@@ -68,7 +68,10 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   `ephemeral-storage`, `hugepages-*`, ...), `resources.claims`, or a bare numeric
   `cpu`/`memory` value (e.g. `cpu: 1`, valid Kubernetes `Quantity` syntax the host's
   string check just drops). Any of those now requires a Kubernetes agent too, the
-  same as `resources.requests`.
+  same as `resources.requests`. Separately, a Kubernetes agent with `workspaceSizeLimit` set
+  injects an `ephemeral-storage` **request** into the `job` container itself; it does so only
+  when nothing in the template already sets `ephemeral-storage`, and it never overrides yours (see
+  [Disk limits and headroom](#disk-limits-and-headroom)).
 - **`native: true`** — host-only. A `native: true` job claimed by the k8s-agent fails the
   run immediately with a clear error; route native jobs away from k8s-agents (and to host
   agents) via `agentSelector`.
@@ -358,6 +361,10 @@ volume](#named-volumes) (expensive to move). A job that mounts a volume cannot a
 
 All containers in the Pod mount the same path (`mountPath`), so files are shared between containers.
 
+The `emptyDir` is unlimited unless the agent's `workspaceSizeLimit` (or the template's
+`podTemplates.<name>.workspaceSizeLimit`) is set, in which case it gets a `sizeLimit` and the `job`
+container an `ephemeral-storage` request; see [Disk limits and headroom](#disk-limits-and-headroom).
+
 The workspace is **always ephemeral** unless a named volume replaces it, on this agent and on the
 standard agent alike. The `pvc` block that an earlier release accepted under `workspace` (a persistent claim or a
 per-Pod ephemeral one) has been removed; a job or agent config that still carries it is rejected. See the [migration
@@ -423,6 +430,10 @@ DNS-label names throughout.
   has no figures until a run next mounts each volume. Replicas sharing one config report the same PVC
   under different `agent` IDs: aggregate with `min by (agent_name, volume)`. See [Watching agent disk
   headroom](operations.md#watching-agent-disk-headroom).
+- **Low free space holds runs back.** The same readings feed `minFreeDisk` (default `1%`): a volume
+  below it is withheld from the claim and the runs that mount it stay `Queued`. It has a
+  10-minute staleness escape and a restart clears it; see [Disk limits and
+  headroom](#disk-limits-and-headroom).
 
 **Exclusion across replicas.** `mode: exclusive` is not left to the `ReadWriteOnce` access mode,
 which is a *node*-level constraint and says nothing about two Pods on one node. Instead the agent
@@ -492,6 +503,110 @@ example](#rbac-example). It never deletes a volume's PVC itself.
 A run still waiting for its volumes when the agent starts draining is failed with `k8s: run
 abandoned: the agent is draining and the run was still waiting for its volumes ...` instead of
 holding up the drain.
+
+---
+
+## Disk limits and headroom
+
+Two independent settings keep a Kubernetes agent from running out of disk. Neither is a quota: one
+protects the cluster's nodes from a single run, the other protects your volumes from being filled
+by runs that are admitted too late.
+
+### Capping the workspace: `workspaceSizeLimit`
+
+A run's workspace is an `emptyDir`, which lives on the node's disk and is not limited by default. A
+run that writes without bound fills the node and the kubelet starts evicting unrelated pods. Set
+`workspaceSizeLimit` (a Kubernetes quantity) to prevent that:
+
+```yaml
+# k8s-agent-config.yaml
+workspaceSizeLimit: 20Gi          # global default; omit to leave the workspace uncapped (the default)
+
+podTemplates:
+  unity:
+    workspaceSizeLimit: 80Gi      # overrides the global value for this template
+    spec:
+      containers:
+        - name: job
+          image: my-unity-builder:latest
+```
+
+(or `UNIFIED_K8S_WORKSPACE_SIZE_LIMIT` for the global value; the per-template key is
+`podTemplates.<name>.workspaceSizeLimit`. The config loader ignores unknown keys, so check the
+spelling: a misspelled key leaves the workspace uncapped without any error.)
+
+When it applies, the agent sets `sizeLimit` on the `workspace` `emptyDir` **and** an
+`ephemeral-storage` **request** of the same size on the `job` container. The request makes the
+scheduler place the pod only on a node with that much ephemeral storage free; the `sizeLimit` makes
+the kubelet evict the pod if the workspace grows past it. No `ephemeral-storage` *limit* is added,
+because a container limit also counts logs and the container's writable layer and would kill runs
+for reasons the operator did not choose. The limit is applied only when the workspace is an
+`emptyDir` (not when a named volume replaces it) and when nothing in the pod template already sets
+an `ephemeral-storage` request or limit, on any container or init container, or a `sizeLimit` on
+the workspace: what you wrote in the template always wins. Scope pods (`runsIn.image` steps) get the
+global value. Pooled pods (`podTemplate.reuse`) are keyed by their resolved limit, so changing the
+limit gives new runs new pods rather than reusing one created with the old cap.
+
+**It is unset by default** because a limit that is too small kills legitimate runs, and the right
+number depends on the largest job you run. While it is unset the agent logs at startup that "a run
+can fill the node's ephemeral storage". Start from the largest workspace your jobs produce plus
+margin, and watch for evictions (below).
+
+When a run's pod is evicted, the run fails with the kubelet's own message first, then the hint:
+
+```
+k8s: pod <pod name> was evicted: Usage of EmptyDir volume "workspace" exceeds the limit "20Gi".
+The workspace emptyDir is limited to 20Gi by the agent workspaceSizeLimit; use a larger podTemplate (podTemplates.<name>.workspaceSizeLimit), or keep large data in a named volume (spec.volumes).
+(exec error: ...)
+```
+
+The hint appears only when a limit is configured. See [Kubernetes run fails: pod was
+evicted](../troubleshooting/artifacts-and-storage.md#kubernetes-run-fails-pod-was-evicted-usage-of-emptydir-volume-workspace-exceeds-the-limit).
+To look for evictions on the cluster:
+
+```bash
+kubectl -n ci get pods --field-selector=status.phase=Failed
+kubectl -n ci get events --field-selector reason=Evicted
+```
+
+### Gating claims on volume headroom: `minFreeDisk`
+
+`minFreeDisk` (`1%` by default; also `"10Gi"`, a byte count, or `0` / `"off"`; env
+`UNIFIED_K8S_MIN_FREE_DISK`) applies to the agent's [named volumes](#named-volumes). A volume whose
+free space is below the threshold is withheld from the claim: runs that mount it stay `Queued`
+(for another agent, or until space is freed) and other runs are unaffected. A volume that is not
+being gated does not block anything, and there is no workspace gate on this agent, because the
+workspace is an `emptyDir` governed by `workspaceSizeLimit` instead. A malformed value fails
+startup. The Kubernetes agent's config loader ignores unknown keys, so spell the key exactly:
+`minFreeDisk`.
+
+A Kubernetes agent can measure a volume only from inside a pod that has the PVC mounted, so a
+volume is measured only by a run that mounts it (before the run starts and again after it ends).
+That shapes the gate:
+
+- **A volume that was never measured is not gated.** A new or freshly restarted agent has no
+  readings; the first run that mounts the volume goes through and measures it.
+- **A reading older than 10 minutes no longer gates.** Nothing measures an idle volume, so a gated
+  volume would otherwise stay gated forever even after you free space. Ten minutes after the last
+  reading, **one probe run is let through**. Its pre-run measurement either clears the gate or, if
+  the volume is still low, re-arms it, and the run's own log then carries a warning such as
+  `volume go-cache has 3.1GiB free (0.6%), below minFreeDisk 1%; this run may fail for lack of
+  space`. The window is fixed; it is not configurable.
+- **A restart clears the readings**, and with them the gate. Restarting the agent (`kubectl rollout
+  restart deployment/unified-cd-k8s-agent`) is the way to lift a gate immediately after freeing
+  space. The metric `unifiedcd_agent_volume_claim_blocked` reads `0` once a reading is more than 10
+  minutes old, consistent with the claim decision.
+- **Each replica keeps its own readings.** Replicas share one set of PVCs but not one cache, so one
+  replica may be gating a volume while another, which measured it earlier or later, is not.
+  Aggregate `volume_claim_blocked` with `max by (agent_name, volume)`.
+- **A threshold that is not smaller than the volume** (an absolute `minFreeDisk` of `100Gi` on a
+  `50Gi` PVC) can never be met, so that volume is not gated and the agent logs a WARN once.
+
+The log lines are `volume below minFreeDisk, not claiming runs that mount it` when a volume enters
+the gate and `volume no longer below minFreeDisk (or its reading is too old to trust), claiming
+runs that mount it again` when it leaves. See [Run stays Queued: the volume it mounts is below
+`minFreeDisk`](../troubleshooting/runs-and-scheduling.md#run-stays-queued-the-volume-it-mounts-is-below-minfreedisk)
+and [Operations: Choosing a threshold](operations.md#choosing-a-threshold).
 
 ---
 

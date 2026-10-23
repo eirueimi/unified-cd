@@ -228,6 +228,61 @@ entry is left out of the check, no banner is raised for it, and the schedulabili
 *resolves* to something nobody declares gives a run that stays `Queued` with no banner. Read the
 resolved name from the run's params, and compare it with the agents' `volumes`.
 
+## Run stays Queued: the volume it mounts is below `minFreeDisk`
+
+**Symptom**
+
+A job that mounts a [named volume](../user-guide/writing-jobs/volumes.md) stays `Queued` while jobs
+that do not mount it run normally on the same agents. The job page shows no unschedulable banner
+(the volume is declared). The agent that declares the volume logs, once when the volume enters the
+gate:
+
+```
+level=WARN msg="volume below minFreeDisk, not claiming runs that mount it" volume=unity-main freeBytes=3221225472 totalBytes=214748364800 thresholdBytes=21474836480
+```
+
+and `/metrics` shows:
+
+```
+unifiedcd_agent_volume_claim_blocked{agent="build-agent-01",agent_name="build-host",volume="unity-main"} 1
+```
+
+When the volume recovers the agent logs `volume no longer below minFreeDisk (or no longer measured),
+claiming runs that mount it again` (`or its reading is too old to trust` on a Kubernetes agent).
+
+**Cause**
+
+The free space on the filesystem backing that volume is below the agent's `minFreeDisk` (default
+`1%`), so the agent leaves the volume out of what it will claim. Only runs that mount it wait; the
+agent keeps claiming everything else, and another agent that declares the volume can still claim the
+run. Nothing is deleted and no run fails. This is different from the workspace gate, which stops all
+claiming ([`free disk space below minimum, skipping
+claim`](agents-and-enrollment.md#a-host-agent-is-not-claiming-free-disk-space-below-minimum-skipping-claim)).
+
+On a **host agent** the reading comes from the agent's 15-second background sample, so the gate
+follows the volume within about that time. A volume with no fresh reading is not gated. On a
+**Kubernetes agent** a volume is measured only by a run that mounts it, so the gate rests on the
+reading from the last such run: after 10 minutes the reading no longer counts, one probe run is let
+through and measures the volume again (its run log warns `volume ... has ... free (...), below
+minFreeDisk ...; this run may fail for lack of space` if it is still low), and the gate re-arms if
+so. The `volume_claim_blocked` series reads `0` once a reading is more than 10 minutes old.
+Each Kubernetes replica keeps its own readings.
+
+**Fix**
+
+- Free space on that volume's filesystem (clear old build output inside the volume, expand the PVC
+  through your StorageClass, or move the volume to a bigger disk). A host agent lifts the gate on the
+  next sample; a Kubernetes agent lifts it when the stale reading expires, or at once if you restart
+  the agent (`kubectl rollout restart deployment/unified-cd-k8s-agent`), which clears its readings.
+- If the threshold is simply too high for this volume, lower `minFreeDisk` in the agent's config
+  (for example `"500MiB"`, or `0` to disable it) and restart the agent. See [Operations: Choosing a
+  threshold](../operator-manual/operations.md#choosing-a-threshold).
+- To see which volumes are gated across the fleet:
+  `max by (agent_name, volume) (unifiedcd_agent_volume_claim_blocked) == 1`.
+- If the log instead says `minFreeDisk is not smaller than the volume, so the volume is not gated`,
+  the threshold is at least as big as the volume, the volume is *not* the reason a run is queued, and
+  the threshold is wrong for it.
+
 ## Run marked `Failed` with "agent lost"
 
 **Symptom**

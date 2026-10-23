@@ -157,7 +157,7 @@ unified-cd-agent [FLAGS]
   --finally-timeout       duration  Ceiling on each of a run's post-DAG cleanup phases (the spec.finally pipeline, and each post:/cache: hook drain); 0/unset = default 10m (env: UNIFIED_AGENT_FINALLY_TIMEOUT)
   --pause-image           string    Image for the claim pod's pause (netns-holder) container (default: busybox:1.36, pinned by digest)
   --runner-image          string    Default primary container image for isolated jobs without a podTemplate job container (default: ghcr.io/eirueimi/unified-cd-runner:<this agent's version>, or :latest for a build that carries no release version)
-  --min-free-disk         uint64    Minimum free space in bytes on the workspace filesystem required to keep claiming runs; 0 disables the check (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)
+  --min-free-disk         string    Minimum free space on the workspace filesystem required to keep claiming runs: a percentage of the filesystem (1%), a size (10GiB) or a byte count; 0 disables the check; default 1% (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)
   --workspace-retention-days int    Age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; workspaces are already emptied around every run, so this only reclaims what an agent crash left behind) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)
   --log-level             string    Log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)
 ```
@@ -189,7 +189,7 @@ for how to pin the runner by digest.
 | `UNIFIED_CACHE_KEY` | Cache storage access key ID (env equivalent of `--cache-key`) |
 | `UNIFIED_CACHE_SECRET` | Cache storage secret access key (env equivalent of `--cache-secret`) |
 | `UNIFIED_CACHE_BUCKET` | Cache storage bucket name (env equivalent of `--cache-bucket`) |
-| `UNIFIED_AGENT_MIN_FREE_DISK` | Minimum free bytes on the workspace filesystem required to keep claiming runs (env equivalent of `--min-free-disk`). `0`/unset disables the check. **Host agent only** — the k8s-agent's job workspaces are pod volumes, not host disk, so there is no preflight to run there. |
+| `UNIFIED_AGENT_MIN_FREE_DISK` | Minimum free space required to keep claiming runs (env equivalent of `--min-free-disk`): a percentage of the filesystem (`1%`), a size (`10GiB`, `10Gi`, `500MB`) or a bare byte count (`5368709120`, the legacy form, same meaning as before). **Default `1%`**; `0` or `off` disables the check. Applies to the workspace filesystem **and** to each named volume. A malformed value is a startup error naming `UNIFIED_AGENT_MIN_FREE_DISK` (it used to be ignored). **Host agent only** — the k8s-agent has its own `minFreeDisk` field / `UNIFIED_K8S_MIN_FREE_DISK`. |
 | `UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS` | Age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC (env equivalent of `--workspace-retention-days`). `0` (default) disables the GC entirely. **Host agent only.** |
 
 When no workspace directory is set by flag, environment variable, or config
@@ -234,7 +234,7 @@ drainTimeout: 60s
 finallyTimeout: 10m            # ceiling on each post-DAG cleanup phase (spec.finally, and each post:/cache: drain); default shown
 # pauseImage: busybox:1.36@sha256:<digest>            # claim pod pause container; left unset it keeps the shipped digest pin. Do not paste this without the digest: that would drop the pin on the one default image this project still pins
 # runnerImage: ghcr.io/eirueimi/unified-cd-runner:<agent version> # default primary container; left unset it follows the agent's own version. Do not paste a literal tag: it would stop following the agent
-minFreeDisk: 5368709120        # 5Gi; below this free space on workspaceDir's filesystem, stop claiming (0 = disabled, default)
+minFreeDisk: "1%"              # stop claiming when free space on workspaceDir's filesystem (or a named volume's) drops below this. Forms: "1%" (default), "10GiB", 5368709120 (bytes); 0 or "off" disables
 workspaceRetentionDays: 0      # >0 opts in to the periodic GC of workspace directories an agent crash left behind (0 = disabled, default)
 logLevel: info
 
@@ -284,26 +284,53 @@ Start with config file:
 ./bin/unified-cd-agent -f unified-agent.yaml
 ```
 
-`minFreeDisk` and `workspaceRetentionDays` are **host agent only** — the
-k8s-agent's job workspaces are ephemeral pod `emptyDir`s, not host disk, so
-neither a disk preflight nor a directory GC applies there.
+`workspaceRetentionDays` is **host agent only** — the k8s-agent's job
+workspaces are ephemeral pod `emptyDir`s, not host disk, so a directory GC does
+not apply there. `minFreeDisk` exists on both agents with the same value forms
+(the k8s-agent's version is described under [K8s Agent config
+fields](#k8s-agent-config-fields)); this section describes the host agent's.
 
-- **`minFreeDisk`** (bytes) is a pre-claim disk check on the workspace
-  filesystem (`workspaceDir`). Below the threshold, the agent stops claiming
-  new runs on that slot and retries after a short backoff — it never deletes
-  anything and never fails the run it would have claimed. `0` (default)
-  disables the check, and an agent that has never set it has no protection at all. If the free space of
-  the workspace filesystem cannot be measured (the call fails, or the filesystem reports a total size of 0), the
-  agent logs `free disk space check failed, proceeding with claim` and claims anyway rather than declining
-  forever. This is an
-  operational lever, not an error condition: pair it with disk-usage monitoring/alerting (see
-  [Operations Guide: Monitoring Points](../operator-manual/operations.md#monitoring-points)) so an
-  operator notices *why* an agent stopped claiming. The configured value is published as the metric
-  `unifiedcd_agent_min_free_disk_bytes` (an unset value publishes as `0`, which means "disabled", not
-  "no space left"), and `unifiedcd_agent_claim_blocked_by_disk` is `1` while the check is making the
-  agent decline work; see [Operations Guide: Watching agent disk
-  headroom](../operator-manual/operations.md#watching-agent-disk-headroom). A Kubernetes agent
-  publishes neither series, because the setting does not apply to it.
+- **`minFreeDisk`** is a pre-claim disk check. It takes a **percentage of the
+  filesystem** (`"1%"`), a **size** (`"10GiB"`, `"10Gi"`, `"500MB"`), a **bare
+  byte count** (`5368709120`, the legacy form, unchanged in meaning), or `0` /
+  `"off"` to disable it. **The default is `1%`, so the check is on unless you
+  turn it off**; an explicit `0` is honoured and beats the environment variable
+  and the default. A malformed value (`minFreeDisk: 1 percent`, or an
+  unparseable `UNIFIED_AGENT_MIN_FREE_DISK` / `--min-free-disk`) fails startup
+  with an error naming the source, rather than being silently ignored. It
+  gates in two places:
+    - **The workspace filesystem (`workspaceDir`) gates all claiming.** Below
+      the threshold the agent stops claiming new runs on that slot and retries
+      after a short backoff. It never deletes anything and never fails the run
+      it would have claimed.
+    - **Each named volume gates only the runs that mount it.** A volume whose
+      filesystem is below the threshold is withheld from the claim, so a run
+      that mounts it stays `Queued` for another agent (or until space is
+      freed) while jobs that do not mount it are claimed as usual. Volume
+      readings come from the agent's background sampler (every 15s), never
+      from a measurement in the claim path.
+
+  The check **fails open**: if the workspace cannot be measured (the call fails,
+  or the filesystem reports a total size of 0) the agent logs `free disk space
+  check failed, proceeding with claim` and claims anyway; a volume that has
+  never been measured, or whose reading is stale, is not gated. An **absolute**
+  threshold that is not smaller than a volume's total size can never be met, so
+  that volume is not gated and the agent logs one WARN
+  (`minFreeDisk is not smaller than the volume, so the volume is not gated`).
+  The threshold is an operational lever, not an error condition: pair it with
+  disk-usage monitoring (see [Operations Guide: Monitoring
+  Points](../operator-manual/operations.md#monitoring-points)). Metrics:
+  `unifiedcd_agent_min_free_disk_bytes` publishes the **resolved** threshold in
+  bytes (`0` means the check is disabled; the series is omitted while a
+  percentage cannot yet be resolved because the workspace has not been
+  measured), `unifiedcd_agent_claim_blocked_by_disk` is `1` while the workspace
+  gate is declining work, and
+  `unifiedcd_agent_volume_claim_blocked{agent,agent_name,volume}` is `1` per
+  gated volume. See [Operations Guide: Watching agent disk
+  headroom](../operator-manual/operations.md#watching-agent-disk-headroom) for
+  how to choose a value, and the [migration
+  note](../operator-manual/migrations/2026-10-23-disk-gating-defaults.md) for
+  what changed from the old `0` (disabled) default.
 - **`workspaceRetentionDays`** (days) opt-in-enables a periodic sweep (hourly,
   plus once at startup) that removes per-job workspace directories
   (`workspaceDir/working<slot>/<job>`) whose mtime is older than the
@@ -436,6 +463,12 @@ poolIdleTimeout: 10m
 
 # Log level is a flag/env, not a config-file field: --log-level / UNIFIED_K8S_LOG_LEVEL
 
+# Disk headroom (see "K8s Agent config fields"). minFreeDisk gates claims on the agent's
+# volumes: "1%" (default), "10Gi", a byte count, or 0/"off". workspaceSizeLimit is unset by
+# default; set it to cap each run's workspace emptyDir (a per-template value overrides it).
+minFreeDisk: "1%"
+# workspaceSizeLimit: 20Gi
+
 # Agent-owned named volumes (jobs mount them with spec.volumes). Each becomes a PVC named
 # <agentName>-<volume>. agentName is required when volumes is set and must never change while
 # the volumes hold data.
@@ -452,6 +485,7 @@ podTemplates:
   golang:
     workspace:
       mountPath: /workspace
+    # workspaceSizeLimit: 40Gi   # overrides the global workspaceSizeLimit for this template
     spec:
       containers:
         - name: job
@@ -501,20 +535,24 @@ podTemplates:
 | `drainTimeout` | string | No | `0` (wait indefinitely) | Go duration bounding the graceful-shutdown drain window. Env override: `UNIFIED_K8S_DRAIN_TIMEOUT`. On SIGTERM/rollout the agent immediately stops claiming new runs but lets in-flight runs keep going — heartbeats keep beating during drain so a draining run isn't reaped as stuck — until either they finish or `drainTimeout` elapses, whichever comes first. `0`/unset waits forever for in-flight runs to finish (no forced cutoff). Parity with the standard agent's `--drain-timeout`. |
 | `finallyTimeout` | string | No | `10m` | Go duration bounding **each** of a run's post-DAG cleanup phases: the [`spec.finally`](../user-guide/writing-jobs/approval-and-finally.md#finally-block-finally) pipeline, and each `post:`/`cache:` hook drain. Env override: `UNIFIED_K8S_FINALLY_TIMEOUT`. Those phases deliberately keep running after a cancellation — that is what `finally:` is for — which also discards the job-level `spec.timeoutMinutes` deadline, so without this ceiling a cleanup step that never returns (most easily a `call:` waiting on a child run that will never be claimed) pinned the run and the agent's concurrency slot indefinitely. Unset or non-positive falls back to the default; "unbounded" is deliberately not expressible. An **unparseable** value is rejected at startup (`invalid config: finallyTimeout "10 minutes": …`) and the agent exits 1 — it does not fall back. It is a per-phase budget, not a shared total: four phases carry it inside the shared cleanup loop (each hook drain, the `finally` pipeline, and scope/Pod teardown), and this agent adds a fifth after that loop returns — the claim Pod's own deletion or return to the idle pool. So the worst-case post-DAG time here is **5 × this value**, 50m at the default; size a rollout's `terminationGracePeriodSeconds` against that, not against the standard agent's 4 × / 40m. Per-step `timeoutMinutes:` works inside `finally:` and remains the precise tool. Parity with the standard agent's `--finally-timeout`. |
 | `poolIdleTimeout` | string | No | `0` (no reuse) | Go duration an idle pooled Pod is kept for reuse before teardown (e.g. `10m`) |
+| `minFreeDisk` | string or int | No | `1%` | Minimum free space on each agent-owned volume's filesystem before the agent stops claiming runs that mount it: `"1%"`, `"10Gi"` / `"10GiB"`, a bare byte count, or `0` / `"off"` to disable. A volume is measured only by runs that mount it, so a reading older than 10 minutes no longer gates and one probe run is let through (it logs a warning in its run log when the volume is still low, and the gate re-arms from its pre-run measurement); restarting the agent clears the readings, and each replica keeps its own. A malformed value fails startup. Env override: `UNIFIED_K8S_MIN_FREE_DISK`. See [Kubernetes Integration: Disk limits and headroom](../operator-manual/kubernetes-integration.md#disk-limits-and-headroom). The k8s-agent config loader ignores unknown keys, so a misspelled `minFreeDisk` silently leaves the default in place. |
+| `workspaceSizeLimit` | string | No | unset | Kubernetes quantity (e.g. `10Gi`). When set, the agent sets `sizeLimit` on the workspace `emptyDir` and an `ephemeral-storage` **request** (no limit) on the `job` container, so the scheduler reserves the space and the kubelet evicts a run that exceeds it instead of letting it fill the node. Applied only when the workspace is an `emptyDir` and nothing in the pod template already sets `ephemeral-storage`. Scope pods get the global value. Overridable per template with `podTemplates.<name>.workspaceSizeLimit`. Env override: `UNIFIED_K8S_WORKSPACE_SIZE_LIMIT`. Unset by default because a limit that is too small kills legitimate runs; the agent logs an INFO at startup while it is unset. |
 | `podTemplates` | map | No | — | Named Pod templates referenced from Job YAML via `podTemplate.name` (see below) |
 | `agentName` | string | Yes, when `volumes` is set | — | Stable name that prefixes this agent's volume PVCs (`<agentName>-<volume>`). A DNS label (lower-case letters, digits, `-`). **Do not change it while the volumes hold data**: a new name provisions new, empty PVCs and leaves the old ones behind. It is not the agent ID, which the controller assigns per Pod (`k8s:<cluster>:<namespace>:<pod UID>`) and so changes on every restart. Replicas that share one config share one set of PVCs. |
 | `volumes` | list | No | — | Agent-owned named volumes jobs mount with `spec.volumes`. Each entry: `name` (a DNS label), `mode` (`exclusive` requests a `ReadWriteOnce` PVC; `shared` requests `ReadWriteMany`, which only works if the StorageClass supports it), `size` (**required**, e.g. `200Gi`) and optional `storageClassName` (unset means the cluster default). `path` is for host agents and is ignored here. A PVC is created at startup if it does not exist and is never resized or deleted by the agent; a volume removed from this list stops being advertised and its PVC is left in place (logged as an orphan). A `shared` volume cannot be mounted at the workspace root. An `exclusive` volume is held by one run at a time across all replicas: the run writes its ID to the PVC's `unified-cd/volume-held-by` annotation before its Pod is created and clears it when the Pod has been deleted (a lock whose run has no live Pod is taken over after two minutes). A run waiting for a held volume fails with `the agent is draining` if the agent starts draining. |
 
 The default agent Deployment projects a ServiceAccount token with audience `unified-cd-agent-enrollment` and mounts it read-only at `/var/run/secrets/unified-cd-agent`. Do not add a token Secret to that Deployment.
 
-`UNIFIED_K8S_POD_START_TIMEOUT`, `UNIFIED_K8S_DRAIN_TIMEOUT`, and
-`UNIFIED_K8S_FINALLY_TIMEOUT` override their config fields.
+`UNIFIED_K8S_POD_START_TIMEOUT`, `UNIFIED_K8S_DRAIN_TIMEOUT`,
+`UNIFIED_K8S_FINALLY_TIMEOUT`, `UNIFIED_K8S_MIN_FREE_DISK` and
+`UNIFIED_K8S_WORKSPACE_SIZE_LIMIT` override their config fields.
 
 ### Pod template fields
 
 | Field | Type | Description |
 |---|---|---|
 | `workspace.mountPath` | string | Mount path inside the pod (default: `/workspace`) |
+| `workspaceSizeLimit` | string | Kubernetes quantity capping this template's workspace `emptyDir`; overrides the global `workspaceSizeLimit` (see [K8s Agent config fields](#k8s-agent-config-fields)) |
 | `spec` | map | Kubernetes PodSpec (containers, volumes, etc.) |
 
 The workspace is always an `emptyDir`: empty when the run starts, discarded with the Pod. The
