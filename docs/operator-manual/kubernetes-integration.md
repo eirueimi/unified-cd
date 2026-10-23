@@ -544,7 +544,9 @@ for reasons the operator did not choose. The limit is applied only when the work
 `emptyDir` (not when a named volume replaces it) and when nothing in the pod template already sets
 an `ephemeral-storage` request or limit, on any container or init container, or a `sizeLimit` on
 the workspace: what you wrote in the template always wins. Scope pods (`runsIn.image` steps) get the
-global value. Pooled pods (`podTemplate.reuse`) are keyed by their resolved limit, so changing the
+global value, and each one reserves the full global `workspaceSizeLimit` as its own
+`ephemeral-storage` request, so a run with N `runsIn.image` scopes reserves (N+1) times the limit
+across its pods. Pooled pods (`podTemplate.reuse`) are keyed by their resolved limit, so changing the
 limit gives new runs new pods rather than reusing one created with the old cap.
 
 **It is unset by default** because a limit that is too small kills legitimate runs, and the right
@@ -588,8 +590,10 @@ That shapes the gate:
   readings; the first run that mounts the volume goes through and measures it.
 - **A reading older than 10 minutes no longer gates.** Nothing measures an idle volume, so a gated
   volume would otherwise stay gated forever even after you free space. Ten minutes after the last
-  reading, **one probe run is let through**. Its pre-run measurement either clears the gate or, if
-  the volume is still low, re-arms it, and the run's own log then carries a warning such as
+  reading, **runs are let through until one of them measures the volume again**: there is no
+  single probe, so a shared volume, or an agent running several runs at once, can start more than
+  one in that window. A run's pre-run measurement either clears the gate or, if the volume is still
+  low, re-arms it, and the run's own log then carries a warning such as
   `volume go-cache has 3.1GiB free (0.6%), below minFreeDisk 1%; this run may fail for lack of
   space`. The window is fixed; it is not configurable.
 - **A restart clears the readings**, and with them the gate. Restarting the agent (`kubectl rollout

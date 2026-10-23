@@ -145,6 +145,8 @@ func emitAgentStorage(ch chan<- prometheus.Metric, id string, s api.AgentStorage
 		gauge(volumeFreeDesc, float64(v.FreeBytes), id, s.AgentName, name)
 		gauge(volumeSizeDesc, float64(v.TotalBytes), id, s.AgentName, name)
 		gauge(volumeMeasuredDesc, float64(v.MeasuredAt.Unix()), id, s.AgentName, name)
+		// 0 means "not blocked" only for an agent that gates: an old agent, or
+		// one with the check off, never sets ClaimBlocked and reads 0 here too.
 		blocked := 0.0
 		if v.ClaimBlocked {
 			blocked = 1

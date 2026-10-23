@@ -125,7 +125,7 @@ full flag/env/yaml forms.
   disk problem worse until space frees up (an operator clears old workspaces,
   an unrelated process on the host frees space, or the opt-in GC below runs).
   Watch the agent log for `free disk space below minimum, skipping claim`
-  (workspace) or `volume below minFreeDisk, not claiming runs that mount it`
+  (workspace; logged once when the agent starts declining, then a reminder at most once a minute) or `volume below minFreeDisk, not claiming runs that mount it`
   (volume) to know when the lever is engaged, or alert on
   `unifiedcd_agent_claim_blocked_by_disk` and
   `unifiedcd_agent_volume_claim_blocked` (see [Watching agent disk
@@ -194,9 +194,14 @@ either.
   completely ... the figure is a lower bound` rather than failing), and `cleanWorkspace` falls back
   to a root cleanup container. But reclaiming the directory by hand needs root. Rootless podman
   avoids all of it.
-- To reclaim space, empty the directory with the agent stopped or the volume idle, or have a job
-  with `cleanWorkspace: true` run once (that wipes a volume mounted at the workspace root only).
-  Deleting a volume's directory while a run holds it breaks that run.
+- To reclaim space, empty the directory with the agent stopped or the volume idle. A job with
+  `cleanWorkspace: true` (which wipes a volume mounted at the workspace root only) is **not** a way
+  out of a volume the gate is withholding: a job that mounts the volume waits like any other, and a
+  host agent has no probe run. If the volume is below `minFreeDisk`, free the space on the host
+  directly, or temporarily set `minFreeDisk: 0` (or a lower value) and restart the agent so the
+  cleanup job can run. (A Kubernetes agent re-probes a stale reading after 10 minutes, so
+  runs are let through eventually.) Deleting a volume's directory while a run holds it breaks that
+  run.
 
 **Kubernetes agents.**
 
@@ -592,7 +597,9 @@ a series that is not there is not a zero. The cases:
   (every claim pod gets an ephemeral `emptyDir`), so it publishes no `workspace_filesystem_*`, no
   `min_free_disk_bytes` and no `claim_blocked_by_disk`. It does gate claims on its named volumes
   with `minFreeDisk`, so it **does** publish `volume_claim_blocked` for each volume it has a reading
-  for. Absent means "not applicable", and it must not be read as "not blocked".
+  for. Absent means "not applicable", and it must not be read as "not blocked". Conversely, a `0`
+  does not prove the volume is fine: agents that do not gate (older agents, or `minFreeDisk`
+  disabled) also publish `0` for their volumes.
 - **A Kubernetes volume figure is only as fresh as the last run that mounted the volume.** The agent
   measures it from inside the claim pod, which already has the PVC mounted, both before the run
   starts and again after it ends (so it includes what the run just wrote). Nothing measures an idle
@@ -694,8 +701,9 @@ a single run from filling the disk once it has been admitted. Two consequences:
   also gates the workspace filesystem**, so do not set it from the volume alone (see the warning
   below).
 
-**Warning: the workspace gate has no exemption.** The threshold is one value applied to the
-workspace filesystem and to every volume. A named volume whose filesystem is no bigger than an
+**Warning (host agents): the workspace gate has no exemption.** The threshold is one value applied to the
+workspace filesystem and to every volume. (A Kubernetes agent has no workspace gate, so this warning
+does not apply to it: it only gates named volumes.) A named volume whose filesystem is no bigger than an
 *absolute* threshold is skipped (it can never satisfy it): that volume is not gated and the agent
 logs a WARN once, naming the volume and both numbers. The workspace filesystem is **never**
 skipped. If an absolute value is larger than the workspace's normal free space, the agent stops
@@ -704,6 +712,13 @@ So pick an absolute value that fits the workspace filesystem too; or put the big
 filesystem and use a percentage, which scales to each filesystem separately; or keep the default.
 A host agent's volume gate reads the 15s background sample rather than measuring in the claim path,
 so it reacts to a filling volume within about that time, not instantly.
+
+**Cost of the workspace check (host agents).** With the check on by default, every claim slot (the
+`maxConcurrent` ones and the detached ones) does one inline `statfs` of `workspaceDir` per claim
+loop iteration. That is cheap on a local disk. On a hard-mounted NFS workspace that has hung, the
+call blocks and wedges those claim slots; runs on such a workspace would hang anyway. If the
+workspace is on such a mount and you would rather not take that risk, set `minFreeDisk: 0` for the
+workspace (this also disables the volume gate).
 
 The shipped alerting rules in
 [`deployments/observability/prometheus-alerts.yaml`](https://github.com/eirueimi/unified-cd/blob/main/deployments/observability/prometheus-alerts.yaml)

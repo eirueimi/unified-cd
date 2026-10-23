@@ -317,8 +317,8 @@ fields](#k8s-agent-config-fields)); this section describes the host agent's.
   threshold that is not smaller than a volume's total size can never be met, so
   that volume is not gated and the agent logs one WARN
   (`minFreeDisk is not smaller than the volume, so the volume is not gated`).
-  **The workspace filesystem has no such exemption**: an absolute value larger than its normal
-  free space stops all claiming.
+  **On a host agent the workspace filesystem has no such exemption**: an absolute value larger
+  than its normal free space stops all claiming (a Kubernetes agent has no workspace gate).
   The threshold is an operational lever, not an error condition: pair it with
   disk-usage monitoring (see [Operations Guide: Monitoring
   Points](../operator-manual/operations.md#monitoring-points)). Metrics:

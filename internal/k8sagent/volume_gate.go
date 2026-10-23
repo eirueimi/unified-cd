@@ -133,6 +133,20 @@ func (a *K8sAgent) gatedNames(now time.Time) []string {
 	return a.volGate.names(a.cfg.Volumes, a.volumeStats.snapshot(), a.cfg.EffectiveMinFreeDisk(), now)
 }
 
+// gatedSet is the set of declared volumes whose cached reading gates claims at
+// now (the same judgement as gatedNames, without its logging). It only reads
+// the cache.
+func (a *K8sAgent) gatedSet(now time.Time) map[string]bool {
+	th := a.cfg.EffectiveMinFreeDisk()
+	set := map[string]bool{}
+	for name, stats := range a.volumeStats.snapshot() {
+		if volumeGated(stats, th, now) {
+			set[name] = true
+		}
+	}
+	return set
+}
+
 // withGated appends gated to busy, skipping names busy already lists.
 func withGated(busy, gated []string) []string {
 	have := make(map[string]bool, len(busy))

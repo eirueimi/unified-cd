@@ -169,7 +169,7 @@ func (t DiskThreshold) String() string {
 	case t.Bytes != 0:
 		return strconv.FormatUint(t.Bytes, 10)
 	case t.Percent > 0:
-		return strconv.FormatFloat(t.Percent, 'g', -1, 64) + "%"
+		return strconv.FormatFloat(t.Percent, 'f', -1, 64) + "%"
 	default:
 		return ""
 	}

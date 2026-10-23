@@ -638,6 +638,10 @@ func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse
 	// made again, so a candidate list falls through to its next free entry
 	// instead of waiting a whole poll interval for the same loser.
 	contended := map[string]bool{}
+	// Volumes below minFreeDisk, from the same cached readings the claim used
+	// to advertise them (no new measurement): an entry listing a gated and a
+	// healthy volume takes the healthy one. See ChooseVolumesAvoiding.
+	gated := a.gatedSet(time.Now().UTC())
 	var chosen []string
 	var release func(context.Context)
 	for {
@@ -645,7 +649,7 @@ func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse
 			return !contended[n] && (declared[n].Mode == agentlib.VolumeModeShared || !held[n])
 		}
 		var ok, abandoned bool
-		chosen, ok, abandoned = agentlib.ChooseVolumes(sets, free)
+		chosen, ok, abandoned = agentlib.ChooseVolumesAvoiding(sets, free, func(n string) bool { return gated[n] })
 		if !ok {
 			if abandoned {
 				return claimPodResult{}, false, errVolumeSearchAbandoned

@@ -123,7 +123,7 @@ func TestDiskThreshold_DefaultAndOrDefault(t *testing.T) {
 }
 
 func TestDiskThreshold_StringRoundTrip(t *testing.T) {
-	for _, in := range []string{"1%", "0.5%", "1.5%", "10GiB", "500MB", "5368709120", "0", "off", ""} {
+	for _, in := range []string{"1%", "0.5%", "1.5%", "10GiB", "500MB", "5368709120", "0", "off", "", "0.00001%", "0.000001%"} {
 		th, err := ParseDiskThreshold(in)
 		if err != nil {
 			t.Fatalf("parse %q: %v", in, err)
@@ -135,6 +135,11 @@ func TestDiskThreshold_StringRoundTrip(t *testing.T) {
 		if back != th {
 			t.Errorf("round trip %q -> %q -> %+v, want %+v", in, th.String(), back, th)
 		}
+	}
+	// A tiny percentage must not render in exponent form ("1e-05%"): String()
+	// feeds a flag default that main re-parses.
+	if got := (DiskThreshold{Percent: 0.00001, Set: true}).String(); got != "0.00001%" {
+		t.Errorf("tiny percent String = %q, want 0.00001%%", got)
 	}
 	if got := (DiskThreshold{Percent: 1}).String(); got != "1%" {
 		t.Errorf("Default String = %q, want 1%%", got)

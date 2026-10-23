@@ -262,16 +262,21 @@ claim`](agents-and-enrollment.md#a-host-agent-is-not-claiming-free-disk-space-be
 On a **host agent** the reading comes from the agent's 15-second background sample, so the gate
 follows the volume within about that time. A volume with no fresh reading is not gated. On a
 **Kubernetes agent** a volume is measured only by a run that mounts it, so the gate rests on the
-reading from the last such run: after 10 minutes the reading no longer counts, one probe run is let
-through and measures the volume again (its run log warns `volume ... has ... free (...), below
+reading from the last such run: after 10 minutes the reading no longer counts, runs are let through
+until one measures the volume again (several can start meanwhile if the volume is shared or the
+agent runs more than one at a time; each run's log warns `volume ... has ... free (...), below
 minFreeDisk ...; this run may fail for lack of space` if it is still low), and the gate re-arms if
 so. The `volume_claim_blocked` series reads `0` once a reading is more than 10 minutes old.
 Each Kubernetes replica keeps its own readings.
 
 **Fix**
 
-- Free space on that volume's filesystem (clear old build output inside the volume, expand the PVC
-  through your StorageClass, or move the volume to a bigger disk). A host agent lifts the gate on the
+- Free space on that volume's filesystem (expand the PVC through your StorageClass, move the volume
+  to a bigger disk, or clear old output directly on the host or PVC). **A cleanup job that mounts the
+  volume does not help while it is gated: it waits like every other run that mounts it**, and a host
+  agent has no probe run. On a host agent either free space outside the agent, or temporarily set
+  `minFreeDisk: 0` (or a lower value) and restart it so the cleanup job can run, then restore the
+  setting. On Kubernetes the 10-minute re-probe eventually lets a run through. A host agent lifts the gate on the
   next sample; a Kubernetes agent lifts it when the stale reading expires, or at once if you restart
   the agent (`kubectl rollout restart deployment/unified-cd-k8s-agent`), which clears its readings.
 - If the threshold is simply too high for this volume, lower `minFreeDisk` in the agent's config

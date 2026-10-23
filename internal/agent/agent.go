@@ -143,6 +143,9 @@ type Agent struct {
 	sampler *storageSampler
 	// volGate de-duplicates the volume gate's log lines across claim slots.
 	volGate volumeGate
+	// wsGate de-duplicates the workspace gate's log lines across claim slots
+	// (normal and detached): the gate state is agent-wide.
+	wsGate workspaceGate
 
 	// RuntimePref selects the container runtime for runsIn.image steps
 	// (docker|podman|nerdctl|wslc|container); empty = auto-detect.
@@ -570,21 +573,23 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 				// wedging the agent on a stat failure.
 				slog.Warn("free disk space check failed, proceeding with claim", "error", err, "slot", slot)
 				setBlocked(false)
+				a.wsGate.ok()
 			} else if t.Below(free, total) {
-				attrs := []any{"freeBytes", free, "thresholdBytes", t.Resolve(total), "minFreeDisk", t.String(), "slot", slot}
+				attrs := []any{"freeBytes", free, "thresholdBytes", t.Resolve(total), "minFreeDisk", t.String()}
 				if t.Percent > 0 {
 					attrs = append(attrs, "thresholdPercent", t.Percent, "totalBytes", total)
 				}
-				slog.Warn("free disk space below minimum, skipping claim", attrs...)
+				a.wsGate.below(attrs...)
 				setBlocked(true)
 				select {
 				case <-claimCtx.Done():
 					return
-				case <-time.After(2 * time.Second):
+				case <-time.After(workspaceGateWait):
 				}
 				continue
 			} else {
 				setBlocked(false)
+				a.wsGate.ok()
 			}
 		}
 		var resp api.ClaimResponse
@@ -606,7 +611,11 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			// the sampler, never by an inline statfs on a volume.
 			busy := a.Volumes.Busy()
 			if a.sampler != nil {
-				busy = withGated(busy, a.volGate.names(a.Volumes, a.sampler, a.MinFreeDisk))
+				gated := a.volGate.names(a.Volumes, a.sampler, a.MinFreeDisk)
+				// Hand the same list to the volume manager, so an entry that
+				// lists a gated and a healthy volume is assigned the healthy one.
+				a.Volumes.SetGated(gated)
+				busy = withGated(busy, gated)
 			}
 			resp, err = a.Client.Claim(claimCtx, a.ID, "30s", a.Labels, api.ClaimRequest{
 				BusyVolumes:  busy,

@@ -412,3 +412,105 @@ func TestClaim_ABlockedVolumeStatfsNeverStallsTheClaim(t *testing.T) {
 	require.Len(t, rec.snapshot(), 2)
 	require.EqualValues(t, 0, volumeCalls.Load(), "runLoop called statfs on a volume path")
 }
+
+// With name: [a, b] and a gated, the run must take b: the controller let it
+// through on the strength of b, and the agent used to pick a (the first free).
+func TestReserveSet_PrefersAnUngatedCandidate(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("a"), exclusive("b"))
+	m.SetGated([]string{"a"})
+	chosen, rel, err := m.ReserveSet(context.Background(), "run-1", [][]string{{"a", "b"}}, nil, nil)
+	require.NoError(t, err)
+	defer rel()
+	require.Equal(t, []string{"b"}, chosen)
+}
+
+// Every candidate gated: the run is already claimed, so it still gets its
+// volume (the first free), exactly as with no gate.
+func TestReserveSet_FallsBackWhenEveryCandidateIsGated(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("a"), exclusive("b"))
+	m.SetGated([]string{"a", "b"})
+	chosen, rel, err := m.ReserveSet(context.Background(), "run-1", [][]string{{"a", "b"}}, nil, nil)
+	require.NoError(t, err)
+	defer rel()
+	require.Equal(t, []string{"a"}, chosen)
+}
+
+// Nothing gated: unchanged, first listed free candidate wins; clearing the gate
+// restores that.
+func TestReserveSet_NothingGatedKeepsListedOrder(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("a"), exclusive("b"))
+	m.SetGated([]string{"a"})
+	m.SetGated(nil)
+	chosen, rel, err := m.ReserveSet(context.Background(), "run-1", [][]string{{"a", "b"}}, nil, nil)
+	require.NoError(t, err)
+	defer rel()
+	require.Equal(t, []string{"a"}, chosen)
+}
+
+// The workspace gate is agent-wide: several slots (normal and detached) blocked
+// for many loop iterations log ONE WARN, and recovery logs ONE INFO.
+func TestWorkspaceGate_LogsTransitionsOnceAcrossSlots(t *testing.T) {
+	old := workspaceGateWait
+	workspaceGateWait = 5 * time.Millisecond
+	t.Cleanup(func() { workspaceGateWait = old })
+
+	var mu sync.Mutex
+	wsFree := uint64(5)
+	var wsPath string
+	a, ws := gateAgent(t, "a-wg1", config.DiskThreshold{Bytes: 10, Set: true}, func(a *Agent, p string) (uint64, uint64, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if p == wsPath {
+			return wsFree, 1000, nil
+		}
+		return 500, 1000, nil
+	})
+	wsPath = ws
+	logs := captureGateLogs(t)
+	rec := &claimRecorder{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := rec.server(t, a.ID, 4, cancel) // ends once four claims are made after recovery
+	a.Client = NewClient(srv.URL, "tok")
+	var wg sync.WaitGroup
+	for slot := 0; slot < 4; slot++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			a.runLoop(ctx, context.Background(), slot, ws, NewRunSet(), NewRunSet(), slot >= 2)
+		}(slot)
+	}
+
+	require.Eventually(t, func() bool { return a.blockedSlots.Load() == 4 }, 5*time.Second, 5*time.Millisecond)
+	time.Sleep(300 * time.Millisecond) // dozens of loop iterations per slot
+	require.Equal(t, 1, strings.Count(logs.String(), "free disk space below minimum, skipping claim"),
+		"one agent-wide WARN, not one per slot per check")
+	require.NotContains(t, logs.String(), "slot=", "the entering WARN is agent-wide")
+
+	mu.Lock()
+	wsFree = 500
+	mu.Unlock()
+	wg.Wait()
+	require.Equal(t, 1, strings.Count(logs.String(), "free disk space is no longer below minimum"), "one INFO on recovery")
+	require.Equal(t, 1, strings.Count(logs.String(), "free disk space below minimum, skipping claim"))
+}
+
+func TestWorkspaceGate_RemindsOncePerMinuteWhileBlocked(t *testing.T) {
+	logs := captureGateLogs(t)
+	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	g := &workspaceGate{now: func() time.Time { return now }}
+	for i := 0; i < 5; i++ {
+		g.below("freeBytes", 1)
+	}
+	now = now.Add(59 * time.Second)
+	g.below("freeBytes", 1)
+	require.Equal(t, 0, strings.Count(logs.String(), "still below minimum"))
+	now = now.Add(2 * time.Second)
+	g.below("freeBytes", 1)
+	g.below("freeBytes", 1)
+	require.Equal(t, 1, strings.Count(logs.String(), "free disk space still below minimum, not claiming"))
+	require.Equal(t, 1, strings.Count(logs.String(), "free disk space below minimum, skipping claim"))
+	g.ok()
+	g.ok()
+	require.Equal(t, 1, strings.Count(logs.String(), "no longer below minimum"))
+}

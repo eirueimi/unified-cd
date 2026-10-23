@@ -197,10 +197,12 @@ guide](../operator-manual/migrations/2026-10-20-named-volumes.md#workspacepvc-is
 **Symptom**
 
 Runs sit `Queued` although an agent that matches them is connected and heartbeating, and that agent's
-log repeats (every 2 seconds per concurrency slot):
+log says, once when the agent starts declining (with a reminder at most once a minute while it
+stays blocked, and an `INFO` line, `free disk space is no longer below minimum, claiming again`,
+when it recovers):
 
 ```
-level=WARN msg="free disk space below minimum, skipping claim" freeBytes=4203003904 thresholdBytes=5368709120 minFreeDisk=1% slot=0 thresholdPercent=1 totalBytes=536870912000
+level=WARN msg="free disk space below minimum, skipping claim" freeBytes=4203003904 thresholdBytes=5368709120 minFreeDisk=1% thresholdPercent=1 totalBytes=536870912000
 ```
 
 On `/metrics` the agent shows:

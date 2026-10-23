@@ -309,7 +309,9 @@ host agent it is **advisory**: the agent warns when a volume grows past it but n
 it does not tell you how much space is actually left. What does protect a volume is the agent's
 `minFreeDisk` (on by default, `1%` of the volume's filesystem): **if an agent's volume is below its
 free-space threshold, runs that mount it stay `Queued`; other jobs are unaffected.** The run starts
-once space is freed (or another agent that declares the volume claims it); see [Run stays Queued:
+once space is freed (or another agent that declares the volume claims it). A cleanup job, or
+`cleanWorkspace: true`, that mounts the gated volume waits as well, so it cannot free the space
+itself; the operator has to. See [Run stays Queued:
 the volume it mounts is below
 `minFreeDisk`](../../troubleshooting/runs-and-scheduling.md#run-stays-queued-the-volume-it-mounts-is-below-minfreedisk).
 The real number is on the controller's

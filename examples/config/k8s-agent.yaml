@@ -41,7 +41,7 @@ poolIdleTimeout: ""
 # less free space than this. Forms: a percentage ("1%"), a size ("10Gi"), a byte count, or 0 / "off" to
 # disable. The default is "1%", so the check is ON unless you disable it; a malformed value fails
 # startup. A volume is measured only by runs that mount it, so a reading older than 10 minutes stops
-# gating (one probe run goes through) and restarting the agent clears it. This loader ignores unknown
+# gating (runs go through until one re-measures the volume) and restarting the agent clears it. This loader ignores unknown
 # keys: a misspelled minFreeDisk is silently ignored, so copy the key exactly.
 # minFreeDisk: "1%"
 #

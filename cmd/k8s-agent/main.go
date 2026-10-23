@@ -56,6 +56,17 @@ func main() {
 		slog.Error("invalid config", "error", err)
 		os.Exit(1)
 	}
+	// The effective threshold, logged like the host agent's "disk gate:" line:
+	// the loader ignores misspelled keys, so this is the operator's check that
+	// the setting they wrote took effect.
+	switch th := cfg.EffectiveMinFreeDisk(); {
+	case th.Off:
+		slog.Info("volume disk gate: disabled")
+	case th.Bytes != 0:
+		slog.Info(fmt.Sprintf("volume disk gate: minFreeDisk=%d bytes", th.Bytes))
+	default:
+		slog.Info("volume disk gate: minFreeDisk=" + th.String())
+	}
 	if cfg.WorkspaceSizeLimitUnset() {
 		slog.Info("workspaceSizeLimit is unset: a run can fill the node's ephemeral storage; set workspaceSizeLimit (or podTemplates.<name>.workspaceSizeLimit) to cap the workspace emptyDir")
 	}
