@@ -1,10 +1,10 @@
 package agent
 
 import (
-	"path"
 	"context"
 	"fmt"
 	"io"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -263,23 +263,35 @@ func setsIdentity(pt *dsl.PodTemplate) bool {
 	return false
 }
 
-// ChownAsAgentWrite re-owns containerPath and everything below it as the
-// identity agentWriteOwner names, by running `ucd-sh chown-as` in pause. It does
-// nothing when the pod sets no identity field. The path is cleaned first:
-// chown-as takes a trailing-slash path as its own parent.
-func (m *claimPodManager) ChownAsAgentWrite(ctx context.Context, containerPath string) error {
+// chownBatch bounds one chown-as argv: an extraction can write thousands of
+// files, and an exec argument list has a size limit.
+const chownBatch = 128
+
+// ChownAsAgentWrite re-owns each of containerPaths as the identity
+// agentWriteOwner names, by running `ucd-sh chown-as` in pause. chown-as is
+// recursive, so a caller passes only files and directories it created, never a
+// directory that already held the job's own files. It does nothing when the
+// pod sets no identity field. Paths are cleaned first: chown-as takes a
+// trailing-slash path as its own parent.
+func (m *claimPodManager) ChownAsAgentWrite(ctx context.Context, containerPaths []string) error {
 	owner, ok := m.agentWriteOwner()
 	if !ok {
 		return nil
 	}
-	argv := []string{"/.ucd/ucd-sh", "chown-as", owner, path.Clean(containerPath)}
-	var out strings.Builder
-	code, err := m.HelperExec(ctx, argv, &out, &out)
-	if err != nil {
-		return fmt.Errorf("ucd-sh chown-as %s %s: %w", owner, containerPath, err)
-	}
-	if code != 0 {
-		return fmt.Errorf("ucd-sh chown-as %s %s exited with code %d: %s", owner, containerPath, code, strings.TrimSpace(out.String()))
+	for start := 0; start < len(containerPaths); start += chownBatch {
+		end := min(start+chownBatch, len(containerPaths))
+		argv := []string{"/.ucd/ucd-sh", "chown-as", owner}
+		for _, p := range containerPaths[start:end] {
+			argv = append(argv, path.Clean(p))
+		}
+		var out strings.Builder
+		code, err := m.HelperExec(ctx, argv, &out, &out)
+		if err != nil {
+			return fmt.Errorf("ucd-sh chown-as %s: %w", owner, err)
+		}
+		if code != 0 {
+			return fmt.Errorf("ucd-sh chown-as %s exited with code %d: %s", owner, code, strings.TrimSpace(out.String()))
+		}
 	}
 	return nil
 }

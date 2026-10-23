@@ -150,6 +150,12 @@ func Restore(ctx context.Context, store objectstore.ObjectStore, jobName, path, 
 // volume's mount point still holds files there, and extracting them would write
 // into the volume.
 func RestoreExcluding(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, restoreKeys []string, exclude []string) (bool, error) {
+	return RestoreWritten(ctx, store, jobName, path, key, restoreKeys, exclude, nil)
+}
+
+// RestoreWritten is RestoreExcluding that records what it extracted in w (nil
+// records nothing), so the caller can re-own exactly that.
+func RestoreWritten(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, restoreKeys []string, exclude []string, w *artifact.Written) (bool, error) {
 	if jobName == "" {
 		return false, fmt.Errorf("cache restore: jobName must not be empty")
 	}
@@ -157,7 +163,7 @@ func RestoreExcluding(ctx context.Context, store objectstore.ObjectStore, jobNam
 	rc, err := store.Get(ctx, oKey+".tar.zst")
 	if err == nil {
 		defer rc.Close()
-		if err := extract(rc, path, exclude); err != nil {
+		if err := extract(rc, path, exclude, w); err != nil {
 			return false, fmt.Errorf("extract: %w", err)
 		}
 		return true, nil
@@ -182,7 +188,7 @@ func RestoreExcluding(ctx context.Context, store objectstore.ObjectStore, jobNam
 			return false, ErrCacheMiss
 		}
 		defer rc.Close()
-		if err := extract(rc, path, exclude); err != nil {
+		if err := extract(rc, path, exclude, w); err != nil {
 			return false, fmt.Errorf("extract fallback: %w", err)
 		}
 		return true, nil
@@ -288,7 +294,7 @@ func isUnder(p string, paths []string) bool {
 // extract decompresses a tar+zstd stream into dest.
 // Rejects paths that escape dest (path traversal protection). An entry at or
 // below one of the paths in exclude is skipped.
-func extract(r io.Reader, dest string, exclude []string) error {
+func extract(r io.Reader, dest string, exclude []string, w *artifact.Written) error {
 	dec, err := zstd.NewReader(r)
 	if err != nil {
 		return fmt.Errorf("zstd reader: %w", err)
@@ -328,11 +334,11 @@ func extract(r io.Reader, dest string, exclude []string) error {
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o750); err != nil {
+			if err := w.MkdirAll(target, 0o750); err != nil {
 				return err
 			}
 		default:
-			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			if err := w.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 				return err
 			}
 			f, err := os.Create(target)
@@ -344,6 +350,7 @@ func extract(r io.Reader, dest string, exclude []string) error {
 				return err
 			}
 			f.Close()
+			w.File(target)
 		}
 	}
 	return nil

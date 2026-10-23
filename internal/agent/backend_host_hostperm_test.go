@@ -71,6 +71,8 @@ func downloadAgent(t *testing.T) *Agent {
 	t.Helper()
 	src := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(src, "a.txt"), []byte("a"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "sub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "sub", "b.txt"), []byte("b"), 0o644))
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/runs/r1/artifacts/art", func(w http.ResponseWriter, r *http.Request) {
 		rc := artifact.StreamTarZstdExcluding(src, nil)
@@ -222,4 +224,65 @@ func TestHostBackend_ReadFallback_NativeClaimHasNoPauseToCopyFrom(t *testing.T) 
 	b := newHostBackend(downloadAgent(t), "r1", "test-job", t.TempDir(), nil)
 	err := b.readWithFallback(context.Background(), "artifact", b.workDir, func(string, []string) error { return fs.ErrPermission })
 	assert.ErrorIs(t, err, fs.ErrPermission)
+}
+
+// The Kubernetes sidecar never changes ownership of what was already at the
+// destination, and chown-as is recursive: only what the extraction wrote may be
+// passed, never a pre-existing directory.
+func TestHostBackend_Download_DoesNotReownThePreExistingJobFiles(t *testing.T) {
+	f := &podFakeRT{}
+	b, workDir := podBackend(t, downloadAgent(t), f, permPT(nil, map[string]any{"runAsUser": 1000}))
+	dest := filepath.Join(workDir, "dest")
+	require.NoError(t, os.MkdirAll(filepath.Join(dest, "sub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dest, "job-file"), []byte("j"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dest, "sub", "job-file2"), []byte("j"), 0o644))
+
+	require.NoError(t, b.DownloadArtifact(context.Background(), ScopeHandle{}, "r1", "art", dest))
+
+	require.Len(t, chownExecs(f), 1)
+	assert.Equal(t, "0:0 /workspace/dest/a.txt /workspace/dest/sub/b.txt", chownExecs(f)[0],
+		"the extracted files only: not dest, not the pre-existing sub, not the job's files")
+}
+
+// A download into the workspace root re-owns the extracted entries, not the
+// root (which holds the job's files). With runAsGroup 3000 and fsGroup 2000 the
+// owner passed is the pod-level U:G; chown-as then takes the group from the
+// setgid workspace (fsGroup) for each entry, as the shim tests assert.
+func TestHostBackend_Download_IntoTheWorkspaceRootDoesNotReownTheRoot(t *testing.T) {
+	f := &podFakeRT{}
+	b, workDir := podBackend(t, downloadAgent(t), f, permPT(map[string]any{"runAsUser": 1000, "runAsGroup": 3000, "fsGroup": 2000}, nil))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "job-file"), []byte("j"), 0o644))
+
+	require.NoError(t, b.DownloadArtifact(context.Background(), ScopeHandle{}, "r1", "art", workDir))
+
+	require.Len(t, chownExecs(f), 1)
+	assert.Equal(t, "1000:3000 /workspace/a.txt /workspace/sub", chownExecs(f)[0], "sub is newly created, so it is passed whole")
+}
+
+func TestHostBackend_CacheRestore_DoesNotReownThePreExistingJobFiles(t *testing.T) {
+	ctx := context.Background()
+	f := &podFakeRT{}
+	b, workDir := podBackend(t, downloadAgent(t), f, permPT(map[string]any{"runAsUser": 1000}, nil))
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "dep"), []byte("d"), 0o644))
+	require.NoError(t, b.CacheSave(ctx, ScopeHandle{}, "k", src, 1))
+
+	dest := filepath.Join(workDir, "deps")
+	require.NoError(t, os.MkdirAll(dest, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dest, "job-file"), []byte("j"), 0o644))
+	hit, err := b.CacheRestore(ctx, ScopeHandle{}, "k", nil, dest)
+	require.NoError(t, err)
+	require.True(t, hit)
+	assert.Equal(t, []string{"1000:0 /workspace/deps/dep"}, chownExecs(f))
+}
+
+func TestHostBackend_Download_ChownIsBatched(t *testing.T) {
+	f := &podFakeRT{}
+	b, _ := podBackend(t, downloadAgent(t), f, permPT(map[string]any{"runAsUser": 1000}, nil))
+	var paths []string
+	for i := 0; i < chownBatch*2+1; i++ {
+		paths = append(paths, "/workspace/f"+strings.Repeat("x", i%3)+string(rune('a'+i%26)))
+	}
+	require.NoError(t, b.pod.ChownAsAgentWrite(context.Background(), paths))
+	assert.Len(t, chownExecs(f), 3)
 }

@@ -27,6 +27,12 @@ func ExtractTarZstd(r io.Reader, dest string) error {
 // volume (or, where the mount point is shadowed, into a directory the job
 // cannot see). A skipped entry is skipped whatever its type.
 func ExtractTarZstdExcluding(r io.Reader, dest string, exclude []string) error {
+	return ExtractTarZstdWritten(r, dest, exclude, nil)
+}
+
+// ExtractTarZstdWritten is ExtractTarZstdExcluding that records what it wrote
+// in w (nil records nothing).
+func ExtractTarZstdWritten(r io.Reader, dest string, exclude []string, w *Written) error {
 	dec, err := zstd.NewReader(r)
 	if err != nil {
 		return fmt.Errorf("zstd reader: %w", err)
@@ -68,7 +74,7 @@ func ExtractTarZstdExcluding(r io.Reader, dest string, exclude []string) error {
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o750); err != nil {
+			if err := w.MkdirAll(target, 0o750); err != nil {
 				return err
 			}
 		case tar.TypeSymlink, tar.TypeLink:
@@ -79,7 +85,7 @@ func ExtractTarZstdExcluding(r io.Reader, dest string, exclude []string) error {
 			// vector (a symlink can point outside dest). So fail loudly.
 			return fmt.Errorf("unsupported %s entry %q in artifact archive", typeflagName(hdr.Typeflag), hdr.Name)
 		default:
-			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			if err := w.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 				return err
 			}
 			f, err := os.Create(target)
@@ -91,6 +97,7 @@ func ExtractTarZstdExcluding(r io.Reader, dest string, exclude []string) error {
 				return err
 			}
 			f.Close()
+			w.File(target)
 		}
 	}
 	return nil

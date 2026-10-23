@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
@@ -220,12 +221,13 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		hit, err := cache.RestoreExcluding(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, b.excludeVolumes(ctx, "cache restore", path))
+		var written artifact.Written
+		hit, err := cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, b.excludeVolumes(ctx, "cache restore", path), &written)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			return false, err
 		}
 		if hit {
-			if err := b.chownAgentWrite(ctx, path); err != nil {
+			if err := b.chownAgentWrite(ctx, &written); err != nil {
 				return false, err
 			}
 		}
@@ -296,10 +298,11 @@ func (b *hostBackend) UploadArtifact(ctx context.Context, scope ScopeHandle, run
 func (b *hostBackend) DownloadArtifact(ctx context.Context, scope ScopeHandle, runID, name, destDir string) error {
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		if err := b.a.Client.DownloadArtifactExcluding(ctx, runID, name, destDir, b.excludeVolumes(ctx, "artifact download", destDir)); err != nil {
+		var written artifact.Written
+		if err := b.a.Client.DownloadArtifactWritten(ctx, runID, name, destDir, b.excludeVolumes(ctx, "artifact download", destDir), &written); err != nil {
 			return err
 		}
-		return b.chownAgentWrite(ctx, destDir)
+		return b.chownAgentWrite(ctx, &written)
 	}
 	tmp, err := os.MkdirTemp("", "ucd-scope-download-")
 	if err != nil {
@@ -540,19 +543,27 @@ func (b *hostBackend) containerPathOf(hostPath string) (string, bool) {
 	return "", false
 }
 
-// chownAgentWrite re-owns what the agent just wrote at hostPath for the job
-// (artifact download, cache restore), as the unified-artifact sidecar would
-// have on Kubernetes (design 6.4). A no-op for a native claim and for a claim
-// whose pod sets no identity field.
-func (b *hostBackend) chownAgentWrite(ctx context.Context, hostPath string) error {
+// chownAgentWrite re-owns what an extraction just wrote (artifact download,
+// cache restore) as the unified-artifact sidecar would have on Kubernetes
+// (design 6.4). Only the entries the extraction wrote are touched: the
+// sidecar never changes ownership of what was already at the destination, and
+// the destination directory (the workspace root for ".") is full of the job's
+// own files. A no-op for a native claim and for a claim whose pod sets no
+// identity field.
+func (b *hostBackend) chownAgentWrite(ctx context.Context, w *artifact.Written) error {
 	if b.pod == nil {
 		return nil
 	}
-	cp, ok := b.containerPathOf(hostPath)
-	if !ok {
+	var cps []string
+	for _, hp := range w.Roots() {
+		if cp, ok := b.containerPathOf(hp); ok {
+			cps = append(cps, cp)
+		}
+	}
+	if len(cps) == 0 {
 		return nil
 	}
-	return b.pod.ChownAsAgentWrite(ctx, cp)
+	return b.pod.ChownAsAgentWrite(ctx, cps)
 }
 
 // readWithFallback runs op, an archiver reading the host path resolved, and

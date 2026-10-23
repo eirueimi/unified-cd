@@ -280,3 +280,25 @@ func contains(ss []string, s string) bool {
 	}
 	return false
 }
+
+// Design 9: runAsGroup 3000 differs from fsGroup 2000, and the agent passes
+// extracted entries directly under the setgid workspace root. Each takes the
+// root's group (fsGroup), not runAsGroup, and the root itself is untouched.
+func TestChownAs_EntriesDirectlyUnderSetgidRootTakeFsGroup(t *testing.T) {
+	f := newFakeFS()
+	f.add("/ws", fs.ModeDir|fs.ModeSetgid|0o770, 0, 2000)
+	f.add("/ws/a.txt", fileM, 0, 0)
+	f.add("/ws/sub", dirM, 0, 0)
+	f.add("/ws/sub/b.txt", fileM, 0, 0)
+	if err := chownAs(f.ops(), 1000, 3000, []string{"/ws/a.txt", "/ws/sub"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/ws/a.txt", "/ws/sub", "/ws/sub/b.txt"} {
+		if n := f.nodes[p]; n.UID != 1000 || n.GID != 2000 {
+			t.Errorf("%s owner = %d:%d, want 1000:2000", p, n.UID, n.GID)
+		}
+	}
+	if n := f.nodes["/ws"]; n.UID != 0 || n.GID != 2000 {
+		t.Errorf("/ws owner = %d:%d, want unchanged 0:2000", n.UID, n.GID)
+	}
+}

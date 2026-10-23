@@ -761,7 +761,9 @@ itself, is what keeps other users on the host out. On Windows hosts the `chmod` 
 
 Files the agent itself writes into the workspace for the job (an artifact download, a cache
 restore) are owned like the files the Kubernetes artifact sidecar writes: by the *pod-level*
-`runAsUser`/`runAsGroup`, or by `0:0` when only a container sets `runAsUser`. When the pod sets no
+`runAsUser`/`runAsGroup`, or by `0:0` when only a container sets `runAsUser`. Only the entries the
+download or restore wrote (and directories it newly created) are re-owned; files and directories
+that were already at the destination keep their owner, as on Kubernetes. When the pod sets no
 identity field the agent keeps writing as itself. When the agent cannot read a file because a job
 container created it as another UID, an artifact upload or cache save retries once from a root copy
 taken out of the claim pod. That copy can include files the pod-level user could not read on

@@ -411,6 +411,12 @@ func (c *Client) DownloadArtifact(ctx context.Context, runID, name, destDir stri
 // DownloadArtifactExcluding is DownloadArtifact that extracts nothing at or
 // below the paths in exclude: the mount points of the volumes under destDir.
 func (c *Client) DownloadArtifactExcluding(ctx context.Context, runID, name, destDir string, exclude []string) error {
+	return c.DownloadArtifactWritten(ctx, runID, name, destDir, exclude, nil)
+}
+
+// DownloadArtifactWritten is DownloadArtifactExcluding that records what it
+// extracted in w (nil records nothing).
+func (c *Client) DownloadArtifactWritten(ctx context.Context, runID, name, destDir string, exclude []string, w *artifact.Written) error {
 	url := c.base + fmt.Sprintf("/api/v1/runs/%s/artifacts/%s", runID, name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -432,5 +438,5 @@ func (c *Client) DownloadArtifactExcluding(ctx context.Context, runID, name, des
 	if destDir == "" {
 		destDir = "."
 	}
-	return artifact.ExtractTarZstdExcluding(resp.Body, destDir, exclude)
+	return artifact.ExtractTarZstdWritten(resp.Body, destDir, exclude, w)
 }
