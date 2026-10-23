@@ -91,23 +91,34 @@ func TestApplyWorkspaceLimit_ExistingSizeLimitIsKept(t *testing.T) {
 	assert.Equal(t, want, p, "an existing sizeLimit leaves the pod untouched")
 }
 
-func TestApplyWorkspaceLimit_MissingPartsDoNotPanic(t *testing.T) {
-	p := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "x"}}}}
-	want := p.DeepCopy()
-	applyWorkspaceLimit(p, q20Gi)
-	assert.Equal(t, want, p)
+func TestApplyWorkspaceLimit_MissingPartsLeavePodUntouched(t *testing.T) {
+	emptyWS := corev1.Volume{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
+	pvcWS := corev1.Volume{Name: "workspace", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "c"}}}
+	for name, p := range map[string]*corev1.Pod{
+		"no workspace, no job":       {Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "x"}}}},
+		"no workspace, with job":     {Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "job"}}}},
+		"pvc workspace, job":         {Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "job"}}, Volumes: []corev1.Volume{pvcWS}}},
+		"emptyDir workspace, no job": {Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "x"}}, Volumes: []corev1.Volume{emptyWS}}},
+		"empty pod":                  {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			want := p.DeepCopy()
+			applyWorkspaceLimit(p, q20Gi)
+			assert.Equal(t, want, p)
+		})
+	}
+	applyWorkspaceLimit(nil, q20Gi)
+}
 
-	p = &corev1.Pod{Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}}
-	applyWorkspaceLimit(p, q20Gi) // no job container: must not panic
-	assert.NotNil(t, wsVol(p).EmptyDir.SizeLimit)
-
-	// workspace backed by a PVC (not an emptyDir) is left alone
-	p = &corev1.Pod{Spec: corev1.PodSpec{
-		Containers: []corev1.Container{{Name: "job"}},
-		Volumes:    []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "c"}}}},
-	}}
-	applyWorkspaceLimit(p, q20Gi)
-	assert.Nil(t, wsVol(p).EmptyDir)
+func TestPoolKey_FoldsInWorkspaceLimit(t *testing.T) {
+	tmpl := inlineTemplate("golang:1.24-alpine")
+	k := func(l string) string {
+		return poolKeyWithLimit("", nil, tmpl, "fb", SidecarSpec{}, testShimImage, l)
+	}
+	assert.Equal(t, k("20Gi"), k("20Gi"))
+	assert.NotEqual(t, k("20Gi"), k("50Gi"))
+	assert.NotEqual(t, k("20Gi"), k(""))
+	assert.Equal(t, k(""), poolKey("", nil, tmpl, "fb", SidecarSpec{}, testShimImage), "unset limit keeps the existing key")
 }
 
 func TestResolveWorkspaceSizeLimit(t *testing.T) {

@@ -56,30 +56,32 @@ func applyLimit(pod *corev1.Pod, limit resource.Quantity, container string) {
 	if podHasEphemeralStorage(pod) {
 		return
 	}
+	// Cap and reservation go together: without an emptyDir workspace (absent,
+	// or backed by a PVC) a request would reserve space nothing caps.
 	var ws *corev1.EmptyDirVolumeSource
 	for i := range pod.Spec.Volumes {
 		if v := &pod.Spec.Volumes[i]; v.Name == workspaceVolumeName {
 			ws = v.EmptyDir
 		}
 	}
-	if ws != nil {
-		if ws.SizeLimit != nil {
-			return // the pod already sizes its workspace: leave it untouched
-		}
-		q := limit.DeepCopy()
-		ws.SizeLimit = &q
+	if ws == nil || ws.SizeLimit != nil {
+		return // no emptyDir workspace, or the pod already sizes it: untouched
 	}
+	var c *corev1.Container
 	for i := range pod.Spec.Containers {
-		c := &pod.Spec.Containers[i]
-		if c.Name != container {
-			continue
+		if pod.Spec.Containers[i].Name == container {
+			c = &pod.Spec.Containers[i]
 		}
-		if c.Resources.Requests == nil {
-			c.Resources.Requests = corev1.ResourceList{}
-		}
-		c.Resources.Requests[corev1.ResourceEphemeralStorage] = limit.DeepCopy()
+	}
+	if c == nil {
 		return
 	}
+	q := limit.DeepCopy()
+	ws.SizeLimit = &q
+	if c.Resources.Requests == nil {
+		c.Resources.Requests = corev1.ResourceList{}
+	}
+	c.Resources.Requests[corev1.ResourceEphemeralStorage] = limit.DeepCopy()
 }
 
 func podHasEphemeralStorage(pod *corev1.Pod) bool {

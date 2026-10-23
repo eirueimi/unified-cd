@@ -195,6 +195,7 @@ func (f *fakePM) DeletePod(ctx context.Context, name string) error {
 	f.mu.Unlock()
 	return nil
 }
+
 // GetPod serves the getPod fixture. getBlock makes it wait for ctx so a test
 // can prove the caller bounds the lookup; getErr fails it outright.
 func (f *fakePM) GetPod(ctx context.Context, name string) (*corev1.Pod, error) {

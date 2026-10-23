@@ -90,20 +90,32 @@ type PodPool struct {
 // for S3SecretMode: Sidecar is marshaled as a whole SidecarSpec value, so a
 // new field on that struct is automatically part of the key.
 func poolKey(templateName string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage string) string {
+	return poolKeyWithLimit(templateName, agentTmpls, jobTmpl, fallbackImage, sidecar, shimImage, "")
+}
+
+// poolKeyWithLimit is poolKey plus the resolved workspace size limit for the
+// template (its quantity string, "" when unset). The limit is baked into the
+// pod at creation, so it is part of the pod shape: after the operator changes
+// workspaceSizeLimit and restarts, Restore must not re-adopt pods that carry
+// the old cap. A changed limit yields a new key; the old pods age out through
+// idle eviction. An unset limit leaves the key identical to poolKey's.
+func poolKeyWithLimit(templateName string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage, workspaceLimit string) string {
 	type canonicalShape struct {
-		TemplateName  string            `json:"templateName"`
-		AgentTemplate *AgentPodTemplate `json:"agentTemplate,omitempty"`
-		JobTemplate   *dsl.PodTemplate  `json:"jobTemplate,omitempty"`
-		FallbackImage string            `json:"fallbackImage"`
-		Sidecar       SidecarSpec       `json:"sidecar"`
-		ShimImage     string            `json:"shimImage"`
+		TemplateName   string            `json:"templateName"`
+		AgentTemplate  *AgentPodTemplate `json:"agentTemplate,omitempty"`
+		JobTemplate    *dsl.PodTemplate  `json:"jobTemplate,omitempty"`
+		FallbackImage  string            `json:"fallbackImage"`
+		Sidecar        SidecarSpec       `json:"sidecar"`
+		ShimImage      string            `json:"shimImage"`
+		WorkspaceLimit string            `json:"workspaceLimit,omitempty"`
 	}
 	shape := canonicalShape{
-		TemplateName:  templateName,
-		JobTemplate:   jobTmpl,
-		FallbackImage: fallbackImage,
-		Sidecar:       sidecar,
-		ShimImage:     shimImage,
+		TemplateName:   templateName,
+		JobTemplate:    jobTmpl,
+		FallbackImage:  fallbackImage,
+		Sidecar:        sidecar,
+		ShimImage:      shimImage,
+		WorkspaceLimit: workspaceLimit,
 	}
 	if templateName != "" {
 		if at, ok := agentTmpls[templateName]; ok {
@@ -125,6 +137,9 @@ func poolKey(templateName string, agentTmpls map[string]AgentPodTemplate, jobTmp
 		// reached if the spec is unmarshalable, which BuildPod would reject
 		// anyway).
 		scalarKey := fmt.Sprintf("%s:%s:%s:%s:%s:%s", templateName, fallbackImage, shimImage, sidecar.Image, sidecar.S3SecretName, sidecar.S3SecretMode)
+		if workspaceLimit != "" {
+			scalarKey += ":" + workspaceLimit
+		}
 		data = []byte(scalarKey)
 	}
 	sum := sha256.Sum256(data)
@@ -202,7 +217,13 @@ func (p *PodPool) evictExpired(ctx context.Context) {
 // inline templates with different images, or the same named template with
 // different overrides — are never handed each other's pod.
 func (p *PodPool) ClaimPod(ctx context.Context, runID, templateName string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage string) (*PooledPod, error) {
-	key := poolKey(templateName, agentTmpls, jobTmpl, fallbackImage, sidecar, shimImage)
+	wsLimit := ""
+	if p.limitFor != nil {
+		if q, ok := p.limitFor(templateName); ok {
+			wsLimit = q.String()
+		}
+	}
+	key := poolKeyWithLimit(templateName, agentTmpls, jobTmpl, fallbackImage, sidecar, shimImage, wsLimit)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -244,6 +265,8 @@ func (p *PodPool) createPoolPod(ctx context.Context, runID, key string, agentTmp
 	if err != nil {
 		return nil, err
 	}
+	// jobTmpl is never nil here: only reuse claims reach the pool, and reuse
+	// lives on the job podTemplate. The check is defensive.
 	if p.limitFor != nil && jobTmpl != nil {
 		if limit, ok := p.limitFor(jobTmpl.Name); ok {
 			applyWorkspaceLimit(pod, limit)
