@@ -233,6 +233,9 @@ func (j *Job) Validate() error {
 		}
 	}
 
+	if err := validatePodTemplateSecurityContext(j.Spec.PodTemplate); err != nil {
+		return err
+	}
 	if err := validatePodTemplateNames(j.Spec.PodTemplate); err != nil {
 		return err
 	}
