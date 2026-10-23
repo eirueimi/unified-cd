@@ -191,11 +191,19 @@ func TestHostBackend_ReadFallback_RetriesThroughCopyOutOnPermissionError(t *test
 	assert.True(t, os.IsNotExist(statErr), "the temp copy is removed afterwards")
 }
 
-func TestHostBackend_ReadFallback_ExclusionsAreMappedIntoTheCopy(t *testing.T) {
+// The pause container sees the volumes bind-mounted under /workspace, so
+// copying /workspace whole would copy every volume into the staging directory
+// before the exclusions applied. The fallback copies child by child and never
+// asks for an excluded path.
+func TestHostBackend_ReadFallback_NeverCopiesAVolumeOut(t *testing.T) {
 	f := &copyOutRT{}
 	b, workDir := podBackend(t, downloadAgent(t), f, permPT(nil, nil))
 	volHost := t.TempDir()
 	b.volumeRefs = []volumeMountRef{{Volume: "v", MountPath: "data", Rel: "data", HostPath: volHost}}
+	// The host sees the mount point as an empty stub directory.
+	require.NoError(t, os.Mkdir(filepath.Join(workDir, "data"), 0o755))
+	require.NoError(t, os.Mkdir(filepath.Join(workDir, "sub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "a.txt"), []byte("a"), 0o644))
 
 	var got []string
 	var copied string
@@ -209,9 +217,78 @@ func TestHostBackend_ReadFallback_ExclusionsAreMappedIntoTheCopy(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
+
+	var from []string
+	for _, c := range f.copyOuts {
+		from = append(from, c.from)
+	}
+	assert.ElementsMatch(t, []string{"/workspace/a.txt", "/workspace/sub"}, from, "the volume mount point is never copied")
+	assert.Equal(t, []string{filepath.Join(copied, "data")}, got, "the exclusion is still mapped into the copy")
+}
+
+func TestHostBackend_ReadFallback_RecursesToSkipANestedVolume(t *testing.T) {
+	f := &copyOutRT{}
+	b, workDir := podBackend(t, downloadAgent(t), f, permPT(nil, nil))
+	volHost := t.TempDir()
+	b.volumeRefs = []volumeMountRef{{Volume: "v", MountPath: "deep/data", Rel: "deep/data", HostPath: volHost}}
+	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "deep", "data"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "deep", "keep"), []byte("k"), 0o644))
+
+	calls := 0
+	require.NoError(t, b.readWithFallback(context.Background(), "artifact", workDir, func(string, []string) error {
+		calls++
+		if calls == 1 {
+			return fs.ErrPermission
+		}
+		return nil
+	}))
 	require.Len(t, f.copyOuts, 1)
-	assert.Equal(t, "/workspace", f.copyOuts[0].from)
-	assert.Equal(t, []string{filepath.Join(copied, "data")}, got, "the volume mount point is excluded in the copy")
+	assert.Equal(t, "/workspace/deep/keep", f.copyOuts[0].from)
+}
+
+// When the agent cannot list a directory that holds a volume, it cannot copy
+// around the volume either: it refuses, rather than copying the volume.
+func TestHostBackend_ReadFallback_RefusesWhenItCannotCopyAroundAVolume(t *testing.T) {
+	f := &copyOutRT{}
+	b, workDir := podBackend(t, downloadAgent(t), f, permPT(nil, nil))
+	b.volumeRefs = []volumeMountRef{{Volume: "v", MountPath: "build/data", Rel: "build/data", HostPath: t.TempDir()}}
+	// workDir/build does not exist on the host: standing in for a directory the
+	// agent's own user cannot list.
+	err := b.readWithFallback(context.Background(), "artifact", filepath.Join(workDir, "build"), func(p string, _ []string) error {
+		return &fs.PathError{Op: "open", Path: p, Err: fs.ErrPermission}
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fs.ErrPermission)
+	assert.Contains(t, err.Error(), "volume")
+	assert.Empty(t, f.copyOuts)
+}
+
+// The staging copy can be as large as the artifact, so it goes under the
+// workspace directory (the disk the operator sized for jobs), not the OS temp
+// directory (often a small tmpfs), and is removed afterwards.
+func TestHostBackend_ReadFallback_StagesUnderTheWorkspaceBase(t *testing.T) {
+	f := &copyOutRT{}
+	a := downloadAgent(t)
+	a.WorkspaceDir = t.TempDir()
+	b, workDir := podBackend(t, a, f, permPT(nil, nil))
+	src := filepath.Join(workDir, "build")
+
+	var staged string
+	calls := 0
+	require.NoError(t, b.readWithFallback(context.Background(), "artifact", src, func(p string, _ []string) error {
+		calls++
+		if calls == 1 {
+			return fs.ErrPermission
+		}
+		staged = p
+		return nil
+	}))
+	rel, err := filepath.Rel(a.WorkspaceDir, staged)
+	require.NoError(t, err)
+	assert.False(t, strings.HasPrefix(rel, ".."), "staged at %s, outside %s", staged, a.WorkspaceDir)
+	entries, err := os.ReadDir(a.WorkspaceDir)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "the staging directory is removed")
 }
 
 func TestHostBackend_ReadFallback_OtherErrorsAreReturnedUntouched(t *testing.T) {

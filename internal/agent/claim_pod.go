@@ -291,7 +291,7 @@ type claimPodManager struct {
 	// maps (the rootless limit, design 5.4); 0 means no limit. Set before
 	// Start. runLog receives helper output (fsgroup warnings) for the run log.
 	maxMappedID int64
-	runLog      func(string)
+	runLog      func(lines []string)
 
 	mu    sync.Mutex
 	pause crt.ContainerHandle

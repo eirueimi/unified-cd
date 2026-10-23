@@ -1,6 +1,8 @@
 package artifact
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,21 +12,27 @@ import (
 // exactly that and nothing it did not write. A nil *Written is valid and
 // records nothing.
 //
-// It keeps every file written (new or overwritten) and the top-most directory
-// of each chain the extraction newly created. A directory that existed before
-// is never recorded: re-owning it (the chown is recursive) would also re-own
-// files the job put there.
+// It keeps every file the extraction created and the top-most directory of each
+// chain it newly created. A file that already existed is overwritten in place
+// and keeps its owner, as it does under the Kubernetes artifact sidecar's
+// os.Create, so it is not recorded; nor is a directory that existed before:
+// re-owning it (the chown is recursive) would also re-own files the job put
+// there.
 type Written struct {
 	files   []string
 	newDirs []string
 }
 
-// File records a file (or link) the extraction wrote.
+// File records a file (or link) the extraction created.
 func (w *Written) File(p string) {
 	if w != nil {
 		w.files = append(w.files, p)
 	}
 }
+
+// lstat is os.Lstat; a variable so a test can inject an error that is not
+// "does not exist".
+var lstat = os.Lstat
 
 // MkdirAll is os.MkdirAll that records the top-most directory it had to
 // create, if any.
@@ -32,8 +40,12 @@ func (w *Written) MkdirAll(dir string, perm os.FileMode) error {
 	var top string
 	if w != nil {
 		for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
-			if _, err := os.Lstat(d); err == nil {
+			_, err := lstat(d)
+			if err == nil {
 				break
+			}
+			if !errors.Is(err, fs.ErrNotExist) {
+				return err
 			}
 			top = d
 			if filepath.Dir(d) == d {

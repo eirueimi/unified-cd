@@ -259,20 +259,20 @@ author:
 | `native` | Can run a step as a plain host process | Standard agent (always) |
 | `container` | Can run a step inside an isolated container | Standard agent (when a container runtime — docker/podman/nerdctl — is detected), Kubernetes agent (always) |
 | `pod` | Can build a Kubernetes Pod | Kubernetes agent (always) |
-| `securitycontext` | Can honour a job's `securityContext` (`runAsUser`, `fsGroup`, ...) the way Kubernetes does | Standard agent, only when its startup probe passes (see [Job isolation notes](../reference/configuration.md#job-isolation-notes)). `pod` implies it. |
+| `securitycontext` | Can honour a job's `securityContext` (`runAsUser`, `fsGroup`, ...) the way Kubernetes does | Standard agent, only when its startup probe passes (see [Job isolation notes](../reference/configuration.md#job-isolation-notes)). The controller adds it to every agent that advertises `pod`; the Kubernetes agent does not report it itself. |
 
 The standard agent reports `["native"]`, or `["native", "container"]` once it
 detects a container runtime at startup, plus `securitycontext` when its startup
 probe shows that runtime honours a `securityContext`. The Kubernetes agent reports
-`["pod", "container", "securitycontext"]`.
+`["pod", "container"]`.
 
 The controller also **normalizes** every capability set it stores: `pod` implies
-`securitycontext`. A Kubernetes agent from before `securitycontext` existed
-reports only `["pod", "container"]`; the controller records it as
-`["pod", "container", "securitycontext"]`, so it keeps claiming the
-`securityContext` jobs it always ran, during an upgrade as well as after. A
-standard agent is never given the capability this way: it has to earn it with the
-startup probe.
+`securitycontext`. A Kubernetes agent, whether from before `securitycontext` existed or
+current, reports only `["pod", "container"]`; the controller records it as
+`["pod", "container", "securitycontext"]`, so it claims the `securityContext` jobs it
+always ran, during an upgrade as well as after, and a new Kubernetes agent is never rejected
+by an older controller that does not know the name. A standard agent is never given the
+capability this way: it has to earn it with the startup probe.
 
 The standard agent logs what it registered as, so a host that came up without
 `container` is visible in its own log:
@@ -808,9 +808,11 @@ equivalent of a Kubernetes `emptyDir`: the agent creates `working<N>/<job>` with
 (`securityContext.runAsUser`) can write to it. This applies to **every** isolated job, with or
 without a `securityContext`. A `native: true` job's workspace stays `0755`, and a workspace that is a
 [volume](#named-volumes) is never re-moded. The directory is private to one run, but its *parent* is
-not, so **keep `wsBase` (the workspace directory) at `0750` or stricter**: that, not the workspace
-itself, is what keeps other users on the host out. On Windows hosts the `chmod` is best-effort
-(a failure is logged as a warning).
+not, so the agent creates the slot directory above it, `working<N>`, with mode **`0700`** (and
+tightens one an older agent left `0755` when it starts): other local users cannot traverse to the
+`0777` job directory. The claim pod's containers do not need that access, because the runtime
+bind-mounts the job directory itself. Also keep `wsBase` (the workspace directory) at `0750` or
+stricter. On Windows hosts the `chmod` is best-effort (a failure is logged as a warning).
 
 Files the agent itself writes into the workspace for the job (an artifact download, a cache
 restore) are owned like the files the Kubernetes artifact sidecar writes: by the *pod-level*
@@ -819,15 +821,29 @@ download or restore wrote (and directories it newly created) are re-owned; files
 that were already at the destination keep their owner, as on Kubernetes. When the pod sets no
 identity field the agent keeps writing as itself. When the agent cannot read a file because a job
 container created it as another UID, an artifact upload or cache save retries once from a root copy
-taken out of the claim pod. That copy can include files the pod-level user could not read on
-Kubernetes, so on the host those uploads are slightly more permissive than on Kubernetes.
+taken out of the claim pod. The copy is staged in a private directory under `wsBase`
+(`.ucd-root-copy-<random>`, not the OS temp directory, so it needs room on the workspace disk) and
+removed afterwards; a directory an agent crash left behind is removed at the next start once it is
+an hour old. The copy is taken entry by entry and never includes a volume mounted below the path
+being read; if the agent cannot list a directory that holds a volume, the retry is refused and the
+original permission error is reported. A failed first attempt leaves no partial artifact or cache
+object behind. The copy can include files the pod-level user could not read on Kubernetes, so on
+the host those uploads are slightly more permissive than on Kubernetes.
+
+When a pod sets `fsGroup`, the agent applies it before the first container starts and writes the
+helper output to the run log (step `-1`): one line per root, `fsgroup <dir>: <n> entries[, <f>
+failed], <duration>` or `... skipped (root already matches)`. Each volume is its own root with its
+own `OnRootMismatch` decision, and the walk of one root never enters a volume mounted below it
+(for example a volume with a relative `mountPath`, which sits under the workspace). Only the first
+20 failed entries are listed, followed by a count of the rest; failures do not fail the claim, as
+in Kubernetes.
 
 **Root-owned files (Linux, rootful docker).** Containers created by rootful
 docker write as root inside the bind-mounted workspace, and a job that sets
 `runAsUser` writes as that UID; the agent process (usually non-root) can then
 fail to clean or overwrite those files (`EPERM`). When a plain removal fails
 this way, the agent falls back to a throwaway root (`0:0`) cleanup container
-(a `busybox` container with the directory mounted) before recreating the
+(a container of the pinned image `docker.io/library/busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662` with the directory mounted; an air-gapped host must have it pulled or loaded beforehand) before recreating the
 directory. The opt-in [workspace GC](operations.md#workspace-and-claim-container-hygiene)
 uses the same fallback. If it also fails, **the run fails** (the GC logs the
 directory and keeps it for the next sweep). **Recommended: run rootless podman.** With rootless

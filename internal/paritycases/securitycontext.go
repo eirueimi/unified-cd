@@ -1,6 +1,8 @@
 package paritycases
 
 import (
+	"strings"
+
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
@@ -28,7 +30,8 @@ func SecurityContextCases() []Case {
 		secArtifactPodLevel(),
 		secArtifactContainerLevel(),
 		secVolumeRegroupAlways(),
-		secVolumeOnRootMismatchSkips(),
+		secVolumeOnRootMismatchSkips("secctx-volume-onrootmismatch-skips", dataVolume, "/data"),
+		secVolumeOnRootMismatchSkips("secctx-volume-relative-mountpath", relativeDataVolume, "/workspace/data"),
 		secNoSecurityContext(),
 		secHardeningCapsAndPrivileges(),
 		secHardeningReadOnlyRootfs(),
@@ -225,18 +228,23 @@ func secArtifactContainerLevel() Case {
 
 var dataVolume = []dsl.VolumeMount{{Name: dsl.StringOrSlice{"data"}, MountPath: "/data"}}
 
+// relativeDataVolume mounts the same volume at a relative path, which the host
+// bind-mounts below the workspace (/workspace/data): a walk of the workspace
+// would descend into it unless each volume is its own fsGroup root.
+var relativeDataVolume = []dsl.VolumeMount{{Name: dsl.StringOrSlice{"data"}, MountPath: "data"}}
+
 const hostOnlyVolumeLeftover = "a leftover root-owned file in a volume needs an earlier run's output to survive: " +
 	"kubelet applies fsGroup when it sets the volume up, before any container writes, " +
 	"and the kind cluster's local-path PVCs are never regrouped (design §6.5)"
 
 // seedRootFile has a root container (no securityContext) leave a root-owned
 // 0644 file in the volume, as an earlier run of the job would have.
-func seedRootFile(runID, file string) Case {
+func seedRootFile(runID string, vols []dsl.VolumeMount, dir, file string) Case {
 	return Case{
 		Name: runID,
 		Claim: func() api.ClaimResponse {
-			return isolatedClaim(runID, podTemplate(nil), dataVolume, step(0, "seed",
-				"echo x > /data/"+file+"\nchmod 644 /data/"+file+"\necho \"seed=$(stat -c '%u %g %a' /data/"+file+")\""))
+			return isolatedClaim(runID, podTemplate(nil), vols, step(0, "seed",
+				"echo x > "+dir+"/"+file+"\nchmod 644 "+dir+"/"+file+"\necho \"seed=$(stat -c '%u %g %a' "+dir+"/"+file+")\""))
 		},
 		Expect: expectStdout([]string{"seed"}, map[string][]string{"seed": {"seed=0 "}}),
 	}
@@ -248,7 +256,7 @@ func secVolumeRegroupAlways() Case {
 	return Case{
 		Name:     "secctx-volume-regroup-always",
 		HostOnly: hostOnlyVolumeLeftover,
-		Setup:    []Case{seedRootFile("run-secctx-vol-always-seed", "left.txt")},
+		Setup:    []Case{seedRootFile("run-secctx-vol-always-seed", dataVolume, "/data", "left.txt")},
 		Claim: func() api.ClaimResponse {
 			return isolatedClaim("run-secctx-vol-always", podTemplate(map[string]any{
 				"runAsUser": 1000, "fsGroup": 4000,
@@ -266,29 +274,30 @@ echo "root=$(stat -c '%a %g' /data)"
 // already carries the group, setgid and g+rwx. A file added afterwards by a
 // root run (group inherited through the setgid root, mode untouched) keeps its
 // 0644, while Always would have made it 0664 (§6.1, §6.5).
-func secVolumeOnRootMismatchSkips() Case {
+func secVolumeOnRootMismatchSkips(name string, vols []dsl.VolumeMount, dir string) Case {
+	id := "run-" + strings.TrimPrefix(name, "secctx-")
 	podSC := func(policy string) map[string]any {
 		return map[string]any{"runAsUser": 1000, "fsGroup": 4000, "fsGroupChangePolicy": policy}
 	}
 	regroup := Case{
-		Name: "run-secctx-vol-skip-regroup",
+		Name: id + "-regroup",
 		Claim: func() api.ClaimResponse {
-			return isolatedClaim("run-secctx-vol-skip-regroup", podTemplate(podSC("Always")), dataVolume,
-				step(0, "regroup", `echo "left=$(stat -c '%a %g' /data/left.txt)"`))
+			return isolatedClaim(id+"-regroup", podTemplate(podSC("Always")), vols,
+				step(0, "regroup", strings.ReplaceAll(`echo "left=$(stat -c '%a %g' /data/left.txt)"`, "/data", dir)))
 		},
 		Expect: expectStdout([]string{"regroup"}, map[string][]string{"regroup": {"left=664 4000"}}),
 	}
 	// A root run in the now-setgid volume: the new file's group is inherited.
-	seed2 := seedRootFile("run-secctx-vol-skip-seed2", "left2.txt")
+	seed2 := seedRootFile(id+"-seed2", vols, dir, "left2.txt")
 	seed2.Expect = expectStdout([]string{"seed"}, map[string][]string{"seed": {"seed=0 4000 644"}})
 	return Case{
-		Name:     "secctx-volume-onrootmismatch-skips",
+		Name:     name,
 		HostOnly: hostOnlyVolumeLeftover,
-		Setup:    []Case{seedRootFile("run-secctx-vol-skip-seed1", "left.txt"), regroup, seed2},
+		Setup:    []Case{seedRootFile(id+"-seed1", vols, dir, "left.txt"), regroup, seed2},
 		Claim: func() api.ClaimResponse {
-			return isolatedClaim("run-secctx-vol-skip", podTemplate(podSC("OnRootMismatch")), dataVolume,
-				step(0, "check", `echo "left2=$(stat -c '%a %g' /data/left2.txt)"
-{ echo more >> /data/left2.txt; } 2>/dev/null && echo "append2=ok" || echo "append2=denied"`))
+			return isolatedClaim(id, podTemplate(podSC("OnRootMismatch")), vols,
+				step(0, "check", strings.ReplaceAll(`echo "left2=$(stat -c '%a %g' /data/left2.txt)"
+{ echo more >> /data/left2.txt; } 2>/dev/null && echo "append2=ok" || echo "append2=denied"`, "/data", dir)))
 		},
 		Expect: expectStdout([]string{"check"}, map[string][]string{"check": {
 			"left2=644 4000", "append2=denied",

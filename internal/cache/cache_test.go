@@ -383,3 +383,18 @@ func TestRestoreKeys_FallbackWorksWithinSameJob(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, hit, "prefix fallback must still work within the same job")
 }
+
+// A save whose archive fails halfway (the first, unprivileged attempt of a
+// read that falls back to a root copy) must leave neither the archive nor a
+// meta record behind: a later retry then starts clean.
+func TestCache_Save_FailedArchiveLeavesNoObjects(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+
+	require.Error(t, cache.SaveExcluding(ctx, store, "job", missing, "k", 1, nil))
+
+	keys, err := store.List(ctx, "")
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+}

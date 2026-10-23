@@ -29,9 +29,12 @@ func TestRealFS_FsGroupAndChownAs(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "outside")
 	must(os.WriteFile(outside, []byte("x"), 0o640))
 	must(os.Symlink(outside, filepath.Join(root, "ext")))
+	outDir := t.TempDir()
+	must(os.WriteFile(filepath.Join(outDir, "child"), []byte("x"), 0o640))
+	must(os.Symlink(outDir, filepath.Join(root, "extdir")))
 
 	var out, warn bytes.Buffer
-	must(FsGroup(PolicyAlways, 54321, []string{root}, &out, &warn))
+	must(FsGroup(PolicyAlways, 54321, nil, []string{root}, &out, &warn))
 	if warn.Len() != 0 {
 		t.Fatalf("warnings: %s", warn.String())
 	}
@@ -54,6 +57,12 @@ func TestRealFS_FsGroupAndChownAs(t *testing.T) {
 	ofi, ost := stat(outside)
 	if ost.Gid == 54321 || ofi.Mode().Perm() != 0o640 {
 		t.Errorf("symlink target was followed: gid=%d mode=%v", ost.Gid, ofi.Mode())
+	}
+	for _, p := range []string{outDir, filepath.Join(outDir, "child")} {
+		ofi, ost := stat(p)
+		if ost.Gid == 54321 || ofi.Mode()&fs.ModeSetgid != 0 {
+			t.Errorf("%s was reached through a symlink to a directory: gid=%d mode=%v", p, ost.Gid, ofi.Mode())
+		}
 	}
 	// Setgid inheritance by the kernel.
 	must(os.WriteFile(filepath.Join(root, "sub", "new"), nil, 0o644))
@@ -93,5 +102,44 @@ func TestProbe_Format(t *testing.T) {
 	}
 	if !strings.HasPrefix(lines[1], "file_uid=") || !strings.Contains(lines[1], " file_gid=") || !strings.Contains(lines[1], " dir_mode=") {
 		t.Errorf("line 2: %q", lines[1])
+	}
+}
+
+func TestRealFS_FsGroupStopsAtAMountBoundary(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root on Linux")
+	}
+	// /dev/shm is a tmpfs, a different st_dev from the temp dir's filesystem
+	// in a container; skip where they happen to coincide.
+	shm := "/dev/shm"
+	root := t.TempDir()
+	rfi, _ := os.Lstat(root)
+	sfi, err := os.Lstat(shm)
+	if err != nil {
+		t.Skip("no /dev/shm")
+	}
+	if rfi.Sys().(*syscall.Stat_t).Dev == sfi.Sys().(*syscall.Stat_t).Dev {
+		t.Skip("/dev/shm shares the temp dir's device")
+	}
+	mp := filepath.Join(root, "mp")
+	if err := os.Mkdir(mp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mount(shm, mp, "", syscall.MS_BIND, ""); err != nil {
+		t.Skipf("cannot bind mount: %v", err)
+	}
+	defer syscall.Unmount(mp, 0)
+	inner := filepath.Join(mp, "ucd-fsgroup-test")
+	if err := os.WriteFile(inner, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(inner)
+	var out, warn bytes.Buffer
+	if err := FsGroup(PolicyAlways, 54321, nil, []string{root}, &out, &warn); err != nil {
+		t.Fatal(err)
+	}
+	fi, _ := os.Lstat(inner)
+	if fi.Sys().(*syscall.Stat_t).Gid == 54321 {
+		t.Error("the walk crossed into the nested mount")
 	}
 }

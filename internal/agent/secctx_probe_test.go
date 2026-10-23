@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"testing"
@@ -246,4 +247,41 @@ func TestProbe_RealDockerOutputParses(t *testing.T) {
 	res := runProbe(t, f)
 	assert.True(t, res.OK, res.Reason)
 	assert.False(t, res.Rootless)
+}
+
+// The probe's cleanup must not depend on a `find` in the pause image (a
+// shell-less image would leave files owned by the probe's UID behind): it
+// removes the directory itself and, when that fails, through the pinned
+// cleanup image.
+func TestProbe_CleanupDoesNotNeedFindInThePauseImage(t *testing.T) {
+	f := &probeFakeRT{rootProbe: goodRootProbe, userProbe: goodUserProbe}
+	runProbe(t, f)
+	for _, e := range f.execs {
+		assert.NotContains(t, e, "find", "cleanup must not exec find in the pause image")
+	}
+}
+
+func TestProbe_LeftoverFilesAreRemovedThroughTheCleanupImage(t *testing.T) {
+	old := removeAll
+	failed := false
+	removeAll = func(p string) error {
+		if !failed {
+			failed = true
+			return fs.ErrPermission // a file owned by the probe's UID
+		}
+		return os.RemoveAll(p)
+	}
+	t.Cleanup(func() { removeAll = old })
+
+	f := &probeFakeRT{rootProbe: goodRootProbe, userProbe: goodUserProbe}
+	runProbe(t, f) // also asserts no probe directory is left
+	require.True(t, failed)
+	var cleanup bool
+	for _, c := range f.created {
+		if c.Image == cleanupImage {
+			cleanup = true
+			assert.Equal(t, "0:0", c.User)
+		}
+	}
+	assert.True(t, cleanup, "the probe directory is removed by a root container of the pinned cleanup image")
 }

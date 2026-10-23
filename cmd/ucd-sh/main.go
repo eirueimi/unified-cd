@@ -111,19 +111,28 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: ucd-sh -c <script> | ucd-sh pause | ucd-sh statfs <path> | ucd-sh fsgroup [--policy=Always|OnRootMismatch] <gid> <dir>... | ucd-sh chown-as <uid>:<gid> <path>... | ucd-sh secctx-probe <dir> | ucd-sh --install <path>")
+	fmt.Fprintln(w, "usage: ucd-sh -c <script> | ucd-sh pause | ucd-sh statfs <path> | ucd-sh fsgroup [--policy=Always|OnRootMismatch] [--exclude=<path>]... <gid> <dir>... | ucd-sh chown-as <uid>:<gid> <path>... | ucd-sh secctx-probe <dir> | ucd-sh --install <path>")
 }
 
-// runFsGroup parses `fsgroup [--policy=Always|OnRootMismatch] <gid> <dir>...`.
+// runFsGroup parses `fsgroup [--policy=Always|OnRootMismatch] [--exclude=<path>]... <gid> <dir>...`.
 func runFsGroup(args []string, stdout, stderr io.Writer) int {
 	policy := shim.PolicyAlways
-	if len(args) > 0 && strings.HasPrefix(args[0], "--policy=") {
-		policy = shim.FsGroupPolicy(strings.TrimPrefix(args[0], "--policy="))
-		args = args[1:]
-		if policy != shim.PolicyAlways && policy != shim.PolicyOnRootMismatch {
-			fmt.Fprintf(stderr, "[ucd-sh] fsgroup: invalid policy %q (want Always or OnRootMismatch)\n", string(policy))
+	var exclude []string
+	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
+		switch {
+		case strings.HasPrefix(args[0], "--policy="):
+			policy = shim.FsGroupPolicy(strings.TrimPrefix(args[0], "--policy="))
+			if policy != shim.PolicyAlways && policy != shim.PolicyOnRootMismatch {
+				fmt.Fprintf(stderr, "[ucd-sh] fsgroup: invalid policy %q (want Always or OnRootMismatch)\n", string(policy))
+				return 2
+			}
+		case strings.HasPrefix(args[0], "--exclude="):
+			exclude = append(exclude, strings.TrimPrefix(args[0], "--exclude="))
+		default:
+			fmt.Fprintf(stderr, "[ucd-sh] fsgroup: unknown flag %q\n", args[0])
 			return 2
 		}
+		args = args[1:]
 	}
 	if len(args) < 2 {
 		usage(stderr)
@@ -134,7 +143,7 @@ func runFsGroup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "[ucd-sh] fsgroup: invalid gid %q\n", args[0])
 		return 2
 	}
-	if err := shim.FsGroup(policy, int(gid), args[1:], stdout, stderr); err != nil {
+	if err := shim.FsGroup(policy, int(gid), exclude, args[1:], stdout, stderr); err != nil {
 		fmt.Fprintf(stderr, "[ucd-sh] fsgroup: %v\n", err)
 		return 1
 	}

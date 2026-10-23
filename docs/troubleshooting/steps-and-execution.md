@@ -102,7 +102,8 @@ The usual cause is **files owned by another user** that a container wrote into t
 bind-mounted workspace: root-owned files from a rootful docker container, or files a job's
 `securityContext.runAsUser` wrote as another UID (a subordinate UID under rootless podman). The
 (usually non-root) agent process cannot remove either. The agent retries
-through a throwaway root cleanup container (a `busybox` container with the directory mounted), and
+through a throwaway root cleanup container (the pinned image
+`docker.io/library/busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662` with the directory mounted), and
 the run fails only if that also fails (no container runtime reachable, the image cannot be pulled,
 the directory is on a filesystem the container cannot see). A reused Kubernetes Pod whose
 workspace cannot be cleared is deleted rather than returned to the pool.
@@ -120,8 +121,9 @@ a native/isolated run](#run-fails-volume-was-last-used-by-a-nativeisolated-run).
   and only the root cleanup container (above) can. A pod-level `securityContext.fsGroup` makes the
   files group-owned, so the job itself can reuse them, but the agent still relies on the fallback.
 - With rootful docker, delete the affected `working<N>/<job>` directory by hand with elevated
-  permissions and re-trigger the run, and make sure the agent host can pull `busybox` or has it
-  cached. See [Workspace lifecycle](../operator-manual/agents.md#workspace-lifecycle).
+  permissions and re-trigger the run, and make sure the agent host can pull the pinned cleanup image
+  (`docker.io/library/busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662`) or has it
+  preloaded (an air-gapped host must load it). See [Workspace lifecycle](../operator-manual/agents.md#workspace-lifecycle).
 
 ### Stray `ucd-sh pause` containers on an agent host after an agent crash
 
@@ -519,7 +521,7 @@ After upgrading a standard agent, it exits shortly after start. Its log ends wit
 
 The controller is older than the agent. A controller that predates the `securitycontext`
 capability rejects the registration with `400 unknown capability: securitycontext` (that text is
-in the controller's HTTP response and on the controller side; the agent log shows only `status=400`). A 4xx is
+only in the controller's HTTP response body; the controller does not log it and the agent log shows only `status=400`). A 4xx is
 permanent, so the agent gives up and exits instead of retrying.
 
 **Fix**

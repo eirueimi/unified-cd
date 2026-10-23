@@ -396,9 +396,15 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	for i := 0; i < n; i++ {
 		dir := filepath.Join(wsBase, fmt.Sprintf("working%d", i))
-		if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+		if mkErr := ensurePrivateDir(dir); mkErr != nil {
 			return fmt.Errorf("create workspace %s: %w", dir, mkErr)
 		}
+	}
+
+	// Scratch directories a crashed process left under wsBase (the probe's, the
+	// root copy's): GC never walks them.
+	for _, d := range reapStagingDirs(ctx, wsBase, time.Now(), a.containerRuntime, a.ToolsDir) {
+		slog.Info("removed a stale scratch directory", "dir", d)
 	}
 
 	// Every volume is free at this point: the agent has lost all the runs it
@@ -937,10 +943,13 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			volumePaths = resolved
 		}
 		// fsgroup helper output goes to the run log (step -1, like failRun).
-		pod.runLog = func(line string) {
-			_ = a.Client.AppendLogBulk(ctx, a.ID, c.RunID, -1, []api.LogAppendRequest{{
-				RunID: c.RunID, StepIndex: -1, Stream: "stderr", Timestamp: time.Now().UTC(), Line: line,
-			}})
+		pod.runLog = func(lines []string) {
+			now := time.Now().UTC()
+			reqs := make([]api.LogAppendRequest, len(lines))
+			for i, line := range lines {
+				reqs[i] = api.LogAppendRequest{RunID: c.RunID, StepIndex: -1, Stream: "stderr", Timestamp: now, Line: line}
+			}
+			_ = a.Client.AppendLogBulk(ctx, a.ID, c.RunID, -1, reqs)
 		}
 		pod.maxMappedID = a.securityContextProbe().MaxMappedID // 0 = no limit (rootful, or the probe did not run)
 		if err := pod.Start(ctx, c.PodTemplate); err != nil {

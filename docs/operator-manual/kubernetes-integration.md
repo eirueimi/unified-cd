@@ -71,8 +71,8 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   writable (they are mounts) and `/tmp` read-only, as on Kubernetes. See
   [Running as a non-root
   user](../user-guide/writing-jobs/isolation-and-containers.md#running-as-a-non-root-user).
-  The k8s-agent advertises `securitycontext`, and the controller records `pod` as implying it, so
-  an older k8s-agent keeps claiming these jobs during an upgrade. See the [migration
+  The k8s-agent advertises `pod` and `container` only; the controller records `pod` as implying
+  `securitycontext`, so every k8s-agent, older or current, claims these jobs. See the [migration
   note](migrations/2026-10-23-host-security-context.md) for what moves and the upgrade order.
 - **Resource `requests`** (`podTemplate.spec.containers[].resources.requests`) — applied
   only on Kubernetes, because docker/podman/nerdctl have no request concept for the

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,6 +89,11 @@ func ExtractTarZstdWritten(r io.Reader, dest string, exclude []string, w *Writte
 			if err := w.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 				return err
 			}
+			// An existing file is overwritten in place and keeps its owner
+			// (os.Create truncates), so only a file this call creates is
+			// recorded for re-owning.
+			_, statErr := os.Lstat(target)
+			created := errors.Is(statErr, fs.ErrNotExist)
 			f, err := os.Create(target)
 			if err != nil {
 				return err
@@ -97,7 +103,9 @@ func ExtractTarZstdWritten(r io.Reader, dest string, exclude []string, w *Writte
 				return err
 			}
 			f.Close()
-			w.File(target)
+			if created {
+				w.File(target)
+			}
 		}
 	}
 	return nil

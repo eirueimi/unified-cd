@@ -256,8 +256,10 @@ process.
   The agent UID maps to itself and container root maps to a subordinate ID. Every
   inode in the workspace is still mapped, so the same operations still succeed. Note
   that keep-id also changes the *default* user of every container to the agent's UID.
-  That already violates decision 1 today. The probe (§7.1) detects it and refuses to
-  advertise.
+  That already violates decision 1 today. The probe (§7.1) does **not** detect it: it
+  runs the root helper with an explicit `--user 0:0`, exactly like the claim pod's pause
+  container, and its non-root container with an explicit `--user`, so the default user
+  is never exercised. keep-id is an unsupported global override.
 
 The design therefore needs **no** rootless detection for correctness. The agent still
 records the mode for diagnostics and for one limit. The probe reads
@@ -284,6 +286,8 @@ Upstream kubelet, `SetVolumeOwnership` / emptyDir setup:
   Then, unless the inode is a symlink, `chmod(mode | 0660)`, and for directories also
   `| 0110 | setgid`. With `fsGroupChangePolicy: OnRootMismatch`, the walk is skipped
   when the root already has group `fsGroup`, the setgid bit, and group rwx.
+- This is applied per volume: each volume is its own mount, so the walk of one volume
+  never enters another, and each volume makes its own `OnRootMismatch` decision.
 - The process gets `fsGroup` as a supplementary group (§5.2).
 - Files created later inherit group `fsGroup` through the setgid directory, by plain
   kernel semantics.
@@ -297,9 +301,9 @@ subcommand (§6.3). The k8s-tagged parity test (§10) pins the result.
 | When | What | Who / privilege | Applies to |
 |---|---|---|---|
 | `prepareWorkspace`, isolated mode, ephemeral workspace (`workspace.go:126-135`) | `os.Chmod(workDir, 0o777)` after `MkdirAll`. This is an explicit chmod, so umask cannot narrow it. | The agent process, which owns the directory it just created | **Every** isolated claim, with or without `securityContext`: the `emptyDir` parity fix from §3 (Q2). Not native claims. Not a volume used as the workspace (a volume is a PVC on k8s, not an `emptyDir`). |
-| `claimPodManager.Start`, after the pause container and **before** any job or sidecar container | `ucd-sh fsgroup --policy=<Always\|OnRootMismatch> <fsGroup> <path>...` exec'd in pause. The paths are the workspace mount and every `volumeMounts` entry; `/.ucd` is excluded. | pause, `--user 0:0`, root in the runtime's userns (§5.4) | Claims whose pod sets `fsGroup` |
+| `claimPodManager.Start`, after the pause container and **before** any job or sidecar container | `ucd-sh fsgroup --policy=<Always\|OnRootMismatch> <fsGroup> <path>...` exec'd in pause. The paths are the workspace mount and every `volumeMounts` entry; `/.ucd` is excluded. Each path is its own root with its own `OnRootMismatch` decision, and no walk enters a mount point below its root or any other root (the agent passes every root as `--exclude=`), so a volume mounted at a relative path below the workspace is walked once. | pause, `--user 0:0`, root in the runtime's userns (§5.4) | Claims whose pod sets `fsGroup` |
 | After a non-scoped `DownloadArtifact` or `CacheRestore` into the workspace or a volume (`backend_host.go:216-226`, :286-290) | `ucd-sh chown-as <U>:<G> <path>...` exec'd in pause: re-owns what the agent wrote as if the k8s artifact sidecar had written it (§6.4). | pause, root | Claims with any honoured identity field |
-| A non-scoped `UploadArtifact` or `CacheSave` fails with `fs.ErrPermission` | Retry the read through `CopyOut` from pause into a temp dir, then archive that | pause, root | Any isolated claim. This is the read-side twin of the existing `wipeDir` fallback |
+| A non-scoped `UploadArtifact` or `CacheSave` fails with `fs.ErrPermission` | Retry the read through `CopyOut` from pause into a staging dir under `wsBase` (`.ucd-root-copy-<rand>`, not the OS temp dir), then archive that. The copy is taken child by child and never asks for a volume mounted below the source; when the agent cannot list a directory that holds a volume, the fallback is refused. A failed first attempt leaves no partial artifact or cache object (the object stores write atomically) | pause, root | Any isolated claim. This is the read-side twin of the existing `wipeDir` fallback |
 | Workspace sweep, before and after the run (`wipeDir`) | Unchanged: `RemoveAll`, falling back to `containerCleanup`. `containerCleanup` gains an explicit `User: "0:0"` so its root-ness no longer depends on the `busybox` image default | the cleanup container, root | Ephemeral workspaces, and volumes with `cleanWorkspace` |
 | Workspace GC of aged directories (`workspace_gc.go:98`) | Switch from `os.RemoveAll` to `wipeDir`, so it gets the same fallback | cleanup container | Crashed-run leftovers |
 
@@ -325,8 +329,17 @@ These are added to `cmd/ucd-sh/main.go`, next to `pause`, `statfs` and `--instal
 injected `lchown`, `chmod` and `lstat` functions.
 
 - `ucd-sh fsgroup [--policy=Always|OnRootMismatch] <gid> <dir>...` implements kubelet's
-  walk exactly. It never follows symlinks (`filepath.WalkDir` plus `Lchown`). It
-  prints one summary line per root: `fsgroup <dir>: <n> entries, <dur>`.
+  walk, with two host-side differences. It never follows symlinks (`Lstat` plus
+  `Lchown`), and it never enters a mount point below the root (read from
+  `/proc/self/mountinfo`; `st_dev` is not used, because overlayfs, btrfs subvolumes and
+  virtiofs vary it within one filesystem) nor any path given by `--exclude=<path>`
+  (repeatable; the agent passes every root, so a volume bind-mounted below the
+  workspace is walked once, as its own root, even when it shares the workspace's
+  device). An entry deleted mid-walk (a concurrent run on a `mode: shared` volume) is
+  skipped. It prints one summary line per root,
+  `fsgroup <dir>: <n> entries[, <f> failed], <dur>`, and the first 20 per-entry
+  lchown/chmod warnings plus a count of the rest; it still exits 0 when entries fail,
+  as kubelet does. The agent forwards the output to the run log in one batch.
 - `ucd-sh chown-as <uid>:<gid> <path>...` makes each path and its descendants look as
   if a process with euid U and egid G had created them. Owner becomes U. Group becomes
   the parent directory's group if the parent is setgid, otherwise G. A directory under
@@ -440,10 +453,16 @@ detected and the shim is installed (`cmd/unified-cd-agent/main.go:166`):
 3. Create a container from `pauseImage` with `--user 54322:54323 --group-add 54321`.
    Exec `ucd-sh secctx-probe /p`.
 4. Expect `uid=54322 gid=54323 groups∋54321`, the new file `54322:54321` (setgid
-   inheritance), and `dir_mode` with setgid and group rwx. The root helper must also
-   report `uid=0` when run **without** `--user`. That catches the keep-id and default
-   user override from §5.4.
-5. Remove everything through the root helper, then remove the dir.
+   inheritance), and `dir_mode` with setgid and group rwx. The root helper must report
+   `uid=0`. The helper is started with `--user 0:0`, the same mechanism the claim pod's
+   pause container uses, so the probe measures what a claim gets. A second, user-less
+   run of the helper was considered and dropped on purpose: it would test a path no
+   claim takes, and it is what a keep-id default would break (§5.4 states that
+   limit).
+5. Remove everything: delete the dir as the agent and, if files owned by another UID
+   remain, through a root container of the pinned cleanup image (`wipeDir`, the same
+   fallback the workspace sweep uses). The probe does not rely on any tool inside the
+   pause image. A dir that survives is reaped (`reapStagingDirs`) at the next start.
 
 If every check passes, the agent advertises the new capability `securitycontext` next
 to `native` and `container` (`agentCapabilities`, `agent.go:241-247`). Otherwise it
@@ -474,8 +493,10 @@ range.
 - **Rolling upgrade, k8s side.** An old k8s-agent advertises `[pod, container]`
   (`k8sagent/agent.go:92`). Without help it would stop claiming securityContext jobs
   until it is upgraded, and those jobs used to run there. Two changes fix this. The new
-  k8s-agent advertises `securitycontext` explicitly. And the controller **normalizes**
-  every stored capability set so that `pod` implies `securitycontext`. That is one
+  k8s-agent keeps advertising `[pod, container]` and does **not** list `securitycontext`:
+  an explicit entry would make a new k8s-agent fail registration against an older
+  controller. The controller **normalizes** every stored capability set so that `pod`
+  implies `securitycontext`, for old and new k8s-agents alike. That is one
   helper, `dsl.NormalizeCapabilities`, applied where register and claim store caps
   (`internal/controller/api_agent.go:46`, :219) and in `EvaluateSchedulability`
   (`internal/controller/schedulability.go:35`).
@@ -660,7 +681,9 @@ sits `Queued` forever.
 2. **Make the ephemeral isolated workspace 0777 for every claim (emptyDir parity),
    including jobs without `securityContext`?** Recommendation: **yes**. It fixes
    today's non-root-image-`USER` failure on hosts. The exposure is limited by `wsBase`
-   permissions, and the docs will recommend `wsBase` 0750 or stricter.
+   permissions. The agent creates the slot directory `working<N>` as `0700`, so other
+   local users cannot reach the `0777` job directory below it; the docs also recommend
+   `wsBase` 0750 or stricter.
 3. **Gate advertisement on a startup probe, or on a static runtime/OS allowlist?**
    Recommendation: **probe**. It is the only option that is correct for Docker
    Desktop, wslc, userns-remap, keep-id and SELinux without guessing.

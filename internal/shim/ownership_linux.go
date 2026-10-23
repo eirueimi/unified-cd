@@ -21,6 +21,13 @@ func realOps() (fsOps, error) {
 			}
 			return info, nil
 		},
+		MountPoints: func() ([]string, error) {
+			b, err := os.ReadFile("/proc/self/mountinfo")
+			if err != nil {
+				return nil, err
+			}
+			return parseMountinfo(string(b)), nil
+		},
 		Lchown: os.Lchown,
 		Chmod:  func(p string, m fs.FileMode) error { return os.Chmod(p, m) },
 		ReadDir: func(p string) ([]string, error) {

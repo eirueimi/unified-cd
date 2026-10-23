@@ -572,8 +572,13 @@ func (b *hostBackend) chownAgentWrite(ctx context.Context, w *artifact.Written) 
 // read-side twin of wipeDir's cleanup-container fallback.
 //
 // Volume exclusions are computed once, on the host paths, and mapped into the
-// copy through container coordinates. The copy can be MORE than the pod-level
-// user could read on Kubernetes, which the docs state (design Q7).
+// copy through container coordinates. The pause container sees every volume
+// bind-mounted under the workspace, so a copy of a directory that holds a
+// volume is taken child by child and never asks for the volume (copyAround);
+// when the agent cannot list such a directory the fallback is refused. The
+// copy is staged under the workspace base, not the OS temp directory. The copy
+// can be MORE than the pod-level user could read on Kubernetes, which the docs
+// state (design Q7).
 func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved string, op func(path string, exclude []string) error) error {
 	exclude := b.excludeVolumes(ctx, kind, resolved)
 	err := op(resolved, exclude)
@@ -584,32 +589,91 @@ func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved strin
 	if !ok {
 		return err
 	}
-	slog.Warn("read failed on permissions; retrying from a root copy taken in the claim pod", "path", resolved, "error", err)
-	tmp, terr := os.MkdirTemp("", "ucd-root-copy-")
-	if terr != nil {
-		return fmt.Errorf("%w (root copy: %v)", err, terr)
-	}
-	defer os.RemoveAll(tmp)
 	// Keep the source's base name: a single-file upload names its archive entry
 	// after it, so a generic name here would change what the artifact contains.
 	base := path.Base(src)
 	if base == "/" || base == "." {
-		// A copy named "/" or "." would be the temp directory itself.
-		return fmt.Errorf("%w (root copy: refusing to copy %q into a temp directory)", err, src)
+		// A copy named "/" or "." would be the staging directory itself.
+		return fmt.Errorf("%w (root copy: refusing to copy %q into a staging directory)", err, src)
 	}
-	dst := filepath.Join(tmp, base)
-	if cerr := b.pod.CopyOutFromPause(ctx, src, dst); cerr != nil {
+	var skip []string // container paths below src that the copy must not contain
+	for _, e := range exclude {
+		if ce, ok := b.containerPathOf(e); ok && strings.HasPrefix(ce, src+"/") {
+			skip = append(skip, ce)
+		}
+	}
+	slog.Warn("read failed on permissions; retrying from a root copy taken in the claim pod", "path", resolved, "error", err)
+	stage, terr := b.stagingDir()
+	if terr != nil {
+		return fmt.Errorf("%w (root copy: %v)", err, terr)
+	}
+	defer func() {
+		if werr := wipeDir(context.WithoutCancel(ctx), stage, false, b.a.containerRuntime, b.a.ToolsDir); werr != nil {
+			slog.Warn("could not remove the root copy staging directory; the next agent start removes it", "dir", stage, "error", werr)
+		}
+	}()
+	dst := filepath.Join(stage, base)
+	if len(skip) == 0 {
+		if cerr := b.pod.CopyOutFromPause(ctx, src, dst); cerr != nil {
+			return fmt.Errorf("%w (root copy: %v)", err, cerr)
+		}
+	} else if cerr := b.copyAround(ctx, resolved, src, dst, skip); cerr != nil {
 		return fmt.Errorf("%w (root copy: %v)", err, cerr)
 	}
 	var copyExclude []string
-	for _, e := range exclude {
-		ce, ok := b.containerPathOf(e)
-		if !ok {
-			continue
-		}
-		if rel, rok := strings.CutPrefix(ce, src+"/"); rok {
-			copyExclude = append(copyExclude, filepath.Join(dst, filepath.FromSlash(rel)))
-		}
+	for _, ce := range skip {
+		rel := strings.TrimPrefix(ce, src+"/")
+		copyExclude = append(copyExclude, filepath.Join(dst, filepath.FromSlash(rel)))
 	}
 	return op(dst, copyExclude)
+}
+
+// stagingDir makes a private scratch directory under the workspace base. The
+// name is dot-prefixed, so workspace GC and job paths never touch it, and
+// reapStagingDirs removes one an agent crash left behind.
+func (b *hostBackend) stagingDir() (string, error) {
+	wsBase, err := ResolveWorkspaceDir(b.a.WorkspaceDir)
+	if err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(wsBase, rootCopyPrefix)
+}
+
+// copyAround copies the container directory srcC (host path hostDir) to dst
+// without any of the container paths in skip, which are volumes mounted below
+// it: it lists hostDir, copies each child the skip list does not mention, and
+// descends into a child that holds one.
+func (b *hostBackend) copyAround(ctx context.Context, hostDir, srcC, dst string, skip []string) error {
+	entries, err := os.ReadDir(hostDir)
+	if err != nil {
+		return fmt.Errorf("cannot list %s to copy around the mounted volume(s) below it, and copying the volume(s) too is not allowed: %w", hostDir, err)
+	}
+	if err := os.MkdirAll(dst, 0o700); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		child := path.Join(srcC, e.Name())
+		var below []string
+		skipped := false
+		for _, s := range skip {
+			switch {
+			case s == child:
+				skipped = true
+			case strings.HasPrefix(s, child+"/"):
+				below = append(below, s)
+			}
+		}
+		switch {
+		case skipped:
+		case len(below) > 0:
+			if err := b.copyAround(ctx, filepath.Join(hostDir, e.Name()), child, filepath.Join(dst, e.Name()), below); err != nil {
+				return err
+			}
+		default:
+			if err := b.pod.CopyOutFromPause(ctx, child, filepath.Join(dst, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

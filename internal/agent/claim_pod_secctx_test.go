@@ -96,19 +96,40 @@ func TestClaimPod_PodLevelIdentityAppliesToJobAndSidecars(t *testing.T) {
 }
 
 func TestClaimPod_FsGroupExecBeforeAnyJobCreate(t *testing.T) {
-	f := &secFakeRT{execOut: "ucd-sh fsgroup: warning: chmod /workspace/x: denied\n"}
+	f := &secFakeRT{execOut: "ucd-sh fsgroup: warning: chmod /workspace/x: denied\nsecond line\n"}
 	pt := secPT(map[string]any{"fsGroup": 2000, "fsGroupChangePolicy": "OnRootMismatch"})
 	m := newClaimPodManager(f, "/w", "/workspace", "pause:img", "runner:img", "/host/tools")
 	m.volumeMounts = []crt.Mount{{HostPath: "/host/v", ContainerPath: "/cache"}}
 	var logged strings.Builder
-	m.runLog = func(s string) { logged.WriteString(s) }
+	var batches int
+	m.runLog = func(lines []string) { batches++; logged.WriteString(strings.Join(lines, "\n")) }
 	require.NoError(t, m.Start(context.Background(), pt))
+	assert.Equal(t, 1, batches, "helper output is delivered to the run log in one batch, not one request per line")
 
 	assert.Equal(t, []string{"create:pause:img", "exec:c0", "create:runner:img"}, f.events)
 	require.Len(t, f.execSpecs, 1)
 	argv := append(append([]string{}, f.execSpecs[0].Shell...), f.execSpecs[0].Script)
-	assert.Equal(t, []string{"/.ucd/ucd-sh", "fsgroup", "--policy=OnRootMismatch", "2000", "/workspace", "/cache"}, argv)
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "fsgroup", "--policy=OnRootMismatch",
+		"--exclude=/workspace", "--exclude=/cache", "2000", "/workspace", "/cache"}, argv)
 	assert.Contains(t, logged.String(), "warning: chmod /workspace/x: denied")
+}
+
+func TestClaimPod_FsGroupExcludesEveryRootIncludingRelativeVolumes(t *testing.T) {
+	// A relative volume mountPath is bind-mounted under the workspace
+	// (volumes_mount.go), so the workspace walk would descend into it unless
+	// every root is passed as an exclusion.
+	f := &secFakeRT{}
+	m := newClaimPodManager(f, "/w", "/workspace", "pause:img", "runner:img", "")
+	m.volumeMounts = []crt.Mount{
+		{HostPath: "/host/v1", ContainerPath: "/workspace/data"},
+		{HostPath: "/host/v2", ContainerPath: "/cache"},
+	}
+	require.NoError(t, m.Start(context.Background(), secPT(map[string]any{"fsGroup": 7})))
+	require.Len(t, f.execSpecs, 1)
+	argv := append(append([]string{}, f.execSpecs[0].Shell...), f.execSpecs[0].Script)
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "fsgroup", "--policy=Always",
+		"--exclude=/workspace", "--exclude=/workspace/data", "--exclude=/cache",
+		"7", "/workspace", "/workspace/data", "/cache"}, argv)
 }
 
 func TestClaimPod_FsGroupDefaultsToAlwaysAndSkippedWhenUnset(t *testing.T) {

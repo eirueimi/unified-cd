@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -142,7 +143,7 @@ func (w *lineWriter) Write(p []byte) (int, error) {
 	defer w.mu.Unlock()
 	w.buf = append(w.buf, p...)
 	for {
-		i := strings.IndexByte(string(w.buf), '\n')
+		i := bytes.IndexByte(w.buf, '\n')
 		if i < 0 {
 			break
 		}
@@ -164,41 +165,55 @@ func (w *lineWriter) flush() {
 // HelperExec runs argv in the root pause container, the agent's privileged
 // helper. It reuses the ExecSpec contract (Shell = argv[:n-1], Script =
 // argv[n-1], exec'd verbatim) so the runtime interface is unchanged.
+//
+// The manager's lock is held only to read the pause handle, never across the
+// exec: a long helper run must not block Exec, CloseAll or SidecarHandles.
 func (m *claimPodManager) HelperExec(ctx context.Context, argv []string, stdout, stderr io.Writer) (int, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.helperExecLocked(ctx, argv, stdout, stderr)
+	pause := m.pause
+	m.mu.Unlock()
+	return m.execHelper(ctx, pause, argv, stdout, stderr)
 }
 
-func (m *claimPodManager) helperExecLocked(ctx context.Context, argv []string, stdout, stderr io.Writer) (int, error) {
+func (m *claimPodManager) execHelper(ctx context.Context, pause crt.ContainerHandle, argv []string, stdout, stderr io.Writer) (int, error) {
 	if len(argv) == 0 {
 		return -1, fmt.Errorf("claim pod helper exec: empty argv")
 	}
-	if m.pause.ID == "" {
+	if pause.ID == "" {
 		return -1, fmt.Errorf("claim pod helper exec: the pause container is not running")
 	}
 	n := len(argv)
-	return m.rt.Exec(ctx, m.pause, crt.ExecSpec{Shell: argv[:n-1], Script: argv[n-1]}, stdout, stderr)
+	return m.rt.Exec(ctx, pause, crt.ExecSpec{Shell: argv[:n-1], Script: argv[n-1]}, stdout, stderr)
 }
 
 // applyFSGroup runs `ucd-sh fsgroup` in pause over the workspace and every
-// volume, copying its output to the run log. The shim warns per failed entry
-// and still exits 0 (kubelet parity); a non-zero exit is a real failure.
+// volume, copying its output to the run log in one batch. Every root is also
+// passed as an exclusion: a relative volume mountPath is bind-mounted under the
+// workspace, and each volume must be walked once, by its own root pass (the
+// shim additionally refuses to cross a mount boundary). The shim warns per
+// failed entry and still exits 0 (kubelet parity); a non-zero exit is a real
+// failure. Start calls this with m.mu held and m.pause set.
 func (m *claimPodManager) applyFSGroup(ctx context.Context, fsGroup int64, policy string) error {
 	if policy == "" {
 		policy = "Always"
 	}
-	argv := []string{"/.ucd/ucd-sh", "fsgroup", "--policy=" + policy, strconv.FormatInt(fsGroup, 10), m.mountPath}
+	roots := []string{m.mountPath}
 	for _, v := range m.volumeMounts {
-		argv = append(argv, v.ContainerPath)
+		roots = append(roots, v.ContainerPath)
 	}
-	var w io.Writer = io.Discard
-	if m.runLog != nil {
-		lw := &lineWriter{fn: m.runLog}
-		defer lw.flush()
-		w = lw
+	argv := []string{"/.ucd/ucd-sh", "fsgroup", "--policy=" + policy}
+	for _, r := range roots {
+		argv = append(argv, "--exclude="+r)
 	}
-	code, err := m.helperExecLocked(ctx, argv, w, w)
+	argv = append(argv, strconv.FormatInt(fsGroup, 10))
+	argv = append(argv, roots...)
+	var lines []string
+	lw := &lineWriter{fn: func(l string) { lines = append(lines, l) }}
+	code, err := m.execHelper(ctx, m.pause, argv, lw, lw)
+	lw.flush()
+	if m.runLog != nil && len(lines) > 0 {
+		m.runLog(lines)
+	}
 	if err != nil {
 		return fmt.Errorf("apply fsGroup %d: %w", fsGroup, err)
 	}
@@ -301,9 +316,10 @@ func (m *claimPodManager) ChownAsAgentWrite(ctx context.Context, containerPaths 
 // the agent's own user cannot.
 func (m *claimPodManager) CopyOutFromPause(ctx context.Context, containerPath, hostPath string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.pause.ID == "" {
+	pause := m.pause
+	m.mu.Unlock()
+	if pause.ID == "" {
 		return fmt.Errorf("claim pod copy out: the pause container is not running")
 	}
-	return m.rt.CopyOut(ctx, m.pause, containerPath, hostPath)
+	return m.rt.CopyOut(ctx, pause, containerPath, hostPath)
 }

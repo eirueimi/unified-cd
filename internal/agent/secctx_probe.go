@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"strconv"
@@ -68,7 +67,7 @@ func probeSecurityContext(ctx context.Context, rt crt.ContainerRuntime, wsBase, 
 	}
 
 	// 1. A dot-prefixed dir is out of workspace GC and job reach.
-	dir, mkErr := os.MkdirTemp(wsBase, ".ucd-probe-")
+	dir, mkErr := os.MkdirTemp(wsBase, probeDirPrefix)
 	if mkErr != nil {
 		res.Reason = fmt.Sprintf("cannot create probe directory in %s: %v", wsBase, mkErr)
 		return res, mkErr
@@ -81,16 +80,18 @@ func probeSecurityContext(ctx context.Context, rt crt.ContainerRuntime, wsBase, 
 		// non-root or subordinate-ID owner left behind), then the dir.
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		if root.ID != "" {
-			_, _ = rt.Exec(cctx, root, crt.ExecSpec{Shell: []string{"find", "/p", "-mindepth", "1"}, Script: "-delete"}, io.Discard, io.Discard)
-		}
 		for i := len(handles) - 1; i >= 0; i-- {
 			if rmErr := rt.Remove(cctx, handles[i]); rmErr != nil {
 				slog.Debug("securityContext probe: remove container", "container", handles[i].ID, "error", rmErr)
 			}
 		}
-		if rmErr := os.RemoveAll(dir); rmErr != nil {
-			slog.Warn("securityContext probe: could not remove its temp directory", "dir", dir, "error", rmErr)
+		// Files the --user container created may be owned by a UID the agent
+		// cannot delete as; wipeDir falls back to the pinned cleanup image, so
+		// this does not depend on anything in the (possibly shell-less) pause
+		// image. A directory that still survives is reaped at the next start.
+		rtFn := func() (crt.ContainerRuntime, error) { return rt, nil }
+		if rmErr := wipeDir(cctx, dir, false, rtFn, toolsDir); rmErr != nil {
+			slog.Warn("securityContext probe: could not remove its temp directory; the next agent start removes it", "dir", dir, "error", rmErr)
 		}
 	}()
 

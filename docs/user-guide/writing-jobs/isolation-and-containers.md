@@ -341,7 +341,7 @@ a Kubernetes agent and on a standard agent alike. The standard agent honours the
 | Level | Fields |
 |---|---|
 | Pod (`podTemplate.spec.securityContext`) | `runAsUser`, `runAsGroup`, `runAsNonRoot`, `supplementalGroups`, `fsGroup`, `fsGroupChangePolicy` (`Always` or `OnRootMismatch`), `supplementalGroupsPolicy: Merge` |
-| Pod, hardening | `seccompProfile` and `appArmorProfile` with `type: RuntimeDefault` (the runtime's default profile, which docker and podman already apply where the host supports it) |
+| Pod, hardening | `seccompProfile` and `appArmorProfile` with `type: RuntimeDefault` (the runtime's default profile, which docker and podman already apply where the host supports it; the standard agent emits no flag for it, so on a daemon whose default is unconfined nothing is applied, whereas Kubernetes applies its RuntimeDefault) |
 | Container (`containers[].securityContext`) | `runAsUser`, `runAsGroup`, `runAsNonRoot` (a container value overrides the pod value, as in Kubernetes) |
 | Container, hardening | `allowPrivilegeEscalation: false` (`no-new-privileges`), `capabilities.drop` (any capability, `ALL` included) and `capabilities.add` limited to `NET_BIND_SERVICE`, `readOnlyRootFilesystem: true`, `privileged: false`, `procMount: Default`, `seccompProfile` / `appArmorProfile` with `type: RuntimeDefault` |
 

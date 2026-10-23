@@ -427,6 +427,20 @@ decide to move to a newer `busybox`:
 Do not "make it consistent" by deriving the pause image from the version too:
 there is no `busybox:v0.7.0` for it to resolve to.
 
+The agent also runs one other `busybox` container: the throwaway root **cleanup
+container** that removes files a job's container left owned by another UID
+(workspace sweeps, workspace GC and the startup probe's leftovers). Its image is a
+separate constant, `cleanupImage` in `internal/agent/workspace.go`, fully qualified
+and pinned to the same digest as the default pause image:
+
+```
+docker.io/library/busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+```
+
+It is only pulled when a plain removal fails, so an **air-gapped host must pull or load
+exactly this reference** (the `pauseImage` setting does not change it). When you rotate
+the pause image, rotate `cleanupImage` with it, or the fleet needs two `busybox` images.
+
 ---
 
 ## Metrics

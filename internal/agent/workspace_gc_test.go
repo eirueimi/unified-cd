@@ -331,3 +331,31 @@ func TestGCWorkspaces_UnremovableDirIsKeptAndNotReported(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, removed)
 }
+
+// Scratch directories an agent crash left under wsBase (the startup probe's and
+// the root-copy fallback's) are not job workspaces, so gcWorkspaces never sees
+// them; reapStagingDirs removes the stale ones and nothing else.
+func TestReapStagingDirs(t *testing.T) {
+	wsBase := t.TempDir()
+	now := time.Now()
+	mk := func(name string, age time.Duration) string {
+		p := filepath.Join(wsBase, name)
+		require.NoError(t, os.MkdirAll(filepath.Join(p, "sub"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(p, "sub", "f"), []byte("x"), 0o644))
+		require.NoError(t, os.Chtimes(p, now.Add(-age), now.Add(-age)))
+		return p
+	}
+	oldProbe := mk(".ucd-probe-111", 3*time.Hour)
+	oldCopy := mk(".ucd-root-copy-222", 3*time.Hour)
+	freshProbe := mk(".ucd-probe-333", time.Minute)
+	tools := mk(".ucd-tools", 3*time.Hour)
+	job := mk("working0", 3*time.Hour)
+
+	removed := reapStagingDirs(context.Background(), wsBase, now, noRuntime, "")
+	assert.ElementsMatch(t, []string{oldProbe, oldCopy}, removed)
+	assert.NoDirExists(t, oldProbe)
+	assert.NoDirExists(t, oldCopy)
+	assert.DirExists(t, freshProbe, "a recent one may belong to a live agent sharing wsBase")
+	assert.DirExists(t, tools)
+	assert.DirExists(t, job)
+}

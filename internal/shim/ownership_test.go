@@ -3,6 +3,8 @@ package shim
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"github.com/stretchr/testify/assert"
 	"io/fs"
 	"os"
 	"path"
@@ -17,6 +19,7 @@ import (
 // normalised through filepath.ToSlash.
 type fakeFS struct {
 	nodes  map[string]*fileInfo
+	mounts []string // mount points in effect
 	chowns []string
 	chmods []string
 }
@@ -29,6 +32,7 @@ func (f *fakeFS) add(p string, mode fs.FileMode, uid, gid int) {
 
 func (f *fakeFS) ops() fsOps {
 	return fsOps{
+		MountPoints: func() ([]string, error) { return f.mounts, nil },
 		Lstat: func(p string) (fileInfo, error) {
 			n, ok := f.nodes[filepath.ToSlash(p)]
 			if !ok {
@@ -86,7 +90,7 @@ func TestFsGroup_ModesAndSymlinks(t *testing.T) {
 	f.add("/w/link", linkM, 1000, 0)
 
 	var out, warn bytes.Buffer
-	if err := fsGroup(f.ops(), PolicyAlways, 2000, []string{"/w"}, &out, &warn); err != nil {
+	if err := fsGroup(f.ops(), PolicyAlways, 2000, nil, []string{"/w"}, &out, &warn); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.nodes["/w/file"].Mode; got != 0o664 {
@@ -135,13 +139,156 @@ func TestFsGroup_ModesAndSymlinks(t *testing.T) {
 func TestFsGroup_DoesNotFollowSymlinkToDir(t *testing.T) {
 	f := newFakeFS()
 	f.add("/w", dirM, 0, 0)
-	f.add("/w/link", linkM, 0, 0) // a symlink has no children in the fake either way
+	f.add("/w/link", linkM, 0, 0)
 	f.add("/elsewhere", dirM, 0, 7)
-	if err := fsGroup(f.ops(), PolicyAlways, 2000, []string{"/w"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+	f.add("/elsewhere/child", fileM, 0, 7)
+	// A walker that followed the link would see the target's children under it.
+	ops := f.ops()
+	readDir, lstat := ops.ReadDir, ops.Lstat
+	ops.ReadDir = func(p string) ([]string, error) {
+		if filepath.ToSlash(p) == "/w/link" {
+			return readDir("/elsewhere")
+		}
+		return readDir(p)
+	}
+	ops.Lstat = func(p string) (fileInfo, error) {
+		if filepath.ToSlash(p) == "/w/link/child" {
+			return *f.nodes["/elsewhere/child"], nil
+		}
+		return lstat(p)
+	}
+	if err := fsGroup(ops, PolicyAlways, 2000, nil, []string{"/w"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	if f.nodes["/elsewhere"].GID != 7 {
+	if f.nodes["/elsewhere"].GID != 7 || f.nodes["/elsewhere/child"].GID != 7 {
 		t.Error("walk escaped through a symlink")
+	}
+	if contains(f.chowns, "/w/link/child") {
+		t.Error("walk descended into a symlink")
+	}
+}
+
+func TestFsGroup_DoesNotCrossIntoANestedMountPoint(t *testing.T) {
+	f := newFakeFS()
+	f.add("/w", dirM, 0, 0)
+	f.add("/w/file", fileM, 0, 0)
+	f.add("/w/vol", dirM, 0, 5) // a volume bind-mounted under the workspace
+	f.add("/w/vol/data", fileM, 0, 5)
+	f.mounts = []string{"/", "/w", "/w/vol"}
+	var out bytes.Buffer
+	if err := fsGroup(f.ops(), PolicyAlways, 2000, nil, []string{"/w"}, &out, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/w/vol", "/w/vol/data"} {
+		if f.nodes[p].GID != 5 || contains(f.chowns, p) || contains(f.chmods, p) {
+			t.Errorf("%s belongs to another mount and was touched", p)
+		}
+	}
+	if f.nodes["/w/file"].GID != 2000 {
+		t.Error("the workspace's own file was not walked")
+	}
+	if !strings.Contains(out.String(), "fsgroup /w: 2 entries") {
+		t.Errorf("summary = %q, want 2 entries (file and root)", out.String())
+	}
+}
+
+func TestFsGroup_ExcludesOtherRootsOnTheSameDevice(t *testing.T) {
+	// A volume that shares the workspace's device is invisible to st_dev, so
+	// the agent names the other roots explicitly.
+	f := newFakeFS()
+	f.add("/w", dirM, 0, 0)
+	f.add("/w/file", fileM, 0, 0)
+	f.add("/w/vol", dirM, 0, 5)
+	f.add("/w/vol/data", fileM, 0, 5)
+	if err := fsGroup(f.ops(), PolicyAlways, 2000, []string{"/w/vol/"}, []string{"/w", "/w/vol"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if f.nodes["/w/vol/data"].GID != 2000 {
+		t.Error("the volume root was not walked as its own root")
+	}
+	n := 0
+	for _, c := range f.chowns {
+		if c == "/w/vol/data" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("volume content walked %d times, want exactly once (its own root pass)", n)
+	}
+}
+
+func TestFsGroup_EachRootHasItsOwnOnRootMismatchDecision(t *testing.T) {
+	f := newFakeFS()
+	match := fs.ModeDir | fs.ModeSetgid | 0o770
+	f.add("/w", dirM, 0, 0)         // fresh workspace: mismatch
+	f.add("/w/vol", match, 0, 2000) // volume already done: match
+	f.add("/w/vol/data", fileM, 0, 0)
+	f.mounts = []string{"/w", "/w/vol"}
+	var out bytes.Buffer
+	if err := fsGroup(f.ops(), PolicyOnRootMismatch, 2000, []string{"/w/vol"}, []string{"/w", "/w/vol"}, &out, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if contains(f.chowns, "/w/vol/data") {
+		t.Error("a matching volume root was walked because the workspace root mismatched")
+	}
+	if !strings.Contains(out.String(), "fsgroup /w/vol: 0 entries, skipped") {
+		t.Errorf("summary = %q", out.String())
+	}
+}
+
+func TestFsGroup_VanishedEntriesAreSkipped(t *testing.T) {
+	f := newFakeFS()
+	f.add("/w", dirM, 0, 0)
+	f.add("/w/gone", fileM, 0, 0)
+	f.add("/w/gonedir", dirM, 0, 0)
+	f.add("/w/keep", fileM, 0, 0)
+	ops := f.ops()
+	lstat, readDir := ops.Lstat, ops.ReadDir
+	ops.Lstat = func(p string) (fileInfo, error) {
+		if filepath.ToSlash(p) == "/w/gone" {
+			return fileInfo{}, &fs.PathError{Op: "lstat", Path: p, Err: fs.ErrNotExist}
+		}
+		return lstat(p)
+	}
+	ops.ReadDir = func(p string) ([]string, error) {
+		if filepath.ToSlash(p) == "/w/gonedir" {
+			return nil, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
+		}
+		return readDir(p)
+	}
+	var out, warn bytes.Buffer
+	if err := fsGroup(ops, PolicyAlways, 2000, nil, []string{"/w"}, &out, &warn); err != nil {
+		t.Fatalf("a concurrently deleted entry must not fail the claim: %v", err)
+	}
+	if f.nodes["/w/keep"].GID != 2000 {
+		t.Error("walk stopped at the vanished entry")
+	}
+	if warn.Len() != 0 {
+		t.Errorf("a vanished entry is not a failure, warn = %q", warn.String())
+	}
+}
+
+func TestFsGroup_CapsWarningsAndCountsFailures(t *testing.T) {
+	f := newFakeFS()
+	f.add("/w", dirM, 0, 0)
+	for i := 0; i < 50; i++ {
+		f.add(fmt.Sprintf("/w/f%02d", i), fileM, 0, 0)
+	}
+	ops := f.ops()
+	ops.Lchown = func(p string, uid, gid int) error { return errors.New("denied") }
+	var out, warn bytes.Buffer
+	if err := fsGroup(ops, PolicyAlways, 2000, nil, []string{"/w"}, &out, &warn); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Count(warn.String(), "\n")
+	if lines > maxFsGroupWarnings+1 {
+		t.Errorf("%d warning lines, want at most %d plus one suppression notice", lines, maxFsGroupWarnings)
+	}
+	if !strings.Contains(warn.String(), "suppressed") {
+		t.Errorf("no suppression notice: %q", warn.String())
+	}
+	if !strings.Contains(out.String(), "51 failed") {
+		t.Errorf("summary = %q, want the failure count (51: 50 files and the root)", out.String())
 	}
 }
 
@@ -156,7 +303,7 @@ func TestFsGroup_OnRootMismatch(t *testing.T) {
 
 	f := setup(2000, match)
 	var out bytes.Buffer
-	if err := fsGroup(f.ops(), PolicyOnRootMismatch, 2000, []string{"/w"}, &out, &bytes.Buffer{}); err != nil {
+	if err := fsGroup(f.ops(), PolicyOnRootMismatch, 2000, nil, []string{"/w"}, &out, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.chowns) != 0 || len(f.chmods) != 0 {
@@ -171,7 +318,7 @@ func TestFsGroup_OnRootMismatch(t *testing.T) {
 		"no setgid":    setup(2000, fs.ModeDir|0o770),
 		"no group rwx": setup(2000, fs.ModeDir|fs.ModeSetgid|0o750),
 	} {
-		if err := fsGroup(f.ops(), PolicyOnRootMismatch, 2000, []string{"/w"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		if err := fsGroup(f.ops(), PolicyOnRootMismatch, 2000, nil, []string{"/w"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
 		}
 		if f.nodes["/w/file"].GID != 2000 {
@@ -181,7 +328,7 @@ func TestFsGroup_OnRootMismatch(t *testing.T) {
 
 	// Always walks even when the root matches.
 	f = setup(2000, match)
-	if err := fsGroup(f.ops(), PolicyAlways, 2000, []string{"/w"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+	if err := fsGroup(f.ops(), PolicyAlways, 2000, nil, []string{"/w"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if f.nodes["/w/file"].Mode != 0o664 {
@@ -196,7 +343,7 @@ func TestFsGroup_WarnsAndContinuesOnChownError(t *testing.T) {
 	ops := f.ops()
 	ops.Lchown = func(p string, uid, gid int) error { return errors.New("denied") }
 	var warn bytes.Buffer
-	if err := fsGroup(ops, PolicyAlways, 2000, []string{"/w"}, &bytes.Buffer{}, &warn); err != nil {
+	if err := fsGroup(ops, PolicyAlways, 2000, nil, []string{"/w"}, &bytes.Buffer{}, &warn); err != nil {
 		t.Fatalf("lchown failure must not abort (kubelet parity): %v", err)
 	}
 	if !strings.Contains(filepath.ToSlash(warn.String()), "lchown /w/a") {
@@ -206,10 +353,10 @@ func TestFsGroup_WarnsAndContinuesOnChownError(t *testing.T) {
 
 func TestFsGroup_RejectsBadArgs(t *testing.T) {
 	f := newFakeFS()
-	if err := fsGroup(f.ops(), "Sometimes", 1, []string{"/w"}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+	if err := fsGroup(f.ops(), "Sometimes", 1, nil, []string{"/w"}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
 		t.Error("unknown policy accepted")
 	}
-	if err := fsGroup(f.ops(), PolicyAlways, 1, []string{"/missing"}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+	if err := fsGroup(f.ops(), PolicyAlways, 1, nil, []string{"/missing"}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
 		t.Error("missing root accepted")
 	}
 }
@@ -301,4 +448,14 @@ func TestChownAs_EntriesDirectlyUnderSetgidRootTakeFsGroup(t *testing.T) {
 	if n := f.nodes["/ws"]; n.UID != 0 || n.GID != 2000 {
 		t.Errorf("/ws owner = %d:%d, want unchanged 0:2000", n.UID, n.GID)
 	}
+}
+
+func TestParseMountinfo(t *testing.T) {
+	in := `22 1 0:21 / / rw - overlay overlay rw
+35 22 8:1 /data /workspace/data rw,relatime - ext4 /dev/sda1 rw
+36 22 8:1 /sp /with\040space rw - ext4 /dev/sda1 rw
+
+bad line
+`
+	assert.Equal(t, []string{"/", "/workspace/data", "/with space"}, parseMountinfo(in))
 }

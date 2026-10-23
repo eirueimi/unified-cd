@@ -411,7 +411,10 @@ needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
     3. a file it creates there is owned `54322:54321` (setgid inheritance), and
        the directory keeps the setgid bit and group rwx.
 
-  Everything the probe creates is removed afterwards, and it is bounded by a
+  Everything the probe creates is removed afterwards (files owned by another
+  UID go through the pinned cleanup image, see
+  [Default images and the pause image digest](../operator-manual/operations.md#default-images-and-the-pause-image-digest);
+  a directory an agent crash left behind is removed at the next start), and it is bounded by a
   90 second timeout (it also stops at once if the agent is told to shut down). A failed probe never stops the agent: it only leaves
   `securitycontext` out of the advertised capabilities, so jobs that set
   `securityContext` are not routed to this agent, and logs one WARN naming the
