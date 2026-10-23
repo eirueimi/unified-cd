@@ -64,7 +64,11 @@ func (a *appleContainer) Run(ctx context.Context, spec RunSpec, stdout, stderr i
 // exec.Cmd.Output()'s stdout plumbing. Mirrors ociCLI.createArgs, including
 // spec.Entrypoint/spec.Args semantics (nil/empty = image's default
 // entrypoint/CMD).
-func (a *appleContainer) createArgs(spec CreateSpec) []string {
+func (a *appleContainer) createArgs(spec CreateSpec) ([]string, error) {
+	if spec.User != "" || len(spec.GroupAdd) > 0 || len(spec.CapDrop) > 0 || len(spec.CapAdd) > 0 ||
+		spec.NoNewPrivileges || spec.ReadOnlyRootfs {
+		return nil, fmt.Errorf("apple container: user, groups, capabilities, no-new-privileges and read-only rootfs are not supported (securityContext requires docker/podman/nerdctl)")
+	}
 	args := []string{"run", "-d"}
 	if spec.CPULimit != "" {
 		args = append(args, "--cpus", spec.CPULimit)
@@ -101,14 +105,17 @@ func (a *appleContainer) createArgs(spec CreateSpec) []string {
 	args = append(args, spec.Image)
 	args = append(args, spec.Entrypoint...)
 	args = append(args, spec.Args...)
-	return args
+	return args, nil
 }
 
 func (a *appleContainer) Create(ctx context.Context, spec CreateSpec) (ContainerHandle, error) {
 	if spec.NetworkContainer != "" {
 		return ContainerHandle{}, fmt.Errorf("apple container: joining another container's network namespace is not supported (claim pod requires docker/podman/nerdctl)")
 	}
-	args := a.createArgs(spec)
+	args, err := a.createArgs(spec)
+	if err != nil {
+		return ContainerHandle{}, err
+	}
 	out, err := execCommand(ctx, "container", args...).Output()
 	if err != nil {
 		return ContainerHandle{}, fmt.Errorf("container run -d: %w", err)

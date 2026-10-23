@@ -16,7 +16,7 @@ func TestAppleSatisfiesInterface(t *testing.T) {
 // above appleContainer.Create), so it must also emit -w for spec.WorkDir.
 func TestAppleCreateArgv_WorkDir(t *testing.T) {
 	a := &appleContainer{}
-	got := a.createArgs(CreateSpec{Image: "golang:1.22", WorkDir: "/workspace"})
+	got, _ := a.createArgs(CreateSpec{Image: "golang:1.22", WorkDir: "/workspace"})
 	foundFlag := false
 	for i, arg := range got {
 		if arg == "-w" {
@@ -34,7 +34,7 @@ func TestAppleCreateArgv_WorkDir(t *testing.T) {
 // TestAppleCreateArgv_NoWorkDirWhenEmpty confirms empty WorkDir omits -w.
 func TestAppleCreateArgv_NoWorkDirWhenEmpty(t *testing.T) {
 	a := &appleContainer{}
-	got := a.createArgs(CreateSpec{Image: "golang:1.22"})
+	got, _ := a.createArgs(CreateSpec{Image: "golang:1.22"})
 	for _, arg := range got {
 		if arg == "-w" {
 			t.Fatalf("expected no -w flag when WorkDir is empty, argv = %v", got)
@@ -44,7 +44,7 @@ func TestAppleCreateArgv_NoWorkDirWhenEmpty(t *testing.T) {
 
 func TestAppleCreateArgv_Mounts(t *testing.T) {
 	a := &appleContainer{}
-	got := a.createArgs(CreateSpec{
+	got, _ := a.createArgs(CreateSpec{
 		Image:   "alpine",
 		WorkDir: "/workspace",
 		Mounts:  []Mount{{HostPath: "/host/ws", ContainerPath: "/workspace"}},
@@ -65,7 +65,7 @@ func TestAppleCreateArgv_Mounts(t *testing.T) {
 // (CreateSpec.Args) must be emitted after the image.
 func TestAppleCreateArgv_CommandEmitsSleepInfinity(t *testing.T) {
 	a := &appleContainer{}
-	got := a.createArgs(CreateSpec{Image: "golang:1.22", Args: []string{"sleep", "infinity"}})
+	got, _ := a.createArgs(CreateSpec{Image: "golang:1.22", Args: []string{"sleep", "infinity"}})
 	want := []string{"run", "-d", "golang:1.22", "sleep", "infinity"}
 	if len(got) != len(want) {
 		t.Fatalf("argv = %v, want %v", got, want)
@@ -82,7 +82,7 @@ func TestAppleCreateArgv_CommandEmitsSleepInfinity(t *testing.T) {
 // sidecar-sleep-infinity fix — a nil Command must not append "sleep infinity".
 func TestAppleCreateArgv_NilCommandRunsImageEntrypoint(t *testing.T) {
 	a := &appleContainer{}
-	got := a.createArgs(CreateSpec{Image: "mysql:8"})
+	got, _ := a.createArgs(CreateSpec{Image: "mysql:8"})
 	want := []string{"run", "-d", "mysql:8"}
 	if len(got) != len(want) {
 		t.Fatalf("argv = %v, want %v", got, want)
@@ -99,7 +99,7 @@ func TestAppleCreateArgv_NilCommandRunsImageEntrypoint(t *testing.T) {
 // `:ro` for a ReadOnly mount (the /.ucd shim injection).
 func TestAppleCreateArgv_ReadOnlyMount(t *testing.T) {
 	a := &appleContainer{}
-	got := a.createArgs(CreateSpec{
+	got, _ := a.createArgs(CreateSpec{
 		Image:  "alpine",
 		Mounts: []Mount{{HostPath: "/host/tools", ContainerPath: "/.ucd", ReadOnly: true}},
 	})

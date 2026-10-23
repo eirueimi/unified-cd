@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -125,6 +126,29 @@ func (r *ociCLI) createArgs(spec CreateSpec) ([]string, error) {
 	for _, e := range spec.Env {
 		args = append(args, "-e", e)
 	}
+	if spec.User != "" {
+		args = append(args, "--user", spec.User)
+	}
+	for _, g := range spec.GroupAdd {
+		args = append(args, "--group-add", g)
+	}
+	for _, c := range spec.CapDrop {
+		args = append(args, "--cap-drop", c)
+	}
+	for _, c := range spec.CapAdd {
+		args = append(args, "--cap-add", c)
+	}
+	if spec.NoNewPrivileges {
+		args = append(args, "--security-opt", "no-new-privileges")
+	}
+	if spec.ReadOnlyRootfs {
+		args = append(args, "--read-only")
+		if r.bin == "podman" {
+			// podman mounts tmpfs on /tmp, /run and /var/tmp under --read-only
+			// unless told otherwise (design section 11 V7).
+			args = append(args, "--read-only-tmpfs=false")
+		}
+	}
 	// An Entrypoint override clears the image ENTRYPOINT (docker
 	// `--entrypoint ""`, which must precede the image) and runs
 	// Entrypoint+Args as positional argv. Args-only leaves the image
@@ -218,4 +242,27 @@ func (r *ociCLI) ExitCode(ctx context.Context, h ContainerHandle) (int, error) {
 		return 0, fmt.Errorf("%s inspect exitcode: %w", r.bin, err)
 	}
 	return strconv.Atoi(strings.TrimSpace(string(out)))
+}
+
+// ImageUser returns the image's Config.User. If the image is not present
+// locally it is pulled and the inspect retried once.
+func (r *ociCLI) ImageUser(ctx context.Context, image string) (string, error) {
+	inspect := func() (string, error) {
+		var stderr bytes.Buffer
+		cmd := execCommand(ctx, r.bin, "image", "inspect", "--format", "{{.Config.User}}", image)
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil {
+			return "", fmt.Errorf("%s image inspect %s: %w: %s", r.bin, image, err, strings.TrimSpace(stderr.String()))
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	u, err := inspect()
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such image") {
+		if perr := r.Pull(ctx, image); perr != nil {
+			return "", fmt.Errorf("%s pull %s: %w", r.bin, image, perr)
+		}
+		return inspect()
+	}
+	return u, err
 }
