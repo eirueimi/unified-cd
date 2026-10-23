@@ -10,7 +10,7 @@ mistake. Knowing which is which is most of what you need.
 | Entry point | `dsl.ExpandTemplate` | `dsl.EvalCondition` |
 | Data | `dsl.TemplateData` (7 fields) | a **subset** — see below |
 | Undefined key | empty string, silently | empty string, plus a run-log line |
-| On error | the run or step fails | **fail-open: the step runs** |
+| On error | the run or step fails | **fail-closed: the step does not run and is reported Failed** |
 
 ## The subset that `if:` can see
 
@@ -56,8 +56,10 @@ steps:
     run: ./deploy.sh
 ```
 
-The typo raised `no such key`, the fail-safe ran the step, and **a gate written
-to be closed defaulted open**. The same trap existed for `secrets`.
+The typo raised `no such key`, the old fail-safe ran the step, and **a gate
+written to be closed defaulted open**. (An `if:` that cannot be evaluated now
+fails the step instead of running it, but an undefined key reading as empty
+is still the better outcome for the author.) The same trap existed for `secrets`.
 
 Both now behave like `{{ }}` — an undefined key reads as the empty string — and
 additionally write a System line into the run's own log, so the typo is
@@ -69,8 +71,8 @@ failure to the `.outputs` access rather than closing it.
 
 !!! warning "If you add anything to the CEL environment"
     Decide explicitly what an undefined reference does, and remember that
-    **erroring is the dangerous choice, not the safe one**. Fail-open means an
-    error opens gates.
+    an error is not free: it **fails the step** (reported Failed, the run
+    fails), which is loud but also breaks runs that merely had a typo.
 
 ## Where each thing happens
 

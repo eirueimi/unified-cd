@@ -236,10 +236,12 @@ Steps can be conditionally skipped based on a boolean expression.
 > variables are lowercase (`params`, `vars`, `steps`, `secrets`), not
 > `.Params`/`.Vars`/`.Steps`. An expression that does not compile is now
 > **rejected at apply time**, so a Go-template-style `if:` fails `apply` with
-> the compile error rather than reaching an agent. If one does fail at run
-> time (a template's `if:` is only resolved then), the condition fails OPEN —
-> the step still runs — and the reason is written into the **run's own log**
-> as a `System` line.
+> the compile error rather than reaching an agent. If one still reaches an
+> agent (a template's `if:` is only resolved then) or errors while being
+> evaluated, the condition **fails closed**: the step does **not** run, it is
+> reported **Failed** (not Skipped — a silent skip would hide a broken gate),
+> and the reason is written into the **run's own log** as a `System` line.
+> See [When an `if:` cannot be evaluated](#when-an-if-cannot-be-evaluated).
 
 ```yaml
 steps:
@@ -271,10 +273,11 @@ presence rather than value, use `"NAME" in params` (or `vars`/`secrets`) —
 `has(params.NAME)` is always true here and must not be used.
 
 `steps` is the one exception: `steps.MISSING.outputs.KEY` still raises
-`no such key`, which is an evaluation error, which fails **OPEN** — the step
-runs. Referencing a step name in an `if:` is either right or a typo; if you
-see a step run when its `steps.` condition looks like it should have skipped
-it, check the step name first.
+`no such key`, which is an evaluation error, and an evaluation error **fails
+the step** (see below) — it does not run. Referencing a step name or output
+in an `if:` is either right or a typo, so if a step fails with a `could not be
+evaluated` line in the run's log, check the step and output names first.
+An output that its step never set is the same error.
 
 > **Why `params` used to differ from `vars` here, and does not anymore.**
 > `params` kept CEL's default map semantics for one release after `vars`
@@ -298,6 +301,34 @@ it, check the step name first.
 > alone, so rejecting one would reject the other. The empty-string default
 > above has no such problem: it changes nothing about which params reach a
 > run, only what an undefined one evaluates to in `if:`.
+
+### When an `if:` cannot be evaluated
+
+An `if:` that does not compile, does not return a boolean, or raises an error
+while being evaluated (typically a `steps.X.outputs.Y` that was never set)
+**fails closed**:
+
+- the step's work does **not** run;
+- the step is reported **Failed** — not Skipped, so the broken gate is loud;
+- the error is written to the run's own log (`System` stream);
+- the run fails, and later steps are skipped by the usual implicit-success rule.
+
+How it interacts with the rest:
+
+- **`continueOnError: true`** on that step is honoured as for any other failure
+  of the step: it is reported Failed (its work still never runs) but the run is
+  not failed and later steps proceed.
+- **`finally:` steps** — a finally step whose `if:` cannot be evaluated does not
+  run its work and is Failed (so the run fails), but the other `finally:` steps
+  still run.
+- **`retry:`, `matrix:`/`foreach:` and `post:`/cache hooks** — `if:` is evaluated
+  once per step (per matrix variant), before any attempt, so there is nothing to
+  retry; a broken condition fails each variant (one log line per step). A step
+  that never ran registers no `post:` hook. The Kubernetes agent shares the same
+  orchestration loop and behaves identically.
+
+Upgrading from the old behaviour (the step ran): see
+[the migration note](../../operator-manual/migrations/2026-10-23-unevaluable-if-fails-step.md).
 
 The expression must evaluate to a boolean. Use CEL operators and the
 zero-arg status functions (see [Status Functions in `if:`](expressions.md#status-functions-in-if)):

@@ -449,8 +449,8 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	//
 	// Why the run's log and not only slog. The two things that can go wrong
 	// with an if: are both invisible otherwise AND both invert the author's
-	// intent: a condition that fails to compile or evaluate is fail-safe (the
-	// step RUNS), and a condition that reads an undefined params, vars, or
+	// intent: a condition that fails to compile or evaluate FAILS the step
+	// (fail closed; it does not run), and a condition that reads an undefined params, vars, or
 	// secrets key gates on an empty string. Either way the person looking at
 	// the run sees a step that ran when it should not have (or a gate that
 	// never matches) with nothing in the run to explain it — the agent's slog
@@ -632,9 +632,29 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			ifData := sctx.snapshot()
 			ok, ifWarnings, err := dsl.EvalCondition(step.If, ifData, statusFn(), implicitSuccess)
 			if err != nil {
-				slog.Warn("if: condition eval failed, running step", "step", step.Name, "error", err)
+				// FAIL CLOSED. A condition that cannot be evaluated must never
+				// run the step it gates (a deploy gate failing open is the
+				// worst direction). The step is reported Failed, not Skipped,
+				// so a broken gate is loud, and the reason goes in the run's
+				// own log. markFailed goes through recordFailure, so the
+				// ordinary rules apply: the run fails (later steps then
+				// auto-skip via implicitSuccess) unless the step has
+				// continueOnError; a finally step's failure fails the run
+				// but does not stop the other finally steps (their status
+				// view is frozen and implicitSuccess is false). This is the
+				// only EvalCondition caller and it is shared by the host and
+				// Kubernetes agents; retry, matrix variants and hooks never
+				// re-evaluate if: (each variant evaluates once, before any
+				// attempt, and post: hooks only exist for steps that ran).
+				slog.Error("if: condition eval failed, failing step without running it", "step", step.Name, "error", err)
 				recordIfDiagnostic(step,
-					fmt.Sprintf("%v — the condition could not be evaluated, so the step RAN (fail-safe)", err))
+					fmt.Sprintf("%v — the condition could not be evaluated, so the step did NOT run and is reported Failed (fail closed)", err))
+				for _, w := range ifWarnings {
+					slog.Warn("if: condition warning", "step", step.Name, "warning", w)
+					recordIfDiagnostic(step, w)
+				}
+				markFailed(context.WithoutCancel(stepCtx))
+				return nil
 			}
 			for _, w := range ifWarnings {
 				slog.Warn("if: condition warning", "step", step.Name, "warning", w)

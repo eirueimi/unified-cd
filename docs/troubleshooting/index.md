@@ -17,7 +17,7 @@ covers it.
 
 - [Run fails with `dynamic secret name must be resolved from a parameter before execution`](steps-and-execution.md#run-fails-with-dynamic-secret-name-must-be-resolved-from-a-parameter-before-execution)
 - [Job isolation](steps-and-execution.md#job-isolation)
-- [Conditional step ran when it shouldn't](steps-and-execution.md#conditional-step-ran-when-it-shouldnt)
+- [Step failed because its `if:` could not be evaluated](steps-and-execution.md#step-failed-because-its-if-could-not-be-evaluated)
 - [A step's log shows `step panicked: ...`](steps-and-execution.md#a-steps-log-shows-step-panicked)
 - [A `finally` step fails with `context deadline exceeded` and the run is `Failed`](steps-and-execution.md#a-finally-step-fails-with-context-deadline-exceeded-and-the-run-is-failed)
 - [A cancelled run finished `Failed` instead of `Cancelled`](steps-and-execution.md#a-cancelled-run-finished-failed-instead-of-cancelled)

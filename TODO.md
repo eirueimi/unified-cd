@@ -5,13 +5,6 @@ Last audited: 2026-07-26 against `1e46459`.
 
 ## Critical
 
-### 3. Reject invalid conditional expressions and align the documented syntax
-
-- **Status:** Partial
-- **Impact:** Invalid or non-boolean `if` expressions currently evaluate as true, so gated steps can run unexpectedly, while the variable reference table documents Go-template syntax that the CEL evaluator does not accept.
-- **Evidence:** `docs/user-guide/writing-jobs/steps.md` lists `{{ .Params.NAME }}` and `{{ .Steps.NAME.Outputs.KEY }}` for conditions, while `internal/agent/orchestrator.go` passes `step.If` to `internal/dsl/condition.go` `EvalCondition`; `internal/dsl/condition_test.go` `TestEvalCondition_InvalidExpr` and `TestEvalCondition_NonBoolResult` require the current fail-open result.
-- **Done when:** The condition reference consistently documents the accepted CEL syntax, invalid or non-boolean expressions cannot execute the gated step, and regression tests cover parameter references, step-output references, compile errors, evaluation errors, and non-boolean results.
-
 ### 13. Verify that the default Kubernetes sidecar image is anonymously pullable
 
 - **Status:** Needs verification

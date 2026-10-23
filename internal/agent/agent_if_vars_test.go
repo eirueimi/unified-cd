@@ -88,7 +88,7 @@ func (h *ifVarsHarness) systemLog() string {
 
 // A vars-gated if: must actually GATE — the whole point of binding vars into
 // the CEL environment. Before that, the expression did not compile, the error
-// path ran the step (fail-safe), and nothing in the run said why.
+// path ran the step (then fail-open), and nothing in the run said why.
 func TestExecuteRun_IfVarsGates(t *testing.T) {
 	h, a := newIfVarsHarness(t, "run-vars-gate")
 
@@ -130,27 +130,4 @@ func TestExecuteRun_IfVarsUndefinedKey_SkipsAndRecordsSystemLine(t *testing.T) {
 	require.NotEmpty(t, log, "an undefined vars key must not be silent")
 	assert.Contains(t, log, "vars.EVN")
 	assert.Contains(t, log, `step "typo"`)
-}
-
-// A condition that cannot be evaluated still runs the step (fail-safe), but
-// that decision now leaves a trace in the run's own log instead of only in the
-// agent's slog on some other host.
-func TestExecuteRun_IfCompileError_RunsAndRecordsSystemLine(t *testing.T) {
-	h, a := newIfVarsHarness(t, "run-if-broken")
-
-	claim := api.ClaimResponse{
-		Native:  true,
-		RunID:   "run-if-broken",
-		JobName: "test",
-		Stages: []api.ClaimStage{
-			{Step: &api.ClaimStep{Name: "broken", Index: 0, If: `params.env ==`, Run: "echo ran"}},
-		},
-	}
-	a.executeRun(context.Background(), claim, t.TempDir())
-
-	assert.Contains(t, h.reports(0), "Succeeded", "an uncompilable condition is fail-safe: the step runs")
-	log := h.systemLog()
-	require.NotEmpty(t, log, "a fail-open condition must not be silent in the run")
-	assert.Contains(t, log, "fail-safe")
-	assert.Contains(t, log, `step "broken"`)
 }

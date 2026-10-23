@@ -459,8 +459,8 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 			if err := validateRetry(entry.Name, entryPath, entry.Retry, entry.Run != ""); err != nil {
 				return err
 			}
-			// An if: that does not compile fails OPEN on the agent (the step
-			// runs), so catching it here is the only place the author still
+			// An if: that does not compile FAILS the step on the agent (fail
+			// closed), so catching it here is the only place the author still
 			// has the file open. See ValidateConditionExpr for why this stops
 			// at "does it compile" and cannot reject a working condition.
 			if err := ValidateConditionExpr(entry.If); err != nil {

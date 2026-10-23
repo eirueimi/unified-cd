@@ -2,8 +2,9 @@
 
 `unified-cli apply` now compiles every step's `if:` expression before storing
 the job. A condition that does not compile is **rejected**. Previously it was
-accepted, and failed at run time — where a compile failure is deliberately
-**fail-open**: the step *runs*.
+accepted, and failed at run time — where a compile failure was at the time
+**fail-open**: the step *ran*. (Run-time failure is now fail-closed too: see
+[Unevaluable `if:` fails the step](2026-10-23-unevaluable-if-fails-step.md).)
 
 **Before**, `if: '{{ eq .Params.env "production" }}'` applied without complaint.
 On every run the expression failed to compile, the orchestrator logged a
@@ -59,7 +60,9 @@ spec.steps[0] (deploy): if: expression "matrix.os == \"linux\"" does not compile
 
 What is **not** rejected: an expression that compiles but errors during
 evaluation. The one case left in `conditionVars` that can still do this is a
-`steps.NAME` reference that names a step the job does not have — `params`,
+`steps.NAME` reference that names a step (or output) the job does not have —
+it now fails the step at run time, see
+[the fail-closed migration note](2026-10-23-unevaluable-if-fails-step.md) — `params`,
 `vars` and `secrets` no longer raise here; an undefined key on any of those
 three reads as the empty string instead (see
 [the params-undefined-key migration
