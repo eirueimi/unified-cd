@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/paritycases"
@@ -181,4 +182,82 @@ func newSecCtxServer(t *testing.T, innerURL string, files map[string]string) *ht
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// TestSecCtx_Integration_UploadFallbackReadsOwnerOnlyFile is design §11 V5. A
+// step running as runAsUser 1000 leaves a 0600 file the agent's own user cannot
+// read; the upload must still carry its content, through the root copy taken
+// from the claim pod's pause container (docker cp / podman cp of a path under a
+// bind mount of a running container).
+func TestSecCtx_Integration_UploadFallbackReadsOwnerOnlyFile(t *testing.T) {
+	pref := testRuntimePref()
+	rt, err := crt.Detect(pref)
+	if err != nil {
+		t.Skipf("no container runtime available (%s=%q): %v", containerRuntimeEnv, pref, err)
+	}
+	wsBase := os.Getenv(testWorkspaceBaseEnv)
+	if wsBase == "" {
+		wsBase = t.TempDir()
+	}
+	require.NoError(t, os.MkdirAll(wsBase, 0o755))
+	a := &Agent{
+		ID: secCtxAgentID, PauseImage: paritycases.SecurityContextImage, RunnerImage: paritycases.SecurityContextImage,
+		ToolsDir: installShimIntoOrSkip(t, wsBase), RuntimePref: pref, WorkspaceDir: wsBase,
+	}
+	if p := a.securityContextProbe(); !p.OK {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("securityContext startup probe failed on %s: %s", rt.Name(), p.Reason)
+		}
+		t.Skipf("securityContext startup probe failed (set %s to a Linux path): %s", testWorkspaceBaseEnv, p.Reason)
+	}
+
+	caseBase, err := os.MkdirTemp(wsBase, "secctx-upload-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = wipeDir(context.Background(), caseBase, false, a.containerRuntime, a.ToolsDir) })
+
+	var uploaded []byte
+	h := newParityHostHarness()
+	inner := newParityHostServer(t, secCtxAgentID, h)
+	target, err := url.Parse(inner.URL)
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	mux.Handle("/", httputil.NewSingleHostReverseProxy(target))
+	mux.HandleFunc("PUT /api/v1/runs/{runId}/artifacts/{name}", func(w http.ResponseWriter, r *http.Request) {
+		dir, derr := os.MkdirTemp(caseBase, "got-")
+		if derr == nil {
+			derr = artifact.ExtractTarZstd(r.Body, dir)
+		}
+		if derr == nil {
+			uploaded, derr = os.ReadFile(filepath.Join(dir, "out.txt"))
+		}
+		if derr != nil {
+			http.Error(w, derr.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	a.Client = NewClient(srv.URL, "tok")
+
+	workDir := filepath.Join(caseBase, "working")
+	require.NoError(t, prepareWorkspace(context.Background(), workDir, "isolated", nil, false, a.containerRuntime, a.ToolsDir))
+
+	claim := paritycases.SecurityContextCases()[0].Claim() // pod-level identity: runAsUser 1000, fsGroup 3000
+	claim.RunID, claim.JobName = "run-secctx-upload", "run-secctx-upload"
+	claim.Stages = []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "write", Run: "echo owner-only > out.txt && chmod 600 out.txt && stat -c '%a %u' out.txt"}},
+		{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "upload", UploadArtifact: &api.UploadArtifactStep{Name: "out", Path: "out.txt"}}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	a.executeRun(ctx, claim, workDir)
+
+	obs := h.observation()
+	paritycases.Assert(t, paritycases.Expectation{
+		StepStatus:     map[string]string{"write": "Succeeded", "upload": "Succeeded"},
+		RunFinished:    "Succeeded",
+		LogMustContain: []paritycases.LogLine{{Step: "write", Stream: "stdout", Substring: "600 1000"}},
+	}, obs)
+	require.Equal(t, "owner-only\n", string(uploaded), "the uploaded artifact must carry the 0600 file's content")
 }

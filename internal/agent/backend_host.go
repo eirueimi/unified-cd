@@ -590,7 +590,9 @@ func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved strin
 		return fmt.Errorf("%w (root copy: %v)", err, terr)
 	}
 	defer os.RemoveAll(tmp)
-	dst := filepath.Join(tmp, "copy")
+	// Keep the source's base name: a single-file upload names its archive entry
+	// after it, so a generic name here would change what the artifact contains.
+	dst := filepath.Join(tmp, path.Base(src))
 	if cerr := b.pod.CopyOutFromPause(ctx, src, dst); cerr != nil {
 		return fmt.Errorf("%w (root copy: %v)", err, cerr)
 	}

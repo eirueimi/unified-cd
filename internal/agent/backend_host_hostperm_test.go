@@ -182,6 +182,9 @@ func TestHostBackend_ReadFallback_RetriesThroughCopyOutOnPermissionError(t *test
 	require.Len(t, paths, 2)
 	assert.Equal(t, src, paths[0], "the first attempt reads the host path")
 	assert.NotEqual(t, src, paths[1])
+	// A single-file upload names its tar entry after the path's base name, so
+	// the copy must keep the source's name or the artifact would hold "copy".
+	assert.Equal(t, "build", filepath.Base(paths[1]), "the copy keeps the source's base name")
 	require.Len(t, f.copyOuts, 1)
 	assert.Equal(t, "/workspace/build", f.copyOuts[0].from)
 	_, statErr := os.Stat(paths[1])
