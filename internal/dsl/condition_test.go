@@ -56,14 +56,23 @@ func TestEvalCondition_InOperator(t *testing.T) {
 func TestEvalCondition_InvalidExpr(t *testing.T) {
 	ok, _, err := EvalCondition("params.env ==", TemplateData{}, RunStatusView{}, true)
 	assert.Error(t, err)
-	assert.True(t, ok, "on compile error should return true (safe default: run the step)")
+	assert.False(t, ok, "on compile error must return false (fail closed: never run the step)")
 }
 
 func TestEvalCondition_NonBoolResult(t *testing.T) {
 	data := TemplateData{Params: map[string]string{"env": "production"}}
 	ok, _, err := EvalCondition("params.env", data, RunStatusView{}, true)
 	assert.Error(t, err)
-	assert.True(t, ok, "on type error should return true (safe default)")
+	assert.False(t, ok, "on type error must return false (fail closed)")
+}
+
+func TestEvalCondition_StepsMissingKey_FailsClosed(t *testing.T) {
+	ok, _, err := EvalCondition(`steps.build.outputs.result == "ok"`, TemplateData{}, RunStatusView{}, true)
+	assert.Error(t, err)
+	assert.False(t, ok, "an unevaluable steps reference must not report true")
+	ok, _, err = EvalCondition(`steps.build.outputs.result == "ok"`, TemplateData{}, RunStatusView{}, false)
+	assert.Error(t, err)
+	assert.False(t, ok, "also false on the finally (implicitSuccess=false) path")
 }
 
 func TestEvalCondition_StepOutputs(t *testing.T) {
@@ -153,7 +162,7 @@ func TestEvalCondition_VarsIndexForm(t *testing.T) {
 func TestEvalCondition_VarsUndefinedKeyIsEmptyAndWarns(t *testing.T) {
 	data := TemplateData{Vars: map[string]string{"ENV": "prod"}}
 	ok, warns, err := EvalCondition(`vars.TYPO == "prod"`, data, RunStatusView{}, true)
-	require.NoError(t, err, "an undefined vars key must not error — an error is fail-open")
+	require.NoError(t, err, "an undefined vars key must not error — an error would fail the step")
 	assert.False(t, ok, "an undefined key must not run the step")
 	require.Len(t, warns, 1)
 	assert.Contains(t, warns[0], "vars.TYPO")
@@ -267,7 +276,7 @@ func TestEvalCondition_HasVarsIsAlwaysTrue(t *testing.T) {
 func TestEvalCondition_ParamsUndefinedKeyIsEmptyAndWarns(t *testing.T) {
 	data := TemplateData{Params: map[string]string{"env": "staging"}}
 	ok, warns, err := EvalCondition(`params.TYPO == "prod"`, data, RunStatusView{}, true)
-	require.NoError(t, err, "an undefined params key must not error — an error is fail-open")
+	require.NoError(t, err, "an undefined params key must not error — an error would fail the step")
 	assert.False(t, ok, "an undefined key must not run the step (a misspelt deploy gate must stay CLOSED)")
 	require.Len(t, warns, 1)
 	assert.Contains(t, warns[0], "params.TYPO")
@@ -334,7 +343,7 @@ func TestEvalCondition_ParamsPresenceTestStaysTruthful(t *testing.T) {
 func TestEvalCondition_SecretsUndefinedKeyIsEmptyAndWarns(t *testing.T) {
 	data := TemplateData{Secrets: map[string]string{"TOKEN": "abc123"}}
 	ok, warns, err := EvalCondition(`secrets.TYPO != ""`, data, RunStatusView{}, true)
-	require.NoError(t, err, "an undefined secrets key must not error — an error is fail-open")
+	require.NoError(t, err, "an undefined secrets key must not error — an error would fail the step")
 	assert.False(t, ok, "an undefined key must not run the step")
 	require.Len(t, warns, 1)
 	assert.Contains(t, warns[0], "secrets.TYPO")

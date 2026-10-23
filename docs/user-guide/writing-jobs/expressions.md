@@ -61,12 +61,12 @@ treated as requiring `success()` — so a normal step is skipped once an earlier
 step has failed (GitHub Actions semantics). Add `if: failure()` or
 `if: always()` to opt in to running after a failure.
 
-> **Compile/eval errors fail open.** `if:` is CEL — see the warning under
-> [Conditional Execution](steps.md#conditional-execution-if). An `if:` that doesn't
-> compile (e.g. leftover `{{ }}` Go-template syntax) does not fail the run or
-> skip the step: the step **runs anyway**, and only a warning is written to
-> the agent log. Double-check any non-trivial `if:` expression before relying
-> on it to gate a sensitive step (e.g. a production deploy).
+> **Compile/eval errors fail closed.** `if:` is CEL — see the warning under
+> [Conditional Execution](steps.md#conditional-execution-if). An `if:` that
+> can't be evaluated (e.g. leftover `{{ }}` Go-template syntax, or a
+> `steps.X.outputs.Y` that was never set) does **not** run the step: the step is
+> reported **Failed** and the reason is written to the run's own log. See
+> [When an `if:` cannot be evaluated](steps.md#when-an-if-cannot-be-evaluated).
 
 ---
 

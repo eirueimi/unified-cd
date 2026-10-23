@@ -11,10 +11,11 @@ import (
 )
 
 // jobWithGoTemplateIf is a job that applied cleanly before apply-time `if:`
-// validation existed. Its condition is Go-template syntax, which is not CEL —
-// at run time it fails to compile, EvalCondition is fail-safe, and the step
-// RUNS. That is the bug the apply-time check fixes. This file is what such a
-// job looks like sitting in a Git repository at upgrade time.
+// validation existed. Its condition is Go-template syntax, which is not CEL:
+// at run time it fails to compile, so the step fails (before the fail-closed
+// change it RAN, fail-open). The apply-time check surfaces that while the
+// author is present. This file is what such a job looks like sitting in a
+// Git repository at upgrade time.
 const jobWithGoTemplateIf = `apiVersion: unified-cd/v1
 kind: Job
 metadata:

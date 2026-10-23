@@ -53,7 +53,7 @@ var conditionVars = []conditionVar{
 		name: "params",
 		typ:  cel.MapType(cel.StringType, cel.StringType),
 		// params USED TO keep CEL's default map semantics, so `params.TYPO`
-		// raised "no such key" and EvalCondition's fail-safe ran the step —
+		// raised "no such key" and EvalCondition's then-fail-open error path ran the step —
 		// the worst direction for a deploy gate to fail in: a typo'd
 		// `if: params.DEPLOY == "yes"` deployed on every run instead of none.
 		// That was the same always-runs trap `vars` had, and it was left
@@ -92,7 +92,7 @@ var conditionVars = []conditionVar{
 		typ:  cel.MapType(cel.StringType, cel.StringType),
 		// vars reads an undefined key as the empty string instead of raising,
 		// matching `{{ .Vars.X }}` in a template (which expands to empty) and
-		// keeping a typo'd gate CLOSED rather than fail-open. Every undefined
+		// keeping a typo'd gate CLOSED. Every undefined
 		// key that was actually consulted is recorded and surfaced by the
 		// caller — see EvalCondition's warnings return.
 		value: func(d TemplateData, undef *undefinedKeys) any {
@@ -107,8 +107,10 @@ var conditionVars = []conditionVar{
 		name: "steps",
 		typ:  cel.MapType(cel.StringType, cel.DynType),
 		// steps ALSO still has CEL's default map semantics today —
-		// `steps.nope.outputs.ok` raises "no such key" and fails open,
-		// exactly like params and secrets did. Checked while auditing this
+		// `steps.nope.outputs.ok` raises "no such key", which
+		// EvalCondition now treats as a FAILED step (fail closed: the gated
+		// step does not run and is reported Failed), unlike params and
+		// secrets, which read as empty. Checked while auditing this
 		// table for the params fix (see the params entry above) and left
 		// unfixed here, deliberately, for two reasons rather than one
 		// oversight:
@@ -122,7 +124,7 @@ var conditionVars = []conditionVar{
 		//     "" would not close the trap, only relocate it —
 		//     `steps.nope.outputs.ok` would still error, now on "outputs is
 		//     not a field on string" instead of "no such key", still
-		//     fail-safe. Actually closing it needs a differently-shaped
+		//     an error. Actually closing it needs a differently-shaped
 		//     default (an empty StepData) and its own design pass, not a
 		//     copy-paste of this fix.
 		//  2. The ambiguity that justifies defaulting params to empty does
@@ -141,7 +143,7 @@ var conditionVars = []conditionVar{
 		typ:  cel.MapType(cel.StringType, cel.StringType),
 		// secrets had the identical trap params did: same map(string, string)
 		// shape, same CEL default "no such key" semantics on a plain Go map,
-		// same fail-safe-runs-the-step outcome. Found while auditing this
+		// same error outcome (then: the step ran). Found while auditing this
 		// table for other entries with the params trap (see the params entry
 		// above) and fixed the same way, in the same change, rather than
 		// left for a second pass — there is no reason to ship it half-done
@@ -214,7 +216,7 @@ func (u *undefinedKeys) sorted() []string {
 // this same mechanism).
 //
 // Why: CEL raises an error for a missing map key, EvalCondition's error path
-// is fail-safe ("run the step"), so e.g. `vars.TYPO == "prod"` would run a
+// used to be fail-open ("run the step"; it now fails the step), so e.g. `vars.TYPO == "prod"` would run a
 // step its author meant to gate — invisibly, and with the author's intent
 // inverted. Empty-on-missing keeps the gate shut and matches the template
 // side, where missingkey=zero already makes `{{ .Vars.TYPO }}` (and
@@ -290,12 +292,12 @@ func conditionActivation(data TemplateData, undef *undefinedKeys) map[string]any
 
 // ValidateConditionExpr compiles an if: expression against the SAME
 // environment EvalCondition uses at run time, so a malformed condition is
-// rejected while its author is present instead of failing open on the agent.
+// rejected while its author is present instead of failing the step on the agent.
 //
 // It reports ONLY what env.Compile rejects — a syntax error, an unknown
 // identifier, a type mismatch. Because the declarations are identical (see
 // conditionEnvOptions), anything rejected here is guaranteed to hit the exact
-// same compile error at run time and therefore to fail open, so this can never
+// same compile error at run time and therefore to fail the step, so this can never
 // reject a condition that actually works today.
 //
 // It deliberately does NOT apply EvalCondition's "must return bool" check.
@@ -348,8 +350,12 @@ func ValidateConditionExpr(expr string) error {
 // in the RUN's own log, because a condition that quietly did not mean what it
 // says is invisible in the agent's process log.
 //
-// On compile or evaluation error it returns (true, nil, err) (fail-safe = run
-// the step).
+// On compile or evaluation error it returns (false, nil, err): FAIL CLOSED. A
+// condition that cannot be evaluated never means "run it", so a caller that
+// forgets to look at err still does not execute the gated step. The caller is
+// expected to treat err as a failure of the step (the agent reports it Failed,
+// with the error in the run's log) — not as a quiet skip, which would hide a
+// broken gate.
 func EvalCondition(expr string, data TemplateData, status RunStatusView, implicitSuccess bool) (bool, []string, error) {
 	successVal := !status.Failed && !status.Cancelled
 
@@ -362,26 +368,26 @@ func EvalCondition(expr string, data TemplateData, status RunStatusView, implici
 
 	env, err := cel.NewEnv(conditionEnvOptions(status)...)
 	if err != nil {
-		return true, nil, fmt.Errorf("if: cel env: %w", err)
+		return false, nil, fmt.Errorf("if: cel env: %w", err)
 	}
 
 	ast, iss := env.Compile(expr)
 	if iss != nil && iss.Err() != nil {
-		return true, nil, fmt.Errorf("if: expression %q compile error: %w", expr, iss.Err())
+		return false, nil, fmt.Errorf("if: expression %q compile error: %w", expr, iss.Err())
 	}
 	if !ast.OutputType().IsExactType(cel.BoolType) {
-		return true, nil, fmt.Errorf("if: expression %q must return bool, got %s", expr, ast.OutputType())
+		return false, nil, fmt.Errorf("if: expression %q must return bool, got %s", expr, ast.OutputType())
 	}
 
 	prg, err := env.Program(ast)
 	if err != nil {
-		return true, nil, fmt.Errorf("if: program: %w", err)
+		return false, nil, fmt.Errorf("if: program: %w", err)
 	}
 
 	undef := &undefinedKeys{}
 	out, _, err := prg.Eval(conditionActivation(data, undef))
 	if err != nil {
-		return true, nil, fmt.Errorf("if: expression %q eval error: %w", expr, err)
+		return false, nil, fmt.Errorf("if: expression %q eval error: %w", expr, err)
 	}
 
 	var warnings []string
@@ -400,7 +406,7 @@ func EvalCondition(expr string, data TemplateData, status RunStatusView, implici
 	b, ok := out.Value().(bool)
 	if !ok {
 		// OutputType check above guarantees this branch is unreachable
-		return true, nil, fmt.Errorf("if: expression %q returned non-bool", expr)
+		return false, nil, fmt.Errorf("if: expression %q returned non-bool", expr)
 	}
 
 	if implicitSuccess && !statusFuncRe.MatchString(expr) {

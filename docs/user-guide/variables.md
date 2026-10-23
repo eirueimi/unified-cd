@@ -184,9 +184,9 @@ spelling there is lowercase `vars.KEY` — no `{{ }}`, no leading dot:
 
 **An undefined key reads as the empty string.** `vars.EVN == "production"` is
 therefore `false`, and the step is **skipped**. This is deliberate: an
-evaluation error in an `if:` fails *open* (the step runs), so a typo that
-raised an error would run a production-gated step on every trigger with the
-author's intent inverted. Reading empty keeps the gate shut.
+evaluation error in an `if:` fails the step (it is reported Failed and does
+not run), so a typo that raised an error would break the run instead of
+gating it as written. Reading empty keeps the gate shut.
 
 It is not silent. Every undefined key that a condition actually consulted is
 written into the **run's own log** as a `System` line naming the key:
@@ -214,28 +214,24 @@ that lookup is what returns the empty string for an undefined key. It therefore
 always succeeds, and `has()` is always true. The `in` operator goes through a
 different path and still answers truthfully.
 
-### `params` behaves differently, on purpose
+### `params` behaves the same as `vars`
 
 | Reference | Undefined key | Step |
 |---|---|---|
 | `vars.MISSING` | reads as `""` | **skips** (the gate stays shut) |
-| `params.MISSING` | raises `no such key` | **runs** (evaluation errors fail open) |
+| `params.MISSING` | reads as `""` | **skips** (the gate stays shut) |
 
-This asymmetry is deliberate, and the reason is that unified-cd genuinely
-supports parameters a job never declares. `resolveParams` passes undeclared
+`params` used to raise an error here, which is why it is worth knowing that
+unified-cd genuinely supports parameters a job never declares. `resolveParams` passes undeclared
 parameters through unchanged, and five paths can introduce one: `--param` on
 `unified-cli run trigger`, a re-trigger of an earlier run, a webhook's
 `paramsMapping`, a schedule's `params:`, and a `call:` step's `with:`. On top of
 that, `spec.concurrency.orLocks` synthesises `{NAME}_LOCK_VALUE` keys. So
 `if: params.DEPLOY_TARGET == "x"` against a `--param DEPLOY_TARGET=x` is
 documented, supported usage — and statically indistinguishable from a typo.
-Making `params` behave like `vars` would silently change the meaning of every
-existing `params`-gated condition; refusing undeclared references at apply time
-would break supported usage. Neither was worth it.
-
-The decision is recorded in the code at
-`TestEvalCondition_ParamsUndefinedKeyStillFailsOpen`, alongside `resolveParams`'
-own doc comment, so you can check the reasoning rather than take it on trust.
+Refusing undeclared references at apply time would break that supported usage,
+so an undefined `params` key reads as empty at run time instead (see the
+[migration note](../operator-manual/migrations/params-undefined-key-is-empty.md)).
 
 The practical rule: in an `if:`, reference only parameters your job declares
 under `spec.params.inputs`.

@@ -14,25 +14,30 @@ add to it when you find the next one.
 
 ## Execution semantics
 
-### An error in an `if:` condition means the step RUNS
+### An error in an `if:` condition fails the step; it never runs it
 
-`dsl.EvalCondition` returns `(true, nil, err)` on a compile or evaluation
-error. The fail-safe is deliberate — a broken expression must not silently skip
-work — but it has a sharp consequence: **anything that makes a condition
-*error* turns a closed gate into an open one.**
+`dsl.EvalCondition` returns `(false, nil, err)` on a compile or evaluation
+error, and the orchestrator reports the step **Failed** (honouring
+`continueOnError`) without running it, with the error in the run's own log.
+It used to return `true` ("fail-safe: run the step"), which meant **anything
+that made a condition *error* turned a closed gate into an open one** — the
+reason this invariant exists. Do not reintroduce a path where an unevaluable
+condition runs the step, and do not downgrade it to a silent Skipped (that would
+hide a broken gate).
 
 *What broke:* CEL raises `no such key` for an undefined map key. So
 `if: params.deploy == "yes"` with `deploy` misspelled did not skip the step and
-did not fail the run — it **ran the step**. A deploy gate failed open. The same
+did not fail the run — it **ran the step** (under the old fail-open contract). A deploy gate failed open. The same
 trap existed for `secrets`. Both now read an undefined key as the empty string
 and write a System line into the run's log.
 
 `steps` still uses CEL's default map semantics, deliberately: it is
 `map(string, dyn)`, so defaulting a missing step to `""` would only move the
-error to the `.outputs` access rather than closing it.
+error to the `.outputs` access. That error now fails the step.
 
 **If you add anything to the CEL environment, decide explicitly what an
-undefined reference does.** Erroring is the dangerous choice, not the safe one.
+undefined reference does.** Erroring fails the step (loud, but it breaks the
+run); reading empty keeps the gate shut.
 
 ### `finally:` is a second, separate pipeline invocation
 

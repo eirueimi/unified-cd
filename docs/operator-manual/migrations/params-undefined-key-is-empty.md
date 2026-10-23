@@ -35,7 +35,7 @@ same way, in the same change. `steps` is **not** — see
 | `params.MISSING` in an `if:` raised `no such key` at run time. `EvalCondition` returned `(true, nil, err)` — fail-safe: the step ran. | `params.MISSING` evaluates to `""`. No error. The step runs or skips based on what the condition actually says with an empty string in place. |
 | `secrets.MISSING` in an `if:` raised `no such key` the same way, with the same fail-open outcome. | `secrets.MISSING` evaluates to `""`, same as `params`. |
 | Nothing in the run's log explained why a params-gated step ran. | The run's own **System** stream (stepIndex `-1`) gets a line naming the expression and the undefined key, e.g. `if: expression "params.DEPOY == \"yes\"" referenced undefined params.DEPOY — an undefined key reads as the empty string, ...`. |
-| `steps.MISSING.outputs.KEY` raised `no such key`, fail-open. | **Unchanged** — still raises, still fails open. See below. |
+| `steps.MISSING.outputs.KEY` raised `no such key`, fail-open. | **Still raises**, but (later change) the error now fails the step instead of running it. See below. |
 
 ## Why this is a real behaviour change, not a bug fix in the narrow sense
 
@@ -108,8 +108,10 @@ still fails open) and is **deliberately left alone**:
   supported thing to write.
 
 If your fleet has an `if:` referencing a `steps.` name that does not match an
-actual step, that condition still fails open today, exactly as before this
-change. Double-check step names the same way you always had to.
+actual step, that condition still raises an evaluation error. It used to fail
+open; it now fails the step — see
+[Unevaluable `if:` fails the step](2026-10-23-unevaluable-if-fails-step.md).
+Double-check step names the same way you always had to.
 
 ## What was considered and rejected
 

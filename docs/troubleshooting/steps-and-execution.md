@@ -417,33 +417,36 @@ podTemplate:
 `securityContext` is a Kubernetes-only field, so a job that sets it is pinned to a Kubernetes
 agent.
 
-## Conditional step ran when it shouldn't
+## Step failed because its `if:` could not be evaluated
 
 **Symptom**
 
-A step gated with `if:` runs even though its condition looks false, and the
-**run's own log** contains a `System` line like:
+A step gated with `if:` is reported **Failed** without running, later steps
+are skipped, and the **run's own log** contains a `System` line like:
 
 ```
-unified-cd: step "deploy": if: expression "{{ eq .Params.x \"y\" }}" compile error: ERROR: <input>:1:17: Syntax error: missing ':' at '"y"' — the condition could not be evaluated, so the step RAN (fail-safe)
+unified-cd: step "deploy": if: expression "{{ eq .Params.x \"y\" }}" compile error: ERROR: <input>:1:17: Syntax error: missing ':' at '"y"' — the condition could not be evaluated, so the step did NOT run and is reported Failed (fail closed)
 ```
 
-The agent log carries the same reason as `if: condition eval failed, running
-step` (both agents share the orchestrator, so the line is identical on the
+The agent log carries the same reason as `if: condition eval failed, failing
+step without running it` (both agents share the orchestrator, so the line is identical on the
 host and Kubernetes agents).
 
 **Cause**
 
 `if:` expressions are **CEL**, not Go templates — unlike `run:`, `env:`, and
 `outputs:` in the same job, which do use `{{ .Params.X }}`-style Go template
-syntax. An expression that fails to compile or evaluate **fails open**: the
-step still runs, and the run is not marked failed.
+syntax. An expression that fails to compile or evaluate **fails closed**: the
+step does not run, it is reported Failed, and the run fails (unless the step
+sets `continueOnError`). Before this behaviour the step ran anyway — see the
+[migration note](../operator-manual/migrations/2026-10-23-unevaluable-if-fails-step.md).
 
 A *malformed* expression is caught earlier: `unified-cd apply` compiles every
 `if:` against the same environment the agent uses and rejects the job with
 `if: expression "..." does not compile`. What apply cannot catch is an
 expression that compiles and then errors during evaluation — the commonest
-cause being a **misspelt `params` key**, which raises `no such key` — or one
+cause being a `steps.X.outputs.Y` whose step or output was never set, which raises
+`no such key` — or one
 that only appears at run time because it came from a `uses:` template
 (resolved after apply).
 
@@ -457,14 +460,15 @@ that only appears at run time because it came from a `uses:` template
   ```yaml
   if: '{{ eq .Params.env "production" }}'   # wrong — Go template, rejected at apply
   ```
-- Check the spelling of every `params` name by hand. An undefined `params.X`
-  errors and fails open, and nothing validates the name at apply time —
+- Check the spelling of every `steps.X.outputs.Y` reference: an undefined one
+  fails the step. For `params` names, nothing validates the name at apply time —
   a param does not have to be declared under `spec.params.inputs` to reach a
   run (`--param`, a webhook `paramsMapping`, a schedule, and a `call:` step's
   `with:` all pass undeclared keys through), so a typo cannot be told apart
-  from a legitimate pass-through reference. An undefined `vars.X` does **not**
-  behave this way — it reads as the empty string, so the gate stays shut, and
-  the run's log gets a `System` line naming the key.
+  from a legitimate pass-through reference. An undefined `params.X`, `vars.X` or
+  `secrets.X` does **not** fail — it reads as the empty string, so the gate
+  stays shut (the step is skipped), and the run's log gets a `System` line
+  naming the key.
 - After a run, check the run's log for `System` lines beginning
   `unified-cd: step "..."` — that is where a condition that did not mean what
   it says now reports itself.
