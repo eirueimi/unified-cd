@@ -25,7 +25,8 @@ func TestAppleContainer_RunArgs(t *testing.T) {
 // after the image is exactly the args.
 func TestAppleCreateArgs_ArgsOnly_Positional(t *testing.T) {
 	a := &appleContainer{}
-	got, _ := a.createArgs(CreateSpec{Image: "img", Args: []string{"serve", "--port", "80"}})
+	got, err := a.createArgs(CreateSpec{Image: "img", Args: []string{"serve", "--port", "80"}})
+	require.NoError(t, err)
 	assert.NotContains(t, got, "--entrypoint")
 	assert.Equal(t, []string{"img", "serve", "--port", "80"}, got[len(got)-4:])
 }
@@ -35,7 +36,8 @@ func TestAppleCreateArgs_ArgsOnly_Positional(t *testing.T) {
 // precedes the image, entrypoint+args ride positionally after it.
 func TestAppleCreateArgs_EntrypointOverride_ClearsAndPositions(t *testing.T) {
 	a := &appleContainer{}
-	got, _ := a.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get", "pods"}})
+	got, err := a.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get", "pods"}})
+	require.NoError(t, err)
 	assert.Equal(t, []string{"--entrypoint", "", "img", "kubectl", "get", "pods"}, got[len(got)-6:])
 }
 
@@ -44,7 +46,8 @@ func TestAppleCreateArgs_EntrypointOverride_ClearsAndPositions(t *testing.T) {
 // token.
 func TestAppleCreateArgs_NoEntrypointNoArgs_Bare(t *testing.T) {
 	a := &appleContainer{}
-	got, _ := a.createArgs(CreateSpec{Image: "img"})
+	got, err := a.createArgs(CreateSpec{Image: "img"})
+	require.NoError(t, err)
 	assert.Equal(t, "img", got[len(got)-1])
 	assert.NotContains(t, got, "--entrypoint")
 }
@@ -58,7 +61,8 @@ func TestAppleCreateArgs_EntrypointOverride_DegradesOnNoClearRuntime(t *testing.
 	a := &appleContainer{}
 	noEmptyEntrypointClear["container"] = true
 	defer delete(noEmptyEntrypointClear, "container")
-	got, _ := a.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get"}})
+	got, err := a.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get"}})
+	require.NoError(t, err)
 	assert.NotContains(t, got, "--entrypoint")
 	assert.Equal(t, []string{"img", "kubectl", "get"}, got[len(got)-3:])
 }

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -159,19 +158,58 @@ func TestOCICLIImageUser_PullsThenRetriesOnNoSuchImage(t *testing.T) {
 	assert.Equal(t, rec[0], rec[2])
 }
 
-func TestOCICLIImageUser_OtherErrorDoesNotPull(t *testing.T) {
-	var rec [][]string
+// Any inspect failure triggers exactly one pull and one retry; the second
+// inspect result is returned. Covers the differing "missing image" wordings.
+func TestOCICLIImageUser_AnyInspectFailurePullsOnceAndRetries(t *testing.T) {
+	cases := map[string]struct{ bin, stderr string }{
+		"docker":        {"docker", "Error: No such image: img"},
+		"podman4":       {"podman", "Error: image not known"},
+		"podman5":       {"podman", `Error: no such object: "img"`},
+		"podman-legacy": {"podman", "Error: unable to find a name and tag match for img in repotags"},
+		"nerdctl":       {"nerdctl", `no such object: img`},
+		"unrelated":     {"docker", "Cannot connect to the daemon"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			var rec [][]string
+			inspects := 0
+			orig := execCommand
+			execCommand = func(ctx context.Context, n string, args ...string) *exec.Cmd {
+				rec = append(rec, append([]string{n}, args...))
+				if len(args) > 0 && args[0] == "pull" {
+					return helperCmd(ctx, "", "")
+				}
+				inspects++
+				if inspects == 1 {
+					return helperCmd(ctx, "", c.stderr)
+				}
+				return helperCmd(ctx, "appuser", "")
+			}
+			t.Cleanup(func() { execCommand = orig })
+
+			u, err := (&ociCLI{bin: c.bin}).ImageUser(context.Background(), "img")
+			require.NoError(t, err)
+			assert.Equal(t, "appuser", u)
+			require.Len(t, rec, 3)
+			assert.Equal(t, []string{c.bin, "pull", "img"}, rec[1])
+			assert.Equal(t, rec[0], rec[2])
+		})
+	}
+}
+
+func TestOCICLIImageUser_PullFailureReportsBothErrors(t *testing.T) {
 	orig := execCommand
-	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		rec = append(rec, append([]string{name}, args...))
+	execCommand = func(ctx context.Context, n string, args ...string) *exec.Cmd {
+		if len(args) > 0 && args[0] == "pull" {
+			return exec.CommandContext(ctx, os.Args[0], "-test.run=^$", "-test.nonexistent-flag")
+		}
 		return helperCmd(ctx, "", "Cannot connect to the daemon")
 	}
 	t.Cleanup(func() { execCommand = orig })
-
 	_, err := (&ociCLI{bin: "docker"}).ImageUser(context.Background(), "img")
 	require.Error(t, err)
-	assert.Len(t, rec, 1)
-	assert.True(t, strings.Contains(err.Error(), "daemon"))
+	assert.Contains(t, err.Error(), "daemon")
+	assert.Contains(t, err.Error(), "pull img")
 }
 
 func TestOCICLIImageUser_RetriesOnlyOnce(t *testing.T) {

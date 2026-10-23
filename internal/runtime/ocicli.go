@@ -245,7 +245,7 @@ func (r *ociCLI) ExitCode(ctx context.Context, h ContainerHandle) (int, error) {
 }
 
 // ImageUser returns the image's Config.User. If the image is not present
-// locally it is pulled and the inspect retried once.
+// locally (any inspect failure) it is pulled and the inspect retried once.
 func (r *ociCLI) ImageUser(ctx context.Context, image string) (string, error) {
 	inspect := func() (string, error) {
 		var stderr bytes.Buffer
@@ -258,11 +258,14 @@ func (r *ociCLI) ImageUser(ctx context.Context, image string) (string, error) {
 		return strings.TrimSpace(string(out)), nil
 	}
 	u, err := inspect()
-	if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such image") {
-		if perr := r.Pull(ctx, image); perr != nil {
-			return "", fmt.Errorf("%s pull %s: %w", r.bin, image, perr)
-		}
-		return inspect()
+	if err == nil {
+		return u, nil
 	}
-	return u, err
+	// The "image missing" wording differs across docker, podman 4.x/5.x and
+	// nerdctl, so any inspect failure triggers one bounded pull-and-retry. A
+	// pull failure surfaces real daemon/auth problems.
+	if perr := r.Pull(ctx, image); perr != nil {
+		return "", fmt.Errorf("%w; pull %s: %v", err, image, perr)
+	}
+	return inspect()
 }
