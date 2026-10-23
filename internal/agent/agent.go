@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -135,6 +136,14 @@ type Agent struct {
 	// another just after) cannot overwrite each other.
 	blockedSlots atomic.Int32
 
+	// sampler is the background filesystem sampler Run starts; the claim loops
+	// read named-volume headroom from it, never by statfs (rulings #8). It is
+	// set before any claim loop starts and nil outside Run, in which case no
+	// volume is gated.
+	sampler *storageSampler
+	// volGate de-duplicates the volume gate's log lines across claim slots.
+	volGate volumeGate
+
 	// RuntimePref selects the container runtime for runsIn.image steps
 	// (docker|podman|nerdctl|wslc|container); empty = auto-detect.
 	RuntimePref string
@@ -202,20 +211,22 @@ func (a *Agent) storagePaths(wsBase string) []string {
 // know it has, and a false reassurance is worse than a missing series. The
 // filesystems that did measure are still reported.
 func (a *Agent) storageReading(sampler *storageSampler, wsBase, agentName string) *api.AgentStorage {
-	var wsTotal uint64
-	if _, total, _, ok := sampler.read(wsBase); ok {
-		wsTotal = total
-	}
-	minFree := a.MinFreeDisk.Resolve(wsTotal)
+	wsFree, wsTotal, _, wsOK := sampler.read(wsBase) // one read: threshold and total share a sample
 	blocked := a.blockedSlots.Load() > 0
 	out := &api.AgentStorage{
 		AgentName:          agentName,
-		MinFreeDiskBytes:   &minFree,
 		ClaimBlockedByDisk: &blocked,
 	}
-	if free, total, _, ok := sampler.read(wsBase); ok {
-		out.Workspace = &api.FilesystemStats{FreeBytes: free, TotalBytes: total}
+	// nil when a percentage cannot be resolved yet (no workspace sample): 0
+	// would read as "disabled" (design D8).
+	if t := a.MinFreeDisk; wsOK || t.Off || t.Bytes != 0 || t.Percent <= 0 {
+		minFree := t.Resolve(wsTotal)
+		out.MinFreeDiskBytes = &minFree
 	}
+	if wsOK {
+		out.Workspace = &api.FilesystemStats{FreeBytes: wsFree, TotalBytes: wsTotal}
+	}
+	gated, _ := gatedVolumes(a.Volumes, sampler, a.MinFreeDisk)
 	for _, name := range a.Volumes.Names() {
 		free, total, at, ok := sampler.read(a.Volumes.PathOf(name))
 		if !ok {
@@ -227,6 +238,7 @@ func (a *Agent) storageReading(sampler *storageSampler, wsBase, agentName string
 		out.Volumes[name] = api.VolumeStats{
 			FilesystemStats: api.FilesystemStats{FreeBytes: free, TotalBytes: total},
 			MeasuredAt:      at.UTC(),
+			ClaimBlocked:    slices.Contains(gated, name),
 		}
 	}
 	return out
@@ -415,6 +427,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// mount can never stall a beat. It stops with runCtx, like the heartbeat; an
 	// abandoned measurement is not waited for.
 	sampler := newStorageSampler(a.statfs(), heartbeatInterval)
+	a.sampler = sampler // before any claim loop starts
 	go sampler.run(runCtx, a.storagePaths(wsBase))
 
 	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot, nil, func() *api.AgentStorage { return a.storageReading(sampler, wsBase, host) })
@@ -557,8 +570,12 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 				// wedging the agent on a stat failure.
 				slog.Warn("free disk space check failed, proceeding with claim", "error", err, "slot", slot)
 				setBlocked(false)
-			} else if belowMinFreeDisk(free, t.Resolve(total)) {
-				slog.Warn("free disk space below minimum, skipping claim", "freeBytes", free, "minFreeDisk", t.Resolve(total), "slot", slot)
+			} else if t.Below(free, total) {
+				attrs := []any{"freeBytes", free, "thresholdBytes", t.Resolve(total), "minFreeDisk", t.String(), "slot", slot}
+				if t.Percent > 0 {
+					attrs = append(attrs, "thresholdPercent", t.Percent, "totalBytes", total)
+				}
+				slog.Warn("free disk space below minimum, skipping claim", attrs...)
 				setBlocked(true)
 				select {
 				case <-claimCtx.Done():
@@ -583,8 +600,16 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			// can recreate the row without it, and the claim poll is what
 			// restores it, so the agent is not left to the legacy baseline
 			// (never pod) until it restarts.
+			//
+			// A volume below minFreeDisk is listed as busy too, so the controller
+			// skips only the runs that need it. Computed once per iteration from
+			// the sampler, never by an inline statfs on a volume.
+			busy := a.Volumes.Busy()
+			if a.sampler != nil {
+				busy = withGated(busy, a.volGate.names(a.Volumes, a.sampler, a.MinFreeDisk))
+			}
 			resp, err = a.Client.Claim(claimCtx, a.ID, "30s", a.Labels, api.ClaimRequest{
-				BusyVolumes:  a.Volumes.Busy(),
+				BusyVolumes:  busy,
 				Volumes:      a.Volumes.Names(),
 				Capabilities: a.capabilities(),
 			})
