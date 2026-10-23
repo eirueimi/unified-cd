@@ -272,3 +272,13 @@ func (pm *PodManager) buildPodSpec(runID string) *corev1.Pod {
 		},
 	}
 }
+
+// GetPod fetches one pod by name. A NotFound error is returned as-is (wrapped
+// with %w) so callers can tell "gone" from "lookup failed" via apierrors.
+func (pm *PodManager) GetPod(ctx context.Context, name string) (*corev1.Pod, error) {
+	pod, err := pm.client.CoreV1().Pods(pm.namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Pod %s: %w", name, err)
+	}
+	return pod, nil
+}

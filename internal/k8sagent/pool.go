@@ -12,6 +12,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -59,6 +60,9 @@ type PodPool struct {
 	namespace   string
 	pm          *PodManager
 	idleTimeout time.Duration // 0 = no eviction
+	// limitFor resolves the workspace size limit for an agent pod template name;
+	// nil means none is configured. Set by NewK8sAgent from the agent Config.
+	limitFor func(tmplName string) (resource.Quantity, bool)
 }
 
 // poolKey returns a deterministic identifier for the effective pod shape a
@@ -239,6 +243,11 @@ func (p *PodPool) createPoolPod(ctx context.Context, runID, key string, agentTmp
 	pod, err := BuildPod(runID, p.namespace, agentTmpls, jobTmpl, fallbackImage, sidecar, shimImage, nil)
 	if err != nil {
 		return nil, err
+	}
+	if p.limitFor != nil && jobTmpl != nil {
+		if limit, ok := p.limitFor(jobTmpl.Name); ok {
+			applyWorkspaceLimit(pod, limit)
+		}
 	}
 	if pod.Annotations == nil {
 		pod.Annotations = map[string]string{}

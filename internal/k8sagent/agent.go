@@ -19,6 +19,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -40,6 +41,7 @@ type podManager interface {
 	WaitForPodRunning(ctx context.Context, name string) error
 	DeletePod(ctx context.Context, name string) error
 	ListPods(ctx context.Context, labelSelector string) (*corev1.PodList, error)
+	GetPod(ctx context.Context, name string) (*corev1.Pod, error)
 }
 
 type stepExecutor interface {
@@ -99,6 +101,7 @@ func NewK8sAgent(cfg Config, agentClient *agentlib.Client, pm *PodManager, exec 
 	a := &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: exec, pool: pool, podBindings: newPodBindingSet()}
 	if pool != nil {
 		a.kube = pool.client
+		pool.limitFor = func(name string) (resource.Quantity, bool) { return resolveWorkspaceSizeLimit(a.cfg, name) }
 	}
 	a.dispatch = a.executeRun
 	return a
@@ -557,6 +560,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// installs the masker itself via SetMasker after fetching secrets, so
 	// this wrapper does neither).
 	backend := newK8sBackend(a, c.RunID, c.JobName, podName, mountPath, dsl.SidecarContainerNames(c.PodTemplate), claimSince)
+	backend.tmplName = claimTemplateName(c.PodTemplate)
 	backend.volumePaths = volumePaths
 	backend.volumes = mountedVolumes(mountPath, volumeMounts)
 

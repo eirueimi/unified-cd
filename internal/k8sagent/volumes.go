@@ -729,6 +729,9 @@ func (a *K8sAgent) buildAndCreate(ctx context.Context, c api.ClaimResponse, side
 	if err != nil {
 		return claimPodResult{}, fmt.Errorf("k8s: failed to build Pod spec: %w", err)
 	}
+	if limit, ok := resolveWorkspaceSizeLimit(a.cfg, claimTemplateName(c.PodTemplate)); ok {
+		applyWorkspaceLimit(pod, limit)
+	}
 	made, err := a.pm.CreatePod(ctx, pod)
 	if err != nil {
 		if len(vols) > 0 {

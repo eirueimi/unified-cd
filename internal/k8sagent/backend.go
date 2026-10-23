@@ -124,6 +124,9 @@ type k8sBackend struct {
 	a       *K8sAgent
 	runID   string
 	podName string
+	// tmplName is the claim agent pod template name ("" for none); it picks
+	// the workspaceSizeLimit explainPodLoss names in its hint.
+	tmplName string
 	// jobName is the claim's qualified job name (e.g. "team-a/build"), passed
 	// as the sidecar's --job flag on every cache restore/save exec so cache
 	// entries stay namespaced per job (mirrors hostBackend.jobName).
@@ -233,7 +236,8 @@ func newK8sBackend(a *K8sAgent, runID, jobName, podName, mountPath string, sidec
 // threading step.Shell (the controller-resolved effective interpreter argv;
 // nil means "apply the shim default") through to Executor.ExecStep.
 func (b *k8sBackend) RunDefault(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	return b.a.exec.ExecStep(ctx, b.podName, execContainer(step), script, step.Shell, env, stdout, stderr)
+	ec, err := b.a.exec.ExecStep(ctx, b.podName, execContainer(step), script, step.Shell, env, stdout, stderr)
+	return ec, b.explainPodLoss(ctx, b.podName, err)
 }
 
 // envSliceToMap converts "KEY=VALUE" pairs (as produced by the orchestrator's
@@ -255,7 +259,8 @@ func envSliceToMap(env []string) map[string]string {
 // default pod (runsIn.container), via the same ExecStep path as RunDefault,
 // threading step.Shell through identically.
 func (b *k8sBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	return b.a.exec.ExecStep(ctx, b.podName, container, script, step.Shell, env, stdout, stderr)
+	ec, err := b.a.exec.ExecStep(ctx, b.podName, container, script, step.Shell, env, stdout, stderr)
+	return ec, b.explainPodLoss(ctx, b.podName, err)
 }
 
 // EnsureScope provisions (or reuses) the step's uses-scope pod, returning a
@@ -279,7 +284,8 @@ func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, scr
 	if !ok {
 		return -1, fmt.Errorf("RunInScope: no scope handle")
 	}
-	return b.a.exec.ExecStep(ctx, podName, "step", script, shell, env, stdout, stderr)
+	ec, err := b.a.exec.ExecStep(ctx, podName, "step", script, shell, env, stdout, stderr)
+	return ec, b.explainPodLoss(ctx, podName, err)
 }
 
 // CloseScopes deletes every scope pod opened during the claim. It first stops
@@ -847,6 +853,7 @@ func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env
 	resources := toResourceRequirements(&dsl.ResourceSpec{Limits: step.ScopeResourceLimits})
 	pod := buildScopePod(b.runID, b.a.cfg.Namespace, step.ScopeID, step.ScopeImage, envMap,
 		SidecarSpec{Image: b.a.cfg.SidecarImage, S3SecretName: b.a.cfg.SidecarS3SecretName, S3SecretMode: b.a.cfg.SidecarS3SecretMode, BrokerURL: b.a.cfg.Server}, b.a.cfg.ShimImage, resources)
+	applyScopeWorkspaceLimit(pod, b.a.cfg)
 	// attemptStart marks the beginning of the whole creation attempt
 	// (CreatePod through WaitForPodRunning), not just the Running-wait below
 	// — see the "pod creation abandoned after %s" message this feeds, which
@@ -1236,7 +1243,7 @@ func (b *k8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle
 		targetPod = b.podName
 	}
 	_, err := b.a.exec.ExecStep(ctx, targetPod, container, script, shell, env, stdout, stderr)
-	return err
+	return b.explainPodLoss(ctx, targetPod, err)
 }
 
 // SetMasker installs the secret masker used by subsequently-created log
