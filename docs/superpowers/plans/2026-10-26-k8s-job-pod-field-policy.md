@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** By default the k8s agent refuses, at claim time, a job whose own `podTemplate` content reaches a ServiceAccount, the node, a Kubernetes Secret, a PVC, or an unclassified field. Each category is restored by an explicit `jobPodPolicy` opt-in in the agent config, and the shipped `ci` namespace enforces Pod Security `baseline`.
+**Goal:** By default the k8s agent refuses, at claim time, a job whose own `podTemplate` content reaches a ServiceAccount, the node, a Kubernetes Secret, a PVC, or an unclassified field. Each category is restored by an explicit `jobPodPolicy` opt-in in the agent config, and the shipped `ci` namespace enforces Pod Security `baseline`. Separately, no step can run in the artifact sidecar or the shim init container (`container: unified-artifact` / `ucd-shim`), on any agent: this is rejected at apply time, after `uses:` resolution, and on the k8s agent at claim and exec time.
 
 **Architecture:** A new `internal/k8sagent/podpolicy.go` decodes job-supplied Pod content with the same functions `BuildPod` uses and checks it against classification tables (allowed / category / opt-in / never). It returns a typed `*JobPodPolicyError` listing every violation. `K8sAgent.executeRun` calls it right after the `native` check, before the pool, volume locks and `BuildPod`. Agent templates are trusted and not checked. `BuildPod` is unchanged.
 
@@ -34,7 +34,9 @@ Failure modes a happy path would not exercise:
 4. **Fail-open on inspection errors.** `jsonKeys` failing must produce a violation, never a pass. — Task 1.
 5. **Effective ServiceAccount for overrides** is the template's, not `default`. — Task 3.
 6. **`omitempty` assumptions.** `hostNetwork: false` disappears on re-encode (allowed). `automountServiceAccountToken: false` does not (it is a pointer) and must be allowed by value. — Task 2.
-7. **Docs made false.** The threat-model sentence "the job container never sees them", the interim "What a job can put in the Pod" section, the authorization paragraph from 913ea9a and its anchor. — Task 7.
+7. **The deferred container-validation paths.** `ValidateContainerReferences` is skipped for named-template and `uses:` specs, so a reserved-target check that only lives there misses exactly the jobs most likely to have one. The check must sit in `validateStepEntries` and in the resolver *before* its named-template skip. — Task 7.
+8. **Stored jobs.** A job applied before the upgrade is never re-parsed. Only the agent-side checks stop it. — Task 7.
+9. **Docs made false.** The threat-model sentence "the job container never sees them", the interim "What a job can put in the Pod" section, the authorization paragraph from 913ea9a and its anchor, and every place that says reserved names are valid `container:` targets. — Task 8.
 
 ---
 
@@ -1496,7 +1498,164 @@ Check `PodVolume`'s field names against `internal/k8sagent/volumes.go` and adjus
 
 ---
 
-### Task 7: Documentation, examples, templates, migration note, TODO
+### Task 7: Refuse the sidecar and the shim as step targets
+
+**Files:**
+- Modify: `internal/dsl/container.go` (new `IsForbiddenStepContainer`, `ForbiddenStepContainerError`, `ValidateStepContainerTargets`; `ValidateContainerReferences` no longer accepts the two names; doc comment)
+- Modify: `internal/dsl/parse.go` (`validateStepEntries`, both branches)
+- Modify: `internal/controller/scheduler.go` (resolver: unconditional check)
+- Modify: `internal/k8sagent/agent.go` (claim-time scan in `executeRun`)
+- Modify: `internal/k8sagent/backend.go` (`RunNamedContainer`, `RunPostHook`)
+- Tests: `internal/dsl/container_test.go` (invert the existing reserved-target assertion and add cases), `internal/dsl/parse_test.go` or a new `internal/dsl/step_target_test.go`, `internal/controller/scheduler_test.go`, a new `internal/k8sagent/agent_reserved_target_test.go`
+
+**Depends on:** Task 5 only for where the claim-time scan sits in `executeRun` (just before the pod-policy check). Otherwise independent.
+
+Spec: §5.8 and R13.
+
+- [ ] **Step 1: Write failing DSL tests.**
+  - `IsForbiddenStepContainer`: true for `unified-artifact`, `ucd-shim`, ` Unified-Artifact `; false for `job`, `tools`, `""`.
+  - `Parse` of a `kind: Job` YAML fails, and the error contains `container "unified-artifact" is reserved for the agent's artifact sidecar`, for each of: a plain step; a `parallel:` sub-step; a `finally:` step; a `uses:` entry with `container: unified-artifact`; a job with `podTemplate: {name: golang}` (deferred `ValidateContainerReferences` path); a `native: true` job. (For the native job, whichever error comes first is fine, but it must fail.) Do the same for `ucd-shim`, checking for the `ucd-sh installer init container` wording.
+  - `ParseJobTemplate` of a `kind: JobTemplate` with a step `container: unified-artifact` fails with the same message.
+  - `container: job` with no `podTemplate` still parses.
+  - In `container_test.go`, change the assertion "Reserved is valid even with no podTemplate at all" to: `job` passes, and `unified-artifact` and `ucd-shim` fail `ValidateContainerReferences`.
+
+- [ ] **Step 2: Implement in `internal/dsl/container.go`.**
+
+```go
+// IsForbiddenStepContainer reports whether name is a reserved container no
+// step may exec into: the artifact sidecar holds the object-store
+// credentials, and the shim init container has exited before any step runs.
+// Normalized like IsReservedContainerName. PrimaryContainerName ("job") is
+// reserved but is the default exec target, so it is not forbidden.
+func IsForbiddenStepContainer(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == ArtifactSidecarContainerName || n == UcdShimContainerName
+}
+
+// ForbiddenStepContainerError explains why container cannot be a step's
+// target. It assumes IsForbiddenStepContainer(container).
+func ForbiddenStepContainerError(path, stepName, container string) error {
+	why := "is reserved for the agent's artifact sidecar, which holds the object-store credentials"
+	if strings.ToLower(strings.TrimSpace(container)) == UcdShimContainerName {
+		why = "is the agent's ucd-sh installer init container, which has exited before any step runs"
+	}
+	return fmt.Errorf("%s (%s): container %q %s; steps cannot run in it. Use the primary container %q or a container declared in podTemplate",
+		path, stepName, container, why, PrimaryContainerName)
+}
+
+// ValidateStepContainerTargets rejects any step, parallel sub-step or finally
+// step of spec whose container: is forbidden. Unlike ValidateContainerReferences
+// it needs no podTemplate knowledge, so it runs on every spec, including
+// named-template and uses:-resolved ones.
+func ValidateStepContainerTargets(spec Spec) error {
+	for _, l := range []struct {
+		path    string
+		entries []StepEntry
+	}{{"spec.steps", spec.Steps}, {"spec.finally", spec.Finally}} {
+		for i, e := range l.entries {
+			if IsForbiddenStepContainer(e.Container) {
+				return ForbiddenStepContainerError(fmt.Sprintf("%s[%d]", l.path, i), e.Name, e.Container)
+			}
+			for j, p := range e.Parallel {
+				if IsForbiddenStepContainer(p.Container) {
+					return ForbiddenStepContainerError(fmt.Sprintf("%s[%d].parallel[%d]", l.path, i, j), p.Name, p.Container)
+				}
+			}
+		}
+	}
+	return nil
+}
+```
+
+  In `ValidateContainerReferences`'s `check`, replace `IsReservedContainerName(container) || defined[container]` with:
+
+```go
+		if IsForbiddenStepContainer(container) {
+			return ForbiddenStepContainerError("step", stepName, container)
+		}
+		if IsReservedContainerName(container) || defined[container] {
+			return nil
+		}
+```
+
+  Update the reserved-names doc comment at the top of the file: "the reserved container names are always valid container: targets" becomes "PrimaryContainerName is always a valid container: target; the sidecar and shim names never are (IsForbiddenStepContainer)".
+
+- [ ] **Step 3: `validateStepEntries` (`parse.go`).** In both branches, right before the existing `checkStepExecTarget` call:
+
+```go
+				if IsForbiddenStepContainer(st.Container) {
+					return ForbiddenStepContainerError(subPath, st.Name, st.Container)
+				}
+```
+
+  In the entry branch, use `entry`/`entryPath`. This runs for every job and every JobTemplate (`JobTemplate.Validate` calls `validateStepEntries`), whether or not container-reference validation is deferred.
+
+- [ ] **Step 4: Controller resolver (`scheduler.go`).** In the git resolver, after `rspec` is unmarshalled and **before** the `if rspec.PodTemplate == nil || rspec.PodTemplate.Name == ""` block, run `dsl.ValidateStepContainerTargets(rspec)`. On error, fail the run exactly as the dangling-container branch does: `slog.Error`, `st.AppendLog` to `systemLogStepIndex`, `MarkRunFinished(RunFailed)`, `bo.Success`, `continue`. Factor the shared failure into a small helper if it reads better. Add `TestResolveGitPendingRuns_FailsOnForbiddenContainerTarget`, modelled on `TestResolveGitPendingRuns_FailsOnDanglingContainer`, using a resolved spec with `podTemplate.name` set and a step `container: unified-artifact`. The run must be failed, and the System log must contain the message.
+
+- [ ] **Step 5: k8s agent backstop.** In `agent.go`, add next to `scanTransferSteps`:
+
+```go
+// forbiddenTargetStep returns the first claim step (main DAG or finally,
+// parallel included) whose container is a reserved agent container, so a job
+// stored before apply-time validation existed still cannot exec into the
+// artifact sidecar.
+func forbiddenTargetStep(c api.ClaimResponse) (step, container string, found bool) {
+	for _, stages := range [][]api.ClaimStage{c.Stages, c.Finally} {
+		for _, st := range stages {
+			if st.Step != nil && dsl.IsForbiddenStepContainer(st.Step.Container) {
+				return st.Step.DisplayName(), st.Step.Container, true
+			}
+			for i := range st.Parallel {
+				if dsl.IsForbiddenStepContainer(st.Parallel[i].Container) {
+					return st.Parallel[i].DisplayName(), st.Parallel[i].Container, true
+				}
+			}
+		}
+	}
+	return "", "", false
+}
+```
+
+  In `executeRun`, immediately before the pod-policy check (Task 5):
+
+```go
+	if name, ctr, bad := forbiddenTargetStep(c); bad {
+		a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: step %q targets container %q, which is reserved for the agent (the artifact sidecar holds the object-store credentials; ucd-shim has exited before steps run); no step may run in it. Re-apply the job with container: %q or a podTemplate container", name, ctr, dsl.PrimaryContainerName))
+		return
+	}
+```
+
+  In `backend.go`, add a guard at the top of `RunNamedContainer`, and in `RunPostHook` after the scope branch (a scoped hook always targets `step`):
+
+```go
+	if dsl.IsForbiddenStepContainer(container) {
+		return -1, fmt.Errorf("k8s: refusing to exec into reserved container %q", container)
+	}
+```
+
+  (`RunPostHook` returns only `error`, so drop the `-1`.) `RunDefault` and `RunInScope` choose their own container, so they need no guard. The host backend gets no guard: its claim pod has neither container (spec §5.8).
+
+- [ ] **Step 6: Agent tests** (`agent_reserved_target_test.go`):
+  - A claim with one stage `Step{Name: "x", Container: "unified-artifact", Run: "env"}` fails the run with the `k8s: step "x" targets container "unified-artifact"` log line, and `pm.created == nil`.
+  - The same check for a parallel step, and for a `Finally` step.
+  - `(&k8sBackend{...}).RunNamedContainer(ctx, step, "unified-artifact", ...)` returns an error and the fake executor records no call. Build the backend the way the existing backend tests do (see `backend_*_test.go`). The same for `RunPostHook` with a zero scope.
+
+- [ ] **Step 7: Sweep for reliance.** Run:
+
+```
+grep -rn "unified-artifact\|ucd-shim" --include=*.go internal cmd | grep -v "_test.go"
+grep -rn "container: *[\"']\?\(unified-artifact\|ucd-shim\)" examples templates docs test internal
+```
+
+  Expected: no `container:` targeting either name outside tests (checked during design). If something legitimately targets the sidecar, stop and report it; do not add an exemption.
+
+- [ ] **Step 8: Run** `go test ./internal/dsl/... ./internal/controller/... ./internal/k8sagent/... ./internal/gittemplate/... -count=1` and `go test ./internal/dsl/ -run 'Templates|Examples' -count=1`.
+
+- [ ] **Step 9: Commit** — `fix!: no step may exec into the artifact sidecar or the shim init container`.
+
+---
+
+### Task 8: Documentation, examples, templates, migration note, TODO
 
 **Files:**
 - Modify: `docs/operator-manual/kubernetes-integration.md`
@@ -1508,40 +1667,39 @@ Check `PodVolume`'s field names against `internal/k8sagent/volumes.go` and adjus
 - Modify: `examples/config/k8s-agent.yaml`, `manifests/base/k8s-agent/config-configmap.yaml`
 - Modify: `templates/buildkit-rootless-build-push.yaml` (header comment only), `templates/README.md`
 - Modify: `TODO.md`
-- Check: `README.md`, `mkdocs.yml` (nav entry for the migration note if migrations are listed there), `docs/operator-manual/agents.md`, `test/edgecase/**`
+- Modify: `docs/troubleshooting/templates-and-uses.md`, `docs/user-guide/writing-jobs/templates-and-reuse.md`, `docs/user-guide/resources/job.md` (reserved `container:` targets)
+- Check: `README.md`, `mkdocs.yml` (nav entry for the migration note if migrations are listed there), `docs/operator-manual/agents.md`, `docs/user-guide/writing-jobs/steps.md`, `test/edgecase/**`
 
-**Depends on:** Tasks 1–6 (the docs describe the final behaviour and quote real error strings, so run the code to copy the strings).
+**Depends on:** Tasks 1–7 (the docs describe the final behaviour and quote real error strings, so run the code to copy the strings).
 
 - [ ] **Step 1: `kubernetes-integration.md`.**
   - Replace the whole "### What a job can put in the Pod" section with "### Job Pod field policy", so the anchor becomes `#job-pod-field-policy`. Cover: the trust boundary (spec R3 table, condensed); what is denied by default (spec §5 in condensed tables: PodSpec categories, container rules, volume types, security contexts); the `jobPodPolicy` YAML block with comments (spec §4); the startup validation errors; the run error with a real example captured from Task 5's test output; why some names can never be allowed (R6, R7); the shipped namespace labels and what `baseline` refuses in operator templates (§6); the `default` ServiceAccount recommendation (R10) as a short YAML snippet (`automountServiceAccountToken: false` on `ServiceAccount/default` in the job namespace); and keeping an admission policy for `serviceAccountName` defence in depth.
-  - "Security note / threat model": the S3 credentials stay out of the job container **by default**. State the exceptions: `allowPodSpecFields: [shareProcessNamespace]` and the open `container: unified-artifact` question (link the new TODO item from Step 9).
+  - "Security note / threat model": the S3 credentials stay out of the job container **by default**. State that no step can target the sidecar (Task 7, with all three layers), and the one remaining exception: `allowPodSpecFields: [shareProcessNamespace]`.
   - Setup section §1 example and the "Named volumes" `fsGroup` example: make sure nothing contradicts the policy (`fsGroup` and `runAsUser` stay allowed). Where an example agent template uses `privileged: true`, add one sentence that `baseline` refuses it in the shipped namespace.
   - The top "intentional differences" bullets: no change unless one now reads as false.
 - [ ] **Step 2: `configuration.md`.** Add a commented `jobPodPolicy` block to the K8s Agent config example and a `jobPodPolicy` row to the config-fields table. The row links to the policy section, says the block is file-only with no environment variables, states that the absent block is the most restrictive, and lists the startup errors. Add `jobPodPolicy` to the "Pod template fields" prose: agent templates are not filtered, job content is.
 - [ ] **Step 3: `authorization.md`.** Rewrite the paragraph added by 913ea9a. Roles stay global. On a Kubernetes agent, a job's reach is the agent's `jobPodPolicy` plus the namespace's admission. Link `kubernetes-integration.md#job-pod-field-policy`.
-- [ ] **Step 4: `isolation-and-containers.md`.** In "Kubernetes Pod Template (`podTemplate`)" and the "podTemplate fields" table (`spec`, `override.*` rows), add that a Kubernetes agent refuses some fields unless its operator allows them, quote the error prefix, and link the policy section.
+- [ ] **Step 4: `isolation-and-containers.md`.** In "Kubernetes Pod Template (`podTemplate`)" and the "podTemplate fields" table (`spec`, `override.*` rows), add that a Kubernetes agent refuses some fields unless its operator allows them, quote the error prefix, and link the policy section. In "`container:` — targeting a podTemplate container", state that `job` is the only reserved name a step may target, and that `unified-artifact` and `ucd-shim` are rejected at apply time. Make the same correction in `docs/troubleshooting/templates-and-uses.md` ("must name either the reserved primary container (`job`), one of the other reserved names, ..." → `job` or a declared container), in `docs/user-guide/writing-jobs/templates-and-reuse.md` (the "a reserved name" wording) and in the `container:` row of `docs/user-guide/resources/job.md`.
 - [ ] **Step 5: `troubleshooting/steps-and-execution.md`.** Under "Job isolation", add two entries:
   - `Run fails immediately on Kubernetes: "k8s: job pod policy: ..."`: what it means; read the path and the `allow with` hint; the operator either adds the setting or moves the content into an agent template; a job author cannot fix it from the job except by removing the field.
   - `Run fails: "k8s: failed to create Pod: ... violates PodSecurity "baseline:latest""`: the namespace label from the shipped manifests; it applies to operator templates too; the options are relabelling, or a separate agent and namespace for privileged templates.
-- [ ] **Step 6: Migration note** `docs/operator-manual/migrations/2026-10-26-k8s-job-pod-field-policy.md`, in the style of `2026-10-23-unevaluable-if-fails-step.md`. Include the spec §8 table (before → after, with the setting that restores each), the exact error prefix and one full example, the startup validation errors, the namespace label change and how to apply it (`kubectl label namespace ci pod-security.kubernetes.io/enforce=baseline` plus a `--dry-run=server` check first, which lists existing violators), and idle pooled Pods built before the upgrade (R12). For R12, give the command to remove them after scaling the agent down: `kubectl -n ci delete pods -l app=unified-cd-agent`. Also give a grep that finds affected job definitions:
+  - `apply fails / run fails: container "unified-artifact" is reserved for the agent's artifact sidecar` (and the `ucd-shim` and `k8s: step ... targets container ...` variants): why (the sidecar holds the object-store credentials) and the fix (target `job` or a declared container; re-apply stored jobs).
+- [ ] **Step 6: Migration note** `docs/operator-manual/migrations/2026-10-26-k8s-job-pod-field-policy.md`, in the style of `2026-10-23-unevaluable-if-fails-step.md`. Include the spec §8 table (before → after, with the setting that restores each), the exact error prefix and one full example, the startup validation errors, the namespace label change and how to apply it (`kubectl label namespace ci pod-security.kubernetes.io/enforce=baseline` plus a `--dry-run=server` check first, which lists existing violators), idle pooled Pods built before the upgrade (R12), and a section on reserved step targets (spec §8's second table, with the apply-time, resolver and claim-time error strings, and the note that it applies to every agent type). Name the old behaviour plainly: before this change, `container: unified-artifact` ran job code in the sidecar. For R12, give the command to remove them after scaling the agent down: `kubectl -n ci delete pods -l app=unified-cd-agent`. Also give a grep that finds affected job definitions:
 
 ```
-grep -rnE "serviceAccount|automountServiceAccountToken|hostPath|hostNetwork|hostPID|hostIPC|hostPort|privileged|capabilities|procMount|Unconfined|sysctls|seLinuxOptions|nodeName|secretKeyRef|secretRef|secretName|imagePullSecrets|persistentVolumeClaim|runtimeClassName|priorityClassName|shareProcessNamespace|ephemeral|csi:|nfs:" <your job definitions>
+grep -rnE "container: *[\"']?(unified-artifact|ucd-shim)|serviceAccount|automountServiceAccountToken|hostPath|hostNetwork|hostPID|hostIPC|hostPort|privileged|capabilities|procMount|Unconfined|sysctls|seLinuxOptions|nodeName|secretKeyRef|secretRef|secretName|imagePullSecrets|persistentVolumeClaim|runtimeClassName|priorityClassName|shareProcessNamespace|ephemeral|csi:|nfs:" <your job definitions>
 ```
 
   If `mkdocs.yml` lists the migration notes, add the new one.
 - [ ] **Step 7: Examples and manifests.** In `examples/config/k8s-agent.yaml`, add a fully commented `jobPodPolicy:` block (every key, with the defaults shown), and above the `golang` template's DinD container a comment that the shipped `ci` namespace (`baseline`) refuses `privileged: true`. In `manifests/base/k8s-agent/config-configmap.yaml`, add a short comment pointing at `jobPodPolicy` (no keys set). Keep `TestExamplesParse` and the config tests green.
 - [ ] **Step 8: Templates.** In the header of `templates/buildkit-rootless-build-push.yaml`, extend "Cluster requirements" with two items: the k8s agent must set `jobPodPolicy.allowUnconfinedProfiles: true`, and the job namespace must admit `Unconfined` (Pod Security `privileged`; the shipped `baseline` refuses it). Change the comment only, not the job. Update its row in `templates/README.md` to match. Run `go test ./internal/dsl/ -run 'Templates|Examples' -count=1`.
-- [ ] **Step 9: `TODO.md`.** Delete item 36 entirely. Add, under Critical, item `37. Refuse the artifact sidecar as a step's container: target`, following the existing format:
-  - **Status:** Needs verification.
-  - **Impact:** a `container: unified-artifact` step may run job code inside the container that holds the sidecar's object-store credentials.
-  - **Evidence:** `internal/dsl/container.go` `ValidateContainerReferences` accepts every `IsReservedContainerName` target, and `internal/k8sagent/agent.go` `execContainer` has no visible guard.
-  - **Done when:** apply rejects the sidecar as a step target, the k8s agent refuses such a claim as a backstop, and tests cover both.
+- [ ] **Step 9: `TODO.md`.** Delete item 36 entirely. Add no new item: the sidecar step-target hole is fixed in Task 7.
 - [ ] **Step 10: Sweep for statements made false.** Run each grep and fix or justify every hit outside `docs/superpowers/` and historical migration notes:
 
 ```
 grep -rn "What a job can put in the Pod\|what-a-job-can-put-in-the-pod\|TODO item 36" docs README.md examples templates manifests
 grep -rn "Nothing else in a job's\|is the only check unified-cd applies\|job container never sees" docs
+grep -rn -i "reserved name\|reserved container\|other reserved names\|always valid container" docs internal/dsl/container.go
 grep -rn -i "full PodSpec\|real Kubernetes PodSpec\|Kubernetes PodSpec (containers, volumes" docs README.md
 grep -rn "serviceAccountName\|hostPath\|privileged: true\|secretKeyRef\|envFrom" docs examples templates test/edgecase | grep -v superpowers
 ```

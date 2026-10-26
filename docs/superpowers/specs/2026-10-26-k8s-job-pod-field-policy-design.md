@@ -24,8 +24,9 @@ Roles are global (`admin`/`developer`/`viewer`, `docs/operator-manual/authorizat
 | A chosen node | `nodeName`, which skips the scheduler and taints |
 | **Any Kubernetes Secret in the job namespace** | `env[].valueFrom.secretKeyRef`, `envFrom[].secretRef`, `secret` volumes, projected `secret` sources |
 | **Another run's exclusive named volume** | a `persistentVolumeClaim` volume naming `<agentName>-<volume>` |
+| **The artifact sidecar's object-store credentials** | a step with `container: unified-artifact` (no `podTemplate` needed at all; §5.8) |
 
-The last two need spelling out because neither needs any cluster misconfiguration:
+The last three need spelling out because none of them needs any cluster misconfiguration:
 
 - **Secrets.** unified-cd fences its own secrets: an agent can fetch only the secrets that the
   run's spec declares. A Kubernetes Secret in the job namespace is outside that fence. In
@@ -36,6 +37,13 @@ The last two need spelling out because neither needs any cluster misconfiguratio
   `unified-cd/volume-held-by` annotation lock ("Named volumes" in
   `kubernetes-integration.md`). The lock only works because the agent alone mounts the PVC, and an
   inline `persistentVolumeClaim` volume gets around it.
+- **The sidecar itself.** `dsl.ValidateContainerReferences` treats every reserved container name
+  as a valid `container:` target, including `unified-artifact`, and the k8s backend's
+  `RunNamedContainer` execs into whatever name the step carries. A one-line step
+  `container: unified-artifact` therefore runs job code inside the container that holds the
+  object-store credentials (as environment variables in `env` mode, a mounted file in `file`
+  mode, or a token that can be exchanged for them in `broker` mode). This needs no `podTemplate`
+  at all, so a Pod field policy alone would not close it (§5.8).
 
 The shipped `manifests/base/namespace/namespace.yaml` `ci` namespace has no Pod Security labels, so
 on a cluster with no default admission policy every row above works. Commit 913ea9a documented the
@@ -54,6 +62,8 @@ gap ("What a job can put in the Pod") as an interim measure.
   classifies it.
 - Operator-written agent templates (`podTemplates:` in the agent config) keep working unchanged.
 - The shipped job namespace enforces Pod Security `baseline` as a second, independent layer.
+- No step, post hook or `uses:`-expanded step can run in the artifact sidecar or the shim init
+  container. This is rejected at apply time, and the k8s agent refuses it as well (§5.8).
 
 **Non-goals**
 
@@ -180,6 +190,17 @@ template, so an idle Pod is only ever matched to claims with identical content, 
 content before `ClaimPod`. An idle Pod built before the upgrade from content that is now denied is
 never handed out again. It lingers until `poolIdleTimeout` or until it is deleted. The migration
 note says how to remove such Pods.
+
+**R13 — `unified-artifact` and `ucd-shim` are not step exec targets, on any path.** This is
+enforced in three layers (§5.8):
+1. At apply/parse time, in `internal/dsl`. This is not a per-agent matter: no agent may ever run
+   job code in the sidecar, so R2's reasoning does not apply and rejecting at apply time is right.
+2. After `uses:` resolution, in the controller.
+3. On the k8s agent at claim time, with a last check at exec time, so that stored jobs from before
+   the upgrade, or any future path that skips validation, still cannot get in.
+`job` stays valid (it is the primary container). Unlike the Pod field policy, this check also
+applies to jobs that use a named agent template (`podTemplate.name`), because the target name is
+reserved whatever the template contains.
 
 ## 4. Configuration
 
@@ -405,6 +426,50 @@ violation that needs a name lists the exact value to add, for example
 The error is a typed `*JobPodPolicyError` carrying `[]PodPolicyViolation{Path, What, Allow}`, so
 tests assert on structure, not on wording.
 
+### 5.8 Reserved containers are not step targets
+
+Only one reserved container name is a valid `container:` target: `dsl.PrimaryContainerName`
+(`job`). `dsl.ArtifactSidecarContainerName` (`unified-artifact`) holds the object-store
+credentials. `dsl.UcdShimContainerName` (`ucd-shim`) is an init container that has exited before
+any step runs, so an exec into it can never work. A new `dsl.IsForbiddenStepContainer(name)`
+names both, normalised the same way as `IsReservedContainerName`.
+
+Every path that carries a `container:` target:
+
+| Path | Where it is checked |
+|---|---|
+| `spec.steps[]`, `spec.finally[]` entries; their `parallel:` sub-steps | `validateStepEntries` (both branches) in `internal/dsl/parse.go`. It runs for every `kind: Job`, including native jobs, named-template jobs and `uses:`-bearing ones. That matters because `ValidateContainerReferences` is skipped for named-template and `uses:` specs (`specDefersContainerValidation`), so the check cannot live only there. |
+| A `uses:` entry's own `container:` (inherited by the inlined template steps, `internal/gittemplate/inline.go`) | the same `validateStepEntries` call: the entry is a step entry |
+| `kind: JobTemplate` steps (`uses:` targets, git or registered) | `JobTemplate.Validate` → `validateStepEntries` |
+| The resolved spec after `uses:` expansion | `internal/controller/scheduler.go`'s resolver: a new `dsl.ValidateStepContainerTargets(rspec)` runs **unconditionally**, before the existing named-template skip. A violation fails the run with the error in its System log, like an invalid container reference does today. |
+| `post:` hooks | They have no `container:` of their own; they run in the owning step's container (`RunPostHook`), which the rows above cover |
+| `runsIn.container` | Already rejected outright (`checkStepExecTarget`) |
+| The claim on the k8s agent (stored jobs, or any path not covered above) | `executeRun` scans `c.Stages` and `c.Finally` (steps and parallel steps) before the pod-policy check and fails the run with `k8s: step %q targets container %q, which is reserved for the agent ...`. `k8sBackend.RunNamedContainer` and `RunPostHook` refuse those two names as a last check. |
+
+`ValidateContainerReferences` stops treating those two names as valid targets; `job` stays valid
+with or without a `podTemplate`. The apply-time error is one string, with `%s` filled in by the
+caller:
+
+```
+spec.steps[0] (upload): container "unified-artifact" is reserved for the agent's artifact sidecar,
+which holds the object-store credentials; steps cannot run in it. Use the primary container "job"
+or a container declared in podTemplate
+```
+
+For `ucd-shim` the reason reads `is the agent's ucd-sh installer init container, which has exited
+before any step runs`.
+
+**The host agent.** Its claim pod has no artifact sidecar and no shim container: artifacts and
+cache go through the agent process, and the shim is bind-mounted. On a host agent a step targeting
+either name has always failed at exec with "no such container", so rejecting it at apply time
+breaks nothing that worked. Its `RunNamedContainer` needs no guard. Nothing in `examples/`,
+`templates/`, `docs/` or `test/edgecase/` targets either name (checked by grep during design).
+The only reliance is `internal/dsl/container_test.go`, which asserts that `unified-artifact` is a
+valid target with no `podTemplate`; that assertion is inverted. The docs that describe reserved
+names as valid targets (`docs/troubleshooting/templates-and-uses.md`,
+`docs/user-guide/writing-jobs/templates-and-reuse.md`, the `container.go` doc comment) are
+corrected.
+
 ## 6. Pod Security on the shipped namespace
 
 `manifests/base/namespace/namespace.yaml` gains, on `ci`:
@@ -476,6 +541,14 @@ Unit tests (no cluster), in `internal/k8sagent`:
     claim with `spec.volumes` takes no lock.
 12. **Manifest.** `namespace.yaml`'s `ci` namespace carries the two labels (a file-read test in the
     style of `credentials_test.go`).
+13. **Reserved step targets (§5.8).**
+    - Parse rejects `container: unified-artifact` / `ucd-shim`, including case and whitespace
+      variants, in a step, a parallel sub-step, a finally step, a `uses:` entry, a native job, a
+      named-template job and a `kind: JobTemplate` step. `container: job` passes.
+    - The controller resolver fails a run whose resolved spec targets them, even with
+      `podTemplate.name` set.
+    - The k8s agent fails such a claim before any `CreatePod`.
+    - `RunNamedContainer` / `RunPostHook` return an error without calling the executor.
 
 Integration (`-tags k8s`, kind): §6's baseline dry-run test. The existing k8s integration tests
 must stay green. None of them sets a field the default policy denies (checked by grep during
@@ -500,6 +573,13 @@ Jobs that **stop working** on upgrade, and the setting that restores each:
 | uses an opt-in volume type (`ephemeral`, `csi`, `nfs`, ...) | `allowVolumeTypes: [<type>]` |
 | adds an override container that mounts a template volume of one of the above kinds | the matching setting |
 | mounts `sidecar-s3-credentials` / `sidecar-store-credential-token` | nothing; remove the mount |
+
+Independent of `podTemplate`, on every agent type:
+
+| A job that... | Now |
+|---|---|
+| has a step (or parallel / finally / `uses:` entry, or a JobTemplate step) with `container: unified-artifact` or `container: ucd-shim` | `apply` fails with `container "unified-artifact" is reserved for the agent's artifact sidecar ...`. Nothing restores it: use `job` or a declared container. |
+| was stored before the upgrade with such a step | its runs fail. A `uses:` job fails at resolution, with the error in the run's System log. On a k8s agent the run fails at claim with `k8s: step "..." targets container "unified-artifact", which is reserved for the agent`, before a Pod is created. On a host agent it fails at the step, as it always did (no such container). |
 
 Moving the content into an agent template (`podTemplates:`) is always an alternative. Operator
 templates are not filtered.
@@ -549,7 +629,7 @@ Kubernetes. This design does not depend on it. Where the two would meet:
   form), configuration, the error, the namespace labels and the recommendation for the `default`
   ServiceAccount. Fix the threat-model sentence ("the job container never sees them"), which
   becomes true by default but can be undone by `allowPodSpecFields: [shareProcessNamespace]`, so
-  that caveat goes in. Note the `baseline` consequence for privileged templates in the setup
+  that caveat goes in. Also state that steps can never target the sidecar (§5.8). Note the `baseline` consequence for privileged templates in the setup
   section's example templates.
 - `docs/reference/configuration.md`: add `jobPodPolicy` to the config example and the field table,
   and note that it is file-only.
@@ -566,18 +646,15 @@ Kubernetes. This design does not depend on it. Where the two would meet:
   `jobPodPolicy` block, and a note on the DinD template and `baseline`.
 - `templates/buildkit-rootless-build-push.yaml` header and `templates/README.md`: the two
   requirements (`allowUnconfinedProfiles`, and a namespace that admits `Unconfined`).
-- `TODO.md`: remove item 36. Add an item for the adjacent finding in §11.
+- `TODO.md`: remove item 36.
+- §5.8 docs: `docs/troubleshooting/templates-and-uses.md` and
+  `docs/user-guide/writing-jobs/templates-and-reuse.md`, which say reserved names are valid
+  targets; the `container:` description in `docs/user-guide/writing-jobs/isolation-and-containers.md`
+  and `docs/user-guide/resources/job.md`; a troubleshooting entry for the new apply-time and claim
+  errors; and the migration note.
 - `README.md`: check the feature summary for any claim about `podTemplate` being a full PodSpec.
 
-## 11. Out of scope, adjacent findings, open questions
-
-**Adjacent finding (not verified end to end; filed as a TODO item by plan Task 7).**
-`dsl.ValidateContainerReferences` accepts every reserved container name as a `container:` target,
-and that includes `unified-artifact`. The k8s executor has no visible guard against execing a
-`run:` step into the sidecar. If one is missing, `container: unified-artifact` runs job code
-inside the container that holds the S3 credentials, which defeats R6 and R7 from another
-direction. It needs verification and probably a fix in `internal/dsl` (reject the sidecar as a
-step target) plus an agent-side backstop.
+## 11. Out of scope, adjacent observations, open questions
 
 **Adjacent observation.** With `podTemplate.name` set, `BuildPod` ignores `podTemplate.spec`, so
 containers and volumes contributed by `uses:` templates are silently dropped from a named-template
