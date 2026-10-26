@@ -775,6 +775,29 @@ notes](../user-guide/writing-jobs/isolation-and-containers.md#podtemplate-contai
   boolean (`value: 8080`) fails Pod-spec decoding; quote it
   (`value: "8080"`).
 
+### What a job can put in the Pod
+
+Nothing else in a job's `podTemplate` is filtered. An inline `spec` is decoded straight into the
+Pod's `PodSpec`, and an `override` patch merges its `containers` and `volumes` into a named
+template, so every field Kubernetes accepts reaches the API server as written: `serviceAccountName`,
+`hostPath` volumes, `hostNetwork`, `hostPID`, `nodeName`, and a container `securityContext` with
+`privileged: true`. The agent's own Role, which may create Pods in the job namespace, is the only
+check unified-cd applies.
+
+Anyone with the `developer` role can therefore run a Pod with any ServiceAccount in the job
+namespace, and with whatever privileges that namespace admits. The shipped `ci` namespace carries
+no Pod Security labels, so on a cluster with no default admission policy a job can mount the
+node's root filesystem. Until the agent restricts these fields itself (TODO item 36), enforce a
+policy on the job namespace:
+
+- Label it for [Pod Security Admission](https://kubernetes.io/docs/concepts/security/pod-security-admission/),
+  for example `pod-security.kubernetes.io/enforce: baseline` (`restricted` also works for jobs whose
+  containers run as non-root). Either level rejects `privileged`, `hostPath`, `hostNetwork` and
+  `hostPID`.
+- Keep ServiceAccounts with API permissions out of the job namespace, or deny their use with an
+  admission policy (Kyverno, Gatekeeper, or a `ValidatingAdmissionPolicy`). Pod Security does not
+  restrict `serviceAccountName`.
+
 ---
 
 ## Artifacts and Cache
