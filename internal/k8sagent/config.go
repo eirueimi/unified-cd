@@ -1,6 +1,7 @@
 package k8sagent
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"net/url"
@@ -104,6 +105,10 @@ type Config struct {
 	// overrides: AgentPodTemplate.WorkspaceSizeLimit. Env:
 	// UNIFIED_K8S_WORKSPACE_SIZE_LIMIT.
 	WorkspaceSizeLimit string `yaml:"workspaceSizeLimit,omitempty"`
+	// JobPodPolicy lists the Pod fields a job's own podTemplate content may
+	// use beyond the always-allowed set; the zero value allows none of the
+	// gated categories. File-only (no environment variable). See podpolicy.go.
+	JobPodPolicy JobPodPolicy `yaml:"jobPodPolicy,omitempty"`
 }
 
 // AgentPodTemplate is a Pod template defined in the agent configuration file.
@@ -213,7 +218,39 @@ func LoadConfig(configPath string) (Config, error) {
 	if err := rejectRemovedWorkspacePVC(configPath); err != nil {
 		return cfg, err
 	}
+	if err := rejectUnknownJobPodPolicyKeys(configPath); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
+}
+
+// rejectUnknownJobPodPolicyKeys strictly decodes the jobPodPolicy block.
+// loadYAML is lenient, and a misspelled opt-in would otherwise vanish silently.
+func rejectUnknownJobPodPolicyKeys(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	var raw struct {
+		JobPodPolicy yaml.Node `yaml:"jobPodPolicy"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	if raw.JobPodPolicy.Kind == 0 {
+		return nil
+	}
+	block, err := yaml.Marshal(&raw.JobPodPolicy)
+	if err != nil {
+		return fmt.Errorf("%s: jobPodPolicy: %w", path, err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(block))
+	dec.KnownFields(true)
+	var p JobPodPolicy
+	if err := dec.Decode(&p); err != nil {
+		return fmt.Errorf("%s: jobPodPolicy: %w", path, err)
+	}
+	return nil
 }
 
 // rejectRemovedWorkspacePVC fails when an agent podTemplate still carries the
@@ -484,6 +521,9 @@ func (c *Config) Validate() error {
 	// the agent would otherwise advertise a volume it cannot provision.
 	if err := validateVolumeConfigs(c.AgentName, c.Volumes); err != nil {
 		return err
+	}
+	if err := c.JobPodPolicy.validate(c.SidecarS3SecretName, c.AgentName, c.Volumes); err != nil {
+		return fmt.Errorf("jobPodPolicy: %w", err)
 	}
 	return nil
 }

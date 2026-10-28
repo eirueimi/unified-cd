@@ -8,7 +8,9 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 
+	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
@@ -608,4 +610,89 @@ func (c *podPolicyChecker) hostProcess(path, subj string, w *corev1.WindowsSecur
 		return
 	}
 	c.deny(path+".windowsOptions.hostProcess", subj, "hostProcess: true runs the container as a process on the node", "allowPrivileged: true")
+}
+
+// validate applies spec section 4's startup rules.
+func (p *JobPodPolicy) validate(sidecarSecret, agentName string, vols []config.VolumeConfig) error {
+	for _, l := range []struct {
+		key   string
+		names []string
+	}{
+		{"allowServiceAccounts", p.AllowServiceAccounts}, {"allowSecrets", p.AllowSecrets},
+		{"allowImagePullSecrets", p.AllowImagePullSecrets}, {"allowPersistentVolumeClaims", p.AllowPersistentVolumeClaims},
+	} {
+		for _, n := range l.names {
+			if strings.Contains(n, "*") {
+				return fmt.Errorf("%s: %q: wildcards are not supported; list each name", l.key, n)
+			}
+			if errs := validation.IsDNS1123Subdomain(n); len(errs) > 0 {
+				return fmt.Errorf("%s: %q is not a valid Kubernetes object name: %s", l.key, n, strings.Join(errs, "; "))
+			}
+		}
+	}
+	if sidecarSecret != "" && slices.Contains(p.AllowSecrets, sidecarSecret) {
+		return fmt.Errorf("allowSecrets: %q is sidecarS3SecretName, the artifact sidecar's credentials, which job containers must never read", sidecarSecret)
+	}
+	for _, v := range vols {
+		if claim := claimNameFor(agentName, v.Name); slices.Contains(p.AllowPersistentVolumeClaims, claim) {
+			return fmt.Errorf("allowPersistentVolumeClaims: %q is this agent's named volume %q; jobs reach it only through spec.volumes, which holds its lock", claim, v.Name)
+		}
+	}
+	if err := validateEscapeList("allowPodSpecFields", "PodSpec field", p.AllowPodSpecFields, podSpecFieldClass, podSpecCategoryKey); err != nil {
+		return err
+	}
+	return validateEscapeList("allowVolumeTypes", "volume type", p.AllowVolumeTypes, volumeSourceClass, volumeCategoryKey)
+}
+
+func validateEscapeList(key, kind string, names []string, table map[string]fieldClass, categoryKey map[string]string) error {
+	var optIn []string
+	for k, cls := range table {
+		if cls == classOptIn {
+			optIn = append(optIn, k)
+		}
+	}
+	sort.Strings(optIn)
+	for _, n := range names {
+		cls, ok := table[n]
+		switch {
+		case !ok:
+			return fmt.Errorf("%s: %q is not an opt-in %s; valid entries: %s", key, n, kind, strings.Join(optIn, ", "))
+		case cls == classAllowed:
+			return fmt.Errorf("%s: %q is always allowed; remove it", key, n)
+		case cls == classCategory:
+			return fmt.Errorf("%s: %q is governed by jobPodPolicy.%s; use that instead", key, n, categoryKey[n])
+		case cls == classNever:
+			return fmt.Errorf("%s: %q cannot be allowed: it cannot be set when a Pod is created", key, n)
+		}
+	}
+	return nil
+}
+
+// Summary renders the effective opt-ins for the agent's startup log line.
+func (p JobPodPolicy) Summary() string {
+	var parts []string
+	list := func(k string, v []string) {
+		if len(v) > 0 {
+			parts = append(parts, k+"="+strings.Join(v, ","))
+		}
+	}
+	flag := func(k string, on bool) {
+		if on {
+			parts = append(parts, k)
+		}
+	}
+	list("allowServiceAccounts", p.AllowServiceAccounts)
+	list("allowSecrets", p.AllowSecrets)
+	list("allowImagePullSecrets", p.AllowImagePullSecrets)
+	list("allowPersistentVolumeClaims", p.AllowPersistentVolumeClaims)
+	flag("allowHostAccess", p.AllowHostAccess)
+	flag("allowPrivileged", p.AllowPrivileged)
+	flag("allowUnconfinedProfiles", p.AllowUnconfinedProfiles)
+	flag("allowNodeName", p.AllowNodeName)
+	list("allowPodSpecFields", p.AllowPodSpecFields)
+	list("allowVolumeTypes", p.AllowVolumeTypes)
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, " ")
 }
