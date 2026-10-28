@@ -25,6 +25,8 @@ Roles are global (`admin`/`developer`/`viewer`, `docs/operator-manual/authorizat
 | **Any Kubernetes Secret in the job namespace** | `env[].valueFrom.secretKeyRef`, `envFrom[].secretRef`, `secret` volumes, projected `secret` sources |
 | **Another run's exclusive named volume** | a `persistentVolumeClaim` volume naming `<agentName>-<volume>` |
 | **The artifact sidecar's object-store credentials** | a step with `container: unified-artifact` (no `podTemplate` needed at all; §5.8) |
+| **The artifact sidecar's process and filesystem** | a job-chosen `workspace.mountPath` or absolute `spec.volumes` `mountPath` over the sidecar's binary directory (R14); the agent used to exec `unified-sidecar` by bare name |
+| **Where the sidecar's broker and object-store connections go** | Pod-level `hostAliases`, `dnsPolicy`, `dnsConfig`, which every container shares (§5.1) |
 
 The last three need spelling out because none of them needs any cluster misconfiguration:
 
@@ -108,9 +110,9 @@ not checked. Everything a job supplies is checked:
 | `podTemplate.override.containers` / `.volumes` | `applyPatch` | Yes, each patch container and volume |
 | An override container's `volumeMounts` / `volumeDevices` naming a **template** volume | the template volume is mounted into a job container | Yes, the referenced template volume is checked as if the job had declared it (§5.6) |
 | `podTemplate.name` | selects an operator template | No; choosing among the operator's templates is allowed |
-| `podTemplate.workspace.mountPath` | `injectWorkspace` (an `emptyDir`) | No; it is a path for an agent-built `emptyDir`, and Kubernetes rejects a duplicate mount path |
+| `podTemplate.workspace.mountPath` (only when the **job** supplies it) | `injectWorkspace` (an `emptyDir`, mounted into **every** container, the sidecar included) | Yes, by R14: absolute, clean, not `/`, and not equal to, under or above a protected directory. The path is a Pod-wide mount, so it is not just a path for an `emptyDir` |
 | `podTemplate.reuse`, `cleanWorkspace` | pool and wipe behaviour | No; no Pod field |
-| `spec.volumes` (named volumes) | `injectVolumes` (agent-owned PVCs, behind the lock) | No; agent-mediated |
+| `spec.volumes` (named volumes) | `injectVolumes` (agent-owned PVCs, behind the lock) | The volume itself: no, it is agent-mediated. Its absolute `mountPath` (mounted into every container): yes, by R14 |
 | `runsIn.image`, `runsIn.resources.limits` | `buildScopePod` | No; image and limits only |
 | `podTemplate.spec` when `podTemplate.name` is also set | ignored by `BuildPod`'s named branch | No; it never reaches the Pod |
 
@@ -202,6 +204,33 @@ enforced in three layers (§5.8):
 applies to jobs that use a named agent template (`podTemplate.name`), because the target name is
 reserved whatever the template contains.
 
+**R14 — Job-chosen mount paths never land on the sidecar's binaries, libraries, configuration or
+credential mounts.** `injectWorkspace` mounts the workspace `emptyDir` into every container, and
+`injectVolumes` mounts every absolute `spec.volumes` entry into every container, so a path a job
+chooses is also a path inside the credential-holding sidecar. Before this rule a job could set
+`podTemplate.workspace.mountPath: /usr/local/bin` and put a job-writable directory over the
+directory the agent resolved `unified-sidecar` from by bare name. Three changes close it:
+1. The agent starts and execs the sidecar by absolute path, `/usr/local/bin/unified-sidecar`
+   (where `docker/artifact-sidecar.Dockerfile` installs it), never through `PATH`.
+2. The k8s-agent refuses, at claim time and before any Pod, a run whose **job-supplied**
+   `workspace.mountPath`, or any absolute `spec.volumes` `mountPath`, is not absolute, is not
+   clean (`path.Clean` differs), is `/`, or is equal to, under, or an ancestor of a protected
+   directory: `/usr`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`, `/libx32`, `/etc`, `/proc`,
+   `/sys`, `/dev`, `/run`, `/var/run`, `/.ucd`, `/usr/local/bin`, and the sidecar's credential
+   mount directories (`/var/run/secrets/unified-cd-store-credentials`,
+   `/etc/unified-cd/s3-credentials`). A relative `spec.volumes` `mountPath` resolves under the
+   workspace and is covered by the workspace check (one that climbs out of it with `..` is
+   resolved and checked directly). The error is a `k8s: job pod policy:` violation that no
+   `jobPodPolicy` setting allows. A workspace `mountPath` set by an agent template is operator
+   written and not checked.
+3. `apply` rejects the same bad `podTemplate.workspace.mountPath` (`internal/dsl`,
+   `CheckContainerMountPath`). This is consistent with R2: no agent can legitimately use such a
+   path, so no per-agent setting could restore it. Absolute `spec.volumes` paths are checked on
+   the agent only, because the agent holds the credential directory constants.
+
+The protected list lives in one place (`dsl.ProtectedMountDirs`), with a comment saying why: the
+sidecar shares these mounts. The k8s-agent adds its two credential mount constants to it.
+
 ## 4. Configuration
 
 A new top-level block in the k8s agent config, named like the existing camelCase keys
@@ -272,13 +301,13 @@ field the table does not list, or if the table lists a field the struct does not
 
 | Class | Fields | Rule |
 |---|---|---|
-| **Always allowed** (nested content checked where noted) | `containers`*, `initContainers`*, `volumes`*, `securityContext`*, `restartPolicy`, `terminationGracePeriodSeconds`, `activeDeadlineSeconds`, `dnsPolicy`, `dnsConfig`, `nodeSelector`, `affinity`, `tolerations`, `topologySpreadConstraints`, `hostname`, `subdomain`, `setHostnameAsFQDN`, `hostAliases`, `enableServiceLinks`, `os`, `hostUsers`, `resources` | Allowed |
+| **Always allowed** (nested content checked where noted) | `containers`*, `initContainers`*, `volumes`*, `securityContext`*, `restartPolicy`, `terminationGracePeriodSeconds`, `activeDeadlineSeconds`, `nodeSelector`, `affinity`, `tolerations`, `topologySpreadConstraints`, `hostname`, `subdomain`, `setHostnameAsFQDN`, `enableServiceLinks`, `os`, `hostUsers`, `resources` | Allowed |
 | **Category** | `serviceAccountName`, `serviceAccount` (deprecated alias) | value ∈ `allowServiceAccounts` |
 | | `automountServiceAccountToken` | `false` always allowed; `true` requires the effective account ∈ `allowServiceAccounts` |
 | | `nodeName` | `allowNodeName` |
 | | `hostNetwork`, `hostPID`, `hostIPC` | `true` requires `allowHostAccess` (`false` is omitted on re-encode) |
 | | `imagePullSecrets` | each name ∈ `allowImagePullSecrets` |
-| **Opt-in** (`allowPodSpecFields`) | `shareProcessNamespace`, `runtimeClassName`, `priorityClassName`, `priority`, `preemptionPolicy`, `schedulerName`, `readinessGates`, `overhead`, `schedulingGates`, `resourceClaims`, `hostnameOverride`, `schedulingGroup` | denied unless listed |
+| **Opt-in** (`allowPodSpecFields`) | `shareProcessNamespace`, `runtimeClassName`, `priorityClassName`, `priority`, `preemptionPolicy`, `schedulerName`, `readinessGates`, `overhead`, `schedulingGates`, `resourceClaims`, `hostnameOverride`, `schedulingGroup`, `hostAliases`, `dnsPolicy`, `dnsConfig` | denied unless listed |
 | **Never** | `ephemeralContainers` | The API server rejects it on Pod create anyway; denied with "cannot be set when a Pod is created" |
 | **Unclassified** (a field added by a future library bump) | — | denied, "not classified by this agent's job pod policy"; the completeness test catches it before a release |
 
@@ -291,7 +320,13 @@ Reasons for the less obvious ones:
 - `tolerations`, `nodeSelector`, `affinity` are allowed. Dedicated CI node pools need them.
   They choose among the nodes the scheduler offers and override no isolation. Operators who need
   to restrict placement use the `PodNodeSelector` / `PodTolerationRestriction` admission plugins.
-- `hostAliases` only writes the Pod's own `/etc/hosts`, and `hostUsers: false` tightens isolation.
+- `hostAliases`, `dnsPolicy` and `dnsConfig` are opt-in, not allowed. They are Pod-wide, so they
+  apply to the artifact sidecar as well as to job containers. A job that controls name resolution
+  controls where the sidecar's broker and object-store connections go (the shipped install uses a
+  plain-HTTP in-cluster `server` with `sidecarS3SecretMode: broker`, so a redirected broker name
+  receives the sidecar's projected token). An operator who needs them for a job lists them in
+  `allowPodSpecFields`, or puts them in an agent template. `hostUsers: false` tightens isolation
+  and stays allowed.
 - `shareProcessNamespace` is opt-in, not allowed. It lets the job container read
   `/proc/<pid>/environ` and `/proc/<pid>/root` of the sidecar, which defeats the container boundary
   that keeps the sidecar's S3 credentials out of the job (the same property R6 and R7 protect).
@@ -372,7 +407,7 @@ Container-level (`containers[].securityContext`):
 |---|---|---|
 | `runAsUser`, `runAsGroup`, `runAsNonRoot`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation` | allowed (R8) | — |
 | `privileged: true` | denied | `allowPrivileged` |
-| `capabilities.add[]` outside the baseline set (R8), compared upper-cased with any `CAP_` prefix removed | denied | `allowPrivileged` |
+| `capabilities.add[]` outside the baseline set (R8), compared exactly as written (no case folding, no `CAP_` prefix handling), as the Kubernetes API and Pod Security `baseline` do | denied | `allowPrivileged` |
 | `capabilities.drop` | allowed | — |
 | `procMount` set and ≠ `Default` | denied | `allowPrivileged` |
 | `seLinuxOptions`, `windowsOptions.hostProcess` | as pod-level | `allowPrivileged` |
@@ -465,8 +500,9 @@ before any step runs`.
 
 **The host agent.** Its claim pod has no artifact sidecar and no shim container: artifacts and
 cache go through the agent process, and the shim is bind-mounted. On a host agent a step targeting
-either name has always failed at exec with "no such container", so rejecting it at apply time
-breaks nothing that worked. Its `RunNamedContainer` needs no guard. Nothing in `examples/`,
+either name has always failed at exec (`internal/agent/claim_pod.go` `Exec`: `container "unified-artifact"
+is not defined in the job's podTemplate`; a native claim fails with `container: "..." requires an
+isolated job`), so rejecting it at apply time breaks nothing that worked. Its `RunNamedContainer` needs no guard. Nothing in `examples/`,
 `templates/`, `docs/` or `test/edgecase/` targets either name (checked by grep during design).
 The only reliance is `internal/dsl/container_test.go`, which asserts that `unified-artifact` is a
 valid target with no `podTemplate`; that assertion is inverted. The docs that describe reserved
@@ -533,8 +569,9 @@ Unit tests (no cluster), in `internal/k8sagent`:
 7. **R7.** Mounting `sidecar-s3-credentials` / `sidecar-store-credential-token` is denied in an
    inline spec and in an override, and nothing allows it.
 8. **R8 boundaries.** `allowPrivilegeEscalation: true`, `capabilities.add: [NET_BIND_SERVICE]`
-   and `[CAP_CHOWN]`, and `runAsUser: 0` pass. `capabilities.add: [SYS_ADMIN]` and `[cap_net_admin]`
-   are denied.
+   and `[CHOWN]`, and `runAsUser: 0` pass. `capabilities.add: [SYS_ADMIN]`, `[cap_net_admin]`,
+   `[CAP_CHOWN]` and `[chown]` are denied: capability names compare exactly, as the Kubernetes API
+   and the Pod Security baseline compare them.
 9. **Error shape.** Two violations come out in deterministic order, with the prefix, the per-item
    `allow with ...` text and the final pointer. A decode error returns nil.
 10. **Config.** Each validation rule in §4 (good and bad), including R6, the wildcard message and
@@ -545,7 +582,14 @@ Unit tests (no cluster), in `internal/k8sagent`:
     claim with `spec.volumes` takes no lock.
 12. **Manifest.** `namespace.yaml`'s `ci` namespace carries the two labels (a file-read test in the
     style of `credentials_test.go`).
-13. **Reserved step targets (§5.8).**
+13. **Mount paths (R14).** `CheckContainerMountPath` / `CheckJobMountPaths`: each protected
+    directory (equal, under, ancestor), `/`, a relative path and an unclean path are refused for the
+    workspace and for an absolute `spec.volumes` entry; `/workspace` and `/home/runner/work` pass;
+    a `..` volume path is resolved; an agent template's workspace is not checked. `executeRun`
+    fails such a claim before any Pod, even with every opt-in set. Parse rejects a bad
+    `workspace.mountPath`. The sidecar's container command and every exec argv start with
+    `/usr/local/bin/unified-sidecar`.
+14. **Reserved step targets (§5.8).**
     - Parse rejects `container: unified-artifact` / `ucd-shim`, including case and whitespace
       variants, in a step, a parallel sub-step, a finally step, a `uses:` entry, a native job, a
       named-template job and a `kind: JobTemplate` step. `container: job` passes.
@@ -576,14 +620,16 @@ Jobs that **stop working** on upgrade, and the setting that restores each:
 | sets an opt-in PodSpec field (`runtimeClassName`, `priorityClassName`, `shareProcessNamespace`, ...) | `allowPodSpecFields: [<field>]` |
 | uses an opt-in volume type (`ephemeral`, `csi`, `nfs`, ...) | `allowVolumeTypes: [<type>]` |
 | adds an override container that mounts a template volume of one of the above kinds | the matching setting |
+| sets `hostAliases`, `dnsPolicy` or `dnsConfig` | `allowPodSpecFields: [<field>]` (opt-in, see §5.1) |
 | mounts `sidecar-s3-credentials` / `sidecar-store-credential-token` | nothing; remove the mount |
+| sets `workspace.mountPath`, or an absolute `spec.volumes` `mountPath`, on or around a protected directory (R14) | nothing; choose another path |
 
 Independent of `podTemplate`, on every agent type:
 
 | A job that... | Now |
 |---|---|
 | has a step (or parallel / finally / `uses:` entry, or a JobTemplate step) with `container: unified-artifact` or `container: ucd-shim` | `apply` fails with `container "unified-artifact" is reserved for the agent's artifact sidecar ...`. Nothing restores it: use `job` or a declared container. |
-| was stored before the upgrade with such a step | its runs fail. A `uses:` job fails at resolution, with the error in the run's System log. On a k8s agent the run fails at claim with `k8s: step "..." targets container "unified-artifact", which is reserved for the agent`, before a Pod is created. On a host agent it fails at the step, as it always did (no such container). |
+| was stored before the upgrade with such a step | its runs fail. A `uses:` job fails at resolution, with the error in the run's System log. On a k8s agent the run fails at claim with `k8s: step "..." targets container "unified-artifact", which is reserved for the agent`, before a Pod is created. On a host agent it fails at the step, as it always did (`container "unified-artifact" is not defined in the job's podTemplate`). |
 
 Moving the content into an agent template (`podTemplates:`) is always an alternative. Operator
 templates are not filtered.

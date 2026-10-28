@@ -355,7 +355,7 @@ spec:
 |---|---|---|
 | `name` | string | Name of a template defined in the k8s-agent config file |
 | `spec` | map | Inline Kubernetes PodSpec (used when `name` is empty). A Kubernetes agent refuses some fields unless its operator allows them (`k8s: job pod policy: ...`); see [Job Pod field policy](../../operator-manual/kubernetes-integration.md#job-pod-field-policy) |
-| `workspace.mountPath` | string | Path inside the pod where the (ephemeral) workspace is mounted |
+| `workspace.mountPath` | string | Path inside the pod where the (ephemeral) workspace is mounted. Must be absolute and clean, and not `/` or on, inside or above a system directory such as `/usr`, `/etc`, `/proc`, `/var/run` or `/.ucd`; `apply` rejects it otherwise |
 | `reuse` | bool | Return the pod to a pool after the run and reuse it for subsequent runs. This only saves Pod start-up: the workspace of a reused pod is emptied before every run, and the run fails (the pod is deleted) if that is impossible. Not allowed together with `spec.volumes` |
 | `cleanWorkspace` | bool | Empty a [volume](volumes.md) mounted at the workspace root (`mountPath: "."`) before the run. Equivalent to `spec.cleanWorkspace`; the two are ORed. An ordinary workspace is always emptied, so this changes nothing without such a volume |
 | `override.containers` | []map | Additional containers to merge into the pod spec. Subject to the same agent-side [field policy](../../operator-manual/kubernetes-integration.md#job-pod-field-policy) as `spec`, including volumes of the agent template that a patch container mounts |

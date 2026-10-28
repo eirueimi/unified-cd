@@ -42,7 +42,7 @@ spec:
 |---|---|---|---|
 | `name` | string, list of strings, or template | Yes | The volume to mount. A list is a set of *candidates*: the agent picks a free one. A name may contain `{{ .Params.X }}`, expanded when the run is queued. |
 | `as` | string | When `name` is a list or a template | The stable handle steps use to reach the volume. Defaults to the name when it is one literal string. |
-| `mountPath` | string | Yes | Where the volume appears. Relative paths are relative to the workspace and `"."` is the workspace root. An absolute path is a path outside the workspace. |
+| `mountPath` | string | Yes | Where the volume appears. Relative paths are relative to the workspace and `"."` is the workspace root. An absolute path is a path outside the workspace; on a Kubernetes agent it must not be on, inside or above a system directory such as `/usr`, `/etc` or `/usr/local/bin` (the run fails with `k8s: job pod policy: ...`). |
 
 A job can mount several volumes. Two entries must not use the same `mountPath`, and one
 `mountPath` must not sit inside another's (`"."` may be combined with any other entry).

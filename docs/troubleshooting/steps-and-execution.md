@@ -100,7 +100,10 @@ policy](../operator-manual/kubernetes-integration.md#job-pod-field-policy) for t
 
 Read every violation: each gives the field path, what it does and an `allow with` hint. The text
 `(no k8s-agent setting allows this)` means no setting allows it and the field must be removed (for
-example a mount of the sidecar's credential volumes).
+example a mount of the sidecar's credential volumes, or a `podTemplate.workspace.mountPath` /
+absolute `spec.volumes` `mountPath` such as `/usr/local/bin` that is on, inside or above a system
+directory: choose a path like `/workspace`). `hostAliases`, `dnsPolicy` and `dnsConfig` are
+opt-in through `allowPodSpecFields`.
 
 - **Job author:** remove the field from the job. You cannot allow it from the job.
 - **Operator:** either add the named setting to the `jobPodPolicy:` block of the k8s-agent config

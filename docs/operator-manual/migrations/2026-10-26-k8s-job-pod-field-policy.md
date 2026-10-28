@@ -35,10 +35,11 @@ volume that an override container mounts.
 | uses `privileged`, a capability outside the `baseline` set, `procMount`, non-baseline SELinux options, an unsafe sysctl, or `hostProcess` | `allowPrivileged: true` |
 | uses `Unconfined` seccomp or AppArmor | `allowUnconfinedProfiles: true` |
 | sets `nodeName` | `allowNodeName: true` |
-| sets an opt-in PodSpec field (`runtimeClassName`, `priorityClassName`, `shareProcessNamespace`, ...) | `allowPodSpecFields: [<field>]` |
+| sets an opt-in PodSpec field (`runtimeClassName`, `priorityClassName`, `shareProcessNamespace`, `hostAliases`, `dnsPolicy`, `dnsConfig`, ...) | `allowPodSpecFields: [<field>]` |
 | uses an opt-in volume type (`ephemeral`, `csi`, `nfs`, ...) | `allowVolumeTypes: [<type>]` |
 | adds an override container that mounts an agent-template volume of one of the above kinds | the matching setting |
 | mounts `sidecar-s3-credentials` / `sidecar-store-credential-token` | nothing; remove the mount |
+| sets `workspace.mountPath`, or an absolute `spec.volumes` `mountPath`, that is relative, unclean, `/`, or on, inside or above `/usr`, `/bin`, `/sbin`, `/lib*`, `/etc`, `/proc`, `/sys`, `/dev`, `/run`, `/var/run`, `/.ucd`, `/usr/local/bin` or a sidecar credential mount | nothing; choose another path (`apply` also rejects the workspace case) |
 
 Moving the content into an agent template is always an alternative to opting in.
 
@@ -100,8 +101,39 @@ Run this over your stored job definitions before upgrading. It over-matches on p
 `secretKeyRef` in a template you wrote yourself is fine); read each hit:
 
 ```
-grep -rnE "container: *[\"']?(unified-artifact|ucd-shim)|serviceAccount|automountServiceAccountToken|hostPath|hostNetwork|hostPID|hostIPC|hostPort|privileged|capabilities|procMount|Unconfined|sysctls|seLinuxOptions|nodeName|secretKeyRef|secretRef|secretName|imagePullSecrets|persistentVolumeClaim|runtimeClassName|priorityClassName|shareProcessNamespace|ephemeral|csi:|nfs:" <your job definitions>
+grep -rnE "container: *[\"']?(unified-artifact|ucd-shim)|hostAliases|dnsPolicy|dnsConfig|serviceAccount|automountServiceAccountToken|hostPath|hostNetwork|hostPID|hostIPC|hostPort|privileged|capabilities|procMount|Unconfined|sysctls|seLinuxOptions|nodeName|secretKeyRef|secretRef|secretName|imagePullSecrets|persistentVolumeClaim|runtimeClassName|priorityClassName|shareProcessNamespace|ephemeral|csi:|nfs:" <your job definitions>
 ```
+
+### `hostAliases`, `dnsPolicy` and `dnsConfig` now need an opt-in
+
+These are not filtered by the policy's always-allowed class any more. They are
+Pod-wide, so they apply to the artifact sidecar too: a job that sets them controls where the
+sidecar's connections to the store-credentials broker and the object store go, which would hand it
+the sidecar's token or credentials. A job that sets any of them now fails with
+`podTemplate.spec.hostAliases: ... (allow with jobPodPolicy.allowPodSpecFields: [hostAliases] in the k8s-agent config)`.
+To restore the old behaviour for jobs you trust, list the fields:
+
+```yaml
+jobPodPolicy:
+  allowPodSpecFields: [hostAliases, dnsPolicy, dnsConfig]
+```
+
+Or move the setting into an agent template, which is not filtered. The shipped install reaches the
+controller over plain HTTP (`manifests/install/agent-config-patch.yaml`); serve the broker over
+TLS if the job namespace is not fully trusted.
+
+### Mount paths over system directories are refused
+
+A job-chosen `podTemplate.workspace.mountPath` and every absolute `spec.volumes[].mountPath` is
+mounted into every container, the artifact sidecar included. The agent therefore refuses, with no
+setting to allow it, a path that is relative, unclean, `/`, or on, inside or above one of `/usr`,
+`/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`, `/libx32`, `/etc`, `/proc`, `/sys`, `/dev`, `/run`,
+`/var/run`, `/.ucd`, `/usr/local/bin` or the sidecar's credential mounts. The error is
+`k8s: job pod policy: ... podTemplate.workspace.mountPath: mountPath "/usr/local/bin" is inside the protected container directory "/usr" (no k8s-agent setting allows this)`.
+`apply` rejects the workspace case up front (`spec.podTemplate.workspace: mountPath "..." ...`). Any
+path outside those directories, such as `/workspace` or `/home/runner/work`, is unaffected. The
+agent now also starts and execs the sidecar as `/usr/local/bin/unified-sidecar`, so run the sidecar
+image from the same release as the agent (the shipped image installs the binary there).
 
 ## The `ci` namespace now enforces Pod Security `baseline`
 
@@ -155,21 +187,25 @@ kubectl -n ci delete pods -l app=unified-cd-agent
 
 Only `job` among the reserved container names is a valid step `container:` target.
 `unified-artifact` holds the object-store credentials, and `ucd-shim` is an init container that
-has exited before any step runs. This applies to **every** agent type (the host agent never had
-either container, so such a step always failed there at exec with "no such container").
+has exited before any step runs. This applies to **every** agent type (the host agent's claim pod has no
+such container, so such a step always failed there at exec with `container "unified-artifact" is
+not defined in the job's podTemplate`).
 
 | A job that... | Now |
 |---|---|
 | has a step, a `finally:` step, a `parallel:` sub-step, a `uses:` entry, or a `kind: JobTemplate` step with `container: unified-artifact` or `container: ucd-shim` (case and surrounding whitespace do not matter) | `apply` fails: `spec.steps[0] (upload): container "unified-artifact" is reserved for the agent's artifact sidecar, which holds the object-store credentials; steps cannot run in it. Use the primary container "job" or a container declared in podTemplate`. For `ucd-shim` the reason reads `is the agent's ucd-sh installer init container, which has exited before any step runs`. Nothing restores it: use `job` or a declared container. |
 | gets such a step from a `uses:` template at trigger time | The controller fails the run when it resolves the template, with the same message in the run's System log. |
-| was stored before the upgrade with such a step | A k8s-agent fails the claim before creating a Pod: `k8s: step "upload" targets container "unified-artifact", which is reserved for the agent (the artifact sidecar holds the object-store credentials; ucd-shim has exited before steps run); no step may run in it. Re-apply the job with container: "job" or a podTemplate container`. A host agent fails the step at exec, as it always did. |
+| was stored before the upgrade with such a step | A k8s-agent fails the claim before creating a Pod: `k8s: step "upload" targets container "unified-artifact", which is reserved for the agent (the artifact sidecar holds the object-store credentials; ucd-shim has exited before steps run); no step may run in it. Re-apply the job with container: "job" or a podTemplate container`. A host agent fails the step at exec, as it always did (`container "unified-artifact" is not defined in the job's podTemplate`). |
 
 The k8s-agent also refuses the exec itself as a last check, so no path that skips validation can
 reach the sidecar. Re-apply any stored job that still has such a step with `container: job` (or a
 declared container). `post:` hooks have no `container:` of their own; they run in the owning
 step's container.
 
-The sidecar is also kept out of reach of Pod-level settings: no job container can mount its
-credential volumes, `allowSecrets` cannot name `sidecarS3SecretName`, and the one remaining way to
-read the sidecar from a job container is `allowPodSpecFields: [shareProcessNamespace]`, which you
-should not set on an agent that runs untrusted jobs.
+The sidecar is also kept out of reach of job-supplied Pod settings: no job container can mount its
+credential volumes, `allowSecrets` cannot name `sidecarS3SecretName`, no job-chosen mount path may
+cover its binaries or credential mounts, and name resolution (`hostAliases`, `dnsPolicy`,
+`dnsConfig`) is opt-in. The remaining ways to reach the sidecar from a job are opt-ins:
+`allowPodSpecFields: [shareProcessNamespace]` lets a job container read the sidecar's `/proc`, and
+`[hostAliases, dnsPolicy, dnsConfig]` let it redirect the sidecar's connections. Do not set them on
+an agent that runs untrusted jobs.
