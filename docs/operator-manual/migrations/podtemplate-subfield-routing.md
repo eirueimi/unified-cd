@@ -69,7 +69,9 @@ looking for after other text on the same line, which an anchored pattern
 misses outright. This project's own docs use exactly that flow style (see
 `valueFrom: { secretKeyRef: ... }` in the [HA
 guide](../high-availability.md)), so treat it as something your job authors
-plausibly do too. The unanchored pattern does not pick up `storageRequest:`
+plausibly do too. (On a Kubernetes agent, a job-supplied `valueFrom: secretKeyRef` now also
+requires `jobPodPolicy.allowSecrets` naming that Secret; see the [job Pod field policy
+migration](2026-10-26-k8s-job-pod-field-policy.md).) The unanchored pattern does not pick up `storageRequest:`
 (`storageRequest:` is a different key, and the substring
 doesn't match — `requests:` needs the trailing `s`), so it stays clean
 against this repo's own `examples/` and `docs/`.

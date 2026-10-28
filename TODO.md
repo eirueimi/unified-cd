@@ -19,13 +19,6 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** `internal/controller/appsource_reconciler.go` redacts credentials in reconciliation errors, but `internal/dsl/gitref.go` `ValidateGitRepoURL` accepts URL userinfo, `internal/controller/api_appsources.go` returns `spec.repoURL`, and `web/src/routes/AppSourceList.svelte` renders the returned URL.
 - **Done when:** New AppSource apply rejects or removes URL userinfo, list, get, UI, and export output never expose credentials, already-persisted credential-bearing URLs are migrated or safely redacted, `GitCredential` authentication still works, and regression coverage exercises every input and output path.
 
-### 36. Restrict the Pod fields a job's podTemplate may set on the Kubernetes agent
-
-- **Status:** Open
-- **Impact:** Any caller with the `developer` role can run a job Pod with any ServiceAccount in the job namespace, and, where the namespace admits it, with `privileged`, `hostPath`, `hostNetwork` or `hostPID`, which can reach the node and the credentials on it.
-- **Evidence:** `internal/k8sagent/podbuilder.go` `BuildPod` decodes an inline `podTemplate.spec` through `podSpecFromMap` into a full `corev1.PodSpec`, and `applyPatch` merges `override` containers and volumes, with no field filtering; neither the controller nor `internal/dsl` validates these fields; `manifests/base/namespace/namespace.yaml` gives the `ci` namespace no Pod Security labels. `docs/operator-manual/kubernetes-integration.md` "What a job can put in the Pod" documents the interim namespace policy.
-- **Done when:** The k8s agent rejects, with an error naming the field, a job Pod that sets `serviceAccountName`, `automountServiceAccountToken: true`, `hostPath` volumes, `hostNetwork`, `hostPID`, `hostIPC`, `nodeName` or a privileged or capability-adding container, unless the agent config explicitly allows that field (agent-side templates stay trusted); the shipped job namespace enforces at least Pod Security `baseline`; unit tests cover inline specs and override patches for each field; and the documentation states the allowlist and the upgrade impact.
-
 ## High
 
 ### 9c. Eliminate Windows cancellation escape paths for child processes

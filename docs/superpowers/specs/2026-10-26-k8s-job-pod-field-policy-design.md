@@ -278,9 +278,13 @@ field the table does not list, or if the table lists a field the struct does not
 | | `nodeName` | `allowNodeName` |
 | | `hostNetwork`, `hostPID`, `hostIPC` | `true` requires `allowHostAccess` (`false` is omitted on re-encode) |
 | | `imagePullSecrets` | each name ∈ `allowImagePullSecrets` |
-| **Opt-in** (`allowPodSpecFields`) | `shareProcessNamespace`, `runtimeClassName`, `priorityClassName`, `priority`, `preemptionPolicy`, `schedulerName`, `readinessGates`, `overhead`, `schedulingGates`, `resourceClaims`, `hostnameOverride`, `workloadRef`, `schedulingGroup` | denied unless listed |
+| **Opt-in** (`allowPodSpecFields`) | `shareProcessNamespace`, `runtimeClassName`, `priorityClassName`, `priority`, `preemptionPolicy`, `schedulerName`, `readinessGates`, `overhead`, `schedulingGates`, `resourceClaims`, `hostnameOverride`, `schedulingGroup` | denied unless listed |
 | **Never** | `ephemeralContainers` | The API server rejects it on Pod create anyway; denied with "cannot be set when a Pod is created" |
 | **Unclassified** (a field added by a future library bump) | — | denied, "not classified by this agent's job pod policy"; the completeness test catches it before a release |
+
+A field that the vendored library no longer carries is not in the table. For example
+`workloadRef` is tombstoned in `k8s.io/api` v0.36.1 (it is commented out of `PodSpec`), so it has no
+row, and the completeness test would reject one.
 
 Reasons for the less obvious ones:
 

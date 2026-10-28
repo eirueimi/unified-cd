@@ -481,6 +481,23 @@ volumes:
     size: 20Gi               # required on Kubernetes
     # storageClassName: gp3  # omit to use the cluster default
 
+# What a job's OWN podTemplate content (an inline spec, an override patch) may put in the Pod.
+# File-only (no environment variables). An absent block is the most restrictive policy: a job that
+# names a ServiceAccount, hostPath, a Secret, a PVC, privileged: true, nodeName, ... is failed at claim
+# time with "k8s: job pod policy: ...". Agent templates below are NOT checked. Names are listed one by
+# one (no wildcards). See operator-manual/kubernetes-integration.md, "Job Pod field policy".
+# jobPodPolicy:
+#   allowServiceAccounts: []        # e.g. [deployer]
+#   allowSecrets: []                # e.g. [db-password]; may not name sidecarS3SecretName
+#   allowImagePullSecrets: []
+#   allowPersistentVolumeClaims: [] # may not name <agentName>-<volume>
+#   allowHostAccess: false          # hostPath, hostNetwork/hostPID/hostIPC, hostPort, probe hosts
+#   allowPrivileged: false          # privileged, extra capabilities, procMount, sysctls, ...
+#   allowUnconfinedProfiles: false  # seccomp / AppArmor Unconfined (rootless BuildKit)
+#   allowNodeName: false
+#   allowPodSpecFields: []          # e.g. [runtimeClassName, priorityClassName, shareProcessNamespace]
+#   allowVolumeTypes: []            # e.g. [nfs, csi, ephemeral]
+
 # Named pod templates referenced in Job YAML via podTemplate.name
 podTemplates:
 
@@ -540,6 +557,7 @@ podTemplates:
 | `minFreeDisk` | string or int | No | `1%` | Minimum free space on each agent-owned volume's filesystem before the agent stops claiming runs that mount it: `"1%"`, `"10Gi"` / `"10GiB"`, a bare byte count, or `0` / `"off"` to disable. A volume is measured only by runs that mount it, so a reading older than 10 minutes no longer gates, so runs that mount the volume are let through until one of them measures it again (a run that starts while the volume is still low logs a warning in its run log, and the gate re-arms from that pre-run measurement); restarting the agent clears the readings, and each replica keeps its own. A malformed value fails startup. Env override: `UNIFIED_K8S_MIN_FREE_DISK`. See [Kubernetes Integration: Disk limits and headroom](../operator-manual/kubernetes-integration.md#disk-limits-and-headroom). The k8s-agent config loader ignores unknown keys, so a misspelled `minFreeDisk` silently leaves the default in place. |
 | `workspaceSizeLimit` | string | No | unset | Kubernetes quantity (e.g. `10Gi`). When set, the agent sets `sizeLimit` on the workspace `emptyDir` and an `ephemeral-storage` **request** (no limit) on the `job` container, so the scheduler reserves the space and the kubelet evicts a run that exceeds it instead of letting it fill the node. Applied only when the workspace is an `emptyDir` and nothing in the pod template already sets `ephemeral-storage`. Scope pods get the global value. Overridable per template with `podTemplates.<name>.workspaceSizeLimit`. Env override: `UNIFIED_K8S_WORKSPACE_SIZE_LIMIT`. Unset by default because a limit that is too small kills legitimate runs; the agent logs an INFO at startup while it is unset. |
 | `podTemplates` | map | No | — | Named Pod templates referenced from Job YAML via `podTemplate.name` (see below) |
+| `jobPodPolicy` | map | No | absent = most restrictive | Which Pod fields a **job's own** `podTemplate` content (an inline `spec`, an `override` patch) may use on this agent. Keys: `allowServiceAccounts`, `allowSecrets`, `allowImagePullSecrets`, `allowPersistentVolumeClaims` (lists of object names, no wildcards), `allowHostAccess`, `allowPrivileged`, `allowUnconfinedProfiles`, `allowNodeName` (booleans), `allowPodSpecFields`, `allowVolumeTypes` (lists of opt-in field/type names). **File-only: there are no environment variables.** An absent block denies every category. The agent refuses to start on an unknown key under `jobPodPolicy`, a name that is not a valid object name (or contains `*`), `allowSecrets` naming `sidecarS3SecretName`, `allowPersistentVolumeClaims` naming one of the agent's `<agentName>-<volume>` claims, or an `allowPodSpecFields` / `allowVolumeTypes` entry that is always allowed, belongs to a category, or is not a known opt-in. A refused run fails with `k8s: job pod policy: ...`. See [Job Pod field policy](../operator-manual/kubernetes-integration.md#job-pod-field-policy) |
 | `agentName` | string | Yes, when `volumes` is set | — | Stable name that prefixes this agent's volume PVCs (`<agentName>-<volume>`). A DNS label (lower-case letters, digits, `-`). **Do not change it while the volumes hold data**: a new name provisions new, empty PVCs and leaves the old ones behind. It is not the agent ID, which the controller assigns per Pod (`k8s:<cluster>:<namespace>:<pod UID>`) and so changes on every restart. Replicas that share one config share one set of PVCs. |
 | `volumes` | list | No | — | Agent-owned named volumes jobs mount with `spec.volumes`. Each entry: `name` (a DNS label), `mode` (`exclusive` requests a `ReadWriteOnce` PVC; `shared` requests `ReadWriteMany`, which only works if the StorageClass supports it), `size` (**required**, e.g. `200Gi`) and optional `storageClassName` (unset means the cluster default). `path` is for host agents and is ignored here. A PVC is created at startup if it does not exist and is never resized or deleted by the agent; a volume removed from this list stops being advertised and its PVC is left in place (logged as an orphan). A `shared` volume cannot be mounted at the workspace root. An `exclusive` volume is held by one run at a time across all replicas: the run writes its ID to the PVC's `unified-cd/volume-held-by` annotation before its Pod is created and clears it when the Pod has been deleted (a lock whose run has no live Pod is taken over after two minutes). A run waiting for a held volume fails with `the agent is draining` if the agent starts draining. |
 
@@ -556,6 +574,8 @@ The default agent Deployment projects a ServiceAccount token with audience `unif
 | `workspace.mountPath` | string | Mount path inside the pod (default: `/workspace`) |
 | `workspaceSizeLimit` | string | Kubernetes quantity capping this template's workspace `emptyDir`; overrides the global `workspaceSizeLimit` (see [K8s Agent config fields](#k8s-agent-config-fields)) |
 | `spec` | map | Kubernetes PodSpec (containers, volumes, etc.) |
+
+Agent templates are operator-written and trusted: the agent does not filter them. The content a **job** supplies in its own `podTemplate` (an inline `spec`, an `override` patch) is filtered by [`jobPodPolicy`](#k8s-agent-config-fields). The shipped `ci` namespace also enforces Pod Security `baseline`, which applies to template Pods too.
 
 The workspace is always an `emptyDir`: empty when the run starts, discarded with the Pod. The
 former `pvc` block under `workspace` (a persistent claim, or a per-Pod ephemeral one) has

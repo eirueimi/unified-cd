@@ -39,9 +39,11 @@ inlined exactly like one in `steps:`.
 
 An inlined step's `container:` (whether declared on the template's own step,
 or inherited from the outer `uses` step) must resolve to a real target — the
-primary container, a reserved name, or a container present in the merged
+primary container (`job`) or a container present in the merged
 `podTemplate` — or run creation fails immediately with an error naming the
 step and the container, instead of the step failing opaquely at exec time.
+The artifact sidecar (`unified-artifact`) and the shim init container
+(`ucd-shim`) are never valid targets.
 
 > **A `uses:`-free job's `container:` references are now validated at
 > `apply` time, not just at run creation/exec.** Applying a plain job (no
