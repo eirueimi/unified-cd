@@ -220,6 +220,13 @@ func cleanVolumeMountPath(p string, v VolumeMount, workspaceRoot string) (string
 	if len(mp) >= 2 && mp[1] == ':' && (mp[0] >= 'a' && mp[0] <= 'z' || mp[0] >= 'A' && mp[0] <= 'Z') {
 		return "", fmt.Errorf("%s: mountPath %q starts with a Windows drive letter; mountPath must be a POSIX path (relative to the workspace, or absolute and starting with \"/\")", p, mp)
 	}
+	// A backslash is not a separator in a POSIX path, but the Kubernetes agent
+	// turns it into one when it mounts the volume. Refusing it here keeps the
+	// path the job wrote and the path that is mounted the same string, so no
+	// check of the one can be dodged through the other.
+	if strings.Contains(mp, `\`) {
+		return "", fmt.Errorf("%s: mountPath %q contains a backslash; mountPath must be a POSIX path (relative to the workspace, or absolute and starting with \"/\")", p, mp)
+	}
 	c := path.Clean(mp)
 	if path.IsAbs(c) {
 		if isPathAncestor(path.Clean(workspaceRoot), c) || c == path.Clean(workspaceRoot) {

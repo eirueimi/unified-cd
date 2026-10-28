@@ -26,7 +26,8 @@ Roles are global (`admin`/`developer`/`viewer`, `docs/operator-manual/authorizat
 | **Another run's exclusive named volume** | a `persistentVolumeClaim` volume naming `<agentName>-<volume>` |
 | **The artifact sidecar's object-store credentials** | a step with `container: unified-artifact` (no `podTemplate` needed at all; §5.8) |
 | **The artifact sidecar's process and filesystem** | a job-chosen `workspace.mountPath` or absolute `spec.volumes` `mountPath` over the sidecar's binary directory (R14); the agent used to exec `unified-sidecar` by bare name |
-| **Where the sidecar's broker and object-store connections go** | Pod-level `hostAliases`, `dnsPolicy`, `dnsConfig`, which every container shares (§5.1) |
+| **Where the sidecar's broker and object-store connections go** | Pod-level `hostAliases`, `dnsPolicy`, `dnsConfig`, which every container shares (§5.1). Making them opt-in stops only the PodSpec fields; see the note on the shared network namespace after R14 |
+| **The sidecar's own credential files and system files, through symlinks** | a symlink in the workspace to `/etc/unified-cd` (upload reads the credential) or to the sidecar's trust store (download or restore overwrites it); closed by R15 |
 
 The last three need spelling out because none of them needs any cluster misconfiguration:
 
@@ -110,9 +111,10 @@ not checked. Everything a job supplies is checked:
 | `podTemplate.override.containers` / `.volumes` | `applyPatch` | Yes, each patch container and volume |
 | An override container's `volumeMounts` / `volumeDevices` naming a **template** volume | the template volume is mounted into a job container | Yes, the referenced template volume is checked as if the job had declared it (§5.6) |
 | `podTemplate.name` | selects an operator template | No; choosing among the operator's templates is allowed |
-| `podTemplate.workspace.mountPath` (only when the **job** supplies it) | `injectWorkspace` (an `emptyDir`, mounted into **every** container, the sidecar included) | Yes, by R14: absolute, clean, not `/`, and not equal to, under or above a protected directory. The path is a Pod-wide mount, so it is not just a path for an `emptyDir` |
+| `podTemplate.workspace.mountPath` (only when the **job** supplies it) | `injectWorkspace` (an `emptyDir`, mounted into **every** container, the sidecar included) | Yes, by R14: absolute, clean, no backslash, not `/`, and not equal to, under or above a protected directory. The path is a Pod-wide mount, so it is not just a path for an `emptyDir` |
 | `podTemplate.reuse`, `cleanWorkspace` | pool and wipe behaviour | No; no Pod field |
-| `spec.volumes` (named volumes) | `injectVolumes` (agent-owned PVCs, behind the lock) | The volume itself: no, it is agent-mediated. Its absolute `mountPath` (mounted into every container): yes, by R14 |
+| `spec.volumes` (named volumes) | `injectVolumes` (agent-owned PVCs, behind the lock) | The volume itself: no, it is agent-mediated. Its `mountPath` (mounted into every container): yes, by R14, on the path as the agent will mount it (backslashes as separators, cleaned, relative paths joined under the workspace) |
+| Workspace paths of `uploadArtifact` / `downloadArtifact` / `cache` steps, and the symlinks in the workspace they pass through | R15: the sidecar confines every file operation to the workspace root |
 | `runsIn.image`, `runsIn.resources.limits` | `buildScopePod` | No; image and limits only |
 | `podTemplate.spec` when `podTemplate.name` is also set | ignored by `BuildPod`'s named branch | No; it never reaches the Pod |
 
@@ -213,23 +215,69 @@ directory the agent resolved `unified-sidecar` from by bare name. Three changes 
 1. The agent starts and execs the sidecar by absolute path, `/usr/local/bin/unified-sidecar`
    (where `docker/artifact-sidecar.Dockerfile` installs it), never through `PATH`.
 2. The k8s-agent refuses, at claim time and before any Pod, a run whose **job-supplied**
-   `workspace.mountPath`, or any absolute `spec.volumes` `mountPath`, is not absolute, is not
-   clean (`path.Clean` differs), is `/`, or is equal to, under, or an ancestor of a protected
+   `workspace.mountPath`, or any `spec.volumes` `mountPath` once resolved the way the mount
+   resolves it, is not absolute, is not
+   clean (`path.Clean` differs), contains a backslash, is `/`, or is equal to, under, or an ancestor of a protected
    directory: `/usr`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`, `/libx32`, `/etc`, `/proc`,
    `/sys`, `/dev`, `/run`, `/var/run`, `/.ucd`, `/usr/local/bin`, and the sidecar's credential
    mount directories (`/var/run/secrets/unified-cd-store-credentials`,
-   `/etc/unified-cd/s3-credentials`). A relative `spec.volumes` `mountPath` resolves under the
-   workspace and is covered by the workspace check (one that climbs out of it with `..` is
-   resolved and checked directly). The error is a `k8s: job pod policy:` violation that no
+   `/etc/unified-cd/s3-credentials`). A `spec.volumes` `mountPath` is first normalised by the same
+   helper the mount code uses (`normalizeVolumeMountPath`: `\` becomes `/`, then `path.Clean`; then
+   `volumeContainerPath` joins a relative path under the workspace mount), and the RESULT is
+   checked. Checking the string as written was bypassable: `\usr\local\bin` and `/usr\local\bin`
+   looked harmless and were mounted at `/usr/local/bin`. A relative path that stays under the
+   workspace is covered by the workspace check; one that climbs out of it with `..` is checked
+   directly. The error is a `k8s: job pod policy:` violation that no
    `jobPodPolicy` setting allows. A workspace `mountPath` set by an agent template is operator
    written and not checked.
 3. `apply` rejects the same bad `podTemplate.workspace.mountPath` (`internal/dsl`,
-   `CheckContainerMountPath`). This is consistent with R2: no agent can legitimately use such a
-   path, so no per-agent setting could restore it. Absolute `spec.volumes` paths are checked on
-   the agent only, because the agent holds the credential directory constants.
+   `CheckContainerMountPath`), and rejects any backslash in a `spec.volumes` `mountPath`
+   (`cleanVolumeMountPath`, "mountPath must be a POSIX path") and in the workspace `mountPath`.
+   This is consistent with R2: no agent can legitimately use such a path, so no per-agent setting
+   could restore it, and a mountPath is a POSIX path on every agent. Absolute `spec.volumes` paths
+   are checked against the protected list on the agent only, because the agent holds the
+   credential directory constants; the agent check also covers stored jobs that predate the
+   backslash rule.
 
 The protected list lives in one place (`dsl.ProtectedMountDirs`), with a comment saying why: the
 sidecar shares these mounts. The k8s-agent adds its two credential mount constants to it.
+
+**What the opt-in does not close.** R14 and the opt-in for `hostAliases` / `dnsPolicy` /
+`dnsConfig` (§5.1) keep a job from choosing the sidecar's mounts and from setting Pod-wide name
+resolution through the PodSpec. They do not isolate the Pod's network path: every container shares
+one network namespace and the kubelet's single writable `/etc/hosts`, so a job container running as
+root (the `baseline` profile allows root) can edit the Pod's `/etc/hosts`, can listen on
+`127.0.0.1` on the broker or object-store client's port, and, with `NET_RAW` (kept by `baseline`),
+can sniff the plain-HTTP broker request. The mitigations are TLS for the controller / broker URL
+(`https://`, with certificate verification), and running job containers non-root with
+`readOnlyRootFilesystem: true` and `NET_RAW` dropped in the operator's templates. Neither is
+enforced by this feature; the operator documentation recommends both and says plainly that the
+opt-in is not a substitute.
+
+**R15 — The sidecar confines every file operation to the workspace root.** The agent's path guard
+(`ContainWithinSlash`) is lexical, and the job controls symlinks inside the workspace. The sidecar
+resolved `--path` / `--dest` in its own filesystem, so `ln -s /etc/unified-cd l` plus an
+`uploadArtifact` of `l/s3-credentials` archived the credential (the sidecar runs as root, so file
+mode does not help), and a download or cache restore into `l/...` wrote through the link into the
+sidecar's own filesystem (for example its CA bundle). Fix:
+1. The agent passes `--root <workspace mount>` on all four sidecar argv sites (`cache restore`,
+   `cache save`, `artifact upload`, `artifact download`; the scope pod's root is its fixed
+   `/workspace`). Every path the agent resolves is under this root already (`ContainWithinSlash`),
+   and a named volume mounted below the workspace is under it too.
+2. The sidecar requires `--root` (exit 2 without it) and performs every read, write and directory
+   creation through an `os.Root` opened on it (`internal/artifact/rooted.go`: `WriteTarZstdIn`,
+   `ExtractTarZstdIn`, `UploadIn`, `DownloadIn`; `internal/cache`: `SaveIn`, `RestoreIn`). A path
+   outside the root, and any symlink or `..` met at any component that leads outside it, fails.
+   A symlink that stays inside the root keeps working as a path component. A symlink met while
+   archiving a directory is written as a link entry (header only, never followed) and its target
+   is not read; extraction still refuses link entries in artifacts (and skips them in caches),
+   as before. The unconfined helpers remain for the host agent, the CLI and the controller, which
+   do not hold the sidecar's credentials.
+3. The sidecar runs no `statfs` or directory listing of its own: volume measurement runs
+   `ucd-sh statfs` in the first step container, so there is nothing further to confine.
+4. The sidecar and the agent are upgraded together (the flag is new and required).
+Running the sidecar non-root with `readOnlyRootFilesystem` would narrow the same class further; it
+is recommended but not enforced.
 
 ## 4. Configuration
 
@@ -324,8 +372,9 @@ Reasons for the less obvious ones:
   apply to the artifact sidecar as well as to job containers. A job that controls name resolution
   controls where the sidecar's broker and object-store connections go (the shipped install uses a
   plain-HTTP in-cluster `server` with `sidecarS3SecretMode: broker`, so a redirected broker name
-  receives the sidecar's projected token). An operator who needs them for a job lists them in
-  `allowPodSpecFields`, or puts them in an agent template. `hostUsers: false` tightens isolation
+  receives the sidecar's projected token). The opt-in closes only the PodSpec fields, not the
+  network path (see "What the opt-in does not close" after R14). An operator who needs them for a
+  job lists them in `allowPodSpecFields`, or puts them in an agent template. `hostUsers: false` tightens isolation
   and stays allowed.
 - `shareProcessNamespace` is opt-in, not allowed. It lets the job container read
   `/proc/<pid>/environ` and `/proc/<pid>/root` of the sidecar, which defeats the container boundary
@@ -584,7 +633,9 @@ Unit tests (no cluster), in `internal/k8sagent`:
     style of `credentials_test.go`).
 13. **Mount paths (R14).** `CheckContainerMountPath` / `CheckJobMountPaths`: each protected
     directory (equal, under, ancestor), `/`, a relative path and an unclean path are refused for the
-    workspace and for an absolute `spec.volumes` entry; `/workspace` and `/home/runner/work` pass;
+    workspace and for an absolute `spec.volumes` entry; backslash spellings (`\usr\local\bin`,
+    `/usr\local\bin`, `usr\..\..\usr\local\bin`) are refused at `apply` and, for a stored job
+    that bypassed it, by the agent; a test pins that the checked path equals the mounted path; `/workspace` and `/home/runner/work` pass;
     a `..` volume path is resolved; an agent template's workspace is not checked. `executeRun`
     fails such a claim before any Pod, even with every opt-in set. Parse rejects a bad
     `workspace.mountPath`. The sidecar's container command and every exec argv start with
@@ -622,7 +673,8 @@ Jobs that **stop working** on upgrade, and the setting that restores each:
 | adds an override container that mounts a template volume of one of the above kinds | the matching setting |
 | sets `hostAliases`, `dnsPolicy` or `dnsConfig` | `allowPodSpecFields: [<field>]` (opt-in, see §5.1) |
 | mounts `sidecar-s3-credentials` / `sidecar-store-credential-token` | nothing; remove the mount |
-| sets `workspace.mountPath`, or an absolute `spec.volumes` `mountPath`, on or around a protected directory (R14) | nothing; choose another path |
+| sets `workspace.mountPath`, or an absolute `spec.volumes` `mountPath`, on or around a protected directory (R14), or any `mountPath` that contains a backslash | nothing; choose another path, written with `/` |
+| uploads, downloads or caches through a symlink that points outside the workspace (R15) | nothing; the sidecar never follows it |
 
 Independent of `podTemplate`, on every agent type:
 

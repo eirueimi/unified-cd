@@ -78,12 +78,27 @@ func Save(ctx context.Context, store objectstore.ObjectStore, jobName, path, key
 // SaveExcluding is Save that leaves the paths in exclude out of the archive
 // (see artifact.WriteTarZstdExcluding).
 func SaveExcluding(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, ttlDays int, exclude []string) error {
+	return save(ctx, store, jobName, key, ttlDays, func() io.ReadCloser {
+		return artifact.StreamTarZstdExcluding(path, exclude)
+	})
+}
+
+// SaveIn is SaveExcluding confined to root: path must lie at or below root and
+// nothing outside root is read, whatever symlinks the tree holds (see
+// artifact.WriteTarZstdIn). It is what the k8s sidecar runs.
+func SaveIn(ctx context.Context, store objectstore.ObjectStore, jobName, root, path, key string, ttlDays int, exclude []string) error {
+	return save(ctx, store, jobName, key, ttlDays, func() io.ReadCloser {
+		return artifact.StreamTarZstdIn(root, path, exclude)
+	})
+}
+
+func save(ctx context.Context, store objectstore.ObjectStore, jobName, key string, ttlDays int, open func() io.ReadCloser) error {
 	if jobName == "" {
 		return fmt.Errorf("cache save: jobName must not be empty")
 	}
 	oKey := objectKey(jobName, key)
 
-	body := artifact.StreamTarZstdExcluding(path, exclude)
+	body := open()
 	counter := &countingReader{r: body}
 	if err := store.Put(ctx, oKey+".tar.zst", counter, -1); err != nil {
 		body.Close()
@@ -150,6 +165,20 @@ func Restore(ctx context.Context, store objectstore.ObjectStore, jobName, path, 
 // volume's mount point still holds files there, and extracting them would write
 // into the volume.
 func RestoreExcluding(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, restoreKeys []string, exclude []string) (bool, error) {
+	return restore(ctx, store, jobName, key, restoreKeys, func(r io.Reader) error { return extract(r, path, exclude) })
+}
+
+// RestoreIn is RestoreExcluding confined to root: path must lie at or below
+// root and nothing is written through a symlink that leads outside root (see
+// artifact.ExtractTarZstdIn). Symlink and hardlink entries in the archive are
+// skipped. It is what the k8s sidecar runs.
+func RestoreIn(ctx context.Context, store objectstore.ObjectStore, jobName, root, path, key string, restoreKeys []string, exclude []string) (bool, error) {
+	return restore(ctx, store, jobName, key, restoreKeys, func(r io.Reader) error {
+		return artifact.ExtractTarZstdIn(r, root, path, exclude, false)
+	})
+}
+
+func restore(ctx context.Context, store objectstore.ObjectStore, jobName, key string, restoreKeys []string, extract func(io.Reader) error) (bool, error) {
 	if jobName == "" {
 		return false, fmt.Errorf("cache restore: jobName must not be empty")
 	}
@@ -157,7 +186,7 @@ func RestoreExcluding(ctx context.Context, store objectstore.ObjectStore, jobNam
 	rc, err := store.Get(ctx, oKey+".tar.zst")
 	if err == nil {
 		defer rc.Close()
-		if err := extract(rc, path, exclude); err != nil {
+		if err := extract(rc); err != nil {
 			return false, fmt.Errorf("extract: %w", err)
 		}
 		return true, nil
@@ -182,7 +211,7 @@ func RestoreExcluding(ctx context.Context, store objectstore.ObjectStore, jobNam
 			return false, ErrCacheMiss
 		}
 		defer rc.Close()
-		if err := extract(rc, path, exclude); err != nil {
+		if err := extract(rc); err != nil {
 			return false, fmt.Errorf("extract fallback: %w", err)
 		}
 		return true, nil

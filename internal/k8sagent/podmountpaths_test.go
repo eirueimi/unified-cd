@@ -2,6 +2,8 @@ package k8sagent
 
 import (
 	"context"
+	"fmt"
+	corev1 "k8s.io/api/core/v1"
 	"strings"
 	"testing"
 	"time"
@@ -164,5 +166,76 @@ func TestSidecarIsAddressedByAbsolutePath(t *testing.T) {
 			_ = call(b)
 			assert.True(t, strings.HasPrefix(ex.gotScript, "/usr/local/bin/unified-sidecar "), "argv was %q", ex.gotScript)
 		})
+	}
+}
+
+// The agent turns a backslash into a separator when it mounts a volume, so the
+// protected-directory check must see the same path. Each spelling below is
+// mounted at a protected directory; none may get past CheckJobMountPaths, which
+// is what runs on a job stored before apply-time validation rejected backslashes.
+func TestCheckJobMountPaths_BackslashSpellingsAreCheckedAsMounted(t *testing.T) {
+	for _, mp := range []string{
+		`\usr\local\bin`,
+		`/usr\local\bin`,
+		`usr\..\..\usr\local\bin`,
+		`..\usr\local\bin`,
+		`/etc\unified-cd`,
+		`/var\run\secrets\unified-cd-store-credentials`,
+		`\.ucd`,
+		`/usr/local\bin/x`,
+	} {
+		vols := []dsl.VolumeMount{{Name: dsl.StringOrSlice{"v"}, MountPath: mp}}
+		err := CheckJobMountPaths(nil, "/workspace", vols)
+		require.Error(t, err, mp)
+		assert.Contains(t, err.Error(), "spec.volumes[0].mountPath", mp)
+	}
+	// A backslash path that stays under the workspace is still the workspace
+	// check's business, and a harmless absolute one is allowed.
+	require.NoError(t, CheckJobMountPaths(nil, "/workspace", []dsl.VolumeMount{{Name: dsl.StringOrSlice{"v"}, MountPath: `deps\cache`}}))
+	require.NoError(t, CheckJobMountPaths(nil, "/workspace", []dsl.VolumeMount{{Name: dsl.StringOrSlice{"v"}, MountPath: `/go\pkg\mod`}}))
+}
+
+// A backslash in the job's own workspace.mountPath is refused too.
+func TestCheckJobMountPaths_WorkspaceBackslashRefused(t *testing.T) {
+	for _, mp := range []string{`\usr\local\bin`, `/usr\local`, `/work\space`} {
+		require.Error(t, CheckJobMountPaths(wsTmpl(mp), "/workspace", nil), mp)
+	}
+}
+
+// What the check looks at is what the mount code mounts: for every spelling,
+// the path injectVolumes gives the sidecar equals the one CheckJobMountPaths
+// resolved. If one of them is changed without the other this fails.
+func TestVolumeMountPathCheckAndMountAgree(t *testing.T) {
+	for _, mp := range []string{`\usr\local\bin`, `/usr\local\bin`, `usr\..\..\usr\local\bin`, `a/../b`, `/data//x/`, `deps\cache`} {
+		norm := normalizeVolumeMountPath(mp)
+		ps := &corev1.PodSpec{Containers: []corev1.Container{{Name: "c"}}}
+		injectVolumes(ps, "/workspace", []PodVolume{{Name: "v", ClaimName: "pvc", MountPath: norm}})
+		if norm == "." {
+			continue
+		}
+		require.Len(t, ps.Containers[0].VolumeMounts, 1, mp)
+		assert.Equal(t, volumeContainerPath("/workspace", norm), ps.Containers[0].VolumeMounts[0].MountPath, mp)
+	}
+}
+
+// A stored job that bypassed apply-time validation with a backslash spelling is
+// refused on the agent before any Pod is created.
+func TestK8sExecuteRun_BackslashVolumeMountPathRefused(t *testing.T) {
+	for i, mp := range []string{`\usr\local\bin`, `/usr\local\bin`, `usr\..\..\usr\local\bin`} {
+		agentID, runID := fmt.Sprintf("k8s-mp-bs-%d", i), fmt.Sprintf("run-mp-bs-%d", i)
+		s := newPolicyRunServer(t, agentID, runID)
+		pm := &fakePM{}
+		a := &K8sAgent{cfg: Config{AgentID: agentID, Namespace: "ci", PodImage: "ubuntu:22.04"}, client: s.client, pm: pm, exec: &fakeExec{}}
+		claim := api.ClaimResponse{
+			RunID: runID, JobName: "mp",
+			Volumes: []dsl.VolumeMount{{Name: dsl.StringOrSlice{"v"}, MountPath: mp}},
+			Stages:  []api.ClaimStage{{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "build", Run: "echo hi"}}},
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		a.executeRun(ctx, claim)
+		cancel()
+		require.Equal(t, api.RunFailed, s.waitFinish(t), mp)
+		require.Contains(t, s.logLines()[0], "spec.volumes[0].mountPath", mp)
+		require.Nil(t, pm.created, mp)
 	}
 }

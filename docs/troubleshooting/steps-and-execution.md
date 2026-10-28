@@ -102,7 +102,8 @@ Read every violation: each gives the field path, what it does and an `allow with
 `(no k8s-agent setting allows this)` means no setting allows it and the field must be removed (for
 example a mount of the sidecar's credential volumes, or a `podTemplate.workspace.mountPath` /
 absolute `spec.volumes` `mountPath` such as `/usr/local/bin` that is on, inside or above a system
-directory: choose a path like `/workspace`). `hostAliases`, `dnsPolicy` and `dnsConfig` are
+directory: choose a path like `/workspace`; a backslash in a `mountPath` is read as `/` there and
+is also rejected by `apply`). `hostAliases`, `dnsPolicy` and `dnsConfig` are
 opt-in through `allowPodSpecFields`.
 
 - **Job author:** remove the field from the job. You cannot allow it from the job.

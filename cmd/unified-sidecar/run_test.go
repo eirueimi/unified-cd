@@ -93,7 +93,7 @@ func TestRun_ThreadsBrokerRunIDToStoreProvider(t *testing.T) {
 
 	gotRunID = ""
 	code := run(context.Background(), prov,
-		[]string{"cache", "restore", "--key", "k1", "--path", t.TempDir(), "--job", "j", "--broker-run-id", "run-cache"},
+		[]string{"cache", "restore", "--key", "k1", "--root", fsRoot(), "--path", t.TempDir(), "--job", "j", "--broker-run-id", "run-cache"},
 		io.Discard)
 	if code != 0 {
 		t.Fatalf("cache restore exit=%d", code)
@@ -104,7 +104,7 @@ func TestRun_ThreadsBrokerRunIDToStoreProvider(t *testing.T) {
 
 	gotRunID = ""
 	code = run(context.Background(), prov,
-		[]string{"artifact", "download", "--run", "artifact-source-run", "--name", "nope", "--dest", t.TempDir(), "--broker-run-id", "run-artifact"},
+		[]string{"artifact", "download", "--run", "artifact-source-run", "--name", "nope", "--root", fsRoot(), "--dest", t.TempDir(), "--broker-run-id", "run-artifact"},
 		io.Discard)
 	_ = code // this download is expected to fail (no such artifact); only gotRunID matters here
 	if gotRunID != "run-artifact" {
@@ -115,7 +115,7 @@ func TestRun_ThreadsBrokerRunIDToStoreProvider(t *testing.T) {
 func TestRunCache_RestoreEmitsHitMarkerToStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	ec := runCache(context.Background(), seededStore(t, "k"), "restore",
-		[]string{"--key", "k", "--path", t.TempDir(), "--job", "test-job"}, &stdout, &stderr)
+		[]string{"--key", "k", "--root", fsRoot(), "--path", t.TempDir(), "--job", "test-job"}, &stdout, &stderr)
 	if ec != 0 {
 		t.Fatalf("exit=%d", ec)
 	}
@@ -130,7 +130,7 @@ func TestRunCache_RestoreEmitsHitMarkerToStdout(t *testing.T) {
 func TestRunCache_RestoreEmitsMissMarkerToStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	ec := runCache(context.Background(), emptyStore(t), "restore",
-		[]string{"--key", "absent", "--path", t.TempDir(), "--job", "test-job"}, &stdout, &stderr)
+		[]string{"--key", "absent", "--root", fsRoot(), "--path", t.TempDir(), "--job", "test-job"}, &stdout, &stderr)
 	if ec != 0 {
 		t.Fatalf("exit=%d", ec)
 	}
@@ -149,11 +149,11 @@ func TestRun_CacheSaveThenRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if code := run(ctx, prov, []string{"cache", "save", "--key", "k1", "--ttl-days", "7", "--path", src, "--job", "test-job"}, io.Discard); code != 0 {
+	if code := run(ctx, prov, []string{"cache", "save", "--key", "k1", "--ttl-days", "7", "--root", fsRoot(), "--path", src, "--job", "test-job"}, io.Discard); code != 0 {
 		t.Fatalf("cache save exit=%d", code)
 	}
 	dest := t.TempDir()
-	if code := run(ctx, prov, []string{"cache", "restore", "--key", "k1", "--path", dest, "--job", "test-job"}, io.Discard); code != 0 {
+	if code := run(ctx, prov, []string{"cache", "restore", "--key", "k1", "--root", fsRoot(), "--path", dest, "--job", "test-job"}, io.Discard); code != 0 {
 		t.Fatalf("cache restore exit=%d", code)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "dep.txt"))
@@ -165,7 +165,7 @@ func TestRun_CacheSaveThenRestore(t *testing.T) {
 func TestRun_CacheRestoreMiss_Exit0(t *testing.T) {
 	prov := localProvider(t.TempDir())
 	dest := t.TempDir()
-	if code := run(context.Background(), prov, []string{"cache", "restore", "--key", "nope", "--path", dest, "--job", "test-job"}, io.Discard); code != 0 {
+	if code := run(context.Background(), prov, []string{"cache", "restore", "--key", "nope", "--root", fsRoot(), "--path", dest, "--job", "test-job"}, io.Discard); code != 0 {
 		t.Fatalf("cache restore miss should exit 0, got %d", code)
 	}
 }
@@ -178,7 +178,7 @@ func TestRun_CacheRestoreMiss_Exit0(t *testing.T) {
 func TestRunCache_RestoreMissingJob_RejectsWithClearError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	ec := runCache(context.Background(), emptyStore(t), "restore",
-		[]string{"--key", "k", "--path", t.TempDir()}, &stdout, &stderr)
+		[]string{"--key", "k", "--root", fsRoot(), "--path", t.TempDir()}, &stdout, &stderr)
 	if ec == 0 {
 		t.Fatalf("cache restore without --job should not exit 0")
 	}
@@ -191,7 +191,7 @@ func TestRunCache_SaveMissingJob_RejectsWithClearError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	src := t.TempDir()
 	ec := runCache(context.Background(), emptyStore(t), "save",
-		[]string{"--key", "k", "--path", src}, &stdout, &stderr)
+		[]string{"--key", "k", "--root", fsRoot(), "--path", src}, &stdout, &stderr)
 	if ec == 0 {
 		t.Fatalf("cache save without --job should not exit 0")
 	}
@@ -207,11 +207,11 @@ func TestRun_ArtifactUploadDownload(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if code := run(ctx, prov, []string{"artifact", "upload", "--run", "r1", "--name", "build", "--path", src}, io.Discard); code != 0 {
+	if code := run(ctx, prov, []string{"artifact", "upload", "--run", "r1", "--name", "build", "--root", fsRoot(), "--path", src}, io.Discard); code != 0 {
 		t.Fatalf("artifact upload exit=%d", code)
 	}
 	dest := t.TempDir()
-	if code := run(ctx, prov, []string{"artifact", "download", "--run", "r1", "--name", "build", "--dest", dest}, io.Discard); code != 0 {
+	if code := run(ctx, prov, []string{"artifact", "download", "--run", "r1", "--name", "build", "--root", fsRoot(), "--dest", dest}, io.Discard); code != 0 {
 		t.Fatalf("artifact download exit=%d", code)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "out.txt"))
@@ -222,7 +222,7 @@ func TestRun_ArtifactUploadDownload(t *testing.T) {
 
 func TestRun_ArtifactDownloadMissing_Exit1(t *testing.T) {
 	prov := localProvider(t.TempDir())
-	if code := run(context.Background(), prov, []string{"artifact", "download", "--run", "r1", "--name", "nope", "--dest", t.TempDir()}, io.Discard); code == 0 {
+	if code := run(context.Background(), prov, []string{"artifact", "download", "--run", "r1", "--name", "nope", "--root", fsRoot(), "--dest", t.TempDir()}, io.Discard); code == 0 {
 		t.Fatal("missing artifact download should exit non-zero")
 	}
 }
@@ -272,7 +272,7 @@ func TestRun_Idle_NeverInvokesProvider_DegradedMode(t *testing.T) {
 // crashing the whole process before dispatch.
 func TestRun_CacheSubcommand_ProviderError_FailsLoudly(t *testing.T) {
 	var stderr strings.Builder
-	code := run(context.Background(), erroringProvider, []string{"cache", "restore", "--key", "k1", "--path", t.TempDir()}, &stderr)
+	code := run(context.Background(), erroringProvider, []string{"cache", "restore", "--key", "k1", "--root", fsRoot(), "--path", t.TempDir()}, &stderr)
 	if code == 0 {
 		t.Fatal("cache restore with erroring provider should exit non-zero")
 	}
@@ -283,11 +283,17 @@ func TestRun_CacheSubcommand_ProviderError_FailsLoudly(t *testing.T) {
 
 func TestRun_ArtifactSubcommand_ProviderError_FailsLoudly(t *testing.T) {
 	var stderr strings.Builder
-	code := run(context.Background(), erroringProvider, []string{"artifact", "upload", "--run", "r1", "--name", "n1", "--path", t.TempDir()}, &stderr)
+	code := run(context.Background(), erroringProvider, []string{"artifact", "upload", "--run", "r1", "--name", "n1", "--root", fsRoot(), "--path", t.TempDir()}, &stderr)
 	if code == 0 {
 		t.Fatal("artifact upload with erroring provider should exit non-zero")
 	}
 	if !strings.Contains(stderr.String(), "S3") {
 		t.Fatalf("expected clear S3-config error message, got: %q", stderr.String())
 	}
+}
+
+// fsRoot is the filesystem root of the temp directory's volume, a --root that
+// contains every t.TempDir() the tests pass as --path or --dest.
+func fsRoot() string {
+	return filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
 }

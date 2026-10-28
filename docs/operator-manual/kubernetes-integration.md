@@ -937,6 +937,25 @@ would decide where the sidecar's connections to the controller's store-credentia
 the object store go. Allow them only for jobs you trust, with `allowPodSpecFields: [hostAliases]`
 (and so on), or put them in an agent template, which is not filtered.
 
+**What the opt-in does not do.** Keeping these three fields out of a job's `podTemplate` stops a job
+from using the PodSpec fields; it does not isolate the sidecar's network path from a job container.
+Every container in the Pod shares one network namespace and the kubelet's single writable
+`/etc/hosts`. A job container that runs as root (the `baseline` profile allows root) can edit that
+`/etc/hosts` for the whole Pod, can listen on `127.0.0.1` on the port the sidecar's broker or
+object-store client uses, and, because `baseline` keeps `NET_RAW`, can sniff the Pod's traffic.
+The mitigations that work are:
+
+- **Serve the controller (the store-credentials broker) over TLS** and point the agent at an
+  `https://` URL. The shipped install reaches it over plain HTTP, so an on-Pod attacker who can
+  redirect or sniff the connection sees the sidecar's token. With TLS and certificate verification
+  the redirect or sniff yields nothing usable.
+- **Run job containers as non-root with a read-only root filesystem** (`securityContext:
+  runAsNonRoot: true`, `readOnlyRootFilesystem: true`, and `capabilities: {drop: [NET_RAW]}`) in
+  your agent templates, so a job cannot rewrite `/etc/hosts` or sniff. This is operator policy in
+  a template; the job Pod field policy does not impose it.
+
+Treat both as recommendations to apply, not as something the policy already guarantees.
+
 <a id="job-chosen-mount-paths"></a>
 
 **Job-chosen mount paths.** The workspace `emptyDir` and every absolute `spec.volumes` entry are
@@ -946,10 +965,28 @@ absolute `spec.volumes[].mountPath` is not absolute, is not clean (`path.Clean` 
 `/`, or is equal to, inside or above any of `/usr`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`,
 `/libx32`, `/etc`, `/proc`, `/sys`, `/dev`, `/run`, `/var/run`, `/.ucd`, `/usr/local/bin` or the
 sidecar's credential mount directories. `/workspace` and `/home/runner/work` are fine. A relative
-`spec.volumes` path resolves under the workspace and is covered by the workspace check. A
+`spec.volumes` path resolves under the workspace and is covered by the workspace check. The check
+runs on the path the agent will actually mount: a backslash is turned into `/` and the result
+cleaned and, if relative, joined under the workspace before it is compared (`\usr\local\bin` is
+`/usr/local/bin`), through the same helper the mount code uses. `apply` also rejects any backslash
+in a `spec.volumes` or `workspace` `mountPath` (`mountPath must be a POSIX path`). A
 `workspace.mountPath` in an agent template is not checked, and `apply` rejects a bad
 `workspace.mountPath` up front. The agent also starts and execs the sidecar as
 `/usr/local/bin/unified-sidecar`, by absolute path, so a mount cannot redirect a `PATH` lookup.
+
+<a id="sidecar-filesystem-confinement"></a>
+
+**The sidecar only reads and writes inside the workspace.** A job controls symlinks in the
+workspace, but the sidecar follows them in its own filesystem, where its credential mounts and
+trust store live. So the sidecar opens the workspace mount (the `--root` it is given on every
+artifact and cache invocation) as a confined root and resolves every path beneath it: a symlink or
+`..` that leads outside the workspace is never followed, on upload or on download and restore. An
+`uploadArtifact` of `l/s3-credentials`, where `l` is a symlink to `/etc/unified-cd`, now fails
+instead of archiving the credential, and a download or cache restore into a path below a symlink
+that points outside the workspace fails instead of writing there. A symlink inside the workspace
+that stays inside it keeps working as a path component. A symlink found while archiving a directory
+is stored as a link entry and its target is not read. The sidecar and the agent must be upgraded
+together, because the agent now passes `--root`.
 
 **No step can target the sidecar.** Independently of the Pod policy, and on every agent type, a
 step's `container:` can never be `unified-artifact` (the sidecar) or `ucd-shim` (the init
@@ -1221,7 +1258,7 @@ See `docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md`
 
 ### Security note / threat model
 
-Bucket-scoped S3 credentials reach the sidecar one of three ways (`env`, `file`, or `broker`; see above), but in every mode they land in the **sidecar container's** environment or a mount only — **by default** the job container never sees them (container-boundary isolation, the same trust boundary Argo Workflows and Tekton use for their artifact sidecars/init-containers). Five things keep that true: the [Job Pod field policy](#job-pod-field-policy) refuses a job's `secretKeyRef` / `secret` volume for any Secret the operator has not listed (and `allowSecrets` can never name `sidecarS3SecretName`) and refuses any mount of the agent-injected credential volumes; it refuses a job-chosen workspace or volume mount path over the sidecar's binaries, libraries, configuration or credential mounts (and the agent runs the sidecar by absolute path), and it denies `hostAliases`, `dnsPolicy` and `dnsConfig` unless the operator opts in, because Pod-wide name resolution would redirect the sidecar's broker and object-store connections; no step can target the sidecar (`container: unified-artifact` is rejected at apply time, after `uses:` resolution, and on the k8s-agent at claim and exec time); and the default policy does not allow `shareProcessNamespace`. The remaining exceptions are operator opt-ins, and none should be set on an agent that runs untrusted jobs: `jobPodPolicy.allowPodSpecFields: [shareProcessNamespace]` lets the job container read the sidecar's `/proc/<pid>/environ` and root filesystem and so defeats the container boundary, and `[hostAliases, dnsPolicy, dnsConfig]` let a job redirect the sidecar's broker and object-store connections (the shipped install reaches the broker over plain HTTP, so serve it over TLS if the job namespace is not fully trusted). Under all three modes the credential is today the SAME long-lived, bucket-scoped one: any workload able to exec into the `unified-artifact` container (or, under `env`/`file`, read the Secret directly if RBAC allows `get`/`list` on Secrets in the namespace) can read/write the whole bucket for as long as that credential is valid.
+Bucket-scoped S3 credentials reach the sidecar one of three ways (`env`, `file`, or `broker`; see above), but in every mode they land in the **sidecar container's** environment or a mount only — **by default** the job container never sees them (container-boundary isolation, the same trust boundary Argo Workflows and Tekton use for their artifact sidecars/init-containers). Five things keep that true: the [Job Pod field policy](#job-pod-field-policy) refuses a job's `secretKeyRef` / `secret` volume for any Secret the operator has not listed (and `allowSecrets` can never name `sidecarS3SecretName`) and refuses any mount of the agent-injected credential volumes; it refuses a job-chosen workspace or volume mount path over the sidecar's binaries, libraries, configuration or credential mounts (checked on the path as the agent will mount it, and the agent runs the sidecar by absolute path), the sidecar confines all of its file access to the workspace so a job-planted symlink cannot make it read its own credentials or write over its own files, and it denies `hostAliases`, `dnsPolicy` and `dnsConfig` unless the operator opts in, so a job cannot set Pod-wide name resolution (this does not stop a root job container from editing the shared `/etc/hosts` or listening in the shared network namespace; see "What the opt-in does not do" above); no step can target the sidecar (`container: unified-artifact` is rejected at apply time, after `uses:` resolution, and on the k8s-agent at claim and exec time); and the default policy does not allow `shareProcessNamespace`. The remaining exceptions are operator opt-ins, and none should be set on an agent that runs untrusted jobs: `jobPodPolicy.allowPodSpecFields: [shareProcessNamespace]` lets the job container read the sidecar's `/proc/<pid>/environ` and root filesystem and so defeats the container boundary, and `[hostAliases, dnsPolicy, dnsConfig]` let a job set Pod-wide name resolution that redirects the sidecar's broker and object-store connections. Even without them, a job container running as root can edit the Pod's shared `/etc/hosts` or listen and sniff in the shared network namespace; the real mitigations are serving the broker over TLS (the shipped install uses plain HTTP) and running job containers non-root with `readOnlyRootFilesystem` and `NET_RAW` dropped. Under all three modes the credential is today the SAME long-lived, bucket-scoped one: any workload able to exec into the `unified-artifact` container (or, under `env`/`file`, read the Secret directly if RBAC allows `get`/`list` on Secrets in the namespace) can read/write the whole bucket for as long as that credential is valid.
 
 This is comparable to how most CI systems hand artifact/cache sidecars static bucket credentials, but it is **not** least-privilege per run, under any of the three modes. `broker` (§5.6 above) removes the per-namespace Secret and is the mechanism a future short-lived or per-pod-scoped credential would be built on — bare-metal, EKS and GKE alike, unlike IAM Roles for Service Accounts (IRSA, EKS-only) or Workload Identity (GKE-only) — but it does not deliver that scoping today; see the `broker` section above for exactly what it does and does not change. Until a scoped credential ships, restrict RBAC `get`/`list`/`watch` on Secrets and `pods/exec` in the agent's namespace to trusted operators under `env`/`file`, and restrict `agentAuth.kubernetesStoreCredentialPolicies` to only the namespaces/ServiceAccounts that actually run jobs under `broker`.
 

@@ -123,7 +123,8 @@ volume mount failed: spec.volumes[0]: volume "go-cache" is shared and cannot be 
 - **A POSIX path, always.** A `mountPath` is written with `/` on every agent, Windows agents
   included. A Windows drive-qualified path (`C:/cache`, `d:\cache`) is rejected when the job is
   applied (`mountPath must be a POSIX path`), because it would otherwise be mistaken for a relative
-  path and fail much later with an opaque `mkdir` error.
+  path and fail much later with an opaque `mkdir` error. Any backslash in a `mountPath` is rejected
+  the same way, in every position (`/usr\local` as much as `d:\cache`).
 
 How the volume is realised depends on where the run executes, but your YAML does not change:
 

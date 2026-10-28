@@ -29,6 +29,12 @@ var ProtectedMountDirs = []string{
 // relative spec.volumes mountPath resolves under the workspace, so the
 // workspace check covers it.
 func CheckContainerMountPath(p string, extraProtected ...string) error {
+	// The Kubernetes agent treats a backslash in a volume mountPath as a
+	// separator, so a path that looks harmless here could be mounted somewhere
+	// protected. A mountPath is a POSIX path.
+	if strings.Contains(p, `\`) {
+		return fmt.Errorf("mountPath %q contains a backslash; mountPath must be a POSIX path", p)
+	}
 	if !path.IsAbs(p) {
 		return fmt.Errorf("mountPath %q must be an absolute path", p)
 	}

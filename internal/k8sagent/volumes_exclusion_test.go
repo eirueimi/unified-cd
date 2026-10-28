@@ -306,3 +306,33 @@ func writeFile(t *testing.T, p string) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
 	require.NoError(t, os.WriteFile(p, []byte("x"), 0o600))
 }
+
+// Every sidecar invocation names the directory it is confined to: the workspace
+// mount. Without it the sidecar would resolve a job-planted symlink in its own
+// filesystem (credential mounts, trust store).
+func TestExecuteRun_SidecarArgvCarriesTheWorkspaceRoot(t *testing.T) {
+	g := exclusionScenarios(t)["relative"]
+	steps := map[string]*api.ClaimStep{
+		"artifact upload":   {Index: 0, Name: "s", UploadArtifact: &api.UploadArtifactStep{Name: "out", Path: "src"}},
+		"artifact download": {Index: 0, Name: "s", DownloadArtifact: &api.DownloadArtifactStep{Name: "out", DestDir: "src"}},
+		"cache":             {Index: 0, Name: "s", Cache: &dsl.CacheStep{Path: "src", Key: "k"}},
+	}
+	for name, step := range steps {
+		t.Run(name, func(t *testing.T) {
+			_, rec := runWithGolden(t, g, step)
+			var argvs [][]string
+			switch name {
+			case "artifact upload":
+				argvs = append(argvs, rec.sidecarArgv("artifact", "upload"))
+			case "artifact download":
+				argvs = append(argvs, rec.sidecarArgv("artifact", "download"))
+			default:
+				argvs = append(argvs, rec.sidecarArgv("cache", "restore"), rec.sidecarArgv("cache", "save"))
+			}
+			for _, argv := range argvs {
+				require.NotNil(t, argv)
+				require.Equal(t, []string{"/workspace"}, flagValues(argv, "--root"), "%v", argv)
+			}
+		})
+	}
+}

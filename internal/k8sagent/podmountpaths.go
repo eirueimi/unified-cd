@@ -27,10 +27,14 @@ var sidecarProtectedDirs = []string{
 // plus sidecarProtectedDirs; no jobPodPolicy setting allows these paths.
 //
 // Only the JOB's own workspace.mountPath is checked: agent-side podTemplates
-// are operator-written and trusted. A relative spec.volumes mountPath resolves
-// under the workspace and is covered by the workspace check, except that one
-// which climbs out of it ("..") is resolved and checked here as a backstop for
-// jobs stored before apply-time validation rejected that.
+// are operator-written and trusted. Every spec.volumes mountPath is first put
+// through the same normalisation the mount uses (backslashes are separators,
+// then Clean, then a relative path is joined under the workspace mount) and the
+// RESULT is checked, so no spelling of a protected path gets past. A path that
+// lands under the workspace is covered by the workspace check; one that climbs
+// out of it ("..") is checked here as a backstop for jobs stored before
+// apply-time validation rejected that, and so is one with a backslash, which
+// apply-time validation now rejects.
 func CheckJobMountPaths(jobTmpl *dsl.PodTemplate, workspaceMount string, volumes []dsl.VolumeMount) error {
 	var vs []PodPolicyViolation
 	deny := func(where string, err error) {
@@ -43,18 +47,20 @@ func CheckJobMountPaths(jobTmpl *dsl.PodTemplate, workspaceMount string, volumes
 		}
 	}
 	for i, v := range volumes {
-		mp := v.MountPath
 		where := fmt.Sprintf("spec.volumes[%d].mountPath", i)
-		switch {
-		case path.IsAbs(mp):
-			if err := dsl.CheckContainerMountPath(mp, sidecarProtectedDirs...); err != nil {
-				deny(where, err)
-			}
-		case path.Clean(mp) == ".." || strings.HasPrefix(path.Clean(mp), "../"):
-			resolved := path.Join(workspaceMount, mp)
-			if err := dsl.CheckContainerMountPath(resolved, sidecarProtectedDirs...); err != nil {
-				deny(where, err)
-			}
+		// Check the path the agent will mount, not the string as written: a
+		// backslash is a separator there ("\usr\local\bin" is /usr/local/bin).
+		mp := normalizeVolumeMountPath(v.MountPath)
+		if mp == "." {
+			continue // the workspace root; the workspace check covers it
+		}
+		wm := path.Clean(workspaceMount)
+		resolved := volumeContainerPath(wm, mp)
+		if !path.IsAbs(mp) && (resolved == wm || strings.HasPrefix(resolved, strings.TrimSuffix(wm, "/")+"/")) {
+			continue // under the workspace; the workspace check covers it
+		}
+		if err := dsl.CheckContainerMountPath(resolved, sidecarProtectedDirs...); err != nil {
+			deny(where, err)
 		}
 	}
 	if len(vs) == 0 {

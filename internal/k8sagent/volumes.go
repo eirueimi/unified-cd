@@ -278,6 +278,25 @@ type PodVolume struct {
 	MountPath string
 }
 
+// normalizeVolumeMountPath is the one place a volume mountPath as written
+// becomes the path the agent mounts: backslashes are separators, then Clean. Both
+// the mount (planPodVolumes) and the protected-directory check
+// (CheckJobMountPaths) go through it, via volumeContainerPath, so what is
+// checked is exactly what is mounted.
+func normalizeVolumeMountPath(raw string) string {
+	return path.Clean(strings.ReplaceAll(raw, `\`, "/"))
+}
+
+// volumeContainerPath is the container path a volume mounted with the
+// normalised mountPath mp lands at: an absolute path is itself, a relative one
+// is under workspaceMount, and "." is the workspace root itself.
+func volumeContainerPath(workspaceMount, mp string) string {
+	if path.IsAbs(mp) {
+		return mp
+	}
+	return path.Join(workspaceMount, mp)
+}
+
 // cleanVolumeMountPath cleans one mount path and refuses one that climbs out
 // of the workspace. An absolute path is allowed (see dsl.ValidateVolumes for
 // why): on Kubernetes it is a container path and touches nothing else.
@@ -292,7 +311,7 @@ func cleanVolumeMountPath(i int, v dsl.VolumeMount, workspace string) (string, e
 	if v.MountPath == "" {
 		return "", fmt.Errorf("spec.volumes[%d]: mountPath is required", i)
 	}
-	mp := path.Clean(strings.ReplaceAll(v.MountPath, `\`, "/"))
+	mp := normalizeVolumeMountPath(v.MountPath)
 	if !path.IsAbs(mp) && (mp == ".." || strings.HasPrefix(mp, "../")) {
 		return "", fmt.Errorf("spec.volumes[%d]: mountPath %q escapes the workspace", i, v.MountPath)
 	}
@@ -398,10 +417,7 @@ func injectVolumes(podSpec *corev1.PodSpec, workspaceMount string, vols []PodVol
 		}
 		name := fmt.Sprintf("%s%d", podVolumeNamePrefix, i)
 		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{Name: name, VolumeSource: src})
-		mp := pv.MountPath
-		if !path.IsAbs(mp) {
-			mp = path.Join(workspaceMount, mp)
-		}
+		mp := volumeContainerPath(workspaceMount, pv.MountPath)
 		for j := range podSpec.Containers {
 			podSpec.Containers[j].VolumeMounts = append(podSpec.Containers[j].VolumeMounts, corev1.VolumeMount{Name: name, MountPath: mp})
 		}

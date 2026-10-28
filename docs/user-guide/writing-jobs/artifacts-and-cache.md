@@ -146,6 +146,8 @@ This is a storage layout change — every cache entry saved before this change i
 
 The `path` of an `uploadArtifact`/`downloadArtifact`/`cache` step must be **relative** to the run workspace. Relative paths behave identically across native, isolated, and Kubernetes execution. Absolute paths and paths that escape the workspace (via `..`) are rejected — the step fails with `artifact/cache path ... escapes the workspace`. Inside a step, `$UNIFIED_WORKSPACE` names the current workspace root (the step's working directory), so scripts can build workspace-relative paths portably.
 
+On a Kubernetes agent the transfer is done by the sidecar, which stays inside the workspace even when the tree holds symlinks: a symlink whose target is outside the workspace is not followed, so a `path` or `destDir` that goes through one fails (artifacts) or is skipped (cache), and the target is never read or written. A symlink that points inside the workspace works as part of a path as usual. A symlink met while archiving a directory is stored as a link entry, not as a copy of its target, and extracting a link entry is refused. The host agent is not affected by this.
+
 **Volumes.** A path *inside* a [named volume](volumes.md)'s mount path works as written (`path: .ucd-cache/go/build` archives the volume's real contents), on every agent. A path that is an *ancestor* of a volume's mount point (`.`, or `.ucd-cache` for a volume at `.ucd-cache/go`) archives everything around the volume but **excludes the volume's contents**, on both agent types, and says so in the run log:
 
 ```

@@ -108,8 +108,8 @@ grep -rnE "container: *[\"']?(unified-artifact|ucd-shim)|hostAliases|dnsPolicy|d
 
 These are not filtered by the policy's always-allowed class any more. They are
 Pod-wide, so they apply to the artifact sidecar too: a job that sets them controls where the
-sidecar's connections to the store-credentials broker and the object store go, which would hand it
-the sidecar's token or credentials. A job that sets any of them now fails with
+sidecar's connections to the store-credentials broker and the object store go. A job that sets any
+of them now fails with
 `podTemplate.spec.hostAliases: ... (allow with jobPodPolicy.allowPodSpecFields: [hostAliases] in the k8s-agent config)`.
 To restore the old behaviour for jobs you trust, list the fields:
 
@@ -118,9 +118,14 @@ jobPodPolicy:
   allowPodSpecFields: [hostAliases, dnsPolicy, dnsConfig]
 ```
 
-Or move the setting into an agent template, which is not filtered. The shipped install reaches the
-controller over plain HTTP (`manifests/install/agent-config-patch.yaml`); serve the broker over
-TLS if the job namespace is not fully trusted.
+Or move the setting into an agent template, which is not filtered.
+
+This opt-in only keeps a job from setting these PodSpec fields. It does not stop a job container
+that runs as root from editing the Pod's shared `/etc/hosts`, or from listening or sniffing in the
+Pod's shared network namespace (`baseline` allows root and `NET_RAW`). The mitigations that do work
+are TLS for the controller / broker URL (the shipped install reaches it over plain HTTP,
+`manifests/install/agent-config-patch.yaml`; use `https://`) and running job containers non-root
+with `readOnlyRootFilesystem: true` and `NET_RAW` dropped, set in your agent templates.
 
 ### Mount paths over system directories are refused
 
@@ -134,6 +139,34 @@ setting to allow it, a path that is relative, unclean, `/`, or on, inside or abo
 path outside those directories, such as `/workspace` or `/home/runner/work`, is unaffected. The
 agent now also starts and execs the sidecar as `/usr/local/bin/unified-sidecar`, so run the sidecar
 image from the same release as the agent (the shipped image installs the binary there).
+
+A `mountPath` that contains a backslash is now rejected, in `spec.volumes` and in
+`podTemplate.workspace`: `spec.volumes[0]: mountPath "\usr\local\bin" contains a backslash; mountPath
+must be a POSIX path (relative to the workspace, or absolute and starting with "/")` (for the
+workspace: `spec.podTemplate.workspace: mountPath "..." contains a backslash; mountPath must be a
+POSIX path`). The Kubernetes agent used to turn a backslash into a `/` when it mounted a volume, so
+`\usr\local\bin` landed on `/usr/local/bin`. Write the path with `/`; this was already the rule
+for every agent (see [Volumes](../../user-guide/writing-jobs/volumes.md)). A job stored before the
+upgrade is refused by the agent the same way as any other protected path, after the backslashes are
+treated as separators.
+
+## The artifact sidecar only reads and writes inside the workspace
+
+The sidecar used to resolve the paths of `uploadArtifact`, `downloadArtifact` and `cache` steps in
+its own filesystem and follow symlinks there, so a job could make it archive its own credential
+mount through a symlink, or write over its own files on a download or restore. It now opens the
+workspace as a confined root (the agent passes `--root` with every invocation) and never follows a
+symlink or `..` out of it.
+
+| A job that... | Now |
+|---|---|
+| uploads, downloads or caches a path through a symlink whose target is outside the workspace (`ln -s /etc/unified-cd l` then `path: l/s3-credentials`) | The step fails (upload, download) or does nothing (cache, which is best-effort). The target is never read or written. |
+| archives a directory that contains a symlink | The link is stored as a link entry and its target is not read. A symlink whose target was non-empty used to fail the upload. A download of an archive that holds a link entry still fails with `unsupported symlink entry`, as before. |
+| uses symlinks that stay inside the workspace | Unchanged as path components. |
+
+Upgrade the agent and the sidecar image together: a sidecar that is older than the agent does not
+know `--root` and fails every artifact and cache step, and a newer sidecar with an older agent
+fails with `--root is required`. The host agent and the CLI are not affected.
 
 ## The `ci` namespace now enforces Pod Security `baseline`
 
@@ -207,5 +240,7 @@ credential volumes, `allowSecrets` cannot name `sidecarS3SecretName`, no job-cho
 cover its binaries or credential mounts, and name resolution (`hostAliases`, `dnsPolicy`,
 `dnsConfig`) is opt-in. The remaining ways to reach the sidecar from a job are opt-ins:
 `allowPodSpecFields: [shareProcessNamespace]` lets a job container read the sidecar's `/proc`, and
-`[hostAliases, dnsPolicy, dnsConfig]` let it redirect the sidecar's connections. Do not set them on
-an agent that runs untrusted jobs.
+`[hostAliases, dnsPolicy, dnsConfig]` let it set Pod-wide name resolution that redirects the
+sidecar's connections. Do not set them on an agent that runs untrusted jobs. Leaving them out is not
+enough on its own: a root job container can still edit the shared `/etc/hosts`, so also use TLS for
+the broker and run job containers non-root with `readOnlyRootFilesystem`.

@@ -26,29 +26,29 @@ func TestRun_ExcludeLeavesPathsOutOfTheArchive(t *testing.T) {
 	prov := localProvider(t.TempDir())
 	ctx := context.Background()
 
-	if code := run(ctx, prov, append([]string{"artifact", "upload", "--run", "r1", "--name", "a", "--path", src}, excludes...), io.Discard); code != 0 {
+	if code := run(ctx, prov, append([]string{"artifact", "upload", "--run", "r1", "--name", "a", "--root", fsRoot(), "--path", src}, excludes...), io.Discard); code != 0 {
 		t.Fatalf("artifact upload exit=%d", code)
 	}
 	artifactDest := t.TempDir()
-	if code := run(ctx, prov, []string{"artifact", "download", "--run", "r1", "--name", "a", "--dest", artifactDest}, io.Discard); code != 0 {
+	if code := run(ctx, prov, []string{"artifact", "download", "--run", "r1", "--name", "a", "--root", fsRoot(), "--dest", artifactDest}, io.Discard); code != 0 {
 		t.Fatalf("artifact download exit=%d", code)
 	}
 
-	if code := run(ctx, prov, append([]string{"cache", "save", "--key", "k", "--ttl-days", "7", "--path", src, "--job", "j"}, excludes...), io.Discard); code != 0 {
+	if code := run(ctx, prov, append([]string{"cache", "save", "--key", "k", "--ttl-days", "7", "--root", fsRoot(), "--path", src, "--job", "j"}, excludes...), io.Discard); code != 0 {
 		t.Fatalf("cache save exit=%d", code)
 	}
 	cacheDest := t.TempDir()
-	if code := run(ctx, prov, []string{"cache", "restore", "--key", "k", "--path", cacheDest, "--job", "j"}, io.Discard); code != 0 {
+	if code := run(ctx, prov, []string{"cache", "restore", "--key", "k", "--root", fsRoot(), "--path", cacheDest, "--job", "j"}, io.Discard); code != 0 {
 		t.Fatalf("cache restore exit=%d", code)
 	}
 
 	// A restore leaves the excluded paths alone too, even from an archive that
 	// holds them (this one was saved without the exclusions).
-	if code := run(ctx, prov, []string{"cache", "save", "--key", "old", "--ttl-days", "7", "--path", src, "--job", "j"}, io.Discard); code != 0 {
+	if code := run(ctx, prov, []string{"cache", "save", "--key", "old", "--ttl-days", "7", "--root", fsRoot(), "--path", src, "--job", "j"}, io.Discard); code != 0 {
 		t.Fatalf("cache save exit=%d", code)
 	}
 	restoreDest := t.TempDir()
-	if code := run(ctx, prov, append([]string{"cache", "restore", "--key", "old", "--path", restoreDest, "--job", "j"}, "--exclude", filepath.Join(restoreDest, "vol1"), "--exclude", filepath.Join(restoreDest, "vol2")), io.Discard); code != 0 {
+	if code := run(ctx, prov, append([]string{"cache", "restore", "--key", "old", "--root", fsRoot(), "--path", restoreDest, "--job", "j"}, "--exclude", filepath.Join(restoreDest, "vol1"), "--exclude", filepath.Join(restoreDest, "vol2")), io.Discard); code != 0 {
 		t.Fatalf("cache restore exit=%d", code)
 	}
 
@@ -81,12 +81,12 @@ func TestRun_ArtifactDownloadExcludeLeavesPathsAlone(t *testing.T) {
 	}
 	prov := localProvider(t.TempDir())
 	ctx := context.Background()
-	if code := run(ctx, prov, []string{"artifact", "upload", "--run", "r1", "--name", "a", "--path", src}, io.Discard); code != 0 {
+	if code := run(ctx, prov, []string{"artifact", "upload", "--run", "r1", "--name", "a", "--root", fsRoot(), "--path", src}, io.Discard); code != 0 {
 		t.Fatalf("artifact upload exit=%d", code)
 	}
 
 	dest := t.TempDir()
-	args := []string{"artifact", "download", "--run", "r1", "--name", "a", "--dest", dest,
+	args := []string{"artifact", "download", "--run", "r1", "--name", "a", "--root", fsRoot(), "--dest", dest,
 		"--exclude", filepath.Join(dest, "vol1"), "--exclude", filepath.Join(dest, "vol2")}
 	if code := run(ctx, prov, args, io.Discard); code != 0 {
 		t.Fatalf("artifact download exit=%d", code)
