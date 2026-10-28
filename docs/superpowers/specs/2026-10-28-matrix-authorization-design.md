@@ -62,8 +62,10 @@ path prefix of the qualified job name.
 
 - Anything that makes the single-team default setup harder than today. A
   config with only `roleMap` / `userMap` / `defaultRole`, or no OIDC at all,
-  must need no edit and must behave exactly as before (the one deliberate
-  narrowing in §5.6 is called out and put to the maintainer in §6).
+  must need no edit and must behave exactly as before. The deliberate
+  exceptions — the token-management narrowing (§5.6) and the PAT-creation
+  refusals of §5.14 / §5.15 — are each called out, and §5.6 is put to the
+  maintainer in §6.
 - Silently widening anyone's access on upgrade. No existing PAT, session or
   OIDC user may gain a permission it did not have before the operator wrote
   new config.
@@ -327,12 +329,9 @@ Designer's call. This is the PAT rule.
   - group changes in the IdP are seen when the owner next logs in through
     the browser: an OIDC login refreshes the group snapshot on every PAT whose
     owner `sub` matches (bounded staleness, the same class as sessions today).
-- **Creation checks.** `token.create` is required. A requested `role` above the
-  creator's global role is clamped exactly as today (silent, unchanged
-  behavior). A requested `permissions` entry the creator holds nowhere (not
-  globally and not on any folder) is a `400`:
-  `cannot grant permission "secret.write": you do not hold it`. Silent clamping
-  is kept only for the legacy field, because changing it would break scripts.
+- **Creation checks.** `token.create` is required, the creator's identity
+  must be known (§5.14), and the ceiling must lie within the owner's grants
+  (§5.15). Both are refusals with a `4xx`, never a silent clamp.
 - **PAT created by a PAT** inherits the parent's owner snapshot; its ceiling is
   the parent's ceiling ∩ the requested ceiling.
 - **Role-only PATs.** A PAT with no recorded owner — every PAT created before
@@ -363,8 +362,8 @@ recorded:
 - `token.create` (in `developer`) — create PATs, list and delete **own** PATs.
 - `token.manage` (in `admin`) — list and delete **everyone's** PATs.
 
-This is the only place where a deployment that changes no config sees
-different behavior: a developer stops seeing other people's tokens, and can no
+Together with the PAT-creation refusals of §5.14 / §5.15, this is where a
+deployment that changes no config sees different behavior: a developer stops seeing other people's tokens, and can no
 longer delete role-only (pre-upgrade) PATs, which have no owner. It is a
 narrowing, never a widening, and it closes a hole the matrix would otherwise
 make worse (a folder-limited developer could revoke an admin's automation
@@ -489,6 +488,98 @@ listed, as `public`, `self` (authenticates itself, e.g. `/auth/me`,
 classification test (§9) can be exhaustive in both directions. `requireMinRole`
 and `viewerOrAgent` are retired in favour of `requirePermission` and
 `requirePermissionOrAgent`.
+
+### 5.14 A PAT is not created from an unknown identity
+
+Designer's call. A PAT's owner snapshot is only as good as the claims the
+creator presented. Two creators present none we can trust:
+
+- a **pre-upgrade session** (`sessions.claims IS NULL`), whose groups were
+  never stored;
+- an **OIDC bearer** (CLI device flow) whose id_token has no `rolesClaim`
+  claim at all, while the config contains group-keyed grants (any `roleMap`
+  entry or any `permissions.*.groups` entry). Typical cause: the device flow
+  did not request the scope that makes the IdP emit groups. When the config
+  has no group-keyed grants, groups cannot affect any decision, so an absent
+  claim is recorded as the empty set — it is then exact, not a guess — and
+  userMap-only setups (for example local Dex static users, which have no
+  groups) keep creating PATs.
+
+For these, `POST /api/v1/tokens` is refused with `403` and no PAT is written:
+
+- session: `cannot create a token: this login predates group-aware tokens; log out and log in again, then retry`
+- bearer: `cannot create a token: your OIDC token carries no "groups" claim; log in again so the token includes it, then retry`
+  (the claim name is the configured `rolesClaim`).
+
+Rejected alternatives: (a) create a role-only PAT from `sessions.role` — that
+is a PAT which bypasses folder grants for as long as it lives, i.e. a widening
+the moment the operator introduces folders; (b) record the owner with an empty
+claim set — that silently narrows the PAT to the owner's `userMap`/default
+grants, which looks like a broken token rather than a stale login.
+
+Rollout window: pre-upgrade sessions last at most 24 h (`sessionDuration`),
+and silent refresh stores claims when the refreshed id_token carries them, so
+the session case disappears within 24 h of the upgrade without any action;
+users who hit it sooner log in again. The bearer case is a configuration issue
+of the IdP/device-flow scopes and is listed in troubleshooting with the exact
+string. PAT creation by break-glass and by role-only PATs is unaffected (it
+already has no claims and produces role-only PATs, §5.5); those creators are
+admins or pre-upgrade tokens by construction.
+
+### 5.15 Folder-only principals, empty roles, and what `ServerAuth` admits
+
+Designer's call. A user matched only by folder grants has an empty global
+role. That must be representable end to end without reopening "unknown or
+empty role means denied" for principals that have no grants.
+
+**Storage.** `pats.role` and `sessions.role` stay `NOT NULL`, and may be `''`
+when the row carries an owner (`pats.owner_sub IS NOT NULL`) or claims
+(`sessions.claims IS NOT NULL`). The migration **drops the `DEFAULT 'admin'`**
+on both columns (added by `002_add_role`): every insert already passes the role
+explicitly, and a default of admin is the wrong failure mode for a row whose
+writer forgot it. Existing rows are untouched. `''` on a row without owner or
+claims is never written by new code.
+
+**Ceiling rules** (all `400`, no PAT written):
+
+- legacy `role` above the creator's global role:
+  `cannot grant role "developer": it exceeds your global role "viewer"; use --permission to grant folder permissions you hold`
+  (for an empty global role the tail reads `it exceeds your global role (none)`).
+  This replaces today's silent clamp for every creator. Silent clamping hands
+  the caller a token weaker than they asked for and lets their script discover
+  it later at a 403; once folder-only users exist it would clamp every request
+  to nothing.
+- a `permissions` ceiling must be a subset of the owner's effective grants,
+  i.e. every entry is held globally or on at least one folder:
+  `cannot grant permission "secret.write": you do not hold it`.
+- for a PAT created by a PAT, the bound is the parent's effective grants
+  (owner ∩ parent ceiling).
+
+**`ServerAuth` changes** (`internal/controller/auth.go`):
+
+- **PAT branch (line 80, `role := pat.Role`).** After the break-glass
+  short-circuit: if the PAT has an owner, build the principal's grants from
+  the owner snapshot and the current config, intersected with the ceiling, and
+  pass it on **whatever `pat.Role` is, including `''`**. If it has no owner
+  (role-only), keep today's semantics: `roleRank(pat.Role) == 0` is rejected
+  in `ServerAuth` with `403 forbidden: no role` (today the same token is
+  refused later by `requireMinRole`; moving the refusal up is needed because
+  `requireMinRole` goes away).
+- **Session branches (lines 133 and 141, `Role: sess.Role`)** — both the
+  refresh and the normal path: if `sess.Claims != nil`, build grants from the
+  stored claims and the session's email/sub and pass the principal on even
+  when `sess.Role == ''`. If `sess.Claims == nil` (pre-upgrade), keep
+  role-only semantics and reject `roleRank(sess.Role) == 0` with `403
+  forbidden: no role`.
+- **OIDC bearer branch (line 100) and browser login (`auth_oidc.go:236`).**
+  `resolveRole` failing no longer refuses on its own: the caller is refused
+  with the existing `forbidden: no role` / `forbidden: no role assigned` only
+  when the legacy resolution denies **and** no `permissions` entry matches
+  (§5.4). Otherwise the principal carries role `''` and its grants.
+- An admitted principal whose grant set is empty (owner or claims present,
+  but nothing in the current config matches) reaches the permission check and
+  gets `403 forbidden: token owner has no permissions` (PAT) or `403
+  forbidden: no permissions` (session/bearer) on every route.
 
 ## 6. Open questions (the maintainer decides)
 
@@ -635,7 +726,9 @@ Every route registered in `server.go` (including `agentRouteIdentityMatrix`).
 
 The legacy-equivalence test (§9) proves that, with no `permissions` block,
 each row's decision for each role is unchanged — except `GET`/`DELETE
-/api/v1/tokens` (§5.6). The artifact rows move from "any authenticated human"
+/api/v1/tokens` (§5.6) and `POST /api/v1/tokens`, which now refuses an
+over-high `role` (§5.15) and a creator without known claims (§5.14) instead of
+clamping. The artifact rows move from "any authenticated human"
 to `job.read`, which every legacy role holds globally, so they are unchanged
 too.
 
@@ -701,6 +794,8 @@ One forward migration, no backfill:
   means the `role` column is the ceiling, or no ceiling when an owner exists
   and `role` is empty). `owner_sub IS NULL` ⇔ role-only PAT.
 - `sessions`: `claims text[] NULL` (`NULL` ⇔ pre-upgrade, role-only).
+- `pats.role`, `sessions.role`: `DROP DEFAULT` (stay `NOT NULL`; `''` allowed
+  only alongside an owner / claims, §5.15).
 - `audit_logs`: `permission text NULL`, `scope text NULL`,
   `granted_by text NULL`.
 
@@ -724,6 +819,16 @@ role and may be empty.
 | `uses:` template edited in Git | Outside unified-cd authorization (§5.9). |
 | Agent principal on agent-or-human routes | Bypass unchanged; path identity binding unchanged. |
 | Break-glass | All permissions, globally, before any lookup. |
+| PAT requested from a pre-upgrade session (`claims IS NULL`) | `403 cannot create a token: this login predates group-aware tokens; ...`; no row written. Gone within 24 h of upgrade (§5.14). |
+| PAT requested by an OIDC bearer with no `rolesClaim` claim, config has group-keyed grants | `403 cannot create a token: your OIDC token carries no "groups" claim; ...`; no row written. |
+| Same, but config has no group-keyed grants (userMap-only) | PAT created; owner claims recorded as empty (exact). |
+| Folder-only user creates a PAT with no ceiling or a `permissions` ceiling they hold | PAT created with `role = ''` and an owner; it authenticates and is evaluated by owner ∩ ceiling. |
+| Folder-only user requests `--role developer` | `400 cannot grant role "developer": it exceeds your global role (none); use --permission ...`. |
+| Viewer requests `--role admin` (no `permissions` block) | `400` naming the role — previously silently clamped to `viewer` (§5.15). |
+| Ceiling permission held nowhere | `400 cannot grant permission "<p>": you do not hold it`. |
+| Session with claims and `role = ''` | Admitted by `ServerAuth`; decided by the permission check. |
+| Session without claims (pre-upgrade) and `role = ''`, or role-only PAT with `role = ''` | Rejected in `ServerAuth`: `403 forbidden: no role`. |
+| Owner/claims present but nothing in current config matches | Admitted; every route `403 forbidden: token owner has no permissions` / `forbidden: no permissions`. |
 | Folder-only user creates a PAT | Needs `token.create`, which is global-only: grant it in `permissions.global` (see the example in §5.4). Safe, because the PAT is bounded by the owner's grants. |
 | User in no `roleMap` group, `defaultRole: deny`, matched only by a folder grant | Logs in; sees only that folder's jobs; global pages hidden. |
 | OIDC not configured | `oidc.permissions` cannot be set (startup error); everything is PAT-based and role-only, exactly as today. |
@@ -733,8 +838,10 @@ role and may be empty.
 **Migration and rollout**
 
 1. Upgrade with no config change. Behavior is identical except token
-   management (§5.6), which the migration guide lists with a before→after
-   table. Existing PATs and sessions are role-only.
+   management (§5.6) and PAT creation (an over-high `--role` is a `400`
+   instead of a clamp; a pre-upgrade session must log in again, for at most
+   24 h — §5.14, §5.15), which the migration guide lists with a before→after
+   table and the exact error strings. Existing PATs and sessions are role-only.
 2. Optionally add `permissions.global` grants (e.g. `token.create` for
    everyone) — purely additive.
 3. To separate teams: move team groups out of `roleMap` (or demote them to no
@@ -762,14 +869,27 @@ role and may be empty.
 - **Legacy equivalence (golden).** A frozen table of today's `route → min
   role` (captured from the current `requireMinRole` registrations) is checked
   against the new evaluation for each of `viewer`/`developer`/`admin` with no
-  `permissions` block. The only permitted differences are the token rows,
-  listed in the test by name.
+  `permissions` block. The only permitted differences are the token rows
+  (§5.6, §5.14, §5.15), listed in the test by name.
 - **Resolution.** `userMap` demotion still demotes the global role and does
   not suppress `permissions`; login denial only when both legacy and new
   grants are empty; every startup error in §5.4 by exact string.
 - **PATs.** Ceiling ∩ owner; config removal reduces a PAT's access without
-  re-issue; login refreshes owner claims; PAT-from-PAT; role-only PATs; legacy
-  role clamp unchanged; `400` on an unheld permission; break-glass.
+  re-issue; login refreshes owner claims; PAT-from-PAT (bound by the parent's
+  effective grants); role-only PATs; break-glass.
+- **PAT creation refusals (§5.14, §5.15).** Exact status and string for: a
+  pre-upgrade session (`claims IS NULL`) → `403`, no row written; an OIDC
+  bearer without the `rolesClaim` claim when group-keyed grants exist → `403`;
+  the same bearer with a userMap-only config → created with empty owner
+  claims; `--role` above the global role (including empty global role) →
+  `400` naming the role; unheld `permissions` entry → `400`.
+- **`ServerAuth` admission (§5.15).** Session with claims and `role ''` →
+  admitted; session without claims and `role ''` → `403 forbidden: no role`;
+  owner PAT with `role ''` → admitted; role-only PAT with `role ''` → `403
+  forbidden: no role`; OIDC bearer denied by `resolveRole` but matched by a
+  folder grant → admitted; admitted principal with an empty grant set → `403`
+  `no permissions` on every route; the migration leaves no `DEFAULT` on
+  `pats.role` / `sessions.role`.
 - **Filtering.** Lists, SSE connect, artifacts, `agents/{id}/runs`, schedule
   list and re-target.
 - **Audit.** Allowed and denied requests record `permission`, `scope` and
@@ -799,7 +919,7 @@ role and may be empty.
   `controller-and-database.md`) for every startup error string and for
   `403 forbidden: missing permission ...` / unexpected 404.
 - `docs/operator-manual/migrations/` — token-management narrowing, the
-  team-separation recipe.
+  PAT-creation refusals with their exact strings, the team-separation recipe.
 - `examples/config/controller.yaml` — a commented `permissions` example.
 - `README.md` — feature summary (fine-grained per-folder permissions).
 - `TODO.md` — item 24 (replay audit) is closed by this work.
