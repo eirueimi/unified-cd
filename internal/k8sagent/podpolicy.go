@@ -224,7 +224,18 @@ func (p *JobPodPolicy) CheckJobPodTemplate(agentTmpls map[string]AgentPodTemplat
 	}
 	switch {
 	case jobTmpl.Name != "":
-		return nil // Task 3: override patches against the named template.
+		if jobTmpl.Override == nil {
+			return nil // an unpatched operator template is trusted (spec R3)
+		}
+		at, ok := agentTmpls[jobTmpl.Name]
+		if !ok {
+			return nil // BuildPod reports the missing template
+		}
+		base, err := podSpecFromMap(at.Spec)
+		if err != nil {
+			return nil // BuildPod reports it
+		}
+		return p.checkOverride(base, jobTmpl.Override)
 	case jobTmpl.Spec != nil:
 		spec, err := podSpecFromMap(jobTmpl.Spec)
 		if err != nil {
@@ -235,6 +246,39 @@ func (p *JobPodPolicy) CheckJobPodTemplate(agentTmpls map[string]AgentPodTemplat
 		return c.result()
 	}
 	return nil
+}
+
+// checkOverride applies spec §5.6: patch volumes and containers are job
+// content; a patch container's mount of a template volume the patch does not
+// replace is checked as if the job had declared that volume.
+func (p *JobPodPolicy) checkOverride(base *corev1.PodSpec, patch *dsl.PodSpecPatch) error {
+	containers, err := containersFromMaps(patch.Containers)
+	if err != nil {
+		return nil
+	}
+	volumes, err := volumesFromMaps(patch.Volumes)
+	if err != nil {
+		return nil
+	}
+	c := &podPolicyChecker{p: p, sa: effectiveServiceAccount(base)}
+	replaced := map[string]bool{}
+	for _, v := range volumes {
+		replaced[v.Name] = true
+	}
+	tmplVols := map[string]*corev1.Volume{}
+	for i := range base.Volumes {
+		if !replaced[base.Volumes[i].Name] {
+			tmplVols[base.Volumes[i].Name] = &base.Volumes[i]
+		}
+	}
+	lookup := func(name string) *corev1.Volume { return tmplVols[name] }
+	for i := range volumes {
+		c.checkVolume(&volumes[i], fmt.Sprintf("podTemplate.override.volumes[%d]", i))
+	}
+	for i := range containers {
+		c.checkContainer(&containers[i], fmt.Sprintf("podTemplate.override.containers[%d]", i), lookup)
+	}
+	return c.result()
 }
 
 // effectiveServiceAccount is the account a Pod built from spec runs as (spec §5.5).
