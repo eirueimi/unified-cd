@@ -785,10 +785,10 @@ template, so every field Kubernetes accepts reaches the API server as written: `
 check unified-cd applies.
 
 Anyone with the `developer` role can therefore run a Pod with any ServiceAccount in the job
-namespace, and with whatever privileges that namespace admits. The shipped `ci` namespace carries
-no Pod Security labels, so on a cluster with no default admission policy a job can mount the
-node's root filesystem. Until the agent restricts these fields itself (TODO item 36), enforce a
-policy on the job namespace:
+namespace, and with whatever privileges that namespace admits. The shipped `ci` namespace enforces
+Pod Security `baseline`, which rejects `privileged`, `hostPath` and host namespaces; a namespace you
+create yourself carries no such labels. Until the agent restricts these fields itself (TODO item 36),
+enforce a policy on the job namespace:
 
 - Label it for [Pod Security Admission](https://kubernetes.io/docs/concepts/security/pod-security-admission/),
   for example `pod-security.kubernetes.io/enforce: baseline` (`restricted` also works for jobs whose
