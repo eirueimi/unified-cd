@@ -259,6 +259,9 @@ func envSliceToMap(env []string) map[string]string {
 // default pod (runsIn.container), via the same ExecStep path as RunDefault,
 // threading step.Shell through identically.
 func (b *k8sBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
+	if dsl.IsForbiddenStepContainer(container) {
+		return -1, fmt.Errorf("k8s: refusing to exec into reserved container %q", container)
+	}
 	ec, err := b.a.exec.ExecStep(ctx, b.podName, container, script, step.Shell, env, stdout, stderr)
 	return ec, b.explainPodLoss(ctx, b.podName, err)
 }
@@ -1238,6 +1241,9 @@ func (b *k8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle
 		}
 		targetPod = podName
 		container = "step"
+	}
+	if dsl.IsForbiddenStepContainer(container) {
+		return fmt.Errorf("k8s: refusing to exec into reserved container %q", container)
 	}
 	if targetPod == "" {
 		targetPod = b.podName

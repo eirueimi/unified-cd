@@ -108,9 +108,15 @@ func TestValidateContainerReferences(t *testing.T) {
 		t.Fatal("undefined container in a finally step must error")
 	}
 
-	// Reserved is valid even with no podTemplate at all.
-	if err := ValidateContainerReferences(Spec{Steps: []StepEntry{{Name: "a", Container: "unified-artifact", Run: "e"}}}); err != nil {
-		t.Fatalf("reserved container with no podTemplate should pass, got %v", err)
+	// The primary container is valid even with no podTemplate at all; the
+	// sidecar and shim names never are.
+	if err := ValidateContainerReferences(Spec{Steps: []StepEntry{{Name: "a", Container: "job", Run: "e"}}}); err != nil {
+		t.Fatalf("job container with no podTemplate should pass, got %v", err)
+	}
+	for _, name := range []string{"unified-artifact", "ucd-shim"} {
+		if err := ValidateContainerReferences(Spec{Steps: []StepEntry{{Name: "a", Container: name, Run: "e"}}}); err == nil {
+			t.Fatalf("container %q must fail ValidateContainerReferences", name)
+		}
 	}
 }
 

@@ -249,7 +249,17 @@ func (j *Job) Validate() error {
 		return fmt.Errorf("spec.vars: %w", err)
 	}
 
-	// Plain (uses-free, inline-podTemplate) non-native jobs get
+	// Collect step names for duplicate detection across steps and finally.
+	nameSet := map[string]bool{}
+	if err := validateStepEntries(j.Spec.Steps, "spec.steps", nameSet, true, j.Spec.Native); err != nil {
+		return err
+	}
+	if err := validateStepEntries(j.Spec.Finally, "spec.finally", nameSet, false, j.Spec.Native); err != nil {
+		return err
+	}
+
+	// Runs after validateStepEntries so a forbidden step target gets the
+	// spec.steps[i] (name) error form. Plain (uses-free, inline-podTemplate) non-native jobs get
 	// container-reference validation at apply time; uses-bearing specs defer to
 	// the controller's post-resolution check and named-podTemplate specs defer
 	// to pod build on the agent (see specDefersContainerValidation).
@@ -258,15 +268,6 @@ func (j *Job) Validate() error {
 		if err := ValidateContainerReferences(j.Spec); err != nil {
 			return err
 		}
-	}
-
-	// Collect step names for duplicate detection across steps and finally.
-	nameSet := map[string]bool{}
-	if err := validateStepEntries(j.Spec.Steps, "spec.steps", nameSet, true, j.Spec.Native); err != nil {
-		return err
-	}
-	if err := validateStepEntries(j.Spec.Finally, "spec.finally", nameSet, false, j.Spec.Native); err != nil {
-		return err
 	}
 
 	for i, p := range j.Spec.Params.Inputs {
@@ -412,6 +413,9 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 						return fmt.Errorf("%s (%s): post.shell: %w", subPath, st.Name, err)
 					}
 				}
+				if IsForbiddenStepContainer(st.Container) {
+					return ForbiddenStepContainerError(subPath, st.Name, st.Container)
+				}
 				if err := checkStepExecTarget(st.Container, st.RunsIn, st.Uses != nil, subPath, st.Name); err != nil {
 					return err
 				}
@@ -452,6 +456,9 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 				if err := validShellArgv(entry.Post.Shell); err != nil {
 					return fmt.Errorf("%s (%s): post.shell: %w", entryPath, entry.Name, err)
 				}
+			}
+			if IsForbiddenStepContainer(entry.Container) {
+				return ForbiddenStepContainerError(entryPath, entry.Name, entry.Container)
 			}
 			if err := checkStepExecTarget(entry.Container, entry.RunsIn, entry.Uses != nil, entryPath, entry.Name); err != nil {
 				return err

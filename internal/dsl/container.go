@@ -14,11 +14,9 @@ import (
 // ucdShimContainerName, which aliases this). WorkspaceVolumeName is the
 // injected workspace volume; UcdToolsVolumeName carries the ucd-sh shim (see
 // internal/k8sagent/podbuilder.go, whose constants alias these). A uses:
-// template may not inject any of them, and the reserved container names are
-// always valid container: targets even when absent from a podTemplate's
-// container list (note: UcdShimContainerName is an init container that exits
-// before the job runs, so an exec into it would fail at runtime — it is
-// listed as reserved, not as a sane exec target).
+// template may not inject any of them. PrimaryContainerName is always a valid
+// container: target; the sidecar and shim names never are
+// (IsForbiddenStepContainer).
 const (
 	PrimaryContainerName         = "job"
 	ArtifactSidecarContainerName = "unified-artifact"
@@ -56,6 +54,50 @@ func ValidateDNS1123Label(name string) error {
 func IsReservedContainerName(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
 	return n == PrimaryContainerName || n == ArtifactSidecarContainerName || n == UcdShimContainerName
+}
+
+// IsForbiddenStepContainer reports whether name is a reserved container no
+// step may exec into: the artifact sidecar holds the object-store
+// credentials, and the shim init container has exited before any step runs.
+// Normalized like IsReservedContainerName. PrimaryContainerName ("job") is
+// reserved but is the default exec target, so it is not forbidden.
+func IsForbiddenStepContainer(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == ArtifactSidecarContainerName || n == UcdShimContainerName
+}
+
+// ForbiddenStepContainerError explains why container cannot be a step's
+// target. It assumes IsForbiddenStepContainer(container).
+func ForbiddenStepContainerError(path, stepName, container string) error {
+	why := "is reserved for the agent's artifact sidecar, which holds the object-store credentials"
+	if strings.ToLower(strings.TrimSpace(container)) == UcdShimContainerName {
+		why = "is the agent's ucd-sh installer init container, which has exited before any step runs"
+	}
+	return fmt.Errorf("%s (%s): container %q %s; steps cannot run in it. Use the primary container %q or a container declared in podTemplate",
+		path, stepName, container, why, PrimaryContainerName)
+}
+
+// ValidateStepContainerTargets rejects any step, parallel sub-step or finally
+// step of spec whose container: is forbidden. Unlike ValidateContainerReferences
+// it needs no podTemplate knowledge, so it runs on every spec, including
+// named-template and uses:-resolved ones.
+func ValidateStepContainerTargets(spec Spec) error {
+	for _, l := range []struct {
+		path    string
+		entries []StepEntry
+	}{{"spec.steps", spec.Steps}, {"spec.finally", spec.Finally}} {
+		for i, e := range l.entries {
+			if IsForbiddenStepContainer(e.Container) {
+				return ForbiddenStepContainerError(fmt.Sprintf("%s[%d]", l.path, i), e.Name, e.Container)
+			}
+			for j, p := range e.Parallel {
+				if IsForbiddenStepContainer(p.Container) {
+					return ForbiddenStepContainerError(fmt.Sprintf("%s[%d].parallel[%d]", l.path, i, j), p.Name, p.Container)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // IsReservedVolumeName reports whether name is a system-reserved volume name
@@ -176,8 +218,8 @@ func validateStepTargetedWorkingDir(spec Spec) error {
 }
 
 // ValidateContainerReferences checks that every step's container: reference in
-// spec resolves to a real target: empty (defaults to the primary container), a
-// reserved name, or a container defined in spec.PodTemplate — including
+// spec resolves to a real target: empty (defaults to the primary container), the
+// primary container name, or a container defined in spec.PodTemplate — including
 // spec.PodTemplate.Override.Containers, which defines REAL containers merged
 // into the pod at build time (see internal/k8sagent/podbuilder.go
 // mergeContainers), not just spec.PodTemplate's base container list.
@@ -202,6 +244,9 @@ func ValidateContainerReferences(spec Spec) error {
 	check := func(stepName, container, scopeID string) error {
 		if container == "" || scopeID != "" {
 			return nil
+		}
+		if IsForbiddenStepContainer(container) {
+			return ForbiddenStepContainerError("step", stepName, container)
 		}
 		if IsReservedContainerName(container) || defined[container] {
 			return nil

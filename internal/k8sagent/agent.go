@@ -365,6 +365,14 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		return
 	}
 
+	// Backstop for jobs stored before apply-time validation existed: no step
+	// may exec into the artifact sidecar (it holds the object-store
+	// credentials) or the exited shim init container.
+	if name, ctr, bad := forbiddenTargetStep(c); bad {
+		a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: step %q targets container %q, which is reserved for the agent (the artifact sidecar holds the object-store credentials; ucd-shim has exited before steps run); no step may run in it. Re-apply the job with container: %q or a podTemplate container", name, ctr, dsl.PrimaryContainerName))
+		return
+	}
+
 	// The job pod field policy (podpolicy.go). Checked before the pool, any
 	// volume lock and BuildPod: a reused pod is handed out without BuildPod,
 	// and a refused run must neither wait for nor take a volume.
@@ -696,6 +704,26 @@ type transferScan struct {
 	// cache counts cache steps, which are best-effort by design and never
 	// justify failing anything.
 	cache int
+}
+
+// forbiddenTargetStep returns the first claim step (main DAG or finally,
+// parallel included) whose container is a reserved agent container, so a job
+// stored before apply-time validation existed still cannot exec into the
+// artifact sidecar.
+func forbiddenTargetStep(c api.ClaimResponse) (step, container string, found bool) {
+	for _, stages := range [][]api.ClaimStage{c.Stages, c.Finally} {
+		for _, st := range stages {
+			if st.Step != nil && dsl.IsForbiddenStepContainer(st.Step.Container) {
+				return st.Step.DisplayName(), st.Step.Container, true
+			}
+			for i := range st.Parallel {
+				if dsl.IsForbiddenStepContainer(st.Parallel[i].Container) {
+					return st.Parallel[i].DisplayName(), st.Parallel[i].Container, true
+				}
+			}
+		}
+	}
+	return "", "", false
 }
 
 // scanTransferSteps walks every step of a claim — both `stages` and `finally`,
