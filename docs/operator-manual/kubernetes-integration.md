@@ -956,9 +956,7 @@ The mitigations that work are:
 
 Treat both as recommendations to apply, not as something the policy already guarantees.
 
-<a id="job-chosen-mount-paths"></a>
-
-**Job-chosen mount paths.** The workspace `emptyDir` and every absolute `spec.volumes` entry are
+**Job-chosen mount paths.**{ #job-chosen-mount-paths } The workspace `emptyDir` and every absolute `spec.volumes` entry are
 mounted into every container of the Pod, and that includes the artifact sidecar. So the agent
 refuses, whatever `jobPodPolicy` says, a run whose job-supplied `podTemplate.workspace.mountPath` or
 absolute `spec.volumes[].mountPath` is not absolute, is not clean (`path.Clean` would change it), is
@@ -974,9 +972,7 @@ in a `spec.volumes` or `workspace` `mountPath` (`mountPath must be a POSIX path`
 `workspace.mountPath` up front. The agent also starts and execs the sidecar as
 `/usr/local/bin/unified-sidecar`, by absolute path, so a mount cannot redirect a `PATH` lookup.
 
-<a id="sidecar-filesystem-confinement"></a>
-
-**The sidecar only reads and writes inside the workspace.** A job controls symlinks in the
+**The sidecar only reads and writes inside the workspace.**{ #sidecar-filesystem-confinement } A job controls symlinks in the
 workspace, but the sidecar follows them in its own filesystem, where its credential mounts and
 trust store live. So the sidecar opens the workspace mount (the `--root` it is given on every
 artifact and cache invocation) as a confined root and resolves every path beneath it: a symlink or

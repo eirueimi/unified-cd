@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/klauspost/compress/zstd"
 )
 
 // seededStore returns a LocalObjectStore (rooted at a fresh t.TempDir) with a
@@ -301,15 +303,59 @@ func fsRoot() string {
 // A restore that skips symlink/hardlink entries still reports a hit, but must
 // say so in the step log so the user knows the tree may be incomplete.
 func TestRunCache_RestoreWarnsWhenLinksSkipped(t *testing.T) {
+	// Build the entry by hand so the test needs no symlink privilege (Windows)
+	// and does not depend on how the archiver treats links: seed a real entry
+	// with the rooted save path, then replace its archive with one holding a
+	// regular file plus a symlink and a hardlink entry.
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "dep.txt"), []byte("cached"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("dep.txt", filepath.Join(src, "link")); err != nil {
-		t.Skipf("symlinks not supported here: %v", err)
-	}
 	store := objectstore.NewLocalObjectStore(t.TempDir())
-	if err := cache.Save(context.Background(), store, "test-job", src, "k", 7); err != nil {
+	ctx := context.Background()
+	if err := cache.SaveIn(ctx, store, "test-job", src, src, "k", 7, nil); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := store.List(ctx, "caches/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archiveKey string
+	for _, k := range keys {
+		if strings.HasSuffix(k, ".tar.zst") {
+			archiveKey = k
+		}
+	}
+	if archiveKey == "" {
+		t.Fatalf("no archive object in %v", keys)
+	}
+	var buf bytes.Buffer
+	zw, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(zw)
+	body := []byte("cached")
+	for _, h := range []*tar.Header{
+		{Name: "dep.txt", Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(body))},
+		{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "dep.txt", Mode: 0o777},
+	} {
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+		if h.Typeflag == tar.TypeReg {
+			if _, err := tw.Write(body); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, archiveKey, bytes.NewReader(buf.Bytes()), int64(buf.Len())); err != nil {
 		t.Fatal(err)
 	}
 	dest := t.TempDir()
