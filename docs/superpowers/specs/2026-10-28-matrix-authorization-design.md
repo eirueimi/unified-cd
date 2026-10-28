@@ -1,8 +1,8 @@
 # Matrix authorization (fine-grained, per-folder permissions) — Design
 
 Date: 2026-10-28
-Status: Draft for review. Direction chosen by the maintainer (§4); the
-designer's calls (§5) and open questions (§6) await review. No code, no plan.
+Status: Draft for review. Direction and every former open question decided by
+the owner (§4); the designer's calls (§5) await review. No code, no plan.
 
 ## 1. Intent and why
 
@@ -38,7 +38,8 @@ path prefix of the qualified job name.
 - Folder grants inherit downward (`team-a` covers `team-a/sub/x`), and all
   grants combine by union.
 - The API hides what a caller cannot read (lists, run reads, logs, SSE,
-  artifacts), and the Web UI hides or disables actions the caller lacks.
+  artifacts), and the Web UI hides or disables actions the caller lacks —
+  with every action still enforced by the server (§5.16).
 - The audit log records which permission an audited request was checked
   against and the outcome.
 - PATs keep working, and a PAT can never exceed its creator.
@@ -53,8 +54,14 @@ path prefix of the qualified job name.
   what *job code* can do (see §5.9): a job in `team-a/` can still reference any
   secret by name, `call:` any job, target any agent labels, download artifacts
   of any run by `runId`, and inline any `uses:` template. Folder permissions
-  govern what **humans** may do through the API and UI.
-- Explicit deny rules.
+  govern what **humans** may do through the API and UI. `job.configure` on
+  any folder is therefore, in practice, the ability to read every secret.
+- Policing the contents of Git repositories. An AppSource's repository runs
+  under the Git host's own permissions; anyone who can push to it can place
+  jobs in **any** folder, and that is managed on the Git side (§4 item 13).
+- Explicit deny rules, `inherit: false`, and an `approvers:` field on the
+  `approval:` step.
+- Folder-limited PAT ceilings, and per-folder WebhookReceivers (both later).
 - Hot reload of the authorization config. Like the rest of the controller
   config it is read at startup.
 
@@ -64,8 +71,8 @@ path prefix of the qualified job name.
   config with only `roleMap` / `userMap` / `defaultRole`, or no OIDC at all,
   must need no edit and must behave exactly as before. The deliberate
   exceptions — the token-management narrowing (§5.6) and the PAT-creation
-  refusals of §5.14 / §5.15 — are each called out, and §5.6 is put to the
-  maintainer in §6.
+  refusals of §5.14 / §5.15 — are each called out and listed in the
+  migration guide.
 - Silently widening anyone's access on upgrade. No existing PAT, session or
   OIDC user may gain a permission it did not have before the operator wrote
   new config.
@@ -134,7 +141,7 @@ path prefix of the qualified job name.
 - **The Web UI does no role gating today.** It calls `/api/v1/auth/me`, which
   returns only `sub`/`name`/`email`, and renders every action.
 
-## 4. Decided parts (as the maintainer decided them)
+## 4. Decided parts (by the owner)
 
 1. **Model:** Jenkins-style matrix — (OIDC group or user) × fine-grained
    permission — with per-folder grants like project-based matrix
@@ -152,10 +159,44 @@ path prefix of the qualified job name.
 7. **Non-goals** as listed in §2: job OIDC tokens for cloud IAM, Git/AppSource
    policy, Web UI editing, regex role patterns, multi-tenant isolation.
 
+Decided by the owner on review (these were the open questions of the first
+draft):
+
+8. **Job code is not confined by folder** (former Q1). Per-folder secret
+   allow-lists, `call:` targets and agent-selector limits are non-goals. The
+   warning stays: `job.configure` anywhere ≈ reading every secret (§5.9).
+9. **Inheritance is union only** (former Q2). No `inherit: false`, no
+   `approvers:` field. Keeping a team out of its own production approvals is
+   done with sibling folders (`team-a/`, `team-a-prod/`), not nesting (§5.2).
+10. **PAT folder limits: later** (former Q3). v1 ceilings are a role or a
+    permission list; a `folders:` ceiling remains a compatible extension.
+11. **Developers list and delete only their own PATs; `token.manage` is
+    admin-only** (former Q4, §5.6).
+12. **Per-folder WebhookReceivers: later** (former Q5). They stay global
+    `webhook.*` resources in v1.
+13. **No AppSource folder limit** (former Q6, dropped). Principle: Git
+    repositories run under their own (Git host) permissions, so unified-cd does
+    not police repository contents. Jobs synced by an AppSource are trusted as
+    the repository writers' decision; folder grants govern only actions taken
+    through unified-cd's own Web UI and API. Anyone who can push to an
+    AppSource's repository can place jobs in any folder (the folder is the
+    file's directory, §3), and controlling that is the Git host's job —
+    branch protection, CODEOWNERS, review rules.
+14. **One `job.read`** (former Q7) covers the definition, YAML, runs, logs,
+    events, outputs, approvals list and artifacts. Splitting it later stays
+    backward compatible (bundles and existing grants would imply the new
+    permissions).
+15. **The Web UI's permission handling must be solid** (owner emphasis):
+    every UI action is enforced server-side, never by UI-only hiding; the UI
+    hides or disables actions from the `/auth/me` grants, with a fixture shared
+    by the server and web tests; unreadable jobs and runs are absent from
+    lists, `404` on direct access and excluded from SSE streams; every
+    decision is audited. Specified in §5.16.
+
 ## 5. Designer's calls
 
-Each item below is the designer's call, with the reason. §6 lists those the
-maintainer should confirm or overrule.
+Each item below is the designer's call, with the reason, unless it says it
+records an owner decision.
 
 ### 5.1 A 24-permission catalogue, `<resource>.<verb>`, one per route
 
@@ -170,7 +211,8 @@ counterpart; approval and schedule are unified-cd-specific.
   YAML, runs, steps, logs, SSE, outputs, approvals list and artifacts.
   Splitting logs or artifacts off is a compatible later change (the bundles
   would include the new permission). Today every role can read all of these,
-  so nobody needs the split to keep current behavior.
+  so nobody needs the split to keep current behavior. Confirmed by the owner
+  (§4 item 14).
 - **`job.configure` is create-or-update.** Apply is an upsert; splitting create
   from update would add a race-prone existence check for no stated need.
 - **`run.replay` is separate from `run.trigger`.** Replay executes the run's
@@ -192,8 +234,8 @@ is answered by reading `global` plus the entries for `team-a` and
 `team-a/prod`. An explicit deny or a "do not inherit" flag would make every
 answer depend on the whole file, and Jenkins' matrix has no deny either. The
 cost — that `team-a` developers cannot be kept out of `team-a/prod` approvals
-while they hold `developer` on `team-a` — is real and is put to the maintainer
-as §6 Q2.
+while they hold `developer` on `team-a` — is real; the owner accepted it (§4
+item 9): such jobs go in a sibling folder (`team-a-prod/`) instead.
 
 ### 5.3 Folder matching is segment-wise on the qualified name
 
@@ -355,7 +397,7 @@ current config is what the operator expects when they edit the file.
 
 ### 5.6 Token management becomes per-owner (one deliberate narrowing)
 
-Designer's call, confirmation requested in §6 Q4. Today any developer can list
+Designer's proposal, confirmed by the owner (§4 item 11). Today any developer can list
 and delete every PAT, including admins' and the bootstrap row. With owners
 recorded:
 
@@ -394,7 +436,7 @@ repo URL.
 
 ### 5.9 Job code is not confined; non-human triggers act as the system
 
-Designer's call, confirmation requested in §6 Q1. Folder permissions decide
+Designer's call, confirmed by the owner (§4 items 8 and 13). Folder permissions decide
 what a human may do through the API and UI. They do not change what a job,
 once it runs, may reach:
 
@@ -406,11 +448,15 @@ once it runs, may reach:
   ("jobs under `team-a/` may only declare `TEAM_A_*`") would be enforceable at
   run creation (one choke point, `createRunFromJob`, covers trigger, replay,
   schedule, webhook and `call:`), but it is a confinement-of-job-code feature
-  and it changes the "secrets are global" contract; it is left to §6 Q1.
+  and it changes the "secrets are global" contract; the owner made it a
+  non-goal.
 - **`call:`** child runs are created by the agent principal (`agent:<id>`),
   with no human in the request, and may target any job. An apply-time check
   would be incomplete (the call can come from a Git `uses:` template, which
   the controller never sees at apply time), so v1 adds none.
+- **AppSource-synced jobs** are the repository writers' decision (§4 item
+  13). The reconciler writes them as the system, into whatever folders the
+  repository layout produces; no folder grant is consulted.
 - **Schedules, WebhookReceivers and AppSource syncs** fire as the system. The
   authorization happens when the trigger is *configured*: creating or
   re-targeting a schedule needs `schedule.configure` on the target job's
@@ -470,8 +516,8 @@ Designer's call. Each audited row gains `permission` (e.g. `run.trigger`),
 `grantedBy` — a short, stable description of the first grant that allowed it
 (`role:developer (roleMap["my-org:devs"])`, `folder:team-a
 (groups["my-org:team-a"])`, `pat-ceiling`, `break-glass`) or empty on a deny.
-The allow-list nature, the "no GETs" rule and the secret-body special case are
-unchanged. `run.replay` is classified at the same time (it is TODO item 24 and
+The allow-list nature and the secret-body special case are unchanged; the
+"no GETs" rule is relaxed to record denied reads only (§5.16 rule 6). `run.replay` is classified at the same time (it is TODO item 24 and
 the route table touches it anyway).
 
 ### 5.13 Route classification lives in one table
@@ -581,36 +627,89 @@ claims is never written by new code.
   gets `403 forbidden: token owner has no permissions` (PAT) or `403
   forbidden: no permissions` (session/bearer) on every route.
 
-## 6. Open questions (the maintainer decides)
+### 5.16 Web UI enforcement: the server decides, the UI only reflects
 
-- **Q1. Confining job code by folder — in scope?** Default above: no (§5.9).
-  If yes, the cheapest meaningful piece is a per-folder secret allow-list
-  (literal names or a trailing-`*` prefix, enforced at run creation), followed
-  by per-folder `call:` targets and agent-selector constraints. Each one
-  changes a global contract and needs its own migration note.
-- **Q2. Should a folder be able to stop inheriting?** Union-only (§5.2) means
-  `team-a` developers can always approve `team-a/prod/*`. Options: (a) keep
-  union-only and lay out folders as siblings (`team-a/`, `team-a-prod/`) — the
-  default; (b) add `inherit: false` on a folder entry, which drops ancestor
-  *folder* grants but keeps `global` (Jenkins' "inherit global only"); (c) add
-  an `approvers:` field to the DSL `approval:` step instead.
-- **Q3. Folder-narrowed PATs?** v1 ceilings are a role or a permission list,
-  not folders. Adding `folders: [team-a]` to a PAT's ceiling is a compatible
-  extension and useful for per-team bots. Ship it in v1 or later?
-- **Q4. Confirm the token-management narrowing (§5.6).** Alternative: put
-  `token.manage` in the `developer` bundle to keep today's behavior exactly, at
-  the cost of folder-limited developers being able to revoke anyone's PAT.
-- **Q5. Should WebhookReceivers become folder-scoped?** Today only admins
-  create them. A receiver with `trigger.job` could be authorized like a
-  schedule (`webhook.configure` on the target job's folder), letting teams wire
-  their own Git webhooks. v1 keeps them global.
-- **Q6. AppSource folder confinement?** An AppSource can create jobs in any
-  folder its repo layout produces. A `spec.folder` prefix that the reconciler
-  enforces would let an admin delegate a repo to a team safely. Out of v1
-  unless the maintainer wants it.
-- **Q7. `job.read` granularity.** One read permission (§5.1) vs. separate
-  `run.logs.read` / `artifact.read` for teams that may see that a job ran but
-  not its output. Default: one.
+Records the owner's emphasis (§4 item 15); the mechanisms are designer's calls.
+
+**Inventory.** The UI's state-changing calls today are: trigger
+(`JobRun.svelte`, `POST /runs`), rebuild (`RunDetail.svelte`, also `POST /runs`
+with the run's params — a trigger, not a replay), cancel (`POST
+/runs/{id}/cancel`), approve/reject (`POST /runs/{runID}/approvals/{i}`),
+AppSource sync (`POST /appsources/{name}/sync`), and token create/delete
+(`TokenList.svelte`). The UI has no job edit or delete action. Every one of
+these is a row of the route table (§7.2) and is decided by the server like any
+API call; the inventory is kept as a test fixture so that a new UI action
+without a classified route fails a test.
+
+**Rules.**
+
+1. **Server-side first.** No action is protected only by hiding. A hidden
+   control that is called anyway (devtools, stale page, crafted request) gets
+   the same `403`/`404` as the CLI would. The UI renders that response as an
+   error and does not retry.
+2. **Hide or disable from `/auth/me`.** The page loads the caller's grants
+   once (§5.11) and evaluates `can(permission, jobName)` per control. Rule of
+   thumb: a control for an action the caller could never take anywhere is
+   **hidden** (navigation to Secrets, GitCredentials, AppSources, Webhooks,
+   Vars, audit; the token page's "all tokens" view); a per-job control the
+   caller lacks on *this* job is **disabled** with a tooltip naming the
+   permission (`requires run.approve on team-a/prod`), so a user who expects
+   the button can tell why it is greyed out instead of filing a bug. The
+   token page offers only ceilings the caller holds.
+3. **One rule, tested on both sides.** `can()` in `web/src/lib` and the Go
+   evaluator are tested against the same fixture file (§9); the fixture is
+   the spec of the prefix/union rule.
+4. **Unreadable means absent.** Job lists, the active-runs view, agent run
+   history and schedule lists are rendered from server responses that are
+   already filtered (§7.4), so unreadable jobs and runs never reach the
+   browser. A direct link to an unreadable job or run gets `404` and renders
+   the ordinary not-found view. SSE: `GET /runs/{id}/events` is per run and
+   refuses at connect (`404`); there is no multi-run stream today, and any
+   future one must filter per event with the same evaluator — the route table
+   entry for such a stream is `filtered`, which the classification test
+   requires to have a per-item filter test.
+5. **Stale grants.** Grants change only at controller restart or re-login.
+   On any `403` the UI re-fetches `/auth/me` once and re-renders, so a page
+   left open across a config change converges without a manual reload.
+6. **Every decision audited.** Designer's call on what "every" means: every
+   state-changing request is recorded, allowed or denied, with `permission`,
+   `scope` and `grantedBy` (§5.12) — the UI's actions are all
+   state-changing, so all are covered. Additionally, every **denied read**
+   (a `403`, or a `404` caused by missing `job.read` — recorded as a deny even
+   though the client saw `404`) is recorded. Allowed reads are not: log
+   tailing and list polling would flood the table and the audit trail would
+   stop being readable, which defeats it.
+
+### 5.17 AppSource-managed jobs edited through the API or UI
+
+Investigated, and the code already does the right thing; no new rule is
+needed. Designer's call only on ordering (§5.8) and wording below.
+
+- `handleApplyJob` and `handleDeleteJob` (`internal/controller/api_jobs.go`)
+  call `guardManagedResource` (`managed_guard.go`) on the qualified name. If
+  an AppSource lists the job in its managed resources and its
+  `syncPolicy.allowManualOverride` is not `true`, the write is refused with
+  `409`:
+  `resource Job "team-a/build" is managed by AppSource "pipelines"; update it in Git (<repoURL with credentials redacted>), or set syncPolicy.allowManualOverride: true on the AppSource`.
+  The guard fails closed on a store error. The same guard covers Schedules,
+  WebhookReceivers, GitCredentials, Vars and AppSources.
+- With `allowManualOverride: true` an edit is accepted and is overwritten on
+  the next sync that changes the file (the reconciler upserts unconditionally)
+  — that is the documented incident escape hatch, not a gap.
+- The Web UI has no job edit or delete control, so the UI path does not
+  exist; run-level actions (trigger, cancel, approve) on managed jobs are not
+  edits and are governed only by folder permissions.
+- With this design: the permission check runs first (§5.8), so a caller
+  without `job.configure`/`job.delete` on that folder gets `403`/`404`, never
+  the repo URL; a caller with it gets the existing `409`. Should a job edit
+  control ever be added to the UI, it must be disabled for managed jobs with
+  the same message (the job response would then need a `managedBy` field);
+  that is noted for whoever adds it, not built here.
+
+## 6. Open questions
+
+None. The seven questions of the first draft were answered by the owner and
+are recorded in §4 items 8–14.
 
 ## 7. The design
 
@@ -773,13 +872,7 @@ bundle granted on a folder contributes only its folder-scopable members.
 - **Schedules.** Applying a schedule whose name already exists checks
   `schedule.configure` on both the old and the new target, so a team cannot
   take over another team's schedule by reusing its global name.
-- **Web UI.** Navigation entries (Secrets, GitCredentials, Tokens,
-  AppSources, Webhooks, audit) are hidden without the matching read
-  permission; job and run pages hide Apply/Delete/Trigger/Replay/Cancel/
-  Delete-run/Approve/Reject controls the caller lacks for that job; the token
-  page offers ceilings from the caller's own grants. A `403`/`404` from the
-  server is still rendered as an error — hiding is a convenience, not the
-  check.
+- **Web UI.** §5.16.
 - **CLI.** `unified-cli token create` gains a repeatable
   `--permission <name>` alongside `--role`. Error messages are the server's
   (§5.7), so no CLI logic changes.
@@ -813,7 +906,8 @@ role and may be empty.
 | Approval of a run whose job moved | `run.approve` is checked at decision time against the run's current `job_name`. For a rename that is the new folder; for an AppSource move the run belongs to the old job and stays under the old folder. |
 | Replay | `run.replay` on the source run's job (current `job_name`). The replayed run is created under that same job. |
 | Direct apply into another folder via `annotations.path` | Checked on the resulting qualified name (§5.3). |
-| Direct apply of an AppSource-managed job | Permission check first, then the managed-resource guard (§5.8). |
+| Direct apply or delete of an AppSource-managed job (API/CLI) | Permission check first, then the existing managed-resource guard: `409` pointing to the AppSource and repo, unless `allowManualOverride` (§5.8, §5.17). |
+| Someone pushes a job into another team's folder via an AppSource repo | Synced; not a unified-cd decision (§4 item 13). Visible to that folder's readers like any other job. |
 | Schedule fires / webhook fires / AppSource syncs | System principal; no permission check at fire time. The configuring action was checked (§5.9, §7.4). |
 | `call:` child run | Created by the agent principal; unaffected (§5.9). The child run's visibility follows the child job's folder, so a team may see its parent run but not the child. The parent run's step shows the child run ID; following it returns 404 for a caller without `job.read` there. |
 | `uses:` template edited in Git | Outside unified-cd authorization (§5.9). |
@@ -892,18 +986,29 @@ role and may be empty.
   `pats.role` / `sessions.role`.
 - **Filtering.** Lists, SSE connect, artifacts, `agents/{id}/runs`, schedule
   list and re-target.
-- **Audit.** Allowed and denied requests record `permission`, `scope` and
-  `grantedBy`; `run.replay` is recorded.
-- **UI.** One shared fixture (`(grants, permission, jobName) → bool`)
-  consumed by a Go test and a Vitest test of the client `can()`; component
-  tests that controls are hidden for a caller lacking the permission.
+- **Audit.** Allowed and denied state-changing requests and denied reads
+  (including a hidden-job `404`) record `permission`, `scope` and
+  `grantedBy`; allowed reads are not recorded; `run.replay` is recorded.
+- **UI (§5.16).** One shared fixture (`(grants, permission, jobName) →
+  bool`) consumed by a Go test and a Vitest test of the client `can()`; a Go
+  test that every action in the UI inventory is a classified route whose
+  server check refuses a caller without the permission (no action is
+  protected only by hiding); component tests that each control is hidden or
+  disabled for a caller lacking its permission and shown otherwise; list views
+  contain no unreadable job; a direct link to an unreadable run renders the
+  not-found view; a `403` triggers one `/auth/me` re-fetch.
+- **AppSource-managed jobs (§5.17).** API apply and delete of a managed job
+  return the existing `409` string after the permission check passes; a
+  caller without `job.configure` / `job.delete` gets `403`/`404` without the
+  repo URL; with `allowManualOverride` the write succeeds.
 
 ## 10. Documentation to update with the implementation
 
 - `docs/operator-manual/authorization.md` — replace the role matrix with the
   catalogue, bundles, `oidc.permissions` reference and examples, the "job
-  names are not confidential" and "folders are not a secret boundary"
-  warnings, resolution order including union and login rule, PAT rule. Also
+  names are not confidential", "folders are not a secret boundary" and
+  "anyone who can push to an AppSource repository can place jobs in any
+  folder" warnings, the sibling-folder recipe, resolution order including union and login rule, PAT rule. Also
   fixes the existing gaps (Vars, replay, run delete, artifacts are missing
   from today's matrix).
 - `docs/operator-manual/authentication.md` — sessions store claims; PAT
@@ -922,4 +1027,10 @@ role and may be empty.
   PAT-creation refusals with their exact strings, the team-separation recipe.
 - `examples/config/controller.yaml` — a commented `permissions` example.
 - `README.md` — feature summary (fine-grained per-folder permissions).
+- `docs/user-guide/resources/app-source.md` — managed-resource protection
+  section: folder grants do not apply to synced jobs; the Git host governs
+  who can write them.
+- `docs/contributing/frontend-development.md` — the `can()` helper, the shared
+  fixture, hide-vs-disable, and the rule that a UI control is never the only
+  enforcement.
 - `TODO.md` — item 24 (replay audit) is closed by this work.
