@@ -205,18 +205,27 @@ func DownloadIn(ctx context.Context, store objectstore.ObjectStore, runID, name,
 // or hardlink entry in the archive is an error when refuseLinks is set and is
 // skipped otherwise.
 func ExtractTarZstdIn(r io.Reader, root, dest string, exclude []string, refuseLinks bool) error {
+	_, err := ExtractTarZstdInCounting(r, root, dest, exclude, refuseLinks)
+	return err
+}
+
+// ExtractTarZstdInCounting is ExtractTarZstdIn that also reports how many
+// symlink and hardlink entries it skipped (always 0 when refuseLinks is set,
+// since the first link is then an error), so a caller can tell the user the
+// extracted tree is incomplete.
+func ExtractTarZstdInCounting(r io.Reader, root, dest string, exclude []string, refuseLinks bool) (skippedLinks int, err error) {
 	rt, absRoot, err := openRoot(root)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer rt.Close()
 	destRel, err := RelInRoot(absRoot, dest)
 	if err != nil {
-		return err
+		return skippedLinks, err
 	}
 	dec, err := zstd.NewReader(r)
 	if err != nil {
-		return fmt.Errorf("zstd reader: %w", err)
+		return skippedLinks, fmt.Errorf("zstd reader: %w", err)
 	}
 	defer dec.Close()
 	var skip []string
@@ -230,11 +239,11 @@ func ExtractTarZstdIn(r io.Reader, root, dest string, exclude []string, refuseLi
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("tar next: %w", err)
+			return skippedLinks, fmt.Errorf("tar next: %w", err)
 		}
 		rel := filepath.Join(destRel, filepath.FromSlash(hdr.Name))
 		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-			return fmt.Errorf("invalid path %q in artifact archive", hdr.Name)
+			return skippedLinks, fmt.Errorf("invalid path %q in artifact archive", hdr.Name)
 		}
 		if isUnderAny(filepath.Join(absRoot, rel), skip) {
 			continue
@@ -242,26 +251,27 @@ func ExtractTarZstdIn(r io.Reader, root, dest string, exclude []string, refuseLi
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := rt.MkdirAll(rel, 0o750); err != nil {
-				return err
+				return skippedLinks, err
 			}
 		case tar.TypeSymlink, tar.TypeLink:
 			if refuseLinks {
-				return fmt.Errorf("unsupported %s entry %q in artifact archive", typeflagName(hdr.Typeflag), hdr.Name)
+				return skippedLinks, fmt.Errorf("unsupported %s entry %q in artifact archive", typeflagName(hdr.Typeflag), hdr.Name)
 			}
+			skippedLinks++
 		default:
 			if err := rt.MkdirAll(filepath.Dir(rel), 0o750); err != nil {
-				return err
+				return skippedLinks, err
 			}
 			f, err := rt.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o666)
 			if err != nil {
-				return err
+				return skippedLinks, err
 			}
 			if _, err := io.Copy(f, tr); err != nil {
 				f.Close()
-				return err
+				return skippedLinks, err
 			}
 			f.Close()
 		}
 	}
-	return nil
+	return skippedLinks, nil
 }

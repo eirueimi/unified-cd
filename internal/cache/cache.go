@@ -171,11 +171,15 @@ func RestoreExcluding(ctx context.Context, store objectstore.ObjectStore, jobNam
 // RestoreIn is RestoreExcluding confined to root: path must lie at or below
 // root and nothing is written through a symlink that leads outside root (see
 // artifact.ExtractTarZstdIn). Symlink and hardlink entries in the archive are
-// skipped. It is what the k8s sidecar runs.
-func RestoreIn(ctx context.Context, store objectstore.ObjectStore, jobName, root, path, key string, restoreKeys []string, exclude []string) (bool, error) {
-	return restore(ctx, store, jobName, key, restoreKeys, func(r io.Reader) error {
-		return artifact.ExtractTarZstdIn(r, root, path, exclude, false)
+// skipped; skippedLinks is how many were, so the caller can warn that the
+// restored tree may be incomplete. It is what the k8s sidecar runs.
+func RestoreIn(ctx context.Context, store objectstore.ObjectStore, jobName, root, path, key string, restoreKeys []string, exclude []string) (hit bool, skippedLinks int, err error) {
+	hit, err = restore(ctx, store, jobName, key, restoreKeys, func(r io.Reader) error {
+		n, err := artifact.ExtractTarZstdInCounting(r, root, path, exclude, false)
+		skippedLinks = n
+		return err
 	})
+	return hit, skippedLinks, err
 }
 
 func restore(ctx context.Context, store objectstore.ObjectStore, jobName, key string, restoreKeys []string, extract func(io.Reader) error) (bool, error) {

@@ -185,3 +185,30 @@ func TestExtractTarZstdIn_RoundTripAndExclude(t *testing.T) {
 	require.Equal(t, "A", string(b))
 	require.NoFileExists(t, filepath.Join(dest, "vol", "b.txt"))
 }
+
+func TestExtractTarZstdInCounting_CountsSkippedLinks(t *testing.T) {
+	var buf bytes.Buffer
+	enc, err := zstd.NewWriter(&buf)
+	require.NoError(t, err)
+	tw := tar.NewWriter(enc)
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "a.txt", Mode: 0o644, Size: 2, Typeflag: tar.TypeReg}))
+	_, err = tw.Write([]byte("hi"))
+	require.NoError(t, err)
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "sym", Typeflag: tar.TypeSymlink, Linkname: "a.txt"}))
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "hard", Typeflag: tar.TypeLink, Linkname: "a.txt"}))
+	require.NoError(t, tw.Close())
+	require.NoError(t, enc.Close())
+	archive := buf.Bytes()
+
+	root := t.TempDir()
+	n, err := ExtractTarZstdInCounting(bytes.NewReader(archive), root, root, nil, false)
+	require.NoError(t, err)
+	require.Equal(t, 2, n)
+	require.FileExists(t, filepath.Join(root, "a.txt"))
+	_, err = os.Lstat(filepath.Join(root, "sym"))
+	require.True(t, os.IsNotExist(err))
+
+	n, err = ExtractTarZstdInCounting(bytes.NewReader(archive), t.TempDir(), "", nil, true)
+	_ = n
+	require.Error(t, err)
+}

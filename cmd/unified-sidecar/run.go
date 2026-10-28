@@ -169,7 +169,7 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 			fmt.Fprintln(stderr, "cache restore: --job is required")
 			return 2
 		}
-		hit, err := cache.RestoreIn(ctx, store, *job, *root, *path, *key, restoreKeys, exclude)
+		hit, skippedLinks, err := cache.RestoreIn(ctx, store, *job, *root, *path, *key, restoreKeys, exclude)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			fmt.Fprintf(stderr, "cache restore error (ignored): %v\n", err)
 			// This path deliberately exits 0 (cache never fails a step) and
@@ -180,6 +180,9 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 			// changing that reader: `hit` is false in this branch anyway.
 		} else if hit {
 			fmt.Fprintf(stderr, "cache hit: %s\n", *key)
+			if skippedLinks > 0 {
+				fmt.Fprintf(stderr, "cache restore warning: skipped %d symlink/hardlink entries; links are not restored on the Kubernetes agent, so the cache may be incomplete (tools such as .venv or node_modules/.bin may need re-creating)\n", skippedLinks)
+			}
 			fmt.Fprintln(stdout, "UCD_CACHE_RESULT=hit")
 		} else {
 			fmt.Fprintf(stderr, "cache miss: %s\n", *key)

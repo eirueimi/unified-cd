@@ -297,3 +297,44 @@ func TestRun_ArtifactSubcommand_ProviderError_FailsLoudly(t *testing.T) {
 func fsRoot() string {
 	return filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
 }
+
+// A restore that skips symlink/hardlink entries still reports a hit, but must
+// say so in the step log so the user knows the tree may be incomplete.
+func TestRunCache_RestoreWarnsWhenLinksSkipped(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "dep.txt"), []byte("cached"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("dep.txt", filepath.Join(src, "link")); err != nil {
+		t.Skipf("symlinks not supported here: %v", err)
+	}
+	store := objectstore.NewLocalObjectStore(t.TempDir())
+	if err := cache.Save(context.Background(), store, "test-job", src, "k", 7); err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	ec := runCache(context.Background(), store, "restore",
+		[]string{"--key", "k", "--root", fsRoot(), "--path", dest, "--job", "test-job"}, &stdout, &stderr)
+	if ec != 0 {
+		t.Fatalf("exit=%d", ec)
+	}
+	if !strings.Contains(stdout.String(), "UCD_CACHE_RESULT=hit") {
+		t.Fatalf("stdout = %q, want hit marker", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "cache restore warning: skipped 1 symlink/hardlink entries") {
+		t.Fatalf("stderr = %q, want a skipped-links warning", stderr.String())
+	}
+	if _, err := os.Lstat(filepath.Join(dest, "link")); err == nil {
+		t.Fatal("link was restored; it must be skipped")
+	}
+}
+
+func TestRunCache_RestoreNoWarningWithoutLinks(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	runCache(context.Background(), seededStore(t, "k"), "restore",
+		[]string{"--key", "k", "--root", fsRoot(), "--path", t.TempDir(), "--job", "test-job"}, &stdout, &stderr)
+	if strings.Contains(stderr.String(), "warning") {
+		t.Fatalf("unexpected warning: %q", stderr.String())
+	}
+}

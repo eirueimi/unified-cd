@@ -162,6 +162,7 @@ symlink or `..` out of it.
 |---|---|
 | uploads, downloads or caches a path through a symlink whose target is outside the workspace (`ln -s /etc/unified-cd l` then `path: l/s3-credentials`) | The step fails (upload, download) or does nothing (cache, which is best-effort). The target is never read or written. |
 | archives a directory that contains a symlink | The link is stored as a link entry and its target is not read. A symlink whose target was non-empty used to fail the upload. A download of an archive that holds a link entry still fails with `unsupported symlink entry`, as before. |
+| restores a cache whose archive holds symlinks or hardlinks | The Kubernetes sidecar skips link entries (it never recreated them), still reports a hit, and now prints one `cache restore warning: skipped N symlink/hardlink entries; ...` line to the step log. The restored tree may be incomplete: tools such as `.venv` or `node_modules/.bin` may need re-creating. |
 | uses symlinks that stay inside the workspace | Unchanged as path components. |
 
 Upgrade the agent and the sidecar image together: a sidecar that is older than the agent does not
