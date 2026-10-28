@@ -192,17 +192,20 @@ draft):
     by the server and web tests; unreadable jobs and runs are absent from
     lists, `404` on direct access and excluded from SSE streams; every
     decision is audited. Specified in §5.16.
+16. **Admin policy view** (added by the owner after review): an admin-only way
+    in the CLI to see how permissions are configured and why an identity holds
+    what it holds. Specified in §5.18 (details are designer's calls).
 
 ## 5. Designer's calls
 
 Each item below is the designer's call, with the reason, unless it says it
 records an owner decision.
 
-### 5.1 A 24-permission catalogue, `<resource>.<verb>`, one per route
+### 5.1 A 25-permission catalogue, `<resource>.<verb>`, one per route
 
 Designer's call. Names follow the audit actions' `resource.verb` style
 (`job.apply`, `run.trigger`, ...) so the two vocabularies read alike. Nine are
-folder-scopable, fifteen are global-only (§7). The verbs are kept to what a
+folder-scopable, sixteen are global-only (§7). The verbs are kept to what a
 team would plausibly separate: Jenkins' `Job/Read`, `Job/Configure`,
 `Job/Delete`, `Job/Build`, `Job/Cancel`, `Run/Replay`, `Run/Delete` all have a
 counterpart; approval and schedule are unified-cd-specific.
@@ -381,7 +384,7 @@ Designer's call. This is the PAT rule.
   role-only PAT — is evaluated as today: the global bundle of `pats.role`.
   This is what makes the upgrade non-widening and non-narrowing for existing
   tokens.
-- **Break-glass** short-circuits to all 24 permissions globally, before any of
+- **Break-glass** short-circuits to all 25 permissions globally, before any of
   the above, exactly where `ServerAuth` short-circuits today.
 - A PAT whose owner now resolves to nothing authenticates but gets `403
   forbidden: token owner has no permissions` on every route, so the failure is
@@ -706,6 +709,64 @@ needed. Designer's call only on ordering (§5.8) and wording below.
   the same message (the job response would then need a `managedBy` field);
   that is noted for whoever adds it, not built here.
 
+### 5.18 Admin policy view: `authz show` and `authz explain`
+
+Requested by the owner (an admin-only way in the CLI to see how permissions
+are configured); every detail below is a designer's call.
+
+- **Permission.** A new global-only permission `authz.read`, in the `admin`
+  bundle only (not `developer`, not `viewer`). It can be granted on its own in
+  `permissions.global`; naming it on a folder is the usual global-only startup
+  error. The catalogue becomes 25 permissions (9 folder-scopable, 16
+  global-only).
+- **`GET /api/v1/authz/policy`** returns the policy as the controller resolved
+  it at startup, never the raw file:
+  - `rolesClaim`, and `oidc: false` with empty sections when OIDC is not
+    configured;
+  - `bundles`: each role name with its permission list (§7.3);
+  - `legacy`: every `roleMap` and `userMap` entry and `defaultRole`, each with
+    the role it resolves to and the global permissions that role grants; a
+    `roleMap`/`userMap` value that is not a known role is listed with
+    `"ignored": true` (the §5.4 warning case);
+  - `global` and `folders`: every `oidc.permissions` entry in file order, as
+    `{subject: "group"|"user", name, grant, permissions}` where `grant` is the
+    configured list (role names and permission names as written) and
+    `permissions` its expansion at that scope (for a bundle on a folder, only
+    the folder-scopable members).
+  It contains no secrets and no tokens: no client secret, no PATs, no session
+  data, no per-user lookups.
+- **`POST /api/v1/authz/explain`** takes
+  `{"user"?: sub-or-email, "groups"?: [...], "job"?: qualified name, "folder"?: path}`
+  and returns the effective permissions of that identity at that scope:
+  - at least one of `user` / `groups` is required (`400 user or groups is
+    required`); `job` and `folder` are mutually exclusive (`400 job and folder
+    are mutually exclusive`); with neither, the scope is global. A `folder` is
+    normalised and validated like a config folder key (§5.4) and is explained
+    as a job directly inside it would be; a `job` need not exist (names are not
+    confidential, and an admin may ask before applying);
+  - `user` is matched as both email and sub, exactly as `userMap` and
+    `permissions.*.users` match at login;
+  - groups: if `groups` is passed it is used (`groupsSource: "request"`);
+    otherwise, if `user` has a stored claims snapshot from their latest browser
+    login (the newest `sessions` row with that sub or email and non-null
+    `claims`), those groups are used (`groupsSource: "login"`); otherwise the
+    group set is empty (`groupsSource: "none"`);
+  - the response carries `identity` (user, groups, groupsSource), `scope`
+    (`{kind: "global"|"job"|"folder", name}`), `globalRole` (the legacy
+    resolution, `""` if it denies), `loginAllowed` (the §5.4 login rule), and
+    `permissions`: every held permission in catalogue order with **all** the
+    grants that gave it, as the same `grantedBy` strings the audit log uses
+    (§5.12);
+  - it explains an identity, not a token: a PAT's ceiling is not applied.
+- **Audit.** Both endpoints are reads (explain is a `POST` only to carry a
+  body; it changes nothing), so per §5.16 rule 6 only denials are recorded;
+  allowed calls are not.
+- **CLI.** `unified-cd authz show [-o table|yaml|json]` (table by default) and
+  `unified-cd authz explain (--user <x> | --group <g>...) [--job <name> |
+  --folder <path>] [-o table|yaml|json]`; `--group` is repeatable and, when
+  given, is sent as `groups`. Server errors are printed as the server wrote
+  them, like every other command.
+
 ## 6. Open questions
 
 None. The seven questions of the first draft were answered by the owner and
@@ -730,7 +791,7 @@ the job a request targets.
 | `run.approve` | Approve or reject a waiting approval step. |
 | `schedule.configure` | Create, re-target or delete a schedule targeting the job. |
 
-**Global-only (15)**
+**Global-only (16)**
 
 | Permission | Meaning |
 |---|---|
@@ -749,6 +810,7 @@ the job a request targets.
 | `token.create` | Create PATs (≤ own permissions); list and delete own PATs. |
 | `token.manage` | List and delete every PAT. |
 | `audit.read` | Read the audit log. |
+| `authz.read` | Read the resolved authorization policy and explain any identity's effective permissions (§5.18). Admin bundle only. |
 
 ### 7.2 Route → permission
 
@@ -760,6 +822,8 @@ Every route registered in `server.go` (including `agentRouteIdentityMatrix`).
 | Method | Route | Today | Permission | Scope |
 |---|---|---|---|---|
 | GET | `/api/v1/audit` | admin | `audit.read` | global |
+| GET | `/api/v1/authz/policy` | (new) | `authz.read` | global |
+| POST | `/api/v1/authz/explain` | (new) | `authz.read` | global |
 | POST | `/api/v1/jobs` | developer | `job.configure` | job from body (qualified name after `annotations.path`) |
 | GET | `/api/v1/jobs` | viewer | `job.read` | filtered |
 | GET | `/api/v1/jobs/*` (job, `/yaml`, `/schedulability`) | viewer | `job.read` | job from path |
@@ -853,7 +917,7 @@ sidecars, secrets fetch, approval create/get, and `PUT
 |---|---|
 | `viewer` | `job.read`, `vars.read`, `webhook.read`, `appsource.read`, `agent.read` |
 | `developer` | `viewer` + `job.configure`, `job.delete`, `run.trigger`, `run.replay`, `run.cancel`, `run.delete`, `run.approve`, `schedule.configure`, `secret.list`, `token.create` |
-| `admin` | all 24 |
+| `admin` | all 25 (the only bundle with `authz.read`) |
 
 A role resolved by `roleMap` / `userMap` / `defaultRole`, a role-only PAT's
 role, and a pre-upgrade session's role are global grants of these bundles. A
@@ -873,6 +937,8 @@ bundle granted on a folder contributes only its folder-scopable members.
   `schedule.configure` on both the old and the new target, so a team cannot
   take over another team's schedule by reusing its global name.
 - **Web UI.** §5.16.
+- **Policy view.** `GET /authz/policy`, `POST /authz/explain` and the
+  `unified-cd authz` commands (§5.18).
 - **CLI.** `unified-cli token create` gains a repeatable
   `--permission <name>` alongside `--role`. Error messages are the server's
   (§5.7), so no CLI logic changes.
@@ -997,6 +1063,11 @@ role and may be empty.
   disabled for a caller lacking its permission and shown otherwise; list views
   contain no unreadable job; a direct link to an unreadable run renders the
   not-found view; a `403` triggers one `/auth/me` re-fetch.
+- **Policy view (§5.18).** `authz.read` is admin-only in the bundles; policy
+  output contains every config entry and no secret; explain uses login groups
+  only when `groups` is absent and reports the source; explain's `grantedBy`
+  equals the audit string for the same decision; `400` strings; CLI method,
+  path and output formats.
 - **AppSource-managed jobs (§5.17).** API apply and delete of a managed job
   return the existing `409` string after the permission check passes; a
   caller without `job.configure` / `job.delete` gets `403`/`404` without the
@@ -1008,14 +1079,16 @@ role and may be empty.
   catalogue, bundles, `oidc.permissions` reference and examples, the "job
   names are not confidential", "folders are not a secret boundary" and
   "anyone who can push to an AppSource repository can place jobs in any
-  folder" warnings, the sibling-folder recipe, resolution order including union and login rule, PAT rule. Also
+  folder" warnings, the sibling-folder recipe, inspecting the policy with
+  `unified-cd authz show` / `explain` (§5.18), resolution order including union and login rule, PAT rule. Also
   fixes the existing gaps (Vars, replay, run delete, artifacts are missing
   from today's matrix).
 - `docs/operator-manual/authentication.md` — sessions store claims; PAT
   owners and ceilings.
 - `docs/operator-manual/audit.md` — new fields; `run.replay` row.
 - `docs/reference/configuration.md` — `oidc.permissions`, config-file only.
-- `docs/reference/cli.md` — `token create --permission`; error messages.
+- `docs/reference/cli.md` — `token create --permission`; `authz show` and
+  `authz explain`; error messages.
 - `docs/contributing/auth-implementation.md` — "Adding an endpoint" step 3
   becomes "add the route to the route table with a permission and scope";
   the `viewerOrAgent` row changes.
