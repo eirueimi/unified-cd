@@ -59,10 +59,10 @@ var podSpecFieldClass = map[string]fieldClass{
 	"containers": classAllowed, "initContainers": classAllowed, "volumes": classAllowed,
 	"securityContext": classAllowed, "restartPolicy": classAllowed,
 	"terminationGracePeriodSeconds": classAllowed, "activeDeadlineSeconds": classAllowed,
-	"dnsPolicy": classAllowed, "dnsConfig": classAllowed, "nodeSelector": classAllowed,
+	"nodeSelector": classAllowed,
 	"affinity": classAllowed, "tolerations": classAllowed, "topologySpreadConstraints": classAllowed,
 	"hostname": classAllowed, "subdomain": classAllowed, "setHostnameAsFQDN": classAllowed,
-	"hostAliases": classAllowed, "enableServiceLinks": classAllowed, "os": classAllowed,
+	"enableServiceLinks": classAllowed, "os": classAllowed,
 	"hostUsers": classAllowed, "resources": classAllowed,
 
 	"serviceAccountName": classCategory, "serviceAccount": classCategory,
@@ -75,6 +75,10 @@ var podSpecFieldClass = map[string]fieldClass{
 	"schedulerName": classOptIn, "readinessGates": classOptIn, "overhead": classOptIn,
 	"schedulingGates": classOptIn, "resourceClaims": classOptIn, "hostnameOverride": classOptIn,
 	"schedulingGroup": classOptIn,
+	// Pod-level name resolution is shared by every container, the artifact
+	// sidecar included. A job that controls it controls where the sidecar's
+	// broker and object-store connections go.
+	"hostAliases": classOptIn, "dnsPolicy": classOptIn, "dnsConfig": classOptIn,
 
 	"ephemeralContainers": classNever,
 }
@@ -568,7 +572,7 @@ func (c *podPolicyChecker) checkSecurityContext(sc *corev1.SecurityContext, path
 	}
 	if sc.Capabilities != nil {
 		for i, cp := range sc.Capabilities.Add {
-			if !baselineCapabilities[normalizeCapability(string(cp))] {
+			if !baselineCapabilities[string(cp)] {
 				c.deny(fmt.Sprintf("%s.capabilities.add[%d]", path, i), subj, fmt.Sprintf("adds capability %q", cp), "allowPrivileged: true")
 			}
 		}
@@ -576,12 +580,6 @@ func (c *podPolicyChecker) checkSecurityContext(sc *corev1.SecurityContext, path
 	if sc.ProcMount != nil && *sc.ProcMount != corev1.DefaultProcMount {
 		c.deny(path+".procMount", subj, fmt.Sprintf("procMount: %s", *sc.ProcMount), "allowPrivileged: true")
 	}
-}
-
-// normalizeCapability upper-cases a capability and strips any CAP_ prefix,
-// so "cap_chown" and "CHOWN" compare equal.
-func normalizeCapability(s string) string {
-	return strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(s)), "CAP_")
 }
 
 func (c *podPolicyChecker) profiles(path, subj string, seccomp *corev1.SeccompProfile, apparmor *corev1.AppArmorProfile) {

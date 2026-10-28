@@ -974,7 +974,7 @@ func (b *k8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandl
 	if err != nil {
 		return false, err
 	}
-	argv := []string{"unified-sidecar", "cache", "restore", "--key", key, "--path", path, "--job", b.jobName, "--broker-run-id", b.runID}
+	argv := []string{sidecarBinary, "cache", "restore", "--key", key, "--path", path, "--job", b.jobName, "--broker-run-id", b.runID}
 	for _, rk := range restoreKeys {
 		argv = append(argv, "--restore-key", rk)
 	}
@@ -1047,7 +1047,7 @@ func (b *k8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, 
 	if err != nil {
 		return err
 	}
-	argv := []string{"unified-sidecar", "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path, "--job", b.jobName, "--broker-run-id", b.runID}
+	argv := []string{sidecarBinary, "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path, "--job", b.jobName, "--broker-run-id", b.runID}
 	if scope.IsZero() {
 		argv = append(argv, b.excludeVolumes(ctx, "cache save", path)...)
 	}
@@ -1075,7 +1075,7 @@ func (b *k8sBackend) UploadArtifact(ctx context.Context, scope agentlib.ScopeHan
 	if err != nil {
 		return err
 	}
-	argv := []string{"unified-sidecar", "artifact", "upload", "--run", runID, "--name", name, "--path", path, "--broker-run-id", b.runID}
+	argv := []string{sidecarBinary, "artifact", "upload", "--run", runID, "--name", name, "--path", path, "--broker-run-id", b.runID}
 	if scope.IsZero() {
 		argv = append(argv, b.excludeVolumes(ctx, "artifact", path)...)
 	}
@@ -1105,7 +1105,7 @@ func (b *k8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.ScopeH
 	if err != nil {
 		return err
 	}
-	argv := []string{"unified-sidecar", "artifact", "download", "--run", runID, "--name", name, "--dest", destDir, "--broker-run-id", b.runID}
+	argv := []string{sidecarBinary, "artifact", "download", "--run", runID, "--name", name, "--dest", destDir, "--broker-run-id", b.runID}
 	if scope.IsZero() {
 		argv = append(argv, b.excludeVolumes(ctx, "artifact download", destDir)...)
 	}

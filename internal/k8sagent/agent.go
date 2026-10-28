@@ -380,6 +380,12 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		a.failRun(ctx, c.RunID, err.Error())
 		return
 	}
+	// Job-chosen mount paths are mounted into the artifact sidecar too; no
+	// jobPodPolicy setting allows a path over its binaries or credentials.
+	if err := CheckJobMountPaths(c.PodTemplate, a.workspaceMount(c.PodTemplate), c.Volumes); err != nil {
+		a.failRun(ctx, c.RunID, err.Error())
+		return
+	}
 
 	// Sibling of the native check above, for the OTHER thing this agent
 	// structurally cannot do.

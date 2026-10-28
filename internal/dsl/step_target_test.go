@@ -62,19 +62,27 @@ func TestParse_ForbiddenStepContainerErrorForm(t *testing.T) {
 	assert.Contains(t, err.Error(), "spec.steps[0].parallel[1] (b): ")
 }
 
-// Case and whitespace variants never get through: they are rejected either by
-// the reserved-name check or by DNS-1123 / reference validation.
+// Case and whitespace variants never get through: every position (including a
+// native job) is refused with the reserved-target error for the container.
 func TestParse_ForbiddenStepContainerVariantsRejected(t *testing.T) {
-	for _, ctr := range []string{`"Unified-Artifact"`, `" unified-artifact "`, `"UCD-SHIM"`, `" ucd-shim "`} {
+	for ctr, want := range map[string]string{
+		`"Unified-Artifact"`:   "is reserved for the agent's artifact sidecar",
+		`" unified-artifact "`: "is reserved for the agent's artifact sidecar",
+		`"UCD-SHIM"`:           shimMsg,
+		`" ucd-shim "`:         shimMsg,
+	} {
 		for name, y := range stepTargetJobs(ctr) {
 			t.Run(ctr+"/"+name, func(t *testing.T) {
 				_, err := Parse(strings.NewReader(y))
 				require.Error(t, err, "variant %s must not parse", ctr)
+				if name != "native job" { // native: either error is acceptable, it just must fail
+					assert.Contains(t, err.Error(), want)
+				}
 			})
 		}
 	}
-	// The reserved-name check itself catches the plain-step variant (it does not
-	// rely on the later DNS-1123 / reference validation).
+	// The reserved-name check itself catches the plain-step variant; it does
+	// not rely on any later reference validation.
 	_, err := Parse(strings.NewReader(stepTargetJobs(`" Unified-Artifact "`)["plain step"]))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "is reserved for the agent's artifact sidecar")

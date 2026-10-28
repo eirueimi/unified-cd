@@ -241,6 +241,10 @@ func (j *Job) Validate() error {
 		return err
 	}
 
+	if err := validateWorkspaceMountPath(j.Spec); err != nil {
+		return err
+	}
+
 	if err := ValidateVolumes(j.Spec); err != nil {
 		return err
 	}
@@ -259,10 +263,11 @@ func (j *Job) Validate() error {
 	}
 
 	// Runs after validateStepEntries so a forbidden step target gets the
-	// spec.steps[i] (name) error form. Plain (uses-free, inline-podTemplate) non-native jobs get
-	// container-reference validation at apply time; uses-bearing specs defer to
-	// the controller's post-resolution check and named-podTemplate specs defer
-	// to pod build on the agent (see specDefersContainerValidation).
+	// spec.steps[i] (name) error form. Plain (uses-free, inline-podTemplate)
+	// non-native jobs get container-reference validation at apply time;
+	// uses-bearing specs defer to the controller's post-resolution check and
+	// named-podTemplate specs defer to pod build on the agent (see
+	// specDefersContainerValidation).
 	// Native jobs have no containers, so skip this check.
 	if !specDefersContainerValidation(j.Spec) && !j.Spec.Native {
 		if err := ValidateContainerReferences(j.Spec); err != nil {

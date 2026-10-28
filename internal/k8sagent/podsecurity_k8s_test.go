@@ -18,13 +18,11 @@ import (
 // admission without scheduling anything, so no image is pulled.
 func TestAgentBuiltPodsAreAdmittedUnderBaseline(t *testing.T) {
 	client, _ := newTestKubeClient(t)
-	ns := newTestNamespace(t, client)
+	// The label is set at creation, never by a later Update: admission reads
+	// namespace labels from an informer cache, so an Update can race the first
+	// Pod create and make the negative control flake.
+	ns := newTestNamespaceWithLabels(t, client, map[string]string{"pod-security.kubernetes.io/enforce": "baseline"})
 	ctx := context.Background()
-	nsObj, err := client.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
-	require.NoError(t, err)
-	nsObj.Labels = map[string]string{"pod-security.kubernetes.io/enforce": "baseline"}
-	_, err = client.CoreV1().Namespaces().Update(ctx, nsObj, metav1.UpdateOptions{})
-	require.NoError(t, err)
 	dry := metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}
 
 	for _, mode := range []string{SidecarS3SecretModeEnv, SidecarS3SecretModeFile, SidecarS3SecretModeBroker} {

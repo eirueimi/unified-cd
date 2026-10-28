@@ -83,7 +83,7 @@ func (a *argvExec) sidecarArgv(group, sub string) []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, v := range a.argvs {
-		if len(v) > 2 && v[0] == "unified-sidecar" && v[1] == group && v[2] == sub {
+		if len(v) > 2 && v[0] == sidecarBinary && v[1] == group && v[2] == sub {
 			return v
 		}
 	}

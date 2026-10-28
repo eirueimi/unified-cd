@@ -83,6 +83,23 @@ var inlinePolicyCases = []policyCase{
 		path: "podTemplate.spec.containers[0].securityContext.capabilities.add[0]", allow: "allowPrivileged: true", fix: JobPodPolicy{AllowPrivileged: true}},
 	{name: "capability cap_net_admin", container: map[string]any{"securityContext": map[string]any{"capabilities": map[string]any{"add": []any{"cap_net_admin"}}}},
 		path: "podTemplate.spec.containers[0].securityContext.capabilities.add[0]", allow: "allowPrivileged: true", fix: JobPodPolicy{AllowPrivileged: true}},
+	// Capability names compare exactly, as the Kubernetes API and the Pod
+	// Security baseline do: "CAP_CHOWN" and "chown" are not baseline names.
+	{name: "capability CAP_CHOWN spelling", container: map[string]any{"securityContext": map[string]any{"capabilities": map[string]any{"add": []any{"CAP_CHOWN"}}}},
+		path: "podTemplate.spec.containers[0].securityContext.capabilities.add[0]", allow: "allowPrivileged: true", fix: JobPodPolicy{AllowPrivileged: true}},
+	{name: "capability lowercase chown", container: map[string]any{"securityContext": map[string]any{"capabilities": map[string]any{"add": []any{"chown"}}}},
+		path: "podTemplate.spec.containers[0].securityContext.capabilities.add[0]", allow: "allowPrivileged: true", fix: JobPodPolicy{AllowPrivileged: true}},
+	// hostAliases, dnsPolicy and dnsConfig are Pod-wide, so they steer the
+	// artifact sidecar's connections too: denied unless opted in.
+	{name: "opt-in hostAliases", pod: map[string]any{"hostAliases": []any{map[string]any{"ip": "10.0.0.1", "hostnames": []any{"broker.local"}}}},
+		path: "podTemplate.spec.hostAliases", allow: "allowPodSpecFields: [hostAliases]",
+		fix: JobPodPolicy{AllowPodSpecFields: []string{"hostAliases"}}},
+	{name: "opt-in dnsPolicy", pod: map[string]any{"dnsPolicy": "None"},
+		path: "podTemplate.spec.dnsPolicy", allow: "allowPodSpecFields: [dnsPolicy]",
+		fix: JobPodPolicy{AllowPodSpecFields: []string{"dnsPolicy"}}},
+	{name: "opt-in dnsConfig", pod: map[string]any{"dnsConfig": map[string]any{"nameservers": []any{"10.0.0.2"}}},
+		path: "podTemplate.spec.dnsConfig", allow: "allowPodSpecFields: [dnsConfig]",
+		fix: JobPodPolicy{AllowPodSpecFields: []string{"dnsConfig"}}},
 	{name: "procMount Unmasked", container: map[string]any{"securityContext": map[string]any{"procMount": "Unmasked"}},
 		path: "podTemplate.spec.containers[0].securityContext.procMount", allow: "allowPrivileged: true", fix: JobPodPolicy{AllowPrivileged: true}},
 	{name: "container apparmor Unconfined", container: map[string]any{"securityContext": map[string]any{"appArmorProfile": map[string]any{"type": "Unconfined"}}},
@@ -245,7 +262,7 @@ func TestJobPodPolicy_BaselineBoundaries(t *testing.T) {
 	ok := []map[string]any{
 		{"securityContext": map[string]any{"allowPrivilegeEscalation": true}},
 		{"securityContext": map[string]any{"runAsUser": 0}},
-		{"securityContext": map[string]any{"capabilities": map[string]any{"add": []any{"NET_BIND_SERVICE", "CAP_CHOWN"}}}},
+		{"securityContext": map[string]any{"capabilities": map[string]any{"add": []any{"NET_BIND_SERVICE", "CHOWN"}}}},
 		{"securityContext": map[string]any{"seccompProfile": map[string]any{"type": "RuntimeDefault"}}},
 		{"securityContext": map[string]any{"privileged": false}},
 		{"securityContext": map[string]any{"seLinuxOptions": map[string]any{"type": "container_t"}}},
