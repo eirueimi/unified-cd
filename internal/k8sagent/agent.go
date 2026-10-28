@@ -365,6 +365,14 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		return
 	}
 
+	// The job pod field policy (podpolicy.go). Checked before the pool, any
+	// volume lock and BuildPod: a reused pod is handed out without BuildPod,
+	// and a refused run must neither wait for nor take a volume.
+	if err := a.cfg.JobPodPolicy.CheckJobPodTemplate(a.cfg.PodTemplates, c.PodTemplate); err != nil {
+		a.failRun(ctx, c.RunID, err.Error())
+		return
+	}
+
 	// Sibling of the native check above, for the OTHER thing this agent
 	// structurally cannot do.
 	//
