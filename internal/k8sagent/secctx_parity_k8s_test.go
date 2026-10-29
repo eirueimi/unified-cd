@@ -17,7 +17,9 @@ import (
 	"github.com/eirueimi/unified-cd/internal/paritycases"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 // artifactEmuContainer stands in for the real unified-artifact sidecar, which
@@ -85,6 +87,32 @@ func (b *secCtxK8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.
 	return nil
 }
 
+// claimTestPVCs gives each volume a case's claim mounts a fresh PVC in the test
+// namespace (the kind cluster's default StorageClass provisions it once the pod
+// is scheduled), so the pod mounts it exactly as an agent-owned volume would.
+// Without it the case's mountPath is just a directory of the image's root
+// filesystem, which readOnlyRootFilesystem makes read-only.
+func claimTestPVCs(ctx context.Context, t *testing.T, client kubernetes.Interface, ns string, mounts []dsl.VolumeMount) []PodVolume {
+	t.Helper()
+	var vols []PodVolume
+	for i, m := range mounts {
+		require.Len(t, m.Name, 1, "parity cases name one literal volume")
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("parity-vol-%d", i), Namespace: ns},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("16Mi")},
+				},
+			},
+		}
+		_, err := client.CoreV1().PersistentVolumeClaims(ns).Create(ctx, pvc, metav1.CreateOptions{})
+		require.NoError(t, err)
+		vols = append(vols, PodVolume{Name: m.Name[0], ClaimName: pvc.Name, MountPath: m.MountPath})
+	}
+	return vols
+}
+
 // TestSecCtxParity_K8s drives the same paritycases.SecurityContextCases the
 // host driver runs, against a real pod on the kind cluster, and asserts the
 // SAME Expectation. A case the host satisfies and the kubelet does not (or the
@@ -113,7 +141,8 @@ func TestSecCtxParity_K8s(t *testing.T) {
 					"command": []any{"sleep", "infinity"},
 				})
 			}
-			pod, err := BuildPod(claim.RunID, ns, nil, claim.PodTemplate, paritycases.SecurityContextImage, SidecarSpec{}, shimImage, nil)
+			vols := claimTestPVCs(ctx, t, client, ns, claim.Volumes)
+			pod, err := BuildPod(claim.RunID, ns, nil, claim.PodTemplate, paritycases.SecurityContextImage, SidecarSpec{}, shimImage, vols)
 			require.NoError(t, err)
 			created, err := pm.CreatePod(ctx, pod)
 			require.NoError(t, err)

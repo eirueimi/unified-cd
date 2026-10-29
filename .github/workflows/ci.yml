@@ -124,7 +124,10 @@ jobs:
           # Its failure is tolerated only because the daemon is then started by
           # hand and the assertions below prove the result either way.
           dockerd-rootless-setuptool.sh install || echo "setuptool did not complete; starting dockerd-rootless.sh by hand"
-          nohup dockerd-rootless.sh > "$HOME/dockerd-rootless.log" 2>&1 &
+          # With systemd as PID 1 dockerd picks the systemd cgroup driver, which
+          # needs a user session's D-Bus to create scopes ("requires
+          # interactive authentication" without one); cgroupfs needs none.
+          nohup dockerd-rootless.sh --exec-opt native.cgroupdriver=cgroupfs > "$HOME/dockerd-rootless.log" 2>&1 &
           for i in $(seq 1 60); do
             [ -S "$XDG_RUNTIME_DIR/docker.sock" ] && break
             sleep 1
