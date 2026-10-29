@@ -35,13 +35,6 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** `internal/controller/api_agent.go` `handleAgentClaim` calls `internal/store/postgres.go` `UpsertAgentOnClaim`, but `internal/controller/agent_auth.go` authenticates first through `GetAgentCredentialForAuth`; `internal/controller/api_agent_test.go` `TestAgentAPI_Claim_UpsertsUnregisteredAgent` covers only a missing inventory row, and `docs/operator-manual/operations.md` states conflicting full-loss recovery expectations.
 - **Done when:** The supported full-database-loss workflow has one explicit runtime and documentation contract, and an integration test starting from absent inventory and credential records proves either bounded automatic recovery or the documented re-enrollment requirement before the agent reappears and can claim work.
 
-### 33d. Prevent late step reports after run finalization
-
-- **Status:** Partial
-- **Impact:** A step report racing with run finalization can write stale step state beneath an already-terminal run, making persisted and displayed execution state inconsistent.
-- **Evidence:** Finish writes use compare-and-set finalization, but `internal/controller/api_agent.go` `handleAgentStepReport` checks run status separately from `internal/store/postgres.go` `UpsertStepReport`, leaving finalization between the read and write unguarded.
-- **Done when:** Once a run becomes terminal, no concurrent or later step report can change its step state, and a deterministic store or controller concurrency test forces finalization between validation and write and proves the late report is rejected without mutation.
-
 ### 33e. Verify that the published quickstart controller image passes its health check
 
 - **Status:** Needs verification

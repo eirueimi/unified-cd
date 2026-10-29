@@ -26,13 +26,7 @@ func TestInstrumentedStoreCountsTransitions(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.runsCreated.WithLabelValues("webhook")))
 
-	// First finish counts; a second finish attempt is CAS-rejected and must not.
-	require.NoError(t, st.MarkRunFinished(ctx, run.ID, api.RunFailed))
-	require.NoError(t, st.MarkRunFinished(ctx, run.ID, api.RunSucceeded))
-	assert.Equal(t, 1.0, testutil.ToFloat64(m.runsFinished.WithLabelValues("Failed")))
-	assert.Equal(t, 0.0, testutil.ToFloat64(m.runsFinished.WithLabelValues("Succeeded")))
-
-	// Step reports: Running is not counted; terminal is; duration observed
+	// Step reports (before the run is finalized: a terminal run rejects them): Running is not counted; terminal is; duration observed
 	// only when both timestamps are present.
 	started := time.Now().Add(-30 * time.Second)
 	ended := time.Now()
@@ -40,6 +34,12 @@ func TestInstrumentedStoreCountsTransitions(t *testing.T) {
 	require.NoError(t, st.UpsertStepReport(ctx, run.ID, 0, 0, "build", "", "Succeeded", nil, &started, &ended, "", ""))
 	assert.Equal(t, 0.0, testutil.ToFloat64(m.stepsCompleted.WithLabelValues("Running")))
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.stepsCompleted.WithLabelValues("Succeeded")))
+
+	// First finish counts; a second finish attempt is CAS-rejected and must not.
+	require.NoError(t, st.MarkRunFinished(ctx, run.ID, api.RunFailed))
+	require.NoError(t, st.MarkRunFinished(ctx, run.ID, api.RunSucceeded))
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.runsFinished.WithLabelValues("Failed")))
+	assert.Equal(t, 0.0, testutil.ToFloat64(m.runsFinished.WithLabelValues("Succeeded")))
 }
 
 func TestInstrumentedStoreDoesNotCountFailures(t *testing.T) {
