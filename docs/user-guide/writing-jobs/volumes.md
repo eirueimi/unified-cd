@@ -124,6 +124,11 @@ volume mount failed: spec.volumes[0]: volume "go-cache" is shared and cannot be 
   included. A Windows drive-qualified path (`C:/cache`, `d:\cache`) is rejected when the job is
   applied (`mountPath must be a POSIX path`), because it would otherwise be mistaken for a relative
   path and fail much later with an opaque `mkdir` error.
+- **Always the whole volume.** There is no `subPath`: a volume is mounted at its root, on every
+  agent. To keep several tools' data apart, either point each tool at its own subdirectory of one
+  volume through its environment variable (for example `GOMODCACHE=$UNIFIED_VOLUME_GO_CACHE/mod`, see
+  [Reaching a volume from a step](#reaching-a-volume-from-a-step)), or ask the operator for a
+  separate volume per tool.
 
 How the volume is realised depends on where the run executes, but your YAML does not change:
 
