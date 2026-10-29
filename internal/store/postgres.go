@@ -147,6 +147,18 @@ func (p *Postgres) BackgroundStore() *Postgres {
 }
 
 func (p *Postgres) Migrate(dsn string) error {
+	return migrateDSN(dsn, nil)
+}
+
+// MigrateTo applies the embedded migrations through the production runner up to
+// and including version, without the final schema verification (which only
+// holds for a fully migrated database). It exists so upgrade tests can seed
+// genuine old-schema state before applying later migrations.
+func (p *Postgres) MigrateTo(dsn string, version uint) error {
+	return migrateDSN(dsn, &version)
+}
+
+func migrateDSN(dsn string, version *uint) error {
 	src, err := iofs.New(migrationsFS, "migrations")
 	if err != nil {
 		return err
@@ -164,6 +176,12 @@ func (p *Postgres) Migrate(dsn string) error {
 	m, err := migrate.NewWithInstance("iofs", src, "postgres", driver)
 	if err != nil {
 		return err
+	}
+	if version != nil {
+		if err := m.Migrate(*version); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+			return err
+		}
+		return nil
 	}
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return err

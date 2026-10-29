@@ -65,13 +65,6 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** `web/src/routes/RunDetail.svelte` opens one event stream and `internal/controller/sse.go` `handleRunEvents` replays stored logs before terminal status, but `web/src/routes/RunDetail.test.js` uses a Running run with an empty stream and `internal/controller/api_runs_test.go` `TestAPI_RunEvents_SSE_ReceivesExistingLogs` does not exercise Web rendering.
 - **Done when:** A component or browser test loads a pre-cancelled run whose event stream backfills known historical lines and then closes with terminal status, and proves those exact lines remain rendered after closure with only one event connection.
 
-### 35b. Exercise AppSource migration 003 through first synchronization
-
-- **Status:** Partial
-- **Impact:** Upgrade regressions in bare-name backfill, first-sync qualification, history preservation, idempotency, or prune safety can pass despite current reconciler coverage.
-- **Evidence:** `internal/controller/appsource_reconciler_test.go` seeds post-migration bare-name state directly instead of running `internal/store/migrations/003_appsource_managed_resources.up.sql` through the production migration runner; store tests cover `RenameJob` separately.
-- **Done when:** An integration test creates a genuine pre-003 schema and state, runs migration 003 through the production migration runner, verifies the deliberate bare-name backfill, performs the first sync, and proves qualification, history preservation, repeat-sync idempotency, and prune safety end to end.
-
 ### 35c. Verify exact matrix-variant output aggregation
 
 - **Status:** Partial
