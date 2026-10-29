@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render } from '@testing-library/svelte';
-import { token, serverURL } from '../lib/api.js';
+import { token, serverURL, currentUser } from '../lib/api.js';
 import JobDetail from './JobDetail.svelte';
 
 function jsonResponse(body) {
@@ -203,5 +203,35 @@ describe('JobDetail — run display name (run-display-name feature)', () => {
     await vi.waitFor(() => {
       expect(container.textContent).toContain('abcdef12…');
     });
+  });
+});
+
+describe('JobDetail — permission-aware controls', () => {
+  const origFetch = global.fetch;
+  afterEach(() => {
+    currentUser.set(null);
+    global.fetch = origFetch;
+  });
+
+  it('renders the Run tab as a disabled span without run.trigger on the job', async () => {
+    currentUser.set({ email: 'a@example.com', permissions: { global: [], folders: { 'team-a': ['job.read'] } } });
+    global.fetch = vi.fn((url) => (String(url).includes('/runs') ? jsonResponse([]) : jsonResponse({})));
+    const { findByText } = render(JobDetail, { props: { params: { name: 'team-a/deploy' } } });
+    const tab = await findByText('▶ Run');
+    expect(tab.tagName).toBe('SPAN');
+    expect(tab.title).toBe('requires run.trigger on team-a/deploy');
+  });
+
+  it('keeps the Run tab a link with run.trigger', async () => {
+    currentUser.set({ email: 'a@example.com', permissions: { global: [], folders: { 'team-a': ['run.trigger'] } } });
+    global.fetch = vi.fn((url) => (String(url).includes('/runs') ? jsonResponse([]) : jsonResponse({})));
+    const { findByText } = render(JobDetail, { props: { params: { name: 'team-a/deploy' } } });
+    expect((await findByText('▶ Run')).tagName).toBe('A');
+  });
+
+  it('renders the not-found view for a 404', async () => {
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false, status: 404, text: async () => 'job not found' }));
+    const { findByText } = render(JobDetail, { props: { params: { name: 'nope' } } });
+    expect(await findByText('Job not found')).toBeTruthy();
   });
 });

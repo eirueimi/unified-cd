@@ -1,7 +1,8 @@
 <script>
   import Router, { router } from "svelte-spa-router";
   import { onMount } from "svelte";
-  import { initAuth, serverURL, browserSSOEnabled, currentUser, token, saveAuth, authReady, savePostLoginHash, restorePostLoginHash } from "./lib/api.js";
+  import { initAuth, serverURL, browserSSOEnabled, currentUser, grants, token, saveAuth, authReady, savePostLoginHash, restorePostLoginHash } from "./lib/api.js";
+  import { allows } from "./lib/authz.js";
   import { themePref, toggleTheme, initTheme } from "./lib/theme.js";
   import JobList from "./routes/JobList.svelte";
   import JobDetail from "./routes/JobDetail.svelte";
@@ -45,6 +46,14 @@
     initTheme();
   });
 
+  // Navigation is hidden for resources the caller can see nowhere; while the
+  // grants are unknown allows() is permissive. The server still decides.
+  $: showSchedules = allows($grants, 'job.read');
+  $: showWebhooks = allows($grants, 'webhook.read');
+  $: showGitCredentials = allows($grants, 'gitcredential.read');
+  $: showAppSources = allows($grants, 'appsource.read');
+  $: showSecrets = allows($grants, 'secret.list');
+
   function ssoLogin() {
     savePostLoginHash();
     window.location.href = $serverURL + '/api/v1/auth/oidc-login';
@@ -61,18 +70,20 @@
 <nav>
   <span class="brand">⚡ unified-cd</span>
   <a href="#/">Jobs</a>
-  <a href="#/agents">Agents</a>
+  {#if allows($grants, 'agent.read')}<a href="#/agents">Agents</a>{/if}
+  {#if showSchedules || showWebhooks || showGitCredentials || showAppSources || showSecrets}
   <div class="dropdown">
     <span class="dropdown-trigger" class:nav-active={router.location.startsWith('/resources/')} tabindex="0" role="button" aria-haspopup="true">Resources ▾</span>
     <div class="dropdown-menu">
-      <a href="#/resources/schedules">Schedules</a>
-      <a href="#/resources/webhooks">Webhooks</a>
-      <a href="#/resources/gitcredentials">GitCredentials</a>
-      <a href="#/resources/appsources">AppSources</a>
-      <a href="#/resources/secrets">Secrets</a>
+      {#if showSchedules}<a href="#/resources/schedules">Schedules</a>{/if}
+      {#if showWebhooks}<a href="#/resources/webhooks">Webhooks</a>{/if}
+      {#if showGitCredentials}<a href="#/resources/gitcredentials">GitCredentials</a>{/if}
+      {#if showAppSources}<a href="#/resources/appsources">AppSources</a>{/if}
+      {#if showSecrets}<a href="#/resources/secrets">Secrets</a>{/if}
     </div>
   </div>
-  <a href="#/tokens">Tokens</a>
+  {/if}
+  {#if allows($grants, 'token.create') || allows($grants, 'token.manage')}<a href="#/tokens">Tokens</a>{/if}
   <span class="spacer"></span>
   <button
     class="btn theme-toggle"

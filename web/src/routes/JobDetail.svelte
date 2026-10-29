@@ -1,7 +1,8 @@
 <script>
   import { onMount } from "svelte";
   import AuthSetup from "../components/AuthSetup.svelte";
-  import { apiFetch } from "../lib/api.js";
+  import { apiFetch, grants, ApiError } from "../lib/api.js";
+  import { allows, requiresText } from "../lib/authz.js";
   import { statusBadge, fmtRelative } from "../lib/utils.js";
 
   export let params;
@@ -12,6 +13,9 @@
     error = "";
   let sched = null;
   let job = null;
+  // A 404 means the job is missing or hidden from the caller (the same view).
+  let notFound = false;
+  $: canRun = allows($grants, "run.trigger", jobName);
 
   $: hasParams = runs.some(
     (r) => r.params && Object.keys(r.params).length > 0,
@@ -27,12 +31,14 @@
   async function load() {
     loading = true;
     error = "";
+    notFound = false;
     try {
       runs = await apiFetch(
         "/api/v1/runs?jobName=" + encodeURIComponent(jobName),
       );
     } catch (e) {
-      error = e.message;
+      if (e instanceof ApiError && e.status === 404) notFound = true;
+      else error = e.message;
     } finally {
       loading = false;
     }
@@ -49,8 +55,9 @@
   async function loadJob() {
     try {
       job = await apiFetch("/api/v1/jobs/" + encodeURIComponent(jobName));
-    } catch (_) {
+    } catch (e) {
       job = null; // description just won't show; runs list is primary
+      if (e instanceof ApiError && e.status === 404) notFound = true;
     }
   }
   onMount(() => {
@@ -74,7 +81,11 @@
   {/if}
   <div style="border-bottom:1px solid var(--border);margin-bottom:1.5rem">
     <a href="#/jobs/{encodeURIComponent(jobName)}" class="tab-link tab-active">History</a>
-    <a href="#/jobs/{encodeURIComponent(jobName)}/run" class="tab-link">▶ Run</a>
+    {#if canRun}
+      <a href="#/jobs/{encodeURIComponent(jobName)}/run" class="tab-link">▶ Run</a>
+    {:else}
+      <span class="tab-link" aria-disabled="true" title={requiresText("run.trigger", jobName)} style="opacity:0.5;cursor:not-allowed">▶ Run</span>
+    {/if}
     <a href="#/jobs/{encodeURIComponent(jobName)}/yaml" class="tab-link">YAML</a>
   </div>
   {#if sched && !sched.satisfiable}
@@ -83,6 +94,7 @@
     </div>
   {/if}
   {#if loading}<div class="loading">Loading...</div>
+  {:else if notFound}<div class="error">Job not found</div>
   {:else if error}<div class="error">{error}</div>
   {:else if !runs.length}<div class="empty">No runs yet.</div>
   {:else}

@@ -1,11 +1,14 @@
 <script>
   import { onMount } from 'svelte';
   import AuthSetup from '../components/AuthSetup.svelte';
-  import { apiFetch } from '../lib/api.js';
+  import { apiFetch, grants } from '../lib/api.js';
+  import { allows } from '../lib/authz.js';
   import { fmtRelative } from '../lib/utils.js';
 
   let sources = [], loading = true, error = '';
   let syncing = {};
+  // Sync is a global-only permission: hidden, not disabled, without it.
+  $: canSync = allows($grants, 'appsource.write');
 
   const POLL_MS = 1500;
   const TIMEOUT_MS = 60000;
@@ -75,9 +78,11 @@
           <td class="meta">{s.lastSyncedAt ? fmtRelative(s.lastSyncedAt) : '—'}</td>
           <td><code class="meta">{s.lastCommit ? s.lastCommit.slice(0, 7) : '—'}</code></td>
           <td>
+            {#if canSync}
             <button class="btn" disabled={syncing[s.name]} on:click={() => sync(s.name)}>
               {syncing[s.name] ? '...' : '↺ Sync'}
             </button>
+            {/if}
           </td>
         </tr>
       {/each}
