@@ -60,6 +60,18 @@ func BearerAuth(expected string) func(http.Handler) http.Handler {
 	}
 }
 
+// isBootstrapHash reports whether hash is the hash of the configured bootstrap
+// token (UNIFIED_TOKEN). It is the only thing that grants break-glass: the PAT
+// name is user-controlled and never trusted. Returns false when no token is
+// configured, so an empty token can never match.
+func (s *Server) isBootstrapHash(hash string) bool {
+	if s == nil || s.cfg.Token == "" || hash == "" {
+		return false
+	}
+	want := HashToken(s.cfg.Token)
+	return subtle.ConstantTimeCompare([]byte(hash), []byte(want)) == 1
+}
+
 // ServerAuth returns an authentication middleware that tries three methods in order:
 // PAT, OIDC id_token, and session Cookie. UNIFIED_TOKEN (the static token) is synced to
 // the DB as a PAT at startup, so no dedicated comparison branch is needed here
@@ -78,7 +90,7 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 					if err == nil && pat != nil {
 						go func() { _ = st.TouchPAT(context.Background(), pat.ID) }()
 						role := pat.Role
-						if pat.Name == BootstrapPATName {
+						if srv != nil && srv.isBootstrapHash(hash) {
 							role = "admin" // break-glass is always admin
 						}
 						next.ServeHTTP(w, withPrincipal(r, Principal{Name: pat.Name, Kind: "pat", Role: role}))

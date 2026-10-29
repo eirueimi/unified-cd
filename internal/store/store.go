@@ -476,6 +476,10 @@ type Store interface {
 	// UpsertBootstrapPAT creates or updates the hash of the single PAT row identified by name.
 	// Used to sync UNIFIED_TOKEN as a PAT on each startup (replaces the hash when the value changes, never creates duplicate rows).
 	UpsertBootstrapPAT(ctx context.Context, name, tokenHash string) (*PAT, error)
+	// PurgeImpersonatedBootstrapPATs deletes every PAT row named name whose token hash
+	// differs from keepHash and returns how many were removed. Run before
+	// UpsertBootstrapPAT at startup so no other row can carry the bootstrap name.
+	PurgeImpersonatedBootstrapPATs(ctx context.Context, name, keepHash string) (int64, error)
 	// DeleteBootstrapPATByName deletes the PAT row identified by name (no-op if it does not exist).
 	// Used to avoid leaving a previously synced row behind when UNIFIED_TOKEN is unset.
 	DeleteBootstrapPATByName(ctx context.Context, name string) error

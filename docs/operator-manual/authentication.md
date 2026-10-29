@@ -27,6 +27,9 @@ which tries the following **3 methods** in order. The first successful method gr
 `ServerAuth` has no special branch for static tokens. **`UNIFIED_TOKEN` is automatically synced to the DB
 as a PAT named `env:UNIFIED_TOKEN` at startup and is treated as one of the method-1 PATs.**
 This means it appears in `token list` / `token delete` like any other PAT.
+Its admin (break-glass) status comes from matching the configured `UNIFIED_TOKEN` value, not from the name:
+the `env:` name prefix is reserved and cannot be used for new PATs, and at startup any other PAT
+named `env:UNIFIED_TOKEN` (different hash) is removed with a warning in the controller log.
 (Note: deleting it via `token delete` while `UNIFIED_TOKEN` is still set in the environment
 will cause it to be re-synced on the next restart. To fully disable it, remove or change
 the environment variable.)

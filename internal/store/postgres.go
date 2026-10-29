@@ -2446,6 +2446,15 @@ func (p *Postgres) UpsertBootstrapPAT(ctx context.Context, name, tokenHash strin
 	return &pat, nil
 }
 
+// PurgeImpersonatedBootstrapPATs deletes every row named name whose token_hash is not keepHash.
+func (p *Postgres) PurgeImpersonatedBootstrapPATs(ctx context.Context, name, keepHash string) (int64, error) {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM pats WHERE name = $1 AND token_hash <> $2`, name, keepHash)
+	if err != nil {
+		return 0, fmt.Errorf("purge impersonated bootstrap pats: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // DeleteBootstrapPATByName deletes the PAT row identified by name (no-op if it does not exist).
 func (p *Postgres) DeleteBootstrapPATByName(ctx context.Context, name string) error {
 	_, err := p.pool.Exec(ctx, `DELETE FROM pats WHERE name = $1`, name)

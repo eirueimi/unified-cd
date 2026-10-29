@@ -290,7 +290,18 @@ func main() {
 	// and deleted (revoked) via /api/v1/tokens just like regular PATs. If the
 	// token is later unset, the previously synced row is removed.
 	if *token != "" {
-		if _, err := pg.UpsertBootstrapPAT(ctx, controller.BootstrapPATName, controller.HashToken(*token)); err != nil {
+		bootHash := controller.HashToken(*token)
+		// Drop any other row carrying the reserved name (user-created, or the
+		// previous token before rotation) so exactly one bootstrap row remains.
+		removed, err := pg.PurgeImpersonatedBootstrapPATs(ctx, controller.BootstrapPATName, bootHash)
+		if err != nil {
+			slog.Error("purge impersonating bootstrap PATs", "error", err)
+			os.Exit(1)
+		}
+		if removed > 0 {
+			slog.Warn("removed personal access tokens that impersonated the bootstrap token name", "count", removed)
+		}
+		if _, err := pg.UpsertBootstrapPAT(ctx, controller.BootstrapPATName, bootHash); err != nil {
 			slog.Error("sync UNIFIED_TOKEN as bootstrap PAT", "error", err)
 			os.Exit(1)
 		}

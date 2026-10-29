@@ -1,5 +1,20 @@
 # Controller and Database
 
+## `token name "env:..." is reserved` / startup warning about impersonating tokens
+
+**Symptom**
+
+- `unified-cli token create env:something` (or `POST /api/v1/tokens`) fails with `token name "env:something" is reserved`.
+- The controller logs `removed personal access tokens that impersonated the bootstrap token name` with a `count` at startup.
+
+**Cause**
+
+The `env:` name prefix is reserved for the token synced from `UNIFIED_TOKEN`. Admin (break-glass) status is granted by matching the configured `UNIFIED_TOKEN` hash, never by name. At startup the controller deletes every PAT named `env:UNIFIED_TOKEN` whose hash differs from the configured token's. The warning also appears (with `count` 1) after you rotate `UNIFIED_TOKEN`, because the old synced row is replaced.
+
+**Fix**
+
+Choose a token name that does not start with `env:`. If the warning appears without a rotation, a PAT was created with the reserved name (possible on versions before this fix); it was removed, so review who created it and rotate any credentials it could have reached.
+
 ## Controller logs `dropping log line for sealed run`
 
 **Symptom**
