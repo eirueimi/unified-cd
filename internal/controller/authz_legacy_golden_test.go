@@ -99,8 +99,11 @@ var legacyExempt = map[string]bool{
 }
 
 // legacyNewRoutes are human routes that did not exist before this work
-// (section 5.18). Task 10 adds its two rows here.
-var legacyNewRoutes = map[string]bool{}
+// (section 5.18).
+var legacyNewRoutes = map[string]bool{
+	"GET /api/v1/authz/policy":   true,
+	"POST /api/v1/authz/explain": true,
+}
 
 // isHumanRow reports whether a row is decided by a permission (as opposed to
 // public, self-authenticating and agent-only routes).

@@ -555,6 +555,9 @@ type Store interface {
 	GetSessionByHash(ctx context.Context, tokenHash string) (*Session, error)
 	UpdateSessionExpiry(ctx context.Context, id string, refreshDEK, refreshCT []byte, expiresAt time.Time) error
 	UpdateSessionClaims(ctx context.Context, id string, claims []string) error
+	// LatestSessionClaims returns the claim snapshot of the newest session of user (matched as sub or
+	// email) that has one; found is false when there is none.
+	LatestSessionClaims(ctx context.Context, user string) (claims []string, found bool, err error)
 	DeleteSession(ctx context.Context, id string) error
 	TouchSession(ctx context.Context, id string) error
 

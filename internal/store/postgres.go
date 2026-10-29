@@ -2787,6 +2787,26 @@ func (p *Postgres) UpdateSessionClaims(ctx context.Context, id string, claims []
 	return err
 }
 
+// LatestSessionClaims returns the claim snapshot of the newest session whose
+// sub or email is user and whose claims are not NULL.
+func (p *Postgres) LatestSessionClaims(ctx context.Context, user string) ([]string, bool, error) {
+	const q = `SELECT claims FROM sessions
+		WHERE (sub = $1 OR email = $1) AND claims IS NOT NULL
+		ORDER BY created_at DESC, id DESC LIMIT 1`
+	var claims []string
+	err := p.pool.QueryRow(ctx, q, user).Scan(&claims)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("latest session claims: %w", err)
+	}
+	if claims == nil {
+		claims = []string{}
+	}
+	return claims, true, nil
+}
+
 // UpdateSessionExpiry updates the expiry time and refresh token of a session.
 func (p *Postgres) UpdateSessionExpiry(ctx context.Context, id string, refreshDEK, refreshCT []byte, expiresAt time.Time) error {
 	_, err := p.pool.Exec(ctx,

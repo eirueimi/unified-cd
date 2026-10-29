@@ -93,6 +93,8 @@ func agentOnly(method, pattern string) routeRule {
 var routeTable = []routeRule{
 	// Human and agent-or-human routes.
 	global(mGet, "/api/v1/audit", authz.AuditRead),
+	global(mGet, "/api/v1/authz/policy", authz.AuthzRead),
+	global(mPost, "/api/v1/authz/explain", authz.AuthzRead),
 
 	{Method: mPost, Pattern: "/api/v1/jobs", Perm: authz.JobConfigure, Scope: scopeJobBody},
 	{Method: mGet, Pattern: "/api/v1/jobs", Perm: authz.JobRead, Scope: scopeFiltered},

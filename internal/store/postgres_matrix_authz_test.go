@@ -222,3 +222,43 @@ func TestAuditLogDecisionColumns(t *testing.T) {
 		AND permission IS NULL AND scope IS NULL AND granted_by IS NULL`).Scan(&nulls))
 	assert.Equal(t, 1, nulls)
 }
+
+func TestLatestSessionClaims(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	exp := time.Now().Add(time.Hour)
+
+	_, found, err := pg.LatestSessionClaims(ctx, "a@example.com")
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	// A NULL-claims session is not a snapshot.
+	_, err = pg.CreateSession(ctx, "h0", "sub-a", "a@example.com", "viewer", nil, []byte{}, []byte{}, exp)
+	require.NoError(t, err)
+	_, found, err = pg.LatestSessionClaims(ctx, "a@example.com")
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	_, err = pg.CreateSession(ctx, "h1", "sub-a", "a@example.com", "viewer", []string{"g-old"}, []byte{}, []byte{}, exp)
+	require.NoError(t, err)
+	_, err = pg.CreateSession(ctx, "h2", "sub-a", "a@example.com", "viewer", []string{"g-new"}, []byte{}, []byte{}, exp)
+	require.NoError(t, err)
+	// A newer session without claims does not hide the older snapshot.
+	_, err = pg.CreateSession(ctx, "h3", "sub-a", "a@example.com", "viewer", nil, []byte{}, []byte{}, exp)
+	require.NoError(t, err)
+	_, err = pg.CreateSession(ctx, "h4", "sub-b", "b@example.com", "viewer", []string{}, []byte{}, []byte{}, exp)
+	require.NoError(t, err)
+
+	for _, user := range []string{"a@example.com", "sub-a"} {
+		claims, found, err := pg.LatestSessionClaims(ctx, user)
+		require.NoError(t, err)
+		assert.True(t, found, user)
+		assert.Equal(t, []string{"g-new"}, claims, user)
+	}
+
+	claims, found, err := pg.LatestSessionClaims(ctx, "b@example.com")
+	require.NoError(t, err)
+	assert.True(t, found, "an empty claim list is still a snapshot")
+	assert.NotNil(t, claims)
+	assert.Empty(t, claims)
+}

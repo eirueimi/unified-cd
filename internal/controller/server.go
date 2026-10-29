@@ -477,6 +477,8 @@ func (s *Server) routes() {
 		r.Use(auditLogMiddleware(s.store))
 
 		r.With(s.authorize).Get("/audit", s.handleListAuditLogs)
+		r.With(s.authorize).Get("/authz/policy", s.handleAuthzPolicy)
+		r.With(s.authorize).Post("/authz/explain", s.handleAuthzExplain)
 
 		r.With(s.authorize).Post("/jobs", s.handleApplyJob)
 		r.With(s.authorize).Get("/jobs", s.handleListJobs)

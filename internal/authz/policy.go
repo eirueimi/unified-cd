@@ -200,8 +200,9 @@ type Identity struct {
 }
 
 type policyGrant struct {
-	key string
-	set Set
+	key   string
+	grant []string // role and permission names as written
+	set   Set
 }
 
 type policyScope struct {
@@ -296,7 +297,7 @@ func compileGrants(folder, path string, entries []GrantEntry) ([]policyGrant, er
 			}
 			set = set.With(perm)
 		}
-		out = append(out, policyGrant{key: e.Key, set: set})
+		out = append(out, policyGrant{key: e.Key, grant: e.Grants, set: set})
 	}
 	return out, nil
 }

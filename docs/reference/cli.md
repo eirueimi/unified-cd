@@ -768,6 +768,56 @@ unified-cli audit list --limit 5
 
 ---
 
+## authz
+
+Inspect the authorization policy. Requires the `authz.read` permission, which
+only the `admin` bundle holds (it can also be granted on its own in
+`oidc.permissions.global`); other callers get
+`403 forbidden: missing permission "authz.read"`.
+
+### authz show
+
+```
+unified-cli authz show [-o table|yaml|json]
+```
+
+Prints the policy as the controller resolved it at startup, never the raw
+config file: the built-in role bundles, every `roleMap` / `userMap` entry and
+`defaultRole` with the role it resolves to (a value that is not a known role is
+marked `ignored`), and every `oidc.permissions` entry in file order with the
+grant as written and its expansion at that scope. It contains no secrets and no
+per-user data. The table has the sections `BUNDLES`, `LEGACY`, `GLOBAL` and
+`FOLDER <name>` with the columns `SUBJECT  NAME  GRANT  PERMISSIONS`.
+
+### authz explain
+
+```
+unified-cli authz explain (--user string | --group string...) [--job string | --folder string] [-o table|yaml|json]
+
+  --user    string   User to explain; matched as both email and sub
+  --group   string   Group of the identity (repeatable); when given it is used as the group list
+  --job     string   Explain at this job (it need not exist)
+  --folder  string   Explain at this folder, as a job directly inside it would be
+```
+
+Prints the permissions the identity holds at the scope and every grant that
+gives each one (joined with `; `), using the same `grantedBy` strings as the
+audit log. Without `--group`, the groups of the user's latest browser login are
+used (`groups (login)`); with none stored the group list is empty
+(`groups (none)`). `--job` and `--folder` are mutually exclusive; with neither
+the scope is global. `explain` describes an identity, not a token: a PAT's
+ceiling is not applied.
+
+```bash
+unified-cli authz explain --user dev@example.com --group my-org:team-a --job team-a/build
+```
+
+The same data is available as `GET /api/v1/authz/policy` and
+`POST /api/v1/authz/explain` (body `{"user", "groups", "job", "folder"}`).
+Allowed calls are not written to the audit log; denied calls are.
+
+---
+
 ## login
 
 Authenticate using OIDC (SSO) device flow and save the token to the config file.
