@@ -4065,6 +4065,13 @@ describe('RunDetail — permission-aware controls', () => {
     expect(cancel.title).toBe('requires run.cancel on team-b/deploy');
   });
 
+  it('shows the server message, not the not-found view, for a 403', async () => {
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false, status: 403, text: async () => 'forbidden: missing permission "job.read"' }));
+    const { findByText, queryByText } = render(RunDetail, { props: { params: { id: 'r9' } } });
+    expect(await findByText('forbidden: missing permission "job.read"')).toBeTruthy();
+    expect(queryByText('Run not found')).toBeNull();
+  });
+
   it('renders the not-found view for a 404', async () => {
     global.fetch = vi.fn((url) => {
       if (String(url).endsWith('/api/v1/runs/missing')) {

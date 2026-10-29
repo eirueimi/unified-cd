@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -37,34 +38,27 @@ func TestUIActionInventoryIsEnforced(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &actions))
 	require.NotEmpty(t, actions)
 
-	// One caller per distinct permission set: it holds every permission except
-	// the action's Perm and AltPerm.
-	type caller struct{ email string }
-	callers := map[string]caller{}
-	var policy strings.Builder
+	// Callers are created lazily per (kind, Perm, AltPerm) and written into the
+	// policy before the server starts.
+	policy := strings.Builder{}
 	policy.WriteString("global:\n  users:\n")
-	addCaller := func(rule routeRule) string {
-		key := string(rule.Perm) + "|" + string(rule.AltPerm)
-		if c, ok := callers[key]; ok {
-			return c.email
-		}
-		email := "without-" + strings.NewReplacer(".", "-", "|", "-").Replace(key) + "@example.com"
-		var perms []string
-		for _, p := range authz.All() {
-			if p != rule.Perm && p != rule.AltPerm {
-				perms = append(perms, string(p))
-			}
+	emails := map[string]string{}
+	addCaller := func(kind string, perms []string, rule routeRule) string {
+		key := kind + "|" + string(rule.Perm) + "|" + string(rule.AltPerm)
+		if e, ok := emails[key]; ok {
+			return e
 		}
 		sort.Strings(perms)
+		email := kind + "-" + strings.NewReplacer(".", "-", "|", "-").Replace(key) + "@example.com"
 		policy.WriteString("    \"" + email + "\": [" + strings.Join(perms, ", ") + "]\n")
-		callers[key] = caller{email}
+		emails[key] = email
 		return email
 	}
 
 	type check struct {
-		action uiAction
-		rule   routeRule
-		email  string
+		action              uiAction
+		rule                routeRule
+		lacking, holds, alt string
 	}
 	var checks []check
 	for _, a := range actions {
@@ -76,24 +70,77 @@ func TestUIActionInventoryIsEnforced(t *testing.T) {
 		}
 		require.Truef(t, rule.Perm == authz.Permission(*a.Permission) || rule.AltPerm == authz.Permission(*a.Permission),
 			"%s %s: the UI checks %q but the route requires %q (alt %q)", a.Method, a.Route, *a.Permission, rule.Perm, rule.AltPerm)
-		checks = append(checks, check{a, rule, addCaller(rule)})
+
+		var others []string
+		for _, p := range authz.All() {
+			if p != rule.Perm && p != rule.AltPerm {
+				others = append(others, string(p))
+			}
+		}
+		c := check{action: a, rule: rule}
+		c.lacking = addCaller("lacking", others, rule)
+		c.holds = addCaller("holds", []string{string(rule.Perm), string(authz.JobRead)}, rule)
+		if rule.AltPerm != "" {
+			c.alt = addCaller("alt", []string{string(rule.AltPerm), string(authz.JobRead)}, rule)
+		}
+		checks = append(checks, c)
 	}
 
-	s, _ := newAuthzTestServer(t, authz.Legacy{DefaultRole: "deny"}, policy.String())
-	for _, c := range checks {
-		path := strings.NewReplacer("{id}", "missing", "{runID}", "missing", "{name}", "missing", "{stepIndex}", "0").Replace(c.action.Route)
-		var body []byte
-		if c.action.Method != http.MethodDelete {
-			body = []byte(`{"jobName":"missing","name":"x","decision":"approve"}`)
+	s, st := newAuthzTestServer(t, authz.Legacy{DefaultRole: "deny"}, policy.String())
+	ctx := context.Background()
+	const job = "team-a/deploy"
+	seq := 0
+
+	// do seeds the resources the action needs, sends the request with a short
+	// timeout (a streaming route must not hang the test) and returns the answer
+	// together with the seeded run ID.
+	do := func(c check, email string) (*httptest.ResponseRecorder, string) {
+		seq++
+		_, err := st.UpsertJob(ctx, job, "unified-cd/v1", []byte(`{"steps":[]}`))
+		require.NoError(t, err)
+		run, err := st.CreateRun(ctx, job, nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+		require.NoError(t, err)
+		_ = st.CreatePendingApproval(ctx, run.ID, 0, "gate", "", nil) // best effort: the gate may need a step
+		_, err = st.UpsertAppSource(ctx, "apps", []byte(`{"repoURL":"https://github.com/org/repo","targetRevision":"main","path":"jobs/"}`))
+		require.NoError(t, err)
+		pat, err := st.CreatePAT(ctx, "seed", HashToken("seed-token-"+strconv.Itoa(seq)), "viewer", nil)
+		require.NoError(t, err)
+
+		path := strings.NewReplacer("{id}", run.ID, "{runID}", run.ID, "{name}", "apps", "{stepIndex}", "0").Replace(c.action.Route)
+		if strings.HasPrefix(c.action.Route, "/api/v1/tokens/") {
+			path = "/api/v1/tokens/" + pat.ID
 		}
-		// A short per-request timeout keeps a route that streams from hanging the test.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		req := httptest.NewRequest(c.action.Method, path, bytes.NewReader(body)).WithContext(ctx)
-		req.Header.Set("Authorization", bearerPrefix+bearer(c.email))
+		var body []byte
+		switch c.action.Method {
+		case http.MethodDelete:
+		default:
+			body = []byte(`{"jobName":"` + job + `","name":"x","decision":"approve"}`)
+		}
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		req := httptest.NewRequest(c.action.Method, path, bytes.NewReader(body)).WithContext(rctx)
+		req.Header.Set("Authorization", bearerPrefix+bearer(email))
 		rec := httptest.NewRecorder()
 		s.Router().ServeHTTP(rec, req)
-		cancel()
-		require.Containsf(t, []int{http.StatusForbidden, http.StatusNotFound}, rec.Code,
-			"%s %s (%s %s) was not refused for a caller lacking %q: %d %s", c.action.Method, c.action.Route, c.action.File, c.action.Action, c.rule.Perm, rec.Code, rec.Body.String())
+		return rec, run.ID
+	}
+
+	for _, c := range checks {
+		name := c.action.Method + " " + c.action.Route
+		// (a) A caller lacking the permission is refused by authorization.
+		rec, runID := do(c, c.lacking)
+		refused := rec.Code == http.StatusForbidden && strings.HasPrefix(rec.Body.String(), "forbidden: missing permission")
+		require.Truef(t, refused || isHidden(c.rule, rec, runID),
+			"%s (%s %s): a caller lacking %q was not refused by authorization: %d %q", name, c.action.File, c.action.Action, c.rule.Perm, rec.Code, rec.Body.String())
+
+		// (b) A caller holding Perm (and, separately, AltPerm) is admitted.
+		for _, holder := range []string{c.holds, c.alt} {
+			if holder == "" {
+				continue
+			}
+			rec, runID := do(c, holder)
+			require.Truef(t, isAdmitted(c.rule, rec, runID),
+				"%s (%s %s): a caller holding the permission was refused: %d %q", name, c.action.File, c.action.Action, rec.Code, rec.Body.String())
+		}
 	}
 }

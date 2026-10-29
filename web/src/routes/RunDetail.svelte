@@ -666,18 +666,30 @@
   $: canRerun = allows($grants, "run.trigger", run?.jobName);
   $: canApprove = allows($grants, "run.approve", run?.jobName);
   async function loadRun() {
+    notFound = false;
     try {
       run = await apiFetch("/api/v1/runs/" + runID);
-      notFound = false;
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
         notFound = true;
         run = null;
-        stopStepPolling();
+        stopAllStreams();
       } else {
         error = e.message;
       }
     }
+  }
+  // Stops everything the component started for a run that turned out to be
+  // missing or hidden: step polling, the event stream and pending log fetches.
+  function stopAllStreams() {
+    stopStepPolling();
+    if (abortController) {
+      abortController.abort();
+      abortController = null;
+    }
+    if (logSearchDebounce) clearTimeout(logSearchDebounce);
+    logSearchToken++;
+    windowFetchToken++;
   }
   async function loadSteps() {
     try {
@@ -1104,6 +1116,7 @@
     loading = false;
     await tick();
     measureLogMetrics();
+    if (notFound) return;
     if (run && !["Succeeded", "Failed", "Cancelled"].includes(run.status))
       startStepPolling();
     startSSE();

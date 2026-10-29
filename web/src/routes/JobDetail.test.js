@@ -229,6 +229,13 @@ describe('JobDetail — permission-aware controls', () => {
     expect((await findByText('▶ Run')).tagName).toBe('A');
   });
 
+  it('shows the server message, not the not-found view, for a 403', async () => {
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false, status: 403, text: async () => 'forbidden: missing permission "job.read"' }));
+    const { findByText, queryByText } = render(JobDetail, { props: { params: { name: 'nope' } } });
+    expect(await findByText('forbidden: missing permission "job.read"')).toBeTruthy();
+    expect(queryByText('Job not found')).toBeNull();
+  });
+
   it('renders the not-found view for a 404', async () => {
     global.fetch = vi.fn(() => Promise.resolve({ ok: false, status: 404, text: async () => 'job not found' }));
     const { findByText } = render(JobDetail, { props: { params: { name: 'nope' } } });
