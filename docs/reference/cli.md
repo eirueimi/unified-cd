@@ -546,6 +546,8 @@ unified-cli token create <name> [--expires-in duration] [--role role]
 ```
 
 Generates a new PAT. The token value is shown only once.
+Names equal to `env:UNIFIED_TOKEN` or starting with `env:` are reserved and rejected
+(`token name "env:..." is reserved`).
 
 ```bash
 unified-cli token create ci-bot
