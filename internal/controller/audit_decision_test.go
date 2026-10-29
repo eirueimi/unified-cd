@@ -118,7 +118,7 @@ func TestAudit_DeniedWriteRecorded(t *testing.T) {
 	assert.Equal(t, "viewer-user", logs[0].Actor)
 	assert.Equal(t, 403, logs[0].Status)
 	assert.Equal(t, "job.configure", logs[0].Permission)
-	assert.Equal(t, "global", logs[0].Scope)
+	assert.Empty(t, logs[0].Scope)
 	assert.Empty(t, logs[0].GrantedBy)
 }
 
@@ -133,6 +133,23 @@ func (f *entryStore) InsertAuditLog(_ context.Context, e store.AuditEntry) error
 // A write on a route absent from auditActionTable is not recorded when it is
 // allowed, and is recorded the way a denied read is when authorization refuses
 // it (no such human route exists yet, so the middleware is driven directly).
+// A refusal by the pre-check on a job-scoped route happens before any job is
+// known, so the scope is empty.
+func TestAudit_PreCheckDenialOnJobRouteHasEmptyScope(t *testing.T) {
+	s, pg := newTestServer(t)
+	makeRolePAT(t, pg, "view-token", "viewer")
+
+	rec := doAs(t, s, http.MethodPost, "/api/v1/runs", "view-token", []byte(`{"jobName":"j"}`))
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+
+	logs := auditRows(t, pg)
+	require.Len(t, logs, 1)
+	assert.Equal(t, "run.trigger", logs[0].Action)
+	assert.Equal(t, "run.trigger", logs[0].Permission)
+	assert.Empty(t, logs[0].Scope)
+	assert.Empty(t, logs[0].GrantedBy)
+}
+
 func TestAudit_DeniedUnclassifiedWriteRecorded(t *testing.T) {
 	st := &entryStore{}
 	router := chi.NewRouter()
@@ -240,6 +257,20 @@ func TestAudit_SecretBodyNeverRecorded(t *testing.T) {
 	assert.Equal(t, 403, logs[0].Status)
 	assert.NotEmpty(t, logs[0].Permission)
 	raw, err := json.Marshal(logs[0])
+	require.NoError(t, err)
+	assert.False(t, strings.Contains(string(raw), value), "audit row leaked the secret value: %s", raw)
+
+	// An allowed write carries the decision columns and still only the name.
+	makeRolePAT(t, pg, "admin-token", "admin")
+	rec = doAs(t, s, http.MethodPost, "/api/v1/secrets", "admin-token", body)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	logs = auditRows(t, pg)
+	require.Len(t, logs, 2)
+	assert.Equal(t, "AWS_KEY", logs[0].Resource)
+	assert.Equal(t, 204, logs[0].Status)
+	assert.NotEmpty(t, logs[0].Permission)
+	assert.NotEmpty(t, logs[0].GrantedBy)
+	raw, err = json.Marshal(logs[0])
 	require.NoError(t, err)
 	assert.False(t, strings.Contains(string(raw), value), "audit row leaked the secret value: %s", raw)
 }

@@ -41,7 +41,8 @@ func missingPermOnJob(p authz.Permission, job string) string {
 }
 
 // authzDecision is what authorize decided for a request, kept for the audit
-// log. Scope is the job name, or "global" for a global check.
+// log. Scope is the job name, or empty for a global check or a refusal before
+// any job is known (spec 5.12).
 type authzDecision struct {
 	Permission authz.Permission
 	Scope      string
@@ -50,7 +51,8 @@ type authzDecision struct {
 	Status     int
 }
 
-const scopeGlobalName = "global"
+// scopeGlobalName is the Scope of a decision that is not tied to a job.
+const scopeGlobalName = ""
 
 type decisionSlotKey struct{}
 
