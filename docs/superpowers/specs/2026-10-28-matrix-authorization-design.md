@@ -356,6 +356,12 @@ block, and make it a startup error when there is one — at that point the
 operator is actively editing authorization and failing loudly is cheap; before
 that, refusing to boot on upgrade would violate the first anti-goal.
 
+**Break-glass left enabled (owner's call, 2026-10-29).** When an OIDC issuer
+is configured and the bootstrap token (`--token` / `UNIFIED_TOKEN` / config
+`token`) is also set, the controller keeps booting but logs
+`slog.Warn("UNIFIED_TOKEN is set while SSO is configured: the env:UNIFIED_TOKEN token is always admin and bypasses oidc.permissions; unset it once SSO works and keep it only as a break-glass credential")`.
+Without an issuer the token is the only login and nothing is logged.
+
 ### 5.5 PATs: owner snapshot ∩ ceiling, evaluated per request
 
 Designer's call. This is the PAT rule.
