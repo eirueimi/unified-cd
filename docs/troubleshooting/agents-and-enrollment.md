@@ -58,6 +58,11 @@ new enrollment file; plaintext tokens cannot be retrieved from list/get
 responses. For a lost or replayed refresh credential, run `unified-cli agent
 identity revoke-credentials <agent-id>`, create a new enrollment, and restart
 the agent with private `credentialFile` and `enrollmentTokenFile` paths.
+After a **full controller database loss** every host agent's credential is
+unknown to the controller and its logs show `credential request returned http 401`
+with a re-enroll hint: create a new enrollment for the same agent ID and restart the
+agent with it (see [Agent recovery contract](../operator-manual/operations.md#agent-recovery-contract)).
+Kubernetes agents recover by themselves once their enrollment policy exists again.
 `agent identity disabled` requires an administrator to investigate and enable
 the identity or replace it. `enrollment unavailable` is retryable only after
 PostgreSQL/controller availability is restored; auth fails closed.

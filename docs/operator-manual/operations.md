@@ -13,18 +13,32 @@ unified-cd's controller is stateless; all durable state lives in two external st
 | **PostgreSQL** (`UNIFIED_DB_DSN`) | Jobs, runs/steps, queue state, schedules, webhooks, PATs/sessions, agents, per-agent identities and credential hashes, encrypted secrets, `controller_settings` |
 | **S3-compatible object store** (`UNIFIED_S3_*`, Garage in dev) | Log archives, artifacts, cache entries, git-template cache |
 
-Losing the PostgreSQL database loses run history and every registered resource (jobs, schedules, webhooks, secrets, GitCredentials, AppSources). Agents are **not** lost from an operator's point of view: both the standard agent and the k8s-agent upsert their row on every claim, so once the DB is restored (or a fresh one is stood up) and an agent's process is still running, it reappears in `agent list` on its own. Everything else must be re-applied:
+Losing the PostgreSQL database loses run history and every registered resource (jobs, schedules, webhooks, secrets, GitCredentials, AppSources) and, on a **full** loss, every agent credential. Re-apply everything that was lost:
 
 - Re-`apply` job/schedule/webhook/AppSource/GitCredential YAML.
 - Re-`secret set` every secret — secret values are never recoverable from a backup of anything other than the DB itself, and are not retrievable via the API even when present (see [Secrets Management Guide](../user-guide/secrets.md#security-model)).
+- Recover the agents as described below.
 
----
+### Agent recovery contract
 
-Per-agent credentials are stored as hashes in PostgreSQL. After restoring a
-fresh database, issue new one-time enrollments and re-enroll the agents rather
-than attempting to reuse lost credential state. During a database outage,
-agent authentication fails closed with `authentication unavailable` or
-`enrollment unavailable`.
+Agent credentials (hashes of access and refresh tokens) and the agent inventory both live in PostgreSQL. What happens to a running agent depends on what was lost:
+
+| Situation | Host (standard) agent | Kubernetes agent |
+|---|---|---|
+| **Inventory row lost, credentials intact** (for example a partial restore) | Self-healing: the next claim upserts the agent's row and it reappears in `agent list`. | Same. |
+| **Full database loss** (credential records gone) | **Re-enrollment required.** The controller does not accept credentials it does not know: every request is rejected with `401 unauthorized` and the agent never appears in `agent list` until it is re-enrolled with a new one-time enrollment. | **Automatic, no new enrollment**, provided the enrollment policy exists again. Policies declared in the controller config (`agentAuth.kubernetesEnrollmentPolicies`) are re-created on every controller start; policies created through the API are lost with the database and must be re-created. |
+
+**Host agents after a full loss.** The running agent does not exit. Its claim loop logs `claim` errors containing `credential request returned http 401: the controller rejected this credential ... re-enroll this agent` (or a bare `http 401: response omitted` for up to an hour while it still holds a cached access token) and retries every few seconds, and heartbeats log warnings. To recover each agent:
+
+1. Create a new one-time enrollment: `unified-cli agent enrollment create --agent-id <agent-id> --label <label> ...` (use the agent's existing ID to keep its name; the printed command is ready to run).
+2. Restart the agent with the new token (`--enrollment-token-file`, `--enrollment-token`, or `UNIFIED_AGENT_ENROLLMENT_TOKEN`). The token is read at startup, so a running agent does not pick it up. A fresh token is exchanged first and overwrites the stale local `credential.json` (default `$HOME/.unified-cd/<agent-id>/credential.json`), so you do not need to delete it. Do not leave an old, already-consumed token in place: the agent would fall back to the stale credential, which is also rejected.
+3. Verify with `unified-cli agent list`: the agent reappears after its first claim.
+
+See [Agents](agents.md) for the enrollment options and [Troubleshooting](../troubleshooting/agents-and-enrollment.md#vm-agent-cannot-enroll-or-refresh).
+
+**Kubernetes agents after a full loss.** The controller restarted on the fresh database has the config-declared policies again. The agent keeps getting `401` on its requests until its cached access token (valid for at most one hour; roughly 40-45 minutes of uptime in practice) is due for renewal, then it proves its projected ServiceAccount token against the policy and receives new credentials with no operator action. Restarting the agent Pod makes this immediate. A policy that existed only in the lost database makes enrollment fail (`enrollment policy rejected`) until the policy is re-created.
+
+During a database outage (as opposed to loss), agent authentication fails closed with `authentication unavailable` or `enrollment unavailable`, and agents recover on their own once PostgreSQL is back.
 
 ## Backup
 

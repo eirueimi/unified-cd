@@ -28,13 +28,6 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** `internal/agent/exec_windows.go` `assignJob` enables `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and `internal/agent/runner_test.go` `TestRunStep_CancelKillsGrandchild` covers the normal path; `internal/agent/exec_tree.go` `runTreeKilled` assigns only after `cmd.Start` and retains a single-process fallback when assignment fails.
 - **Done when:** Cancelling a Windows step leaves no descendant process alive even when the child spawns immediately or Job Object assignment fails, the step reports `Cancelled`, and Windows regression tests deterministically cover both escape paths.
 
-### 12. Define and align full database-loss agent recovery behavior
-
-- **Status:** Partial
-- **Impact:** After complete controller database loss, existing agents cannot authenticate to claim work until they are re-enrolled, despite operations guidance also promising automatic inventory recovery.
-- **Evidence:** `internal/controller/api_agent.go` `handleAgentClaim` calls `internal/store/postgres.go` `UpsertAgentOnClaim`, but `internal/controller/agent_auth.go` authenticates first through `GetAgentCredentialForAuth`; `internal/controller/api_agent_test.go` `TestAgentAPI_Claim_UpsertsUnregisteredAgent` covers only a missing inventory row, and `docs/operator-manual/operations.md` states conflicting full-loss recovery expectations.
-- **Done when:** The supported full-database-loss workflow has one explicit runtime and documentation contract, and an integration test starting from absent inventory and credential records proves either bounded automatic recovery or the documented re-enrollment requirement before the agent reappears and can claim work.
-
 ### 33d. Prevent late step reports after run finalization
 
 - **Status:** Partial
