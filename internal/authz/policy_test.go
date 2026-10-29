@@ -170,3 +170,17 @@ func TestCompileNilConfigIsEmptyPolicy(t *testing.T) {
 	require.Empty(t, w)
 	require.False(t, p.Configured())
 }
+
+func TestCompileLegacyUserMapUnknownRoleIsNotChecked(t *testing.T) {
+	legacy := Legacy{UserMap: map[string]string{"a@example.com": "develper"}}
+
+	_, warnings, err := Compile(nil, legacy, "")
+	require.NoError(t, err)
+	require.Empty(t, warnings)
+
+	cfg, err := decodePolicy(t, "permissions:"+string(rune(10))+"  global:"+string(rune(10))+"    groups: {g: viewer}"+string(rune(10)))
+	require.NoError(t, err)
+	_, warnings, err = Compile(cfg, legacy, "https://idp.example.com")
+	require.NoError(t, err)
+	require.Empty(t, warnings)
+}

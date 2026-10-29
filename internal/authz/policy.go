@@ -301,8 +301,9 @@ func compileGrants(folder, path string, entries []GrantEntry) ([]policyGrant, er
 	return out, nil
 }
 
-// legacyRoleLines reports roleMap/userMap values that are not a built-in role.
-// "deny" and "" are meaningful (or harmless) and are not reported.
+// legacyRoleLines reports roleMap values that are not a built-in role. userMap
+// is not checked: an unknown userMap role denies the user, it is not ignored.
+// "deny" and "" are not reported.
 func legacyRoleLines(l Legacy) []string {
 	var lines []string
 	check := func(field string, m map[string]string) {
@@ -323,7 +324,6 @@ func legacyRoleLines(l Legacy) []string {
 		}
 	}
 	check("roleMap", l.RoleMap)
-	check("userMap", l.UserMap)
 	return lines
 }
 
