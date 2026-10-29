@@ -77,11 +77,6 @@ func generateState() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// oidcProvider builds a provider and oauth2.Config from OIDCConfig.
-// When IssuerInternal is set, it injects a hostRewriteTransport into the context so that
-// server-side discovery, token exchange, and JWKS fetches all go through the internal URL.
-// The auth URL sent to the browser remains the external Issuer URL.
-// The returned ctx has the transport injected and can be passed directly to Exchange / Verify.
 // oidcScopes returns the scopes both the browser login and the CLI device flow
 // request. When the roles claim is a bare scope-like token (e.g. "groups" for
 // Dex) it is requested as a scope too, so the IdP emits it. Namespaced or
@@ -95,6 +90,11 @@ func oidcScopes(rolesClaim string) []string {
 	return scopes
 }
 
+// oidcProvider builds a provider and oauth2.Config from OIDCConfig.
+// When IssuerInternal is set, it injects a hostRewriteTransport into the context so that
+// server-side discovery, token exchange, and JWKS fetches all go through the internal URL.
+// The auth URL sent to the browser remains the external Issuer URL.
+// The returned ctx has the transport injected and can be passed directly to Exchange / Verify.
 func (s *Server) oidcProvider(ctx context.Context, host string) (context.Context, *oidc.Provider, *oauth2.Config, error) {
 	if s.oidcCfg.IssuerInternal != "" {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, &http.Client{

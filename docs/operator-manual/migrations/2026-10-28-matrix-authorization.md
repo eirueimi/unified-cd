@@ -39,7 +39,10 @@ agents are a different kind of principal and are not affected; job code is not c
 3. **If automation creates PATs from a CLI login on a deployment that maps groups** (`roleMap` or
    `permissions.*.groups`), upgrade the CLI and log in again (row 4); a current CLI requests the
    roles-claim scope the server advertises.
-4. Nothing else needs doing. Run the upgrade; read the startup log for the warning in row 10.
+4. **Upgrade order:** controller first, then the CLIs, then (once folder grants are configured)
+   re-issue team PATs. A new CLI against an old controller still works: the old controller sends no
+   scopes, so the CLI falls back to `openid email profile`.
+5. Nothing else needs doing. Run the upgrade; read the startup log for the warning in row 10.
 
 ## Separating teams
 

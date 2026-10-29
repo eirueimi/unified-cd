@@ -581,7 +581,11 @@ creator presented. Two creators present none we can trust:
 - an **OIDC bearer** (CLI device flow) whose id_token has no `rolesClaim`
   claim at all, while the config contains group-keyed grants (any `roleMap`
   entry or any `permissions.*.groups` entry). Typical cause: the device flow
-  did not request the scope that makes the IdP emit groups. When the config
+  did not request the scope that makes the IdP emit groups. The controller
+  advertises the scopes to request (`openid`, `email`, `profile` plus the bare
+  `rolesClaim`, from the same helper the web login uses) as `scopes` in
+  `GET /api/v1/auth/oidc-config`; current CLIs request them, older CLIs do not
+  and fall back to `openid email profile`. When the config
   has no group-keyed grants, groups cannot affect any decision, so an absent
   claim is recorded as the empty set — it is then exact, not a guess — and
   userMap-only setups (for example local Dex static users, which have no
@@ -780,8 +784,10 @@ are configured); every detail below is a designer's call.
   - `bundles`: each role name with its permission list (§7.3);
   - `legacy`: every `roleMap` and `userMap` entry and `defaultRole`, each with
     the role it resolves to and the global permissions that role grants; a
-    `roleMap`/`userMap` value that is not a known role is listed with
-    `"ignored": true` (the §5.4 warning case);
+    `roleMap` value that is not a known role is listed with
+    `"ignored": true` (the §5.4 warning case: it never matches), and an unknown
+    `userMap` or `defaultRole` value with `"denies": true` (the runtime denies
+    login for that user, or for everyone the default would have covered);
   - `global` and `folders`: every `oidc.permissions` entry in file order, as
     `{subject: "group"|"user", name, grant, permissions}` where `grant` is the
     configured list (role names and permission names as written) and
