@@ -100,7 +100,20 @@ jobs:
         run: |
           set -eux
           sudo apt-get update
-          sudo apt-get install -y uidmap dbus-user-session docker-ce-rootless-extras
+          sudo apt-get install -y uidmap dbus-user-session
+          # The runner image's apt sources carry no docker-ce-rootless-extras
+          # (ubuntu-latest is now 26.04), so install Docker's static release
+          # binaries, pinned, into the user's own bin directory instead.
+          DOCKER_STATIC_VERSION=27.5.1
+          base="https://download.docker.com/linux/static/stable/x86_64"
+          mkdir -p "$HOME/bin"
+          curl -fsSL "$base/docker-$DOCKER_STATIC_VERSION.tgz" | tar -xz -C "$HOME/bin" --strip-components=1
+          curl -fsSL "$base/docker-rootless-extras-$DOCKER_STATIC_VERSION.tgz" | tar -xz -C "$HOME/bin" --strip-components=1
+          export PATH="$HOME/bin:$PATH"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          # Ubuntu 24.04+ restricts unprivileged user namespaces through
+          # AppArmor, which rootlesskit needs and has no profile for here.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           # Replace the runner's rootful daemon by a user-session one.
           sudo systemctl disable --now docker.service docker.socket
           sudo rm -f /var/run/docker.sock
@@ -210,6 +223,7 @@ jobs:
           # every case in this image; load it so a registry rate limit cannot
           # fail a pod pull.
           docker pull busybox:1.36
+          echo 'FROM busybox:1.36' | docker build -t busybox:1.36 -
           kind load docker-image busybox:1.36 --name ci
       - name: Build and load a real shim image into kind
         # The k8s job's tests build real Pods, and BuildPod (internal/k8sagent/podbuilder.go)
