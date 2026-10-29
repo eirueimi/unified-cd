@@ -86,13 +86,6 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** `internal/controller/api_artifacts_test.go` `TestArtifact_UploadDownload_RoundTrip` sends an owner enrolled-agent download through `s.Router().ServeHTTP`, requires HTTP 200, and compares the exact artifact bytes; `TestArtifactDownload_RejectsNoAuth` sends an unauthenticated request through `s.r.ServeHTTP` and requires HTTP 401.
 - **Done when:** Router-level tests seed exact artifact bytes and prove byte-for-byte successful downloads for a human viewer and a distinct non-owner enrolled agent under the documented cross-run contract.
 
-### 35e. Assert HTTP methods for every CLI request constructor
-
-- **Status:** Partial
-- **Impact:** CLI tests can miss GET and POST regressions when the path, body, and output remain plausible, causing commands to call the right endpoint with the wrong method.
-- **Evidence:** `internal/cli/apply_test.go` `captureTransport` records methods and selected mutation tests assert them, but most tests under `internal/cli/` still verify only paths, bodies, or output.
-- **Done when:** A table-driven CLI contract covers every current request constructor and exact method-path pair, with command-specific tests retaining body, authorization, and response assertions where applicable.
-
 ### 37. Ship a Helm chart for installing unified-cd
 
 - **Status:** Open
