@@ -54,7 +54,8 @@ func TestAgentAPI_Claim_RestoresCapabilitiesOnARecreatedRow(t *testing.T) {
 	assert.Equal(t, run.ID, got.RunID)
 	info, err = pg.GetAgent(t.Context(), "k8s")
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{dsl.CapPod, dsl.CapContainer}, info.Capabilities)
+	// Stored normalized: pod implies securitycontext.
+	assert.ElementsMatch(t, []string{dsl.CapPod, dsl.CapContainer, dsl.CapSecurityContext}, info.Capabilities)
 }
 
 // A capability outside the vocabulary is rejected on a claim just as it is at

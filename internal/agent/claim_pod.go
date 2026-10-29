@@ -32,6 +32,9 @@ type containerDef struct {
 	// podTemplate set, so it stays alive as an exec target.
 	Entrypoint []string
 	Args       []string
+	// Security is the container's effective identity after pod/container
+	// precedence (dsl.ResolveSecurity). Zero when no securityContext is set.
+	Security dsl.EffectiveSecurity
 }
 
 // parseContainerDef extracts a containerDef from a raw podTemplate container
@@ -40,13 +43,18 @@ type containerDef struct {
 // comment); they are listed in dsl.HostSupportedContainerFields, so a
 // podTemplate that sets them is host-supported and is no longer forced onto
 // a Kubernetes agent by PodTemplateNeedsKubernetes. Other host-unsupported
-// fields (volumeMounts, ports, securityContext, envFrom, ...) are logged
+// fields (volumeMounts, ports, envFrom, ...) are logged
 // once per container and dropped.
 func parseContainerDef(name string, c map[string]any) (containerDef, error) {
 	def := containerDef{Name: name}
 	def.Image, _ = c["image"].(string)
 
 	for k := range c {
+		// securityContext is consumed by claimContainerDefs (def.Security) and
+		// the claim pod builder, so it is not ignored here.
+		if k == "securityContext" {
+			continue
+		}
 		if !dsl.HostSupportedContainerFields[k] {
 			slog.Warn("podTemplate container field is not supported on the host agent and is ignored",
 				"container", name, "field", k)
@@ -190,6 +198,7 @@ const primaryContainerName = "job"
 func claimContainerDefs(pt *dsl.PodTemplate, runnerImage string) ([]containerDef, error) {
 	var defs []containerDef
 	seen := map[string]bool{}
+	podSC := podSecurityContext(pt)
 	if pt != nil {
 		containers, _ := pt.Spec["containers"].([]any)
 		for idx, raw := range containers {
@@ -210,6 +219,10 @@ func claimContainerDefs(pt *dsl.PodTemplate, runnerImage string) ([]containerDef
 			if err != nil {
 				return nil, err
 			}
+			ctrSC, _ := c["securityContext"].(map[string]any)
+			if def.Security, err = dsl.ResolveSecurity(podSC, ctrSC); err != nil {
+				return nil, fmt.Errorf("container %q: %w", name, err)
+			}
 			defs = append(defs, def)
 		}
 	}
@@ -218,7 +231,12 @@ func claimContainerDefs(pt *dsl.PodTemplate, runnerImage string) ([]containerDef
 			return defs, nil
 		}
 	}
-	return append(defs, containerDef{Name: primaryContainerName, Image: runnerImage}), nil
+	primary := containerDef{Name: primaryContainerName, Image: runnerImage}
+	var err error
+	if primary.Security, err = dsl.ResolveSecurity(podSC, nil); err != nil {
+		return nil, fmt.Errorf("container %q: %w", primaryContainerName, err)
+	}
+	return append(defs, primary), nil
 }
 
 // claimNeedsRunnerImage reports whether building the claim pod for pt would
@@ -268,6 +286,12 @@ type claimPodManager struct {
 	// beside the workspace (isolatedVolumeMounts). A volume at the workspace
 	// root is not among them: it replaces the workspace mount's host path.
 	volumeMounts []crt.Mount
+
+	// maxMappedID is the highest container ID the runtime's user namespace
+	// maps (the rootless limit, design 5.4); 0 means no limit. Set before
+	// Start. runLog receives helper output (fsgroup warnings) for the run log.
+	maxMappedID int64
+	runLog      func(lines []string)
 
 	mu    sync.Mutex
 	pause crt.ContainerHandle
@@ -322,6 +346,13 @@ func ucdToolsMount(toolsDir string) []crt.Mount {
 	return []crt.Mount{{HostPath: toolsDir, ContainerPath: "/.ucd", ReadOnly: true}}
 }
 
+// containerMounts returns the mounts every claim-pod container gets, pause
+// included: the workspace, the named volumes and the read-only /.ucd shim.
+func (m *claimPodManager) containerMounts() []crt.Mount {
+	mounts := append([]crt.Mount{{HostPath: m.workDir, ContainerPath: m.mountPath}}, m.volumeMounts...)
+	return append(mounts, ucdToolsMount(m.toolsDir)...)
+}
+
 // Start builds the claim pod eagerly: pause first (netns owner), then every
 // container def. Sidecars must be listening before any step runs, which is
 // why this is claim-start eager, not step-time lazy.
@@ -329,23 +360,62 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.podTemplate = pt
-	// The pause container only owns the netns (nothing execs into it), but it
-	// must outlive the whole claim: without an explicit keep-alive it would
-	// run its image's default entrypoint and could exit immediately,
-	// collapsing the netns every other claim container shares. It also needs
-	// the /.ucd mount: ucdShPause IS the shim binary, not something the pause
-	// image is expected to provide.
-	pause, err := m.rt.Create(ctx, crt.CreateSpec{Image: m.pauseImage, Entrypoint: ucdShPause, Mounts: ucdToolsMount(m.toolsDir)})
+	defs, err := claimContainerDefs(pt, m.runnerImage)
+	if err != nil {
+		return fmt.Errorf("claim pod: %w", err)
+	}
+	podEff, err := dsl.ResolveSecurity(podSecurityContext(pt), nil)
+	if err != nil {
+		return fmt.Errorf("claim pod: %w", err)
+	}
+	// An ID the rootless runtime cannot map fails the claim before anything
+	// is created (design 5.4).
+	if err := checkMappedRange(podEff, m.maxMappedID); err != nil {
+		return fmt.Errorf("claim pod: %w", err)
+	}
+	for _, def := range defs {
+		if err := checkMappedRange(def.Security, m.maxMappedID); err != nil {
+			return fmt.Errorf("claim pod: container %q: %w", def.Name, err)
+		}
+	}
+	// The pause container owns the netns and is the agent's root helper
+	// (design 6.2): --user 0:0 whatever the pause image's USER, with the same
+	// workspace, volume and /.ucd mounts as the job containers so one path
+	// names the same inode everywhere. It must outlive the whole claim:
+	// without an explicit keep-alive it would run its image's default
+	// entrypoint and could exit immediately, collapsing the netns every other
+	// claim container shares. ucdShPause IS the shim binary (/.ucd), not
+	// something the pause image is expected to provide.
+	pause, err := m.rt.Create(ctx, crt.CreateSpec{
+		Image:      m.pauseImage,
+		Entrypoint: ucdShPause,
+		User:       "0:0",
+		Mounts:     m.containerMounts(),
+	})
 	if err != nil {
 		return fmt.Errorf("claim pod: start pause container (image %q): %w", m.pauseImage, err)
 	}
 	m.pause = pause
-	defs, err := claimContainerDefs(pt, m.runnerImage)
-	if err != nil {
-		m.closeAllLocked(ctx)
-		return fmt.Errorf("claim pod: %w", err)
+	// fsGroup runs before any job or sidecar container exists (design 6.2).
+	if podEff.FSGroup != nil {
+		if err := m.applyFSGroup(ctx, *podEff.FSGroup, podEff.FSGroupChangePolicy); err != nil {
+			m.closeAllLocked(ctx)
+			return fmt.Errorf("claim pod: %w", err)
+		}
 	}
-	for _, def := range defs {
+	// runAsNonRoot and image-user checks for every container, before the first
+	// one is created: a sidecar running its own entrypoint must never start as
+	// root first.
+	users := make([]string, len(defs))
+	for i, def := range defs {
+		u, err := m.resolveUser(ctx, def)
+		if err != nil {
+			m.closeAllLocked(ctx)
+			return fmt.Errorf("claim pod: %w", err)
+		}
+		users[i] = u
+	}
+	for i, def := range defs {
 		// A service sidecar runs its own entrypoint/CMD (Entrypoint/Args from
 		// its podTemplate); the primary "job" container is forced to the
 		// ucd-sh pause keep-alive via Entrypoint (clearing whatever ENTRYPOINT
@@ -354,15 +424,19 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 		if def.Name == primaryContainerName {
 			entrypoint, cargs = ucdShPause, nil
 		}
-		mounts := append([]crt.Mount{{HostPath: m.workDir, ContainerPath: m.mountPath}}, m.volumeMounts...)
-		mounts = append(mounts, ucdToolsMount(m.toolsDir)...)
 		h, err := m.rt.Create(ctx, crt.CreateSpec{
 			Image:            def.Image,
 			Env:              def.Env,
 			CPULimit:         def.CPULimit,
 			MemLimit:         def.MemLimit,
 			WorkDir:          m.mountPath,
-			Mounts:           mounts,
+			Mounts:           m.containerMounts(),
+			User:             users[i],
+			GroupAdd:         groupAdd(def.Security),
+			CapDrop:          def.Security.CapDrop,
+			CapAdd:           def.Security.CapAdd,
+			NoNewPrivileges:  def.Security.NoNewPrivileges,
+			ReadOnlyRootfs:   def.Security.ReadOnlyRootfs,
 			NetworkContainer: pause.ID,
 			Entrypoint:       entrypoint,
 			Args:             cargs,

@@ -25,16 +25,32 @@ func (s *LocalObjectStore) Put(_ context.Context, key string, content io.Reader,
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
-	f, err := os.Create(path)
+	// Write to a temp file and rename it into place, so a body that fails
+	// halfway (an archiver that hit a permission error) never leaves a
+	// truncated object under key, nor destroys the one that was there before.
+	f, err := os.CreateTemp(filepath.Dir(path), localTempPrefix)
 	if err != nil {
 		return fmt.Errorf("create: %w", err)
 	}
-	defer f.Close()
+	tmp := f.Name()
 	if _, err := io.Copy(f, content); err != nil {
+		f.Close()
+		os.Remove(tmp)
 		return fmt.Errorf("write: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
 }
+
+// localTempPrefix names Put's in-flight temp files; List hides them.
+const localTempPrefix = ".put-"
 
 // Get implements ObjectStore.Get, including the ErrNotFound contract: os.Open
 // already fails eagerly (not lazily) for a missing file, so this only needs
@@ -72,6 +88,9 @@ func (s *LocalObjectStore) List(_ context.Context, prefix string) ([]string, err
 		rel, err := filepath.Rel(s.baseDir, p)
 		if err != nil {
 			return err
+		}
+		if strings.HasPrefix(d.Name(), localTempPrefix) {
+			return nil
 		}
 		key := filepath.ToSlash(rel)
 		if strings.HasPrefix(key, prefix) {

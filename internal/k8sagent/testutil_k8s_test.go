@@ -19,6 +19,18 @@ import (
 
 var runSeq atomic.Int64
 
+// skipOrFailInCI skips on a developer machine and fails when CI (or
+// UCD_REQUIRE_RUNTIME=1) says the cluster and shim image are supposed to exist.
+// go test reports a skip as ok, so without this a CI job whose kind cluster or
+// shim image silently went missing would pass having tested nothing.
+func skipOrFailInCI(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("CI") != "" || os.Getenv("UCD_REQUIRE_RUNTIME") == "1" {
+		t.Fatalf("required environment missing: "+format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
 const testImage = "ubuntu:22.04"
 
 // shimImageEnvVar is the environment variable pod-creating k8s integration
@@ -43,7 +55,7 @@ func testShimImageOrSkip(t *testing.T) string {
 	t.Helper()
 	img := os.Getenv(shimImageEnvVar)
 	if img == "" {
-		t.Skipf("%s not set; skipping pod-creating k8s integration test (see ci.yml's k8s job for how CI builds and kind-loads a real shim image, or export it yourself pointing at an image containing /ucd-sh)", shimImageEnvVar)
+		skipOrFailInCI(t, "%s not set; skipping pod-creating k8s integration test (see ci.yml's k8s job for how CI builds and kind-loads a real shim image, or export it yourself pointing at an image containing /ucd-sh)", shimImageEnvVar)
 	}
 	return img
 }
@@ -57,14 +69,14 @@ func newTestKubeClient(t *testing.T) (*kubernetes.Clientset, *rest.Config) {
 		rules, &clientcmd.ConfigOverrides{},
 	).ClientConfig()
 	if err != nil {
-		t.Skipf("no kubernetes cluster available: %v", err)
+		skipOrFailInCI(t, "no kubernetes cluster available: %v", err)
 	}
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		t.Fatalf("kubernetes client: %v", err)
 	}
 	if _, err := client.Discovery().ServerVersion(); err != nil {
-		t.Skipf("kubernetes cluster not reachable: %v", err)
+		skipOrFailInCI(t, "kubernetes cluster not reachable: %v", err)
 	}
 	return client, cfg
 }

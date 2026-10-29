@@ -11,9 +11,11 @@
 # Why this template: docker-build-push.yaml needs a Docker daemon (a DinD sidecar
 # with privileged: true on Kubernetes). This one builds with rootless BuildKit
 # instead — a `buildkitd` sidecar that runs WITHOUT privileged, plus `buildctl`
-# in the step container. Because the podTemplate carries container fields the
-# host claim pod can't honor (securityContext/args), the run is auto-pinned to a
-# Kubernetes agent (see dsl.PodTemplateNeedsKubernetes) — no agentSelector needed.
+# in the step container. Because the buildkitd securityContext sets
+# seccompProfile/appArmorProfile `Unconfined`, which a standard agent never
+# honors (the identity fields runAsUser/runAsGroup alone would be fine there, and
+# `args` is host-supported), the run is auto-pinned to a Kubernetes agent (see
+# dsl.PodTemplateNeedsKubernetes) — no agentSelector needed.
 #
 # The step container is the buildkit image itself (it ships buildctl). It has no
 # bash, which is fine: the Kubernetes agent execs steps through its injected

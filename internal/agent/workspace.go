@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
@@ -128,8 +130,32 @@ func prepareWorkspace(ctx context.Context, workDir, mode string, vol *volumeWork
 		if err := wipeDir(ctx, workDir, false, rtFn, toolsDir); err != nil {
 			return fmt.Errorf("clean workspace %s: %w", workDir, err)
 		}
+		// The slot directory above the workspace is the agent user's alone: an
+		// isolated workspace is 0777 (below), and only this parent keeps other
+		// local users from reaching it. Containers do not need to traverse it,
+		// because the runtime bind-mounts the workspace itself.
+		if err := ensurePrivateDir(filepath.Dir(workDir)); err != nil {
+			return fmt.Errorf("create workspace parent %s: %w", filepath.Dir(workDir), err)
+		}
 		if err := os.MkdirAll(workDir, 0o755); err != nil {
 			return fmt.Errorf("create workspace %s: %w", workDir, err)
+		}
+		if mode == "isolated" {
+			// An isolated ephemeral workspace is this host's emptyDir: Kubernetes
+			// creates one 0777 so a container running as any UID can write to it,
+			// and the host must match or a job with runAsUser would fail here and
+			// pass there. An explicit chmod, because the agent's umask would
+			// narrow the mode MkdirAll asked for. The directory is private to
+			// this one run, and its parent working<N> is 0700 (ensurePrivateDir).
+			// Native workspaces and volumes are untouched.
+			if err := os.Chmod(workDir, 0o777); err != nil {
+				if runtime.GOOS != "windows" {
+					return fmt.Errorf("make workspace %s world-writable: %w", workDir, err)
+				}
+				// Windows has no mode bits to widen; the Linux VM behind the
+				// container runtime decides who can write.
+				slog.Warn("could not chmod the isolated workspace", "dir", workDir, "error", err)
+			}
 		}
 		return nil
 	}
@@ -156,6 +182,20 @@ func prepareWorkspace(ctx context.Context, workDir, mode string, vol *volumeWork
 		slog.Warn("write volume mode marker failed", "volume", vol.Name, "error", err)
 	}
 	return nil
+}
+
+// ensurePrivateDir creates dir (and any missing parents) and sets it to 0700
+// explicitly, because MkdirAll applies the umask and leaves an existing
+// directory as it is: an agent upgraded from a release that made working<N>
+// 0755 must tighten it. Windows has no such mode.
+func ensurePrivateDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	return os.Chmod(dir, 0o700)
 }
 
 // withArticle prefixes a mode with the right indefinite article for a message
@@ -216,8 +256,16 @@ func wipeDir(ctx context.Context, dir string, contentsOnly bool, rtFn func() (cr
 	return remove()
 }
 
+// cleanupImage is the root cleanup container's image. Fully qualified and
+// digest-pinned (the digest of the agent's default pause image, so it is
+// normally already pulled): a bare "busybox" depends on the runtime's
+// short-name resolution, which podman may refuse non-interactively and an
+// air-gapped host cannot do at all.
+const cleanupImage = "docker.io/library/busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+
 // containerCleanup deletes workDir's contents as root via a throwaway
-// container, for files a rootful container runtime left owned by root.
+// container, for files another UID owns: a rootful runtime's root, or the
+// UID a job's securityContext ran as.
 func containerCleanup(ctx context.Context, workDir string, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
 	rt, err := rtFn()
 	if err != nil {
@@ -230,10 +278,14 @@ func containerCleanup(ctx context.Context, workDir string, rtFn func() (crt.Cont
 	// The /.ucd mount is what makes that keep-alive binary available.
 	mounts := append([]crt.Mount{{HostPath: workDir, ContainerPath: "/w"}}, ucdToolsMount(toolsDir)...)
 	h, err := rt.Create(ctx, crt.CreateSpec{
-		Image:      "busybox",
+		Image:      cleanupImage,
 		WorkDir:    "/w",
 		Mounts:     mounts,
 		Entrypoint: ucdShPause,
+		// Explicitly root: the point of this container is to delete files the
+		// agent's own user cannot, so that must not depend on the image's
+		// default USER.
+		User: "0:0",
 	})
 	if err != nil {
 		return err
@@ -247,4 +299,38 @@ func containerCleanup(ctx context.Context, workDir string, rtFn func() (crt.Cont
 		return fmt.Errorf("cleanup container exited %d", ec)
 	}
 	return nil
+}
+
+// Dot-prefixed scratch directories the agent makes directly under wsBase. GC
+// never sees them (it only walks working*), so reapStagingDirs does.
+const (
+	probeDirPrefix = ".ucd-probe-"     // the startup securityContext probe
+	rootCopyPrefix = ".ucd-root-copy-" // the root copy-out fallback's staging
+	stagingMinAge  = time.Hour         // younger ones may belong to a live agent sharing wsBase
+)
+
+// reapStagingDirs removes scratch directories an agent crash left under wsBase
+// that are older than stagingMinAge, through wipeDir (so files another UID
+// owns go through the cleanup container). It returns what it removed; failures
+// are logged and retried at the next start.
+func reapStagingDirs(ctx context.Context, wsBase string, now time.Time, rtFn func() (crt.ContainerRuntime, error), toolsDir string) []string {
+	var removed []string
+	for _, prefix := range []string{probeDirPrefix, rootCopyPrefix} {
+		dirs, err := filepath.Glob(filepath.Join(wsBase, prefix+"*"))
+		if err != nil {
+			continue
+		}
+		for _, d := range dirs {
+			fi, err := os.Lstat(d)
+			if err != nil || !fi.IsDir() || now.Sub(fi.ModTime()) < stagingMinAge {
+				continue
+			}
+			if err := wipeDir(ctx, d, false, rtFn, toolsDir); err != nil {
+				slog.Warn("could not remove a stale scratch directory", "dir", d, "error", err)
+				continue
+			}
+			removed = append(removed, d)
+		}
+	}
+	return removed
 }

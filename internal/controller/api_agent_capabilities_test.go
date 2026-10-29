@@ -73,3 +73,31 @@ func TestRegister_ReportedCapabilities_OmitsUnreported(t *testing.T) {
 	assert.ElementsMatch(t, []string{"native"}, got.Capabilities)
 	assert.NotContains(t, got.Capabilities, "container")
 }
+
+// securitycontext is part of the vocabulary, and pod implies it: an old
+// Kubernetes agent that reports [pod, container] is stored with
+// securitycontext added so it keeps claiming securityContext jobs.
+func TestRegister_AcceptsSecurityContextAndNormalizesPod(t *testing.T) {
+	s, pg := newTestServer(t)
+	register := func(id string, caps []string) []string {
+		token := issueAgentAccessForTest(t, pg, id, nil, nil)
+		body, _ := json.Marshal(api.AgentRegisterRequest{AgentID: id, Hostname: "h", OS: "linux", Capabilities: caps})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+		got, err := pg.GetAgent(context.Background(), id)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		return got.Capabilities
+	}
+
+	assert.ElementsMatch(t, []string{"native", "container", "securitycontext"},
+		register("new-host", []string{"native", "container", "securitycontext"}))
+	assert.ElementsMatch(t, []string{"pod", "container", "securitycontext"},
+		register("old-k8s", []string{"pod", "container"}))
+	// A host agent that failed its probe must not gain the capability.
+	assert.ElementsMatch(t, []string{"native", "container"},
+		register("probe-failed", []string{"native", "container"}))
+}

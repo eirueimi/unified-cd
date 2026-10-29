@@ -137,6 +137,7 @@ nav:
           - "Ephemeral Workspaces and Named Volumes": operator-manual/migrations/2026-10-20-named-volumes.md
           - "Version-Derived Default Images": operator-manual/migrations/2026-10-22-version-derived-default-images.md
           - "Disk Gating on by Default": operator-manual/migrations/2026-10-23-disk-gating-defaults.md
+          - "Host Agents Honour securityContext": operator-manual/migrations/2026-10-23-host-security-context.md
           - "Kubernetes Job Pod Field Policy": operator-manual/migrations/2026-10-26-k8s-job-pod-field-policy.md
   - Reference:
       - CLI Reference: reference/cli.md

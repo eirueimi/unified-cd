@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path"
@@ -14,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
@@ -219,9 +221,15 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		hit, err := cache.RestoreExcluding(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, b.excludeVolumes(ctx, "cache restore", path))
+		var written artifact.Written
+		hit, err := cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, b.excludeVolumes(ctx, "cache restore", path), &written)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			return false, err
+		}
+		if hit {
+			if err := b.chownAgentWrite(ctx, &written); err != nil {
+				return false, err
+			}
 		}
 		return hit, nil
 	}
@@ -256,7 +264,9 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return cache.SaveExcluding(ctx, b.a.CacheStore, b.jobName, path, key, ttlDays, b.excludeVolumes(ctx, "cache save", path))
+		return b.readWithFallback(ctx, "cache save", path, func(p string, exclude []string) error {
+			return cache.SaveExcluding(ctx, b.a.CacheStore, b.jobName, p, key, ttlDays, exclude)
+		})
 	}
 	hostPath, cleanup, err := sm.copyOutToTemp(ctx, h, path)
 	if err != nil {
@@ -271,7 +281,9 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 func (b *hostBackend) UploadArtifact(ctx context.Context, scope ScopeHandle, runID, name, path string) error {
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return b.a.Client.UploadArtifactExcluding(ctx, runID, name, path, b.excludeVolumes(ctx, "artifact", path))
+		return b.readWithFallback(ctx, "artifact", path, func(p string, exclude []string) error {
+			return b.a.Client.UploadArtifactExcluding(ctx, runID, name, p, exclude)
+		})
 	}
 	artifactPath, cleanup, err := sm.copyOutToTemp(ctx, h, path)
 	if err != nil {
@@ -286,7 +298,11 @@ func (b *hostBackend) UploadArtifact(ctx context.Context, scope ScopeHandle, run
 func (b *hostBackend) DownloadArtifact(ctx context.Context, scope ScopeHandle, runID, name, destDir string) error {
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return b.a.Client.DownloadArtifactExcluding(ctx, runID, name, destDir, b.excludeVolumes(ctx, "artifact download", destDir))
+		var written artifact.Written
+		if err := b.a.Client.DownloadArtifactWritten(ctx, runID, name, destDir, b.excludeVolumes(ctx, "artifact download", destDir), &written); err != nil {
+			return err
+		}
+		return b.chownAgentWrite(ctx, &written)
 	}
 	tmp, err := os.MkdirTemp("", "ucd-scope-download-")
 	if err != nil {
@@ -493,3 +509,171 @@ func (b *hostBackend) ConcurrencyMode() ConcurrencyMode {
 }
 
 var _ ExecBackend = (*hostBackend)(nil)
+
+// containerPathOf maps a host path inside the claim (the workspace, or a
+// volume mounted below it) to the path the claim pod's containers, pause
+// included, see it at. It inverts resolveInVolumeMount, which turns a mount
+// path into the volume's host directory: the deepest volume wins, then the
+// workspace. false for a native claim or a path outside both.
+func (b *hostBackend) containerPathOf(hostPath string) (string, bool) {
+	if b.pod == nil {
+		return "", false
+	}
+	inside := func(base, p string) (string, bool) {
+		rel, err := filepath.Rel(base, p)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", false
+		}
+		return path.Clean(filepath.ToSlash(rel)), true
+	}
+	var best *volumeMountRef
+	for i := range b.volumeRefs {
+		r := &b.volumeRefs[i]
+		if _, ok := inside(r.HostPath, hostPath); ok && (best == nil || len(r.HostPath) > len(best.HostPath)) {
+			best = r
+		}
+	}
+	if best != nil {
+		rel, _ := inside(best.HostPath, hostPath)
+		return path.Join(b.mountPath, best.Rel, rel), true
+	}
+	if rel, ok := inside(b.workDir, hostPath); ok {
+		return path.Join(b.mountPath, rel), true
+	}
+	return "", false
+}
+
+// chownAgentWrite re-owns what an extraction just wrote (artifact download,
+// cache restore) as the unified-artifact sidecar would have on Kubernetes
+// (design 6.4). Only the entries the extraction wrote are touched: the
+// sidecar never changes ownership of what was already at the destination, and
+// the destination directory (the workspace root for ".") is full of the job's
+// own files. A no-op for a native claim and for a claim whose pod sets no
+// identity field.
+func (b *hostBackend) chownAgentWrite(ctx context.Context, w *artifact.Written) error {
+	if b.pod == nil {
+		return nil
+	}
+	var cps []string
+	for _, hp := range w.Roots() {
+		if cp, ok := b.containerPathOf(hp); ok {
+			cps = append(cps, cp)
+		}
+	}
+	if len(cps) == 0 {
+		return nil
+	}
+	return b.pod.ChownAsAgentWrite(ctx, cps)
+}
+
+// readWithFallback runs op, an archiver reading the host path resolved, and
+// when the agent's own user may not read it (files a container wrote as another
+// UID) retries once on a copy taken from the root pause container. It is the
+// read-side twin of wipeDir's cleanup-container fallback.
+//
+// Volume exclusions are computed once, on the host paths, and mapped into the
+// copy through container coordinates. The pause container sees every volume
+// bind-mounted under the workspace, so a copy of a directory that holds a
+// volume is taken child by child and never asks for the volume (copyAround);
+// when the agent cannot list such a directory the fallback is refused. The
+// copy is staged under the workspace base, not the OS temp directory. The copy
+// can be MORE than the pod-level user could read on Kubernetes, which the docs
+// state (design Q7).
+func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved string, op func(path string, exclude []string) error) error {
+	exclude := b.excludeVolumes(ctx, kind, resolved)
+	err := op(resolved, exclude)
+	if err == nil || !errors.Is(err, fs.ErrPermission) || b.pod == nil {
+		return err
+	}
+	src, ok := b.containerPathOf(resolved)
+	if !ok {
+		return err
+	}
+	// Keep the source's base name: a single-file upload names its archive entry
+	// after it, so a generic name here would change what the artifact contains.
+	base := path.Base(src)
+	if base == "/" || base == "." {
+		// A copy named "/" or "." would be the staging directory itself.
+		return fmt.Errorf("%w (root copy: refusing to copy %q into a staging directory)", err, src)
+	}
+	var skip []string // container paths below src that the copy must not contain
+	for _, e := range exclude {
+		if ce, ok := b.containerPathOf(e); ok && strings.HasPrefix(ce, src+"/") {
+			skip = append(skip, ce)
+		}
+	}
+	slog.Warn("read failed on permissions; retrying from a root copy taken in the claim pod", "path", resolved, "error", err)
+	stage, terr := b.stagingDir()
+	if terr != nil {
+		return fmt.Errorf("%w (root copy: %v)", err, terr)
+	}
+	defer func() {
+		if werr := wipeDir(context.WithoutCancel(ctx), stage, false, b.a.containerRuntime, b.a.ToolsDir); werr != nil {
+			slog.Warn("could not remove the root copy staging directory; the next agent start removes it", "dir", stage, "error", werr)
+		}
+	}()
+	dst := filepath.Join(stage, base)
+	if len(skip) == 0 {
+		if cerr := b.pod.CopyOutFromPause(ctx, src, dst); cerr != nil {
+			return fmt.Errorf("%w (root copy: %v)", err, cerr)
+		}
+	} else if cerr := b.copyAround(ctx, resolved, src, dst, skip); cerr != nil {
+		return fmt.Errorf("%w (root copy: %v)", err, cerr)
+	}
+	var copyExclude []string
+	for _, ce := range skip {
+		rel := strings.TrimPrefix(ce, src+"/")
+		copyExclude = append(copyExclude, filepath.Join(dst, filepath.FromSlash(rel)))
+	}
+	return op(dst, copyExclude)
+}
+
+// stagingDir makes a private scratch directory under the workspace base. The
+// name is dot-prefixed, so workspace GC and job paths never touch it, and
+// reapStagingDirs removes one an agent crash left behind.
+func (b *hostBackend) stagingDir() (string, error) {
+	wsBase, err := ResolveWorkspaceDir(b.a.WorkspaceDir)
+	if err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(wsBase, rootCopyPrefix)
+}
+
+// copyAround copies the container directory srcC (host path hostDir) to dst
+// without any of the container paths in skip, which are volumes mounted below
+// it: it lists hostDir, copies each child the skip list does not mention, and
+// descends into a child that holds one.
+func (b *hostBackend) copyAround(ctx context.Context, hostDir, srcC, dst string, skip []string) error {
+	entries, err := os.ReadDir(hostDir)
+	if err != nil {
+		return fmt.Errorf("cannot list %s to copy around the mounted volume(s) below it, and copying the volume(s) too is not allowed: %w", hostDir, err)
+	}
+	if err := os.MkdirAll(dst, 0o700); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		child := path.Join(srcC, e.Name())
+		var below []string
+		skipped := false
+		for _, s := range skip {
+			switch {
+			case s == child:
+				skipped = true
+			case strings.HasPrefix(s, child+"/"):
+				below = append(below, s)
+			}
+		}
+		switch {
+		case skipped:
+		case len(below) > 0:
+			if err := b.copyAround(ctx, filepath.Join(hostDir, e.Name()), child, filepath.Join(dst, e.Name()), below); err != nil {
+				return err
+			}
+		default:
+			if err := b.pod.CopyOutFromPause(ctx, child, filepath.Join(dst, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}

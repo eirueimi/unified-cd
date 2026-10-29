@@ -56,6 +56,19 @@ func TestContainerCleanup_KeepAliveCommand(t *testing.T) {
 	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, f.created[0].Entrypoint)
 }
 
+// The cleanup container must not depend on short-name resolution (podman can
+// refuse it non-interactively; an air-gapped host cannot do it): its image is
+// fully qualified and digest-pinned.
+func TestContainerCleanup_ImageIsQualifiedAndPinned(t *testing.T) {
+	f := &podFakeRT{}
+	require.NoError(t, containerCleanup(context.Background(), t.TempDir(), func() (crt.ContainerRuntime, error) { return f, nil }, ""))
+	require.Len(t, f.created, 1)
+	img := f.created[0].Image
+	assert.Equal(t, cleanupImage, img)
+	assert.True(t, strings.HasPrefix(img, "docker.io/library/"), "image %q must be fully qualified", img)
+	assert.Contains(t, img, "@sha256:", "image %q must be digest-pinned", img)
+}
+
 // TestContainerCleanup_MountsToolsDirReadOnly verifies the cleanup container
 // carries the same read-only /.ucd shim mount as every other container this
 // agent creates, alongside the existing workspace mount, when toolsDir is

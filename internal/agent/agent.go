@@ -175,6 +175,11 @@ type Agent struct {
 	resolvedRuntime crt.ContainerRuntime
 	runtimeErr      error
 	runtimeOnce     sync.Once
+
+	// probeRes is the result of the startup securityContext probe, computed
+	// once by securityContextProbe.
+	probeRes  probeResult
+	probeOnce sync.Once
 }
 
 // statfs returns the function that measures a filesystem: diskStatsFn, or the
@@ -258,11 +263,16 @@ func (a *Agent) containerRuntime() (crt.ContainerRuntime, error) {
 }
 
 // agentCapabilities reports what this standard agent can execute: always
-// native (host process), plus container when a container runtime is present.
-func agentCapabilities(runtimeAvailable bool) []string {
+// native (host process), plus container when a container runtime is present,
+// plus securitycontext when the startup probe showed that runtime honours a
+// claim's securityContext (secCtx; meaningless without a runtime).
+func agentCapabilities(runtimeAvailable, secCtx bool) []string {
 	caps := []string{dsl.CapNative}
 	if runtimeAvailable {
 		caps = append(caps, dsl.CapContainer)
+		if secCtx {
+			caps = append(caps, dsl.CapSecurityContext)
+		}
 	}
 	return caps
 }
@@ -272,7 +282,10 @@ func agentCapabilities(runtimeAvailable bool) []string {
 // it), so the two always agree and the claim poll costs nothing.
 func (a *Agent) capabilities() []string {
 	_, rtErr := a.containerRuntime()
-	return agentCapabilities(rtErr == nil)
+	if rtErr != nil {
+		return agentCapabilities(false, false)
+	}
+	return agentCapabilities(true, a.securityContextProbe().OK)
 }
 
 // logRegistration records what the agent registered as. Without it a host whose
@@ -280,10 +293,13 @@ func (a *Agent) capabilities() []string {
 // agent) silently registers as native-only: isolated jobs route elsewhere or
 // stay Queued, and nothing in this host's log says why. Detection runs once per
 // process, so the warning also says a restart is needed to pick the runtime up.
-func logRegistration(id string, caps []string, rtErr error) {
+func logRegistration(id string, caps []string, rtErr error, probe probeResult) {
 	if rtErr != nil {
 		slog.Warn("no container runtime: this agent will not run isolated (container) jobs; restart the agent once a runtime is available",
 			"agentId", id, "error", rtErr)
+	} else if !probe.OK {
+		slog.Warn(fmt.Sprintf("container runtime cannot honour securityContext (%s); jobs that set securityContext will not be routed to this agent", probe.Reason),
+			"agentId", id)
 	}
 	slog.Info("agent registered", "agentId", id, "capabilities", caps)
 }
@@ -315,6 +331,14 @@ func collectEnv(exposeEnv []string) map[string]string {
 // When ctx (claimCtx) is cancelled, new claims are stopped (cordon) and the agent waits for in-flight Runs to complete before exiting (drain).
 func (a *Agent) Run(ctx context.Context) error {
 	host, _ := os.Hostname()
+	// Run the securityContext probe now, bound to ctx, so a SIGTERM during it
+	// is honoured; capabilities() below then reads the cached result.
+	if _, rtErr := a.containerRuntime(); rtErr == nil {
+		a.securityContextProbeCtx(ctx)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
 	req := api.AgentRegisterRequest{
 		AgentID:      a.ID,
 		Hostname:     host,
@@ -339,7 +363,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		return registerErr
 	}
 	_, rtErr := a.containerRuntime()
-	logRegistration(a.ID, req.Capabilities, rtErr)
+	logRegistration(a.ID, req.Capabilities, rtErr, a.securityContextProbe())
 
 	// Fail runs a previous process incarnation left behind BEFORE claiming
 	// anything. A restarted agent re-registers under the same ID and resumes
@@ -372,9 +396,15 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	for i := 0; i < n; i++ {
 		dir := filepath.Join(wsBase, fmt.Sprintf("working%d", i))
-		if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+		if mkErr := ensurePrivateDir(dir); mkErr != nil {
 			return fmt.Errorf("create workspace %s: %w", dir, mkErr)
 		}
+	}
+
+	// Scratch directories a crashed process left under wsBase (the probe's, the
+	// root copy's): GC never walks them.
+	for _, d := range reapStagingDirs(ctx, wsBase, time.Now(), a.containerRuntime, a.ToolsDir) {
+		slog.Info("removed a stale scratch directory", "dir", d)
 	}
 
 	// Every volume is free at this point: the agent has lost all the runs it
@@ -447,7 +477,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		// in use by ANOTHER live agent process sharing this wsBase would have
 		// to be younger than retention (days-scale) to survive anyway, since a
 		// truly stuck/abandoned dir is exactly what this GC exists to reclaim.
-		if removed, err := gcWorkspaces(wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now()); err != nil {
+		if removed, err := gcWorkspaces(runCtx, wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now(), a.containerRuntime, a.ToolsDir); err != nil {
 			slog.Warn("workspace gc: startup sweep failed", "error", err)
 		} else if len(removed) > 0 {
 			slog.Info("workspace gc: startup sweep removed aged workspace dirs", "count", len(removed), "dirs", removed)
@@ -786,7 +816,7 @@ func (a *Agent) workspaceGCLoop(ctx context.Context, wsBase string, retention ti
 			return
 		case <-ticker.C:
 		}
-		removed, err := gcWorkspaces(wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now())
+		removed, err := gcWorkspaces(ctx, wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now(), a.containerRuntime, a.ToolsDir)
 		if err != nil {
 			slog.Warn("workspace gc: sweep failed", "error", err)
 			continue
@@ -912,6 +942,16 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			pod.volumeMounts = extra
 			volumePaths = resolved
 		}
+		// fsgroup helper output goes to the run log (step -1, like failRun).
+		pod.runLog = func(lines []string) {
+			now := time.Now().UTC()
+			reqs := make([]api.LogAppendRequest, len(lines))
+			for i, line := range lines {
+				reqs[i] = api.LogAppendRequest{RunID: c.RunID, StepIndex: -1, Stream: "stderr", Timestamp: now, Line: line}
+			}
+			_ = a.Client.AppendLogBulk(ctx, a.ID, c.RunID, -1, reqs)
+		}
+		pod.maxMappedID = a.securityContextProbe().MaxMappedID // 0 = no limit (rootful, or the probe did not run)
 		if err := pod.Start(ctx, c.PodTemplate); err != nil {
 			pod.CloseAll(context.WithoutCancel(ctx))
 			failClaim("claim pod construction failed", err)

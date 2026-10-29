@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,7 +25,8 @@ func TestAppleContainer_RunArgs(t *testing.T) {
 // after the image is exactly the args.
 func TestAppleCreateArgs_ArgsOnly_Positional(t *testing.T) {
 	a := &appleContainer{}
-	got := a.createArgs(CreateSpec{Image: "img", Args: []string{"serve", "--port", "80"}})
+	got, err := a.createArgs(CreateSpec{Image: "img", Args: []string{"serve", "--port", "80"}})
+	require.NoError(t, err)
 	assert.NotContains(t, got, "--entrypoint")
 	assert.Equal(t, []string{"img", "serve", "--port", "80"}, got[len(got)-4:])
 }
@@ -34,7 +36,8 @@ func TestAppleCreateArgs_ArgsOnly_Positional(t *testing.T) {
 // precedes the image, entrypoint+args ride positionally after it.
 func TestAppleCreateArgs_EntrypointOverride_ClearsAndPositions(t *testing.T) {
 	a := &appleContainer{}
-	got := a.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get", "pods"}})
+	got, err := a.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get", "pods"}})
+	require.NoError(t, err)
 	assert.Equal(t, []string{"--entrypoint", "", "img", "kubectl", "get", "pods"}, got[len(got)-6:])
 }
 
@@ -43,7 +46,8 @@ func TestAppleCreateArgs_EntrypointOverride_ClearsAndPositions(t *testing.T) {
 // token.
 func TestAppleCreateArgs_NoEntrypointNoArgs_Bare(t *testing.T) {
 	a := &appleContainer{}
-	got := a.createArgs(CreateSpec{Image: "img"})
+	got, err := a.createArgs(CreateSpec{Image: "img"})
+	require.NoError(t, err)
 	assert.Equal(t, "img", got[len(got)-1])
 	assert.NotContains(t, got, "--entrypoint")
 }
@@ -57,7 +61,30 @@ func TestAppleCreateArgs_EntrypointOverride_DegradesOnNoClearRuntime(t *testing.
 	a := &appleContainer{}
 	noEmptyEntrypointClear["container"] = true
 	defer delete(noEmptyEntrypointClear, "container")
-	got := a.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get"}})
+	got, err := a.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get"}})
+	require.NoError(t, err)
 	assert.NotContains(t, got, "--entrypoint")
 	assert.Equal(t, []string{"img", "kubectl", "get"}, got[len(got)-3:])
+}
+
+// Apple `container` cannot honour user/group/hardening flags; it must refuse
+// rather than silently run the container with the image defaults.
+func TestAppleCreateArgs_SecurityFields_Error(t *testing.T) {
+	cases := map[string]CreateSpec{
+		"user":            {Image: "img", User: "1000"},
+		"groupAdd":        {Image: "img", GroupAdd: []string{"1"}},
+		"capDrop":         {Image: "img", CapDrop: []string{"ALL"}},
+		"capAdd":          {Image: "img", CapAdd: []string{"CHOWN"}},
+		"noNewPrivileges": {Image: "img", NoNewPrivileges: true},
+		"readOnlyRootfs":  {Image: "img", ReadOnlyRootfs: true},
+	}
+	for name, spec := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := &appleContainer{}
+			_, err := a.createArgs(spec)
+			require.Error(t, err)
+			_, err = a.Create(context.Background(), spec)
+			require.Error(t, err)
+		})
+	}
 }

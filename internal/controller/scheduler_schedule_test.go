@@ -300,6 +300,25 @@ func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 		assertStoredScheduleSpec(t, podSpec, m.createdSpecs[0])
 	})
 
+	t.Run("honoured securityContext infers container and securitycontext", func(t *testing.T) {
+		lastFired := testNow.Add(-25 * time.Hour)
+		scSpec := []byte(`{"podTemplate":{"spec":{"securityContext":{"runAsUser":1000,"fsGroup":1000},"containers":[{"name":"job","image":"busybox"}]}},` +
+			`"steps":[{"name":"s","run":"echo x"}]}`)
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "sc-sched", Cron: "0 10 * * *", JobName: "scjob", LastFiredAt: &lastFired},
+			},
+			jobs: map[string]*api.Job{
+				"scjob": {Name: "scjob", Spec: scSpec},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
+		require.Len(t, m.created, 1)
+		require.Len(t, m.createdRequiredCaps, 1)
+		assert.Equal(t, []string{"container", "securitycontext"}, m.createdRequiredCaps[0])
+	})
+
 	t.Run("plain job infers container capability", func(t *testing.T) {
 		lastFired := testNow.Add(-25 * time.Hour)
 		jobSpec := []byte(`{"steps":[{"name":"s","run":"echo x"}]}`)

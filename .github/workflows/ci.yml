@@ -38,6 +38,127 @@ jobs:
         run: |
           go test ./... -race -count=1
 
+  # The host agent's securityContext support is only meaningful against a real
+  # container runtime: a fake shell cannot observe UIDs, setgid inheritance or
+  # rootless user namespaces. `go test ./...` above never sets the `integration`
+  # build tag, so none of internal/agent's real-runtime tests ran in CI at all
+  # until this job. It runs the claim-pod integration tests and the
+  # securityContext parity golden (internal/paritycases.SecurityContextCases,
+  # whose k8s twin runs in the `k8s` job) on the three runtime configurations
+  # the design (docs/superpowers/specs/2026-10-23-host-security-context-design.md
+  # section 10) names. The embedded ucd-sh shim is committed
+  # (internal/shim/embedded), so no build step precedes the tests; the unit job's
+  # freshness test fails if it is stale.
+  #
+  # docker-rootless is a diagnostic leg until it has proved stable: it needs a
+  # user-session dockerd that GitHub's runner does not provide out of the box,
+  # so a failure there must not block merges (continue-on-error). The other two
+  # legs are required.
+  host-runtime-integration:
+    name: Host runtime integration (${{ matrix.leg }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: docker-rootful
+            runtime: docker
+            experimental: false
+            rootless: "0"
+          - leg: podman-rootless
+            runtime: podman
+            experimental: false
+            rootless: "1"
+          - leg: docker-rootless
+            runtime: docker
+            experimental: true
+            rootless: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up rootless podman
+        if: matrix.leg == 'podman-rootless'
+        run: |
+          set -eux
+          # podman is preinstalled and, for a non-root user such as this
+          # runner user, rootless by default. Assert that rather than assume
+          # it: a leg that ran as root would test the wrong thing and pass.
+          test "$(id -u)" -ne 0
+          podman --version
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+          podman info --format '{{.Host.IDMappings}}'
+          id
+          grep "^$(id -un):" /etc/subuid /etc/subgid
+          podman run --rm docker.io/library/busybox:1.36 sh -c 'echo uid=$(id -u); cat /proc/self/uid_map'
+      - name: Set up rootless docker
+        if: matrix.leg == 'docker-rootless'
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y uidmap dbus-user-session
+          # The runner image's apt sources carry no docker-ce-rootless-extras
+          # (ubuntu-latest is now 26.04), so install Docker's static release
+          # binaries, pinned, into the user's own bin directory instead.
+          DOCKER_STATIC_VERSION=27.5.1
+          base="https://download.docker.com/linux/static/stable/x86_64"
+          mkdir -p "$HOME/bin"
+          curl -fsSL "$base/docker-$DOCKER_STATIC_VERSION.tgz" | tar -xz -C "$HOME/bin" --strip-components=1
+          curl -fsSL "$base/docker-rootless-extras-$DOCKER_STATIC_VERSION.tgz" | tar -xz -C "$HOME/bin" --strip-components=1
+          export PATH="$HOME/bin:$PATH"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          # Ubuntu 24.04+ restricts unprivileged user namespaces through
+          # AppArmor, which rootlesskit needs and has no profile for here.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          # Replace the runner's rootful daemon by a user-session one.
+          sudo systemctl disable --now docker.service docker.socket
+          sudo rm -f /var/run/docker.sock
+          export XDG_RUNTIME_DIR="$HOME/.xdg-run"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          # The setup tool wants a systemd user session, which a runner lacks.
+          # Its failure is tolerated only because the daemon is then started by
+          # hand and the assertions below prove the result either way.
+          dockerd-rootless-setuptool.sh install || echo "setuptool did not complete; starting dockerd-rootless.sh by hand"
+          # With systemd as PID 1 dockerd picks the systemd cgroup driver, which
+          # needs a user session's D-Bus to create scopes ("requires
+          # interactive authentication" without one); cgroupfs needs none.
+          nohup dockerd-rootless.sh --exec-opt native.cgroupdriver=cgroupfs > "$HOME/dockerd-rootless.log" 2>&1 &
+          for i in $(seq 1 60); do
+            [ -S "$XDG_RUNTIME_DIR/docker.sock" ] && break
+            sleep 1
+          done
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock" >> "$GITHUB_ENV"
+          export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock"
+          # Prove this is the rootless daemon and the rootful one is gone.
+          test "$(id -u)" -ne 0
+          docker info --format '{{.SecurityOptions}}' | grep -q rootless
+          if docker -H unix:///var/run/docker.sock info >/dev/null 2>&1; then
+            echo "the rootful docker daemon is still reachable"; exit 1
+          fi
+          docker run --rm docker.io/library/busybox:1.36 sh -c 'echo uid=$(id -u); cat /proc/self/uid_map'
+      - name: Run host runtime integration tests
+        shell: bash
+        env:
+          UCD_TEST_CONTAINER_RUNTIME: ${{ matrix.runtime }}
+          UCD_TEST_EXPECT_ROOTLESS: ${{ matrix.rootless }}
+          # A missing runtime or shim must fail, not skip (go test reports a
+          # skip as ok).
+          UCD_REQUIRE_RUNTIME: "1"
+        run: |
+          rc=0
+          go test -tags integration ./internal/agent/ -run 'SecCtx|ClaimPod|ProbeSecurityContext' -count=1 -json -timeout 25m > host-test.json || rc=$?
+          jq -j 'select(.Action=="output") | .Output' host-test.json
+          test "$rc" -eq 0
+          # No selected test may have skipped, and the parity golden must have
+          # run all 12 of its cases.
+          bash .github/scripts/check-test-json.sh host-test.json 'SecCtx|ClaimPod|ProbeSecurityContext' '^$' 'TestSecCtxParity_HostAgent/=12'
+
   # Build the k8s-agent image on every PR.
   #
   # No release Dockerfile was exercised in PR CI, so a commit could break an
@@ -101,6 +222,12 @@ jobs:
           docker pull ubuntu:22.04
           echo 'FROM ubuntu:22.04' | docker build -t ubuntu:22.04 -
           kind load docker-image ubuntu:22.04 --name ci
+          # The securityContext parity golden (secctx_parity_k8s_test.go) runs
+          # every case in this image; load it so a registry rate limit cannot
+          # fail a pod pull.
+          docker pull busybox:1.36
+          echo 'FROM busybox:1.36' | docker build -t busybox:1.36 -
+          kind load docker-image busybox:1.36 --name ci
       - name: Build and load a real shim image into kind
         # The k8s job's tests build real Pods, and BuildPod (internal/k8sagent/podbuilder.go)
         # always prepends a ucd-shim init container that runs
@@ -132,4 +259,10 @@ jobs:
           # satisfied by a kind-loaded image without a pull attempt.
           UCD_K8S_TEST_SHIM_IMAGE: ucd-shim-test:ci
         run: |
-          go test -tags k8s ./internal/k8sagent/... -timeout 10m -v
+          rc=0
+          go test -tags k8s ./internal/k8sagent/... -timeout 20m -json > k8s-test.json || rc=$?
+          jq -j 'select(.Action=="output") | .Output' k8s-test.json
+          test "$rc" -eq 0
+          # The securityContext golden must not have skipped anything but its three
+          # documented host-only cases, and must have run the other 9 (the =9 below).
+          bash .github/scripts/check-test-json.sh k8s-test.json 'SecCtx' '^TestSecCtxParity_K8s/secctx-volume-' 'TestSecCtxParity_K8s/=9'

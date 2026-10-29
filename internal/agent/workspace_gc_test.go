@@ -9,9 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/eirueimi/unified-cd/internal/config"
+	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
 
 // TestGCWorkspaces exercises gcWorkspaces directly (no Agent/network
@@ -49,7 +51,7 @@ func TestGCWorkspaces(t *testing.T) {
 	// activeDir's own absolute path is the active-set key.
 	active := map[string]struct{}{activeDir: {}}
 
-	removed, err := gcWorkspaces(base, 7*24*time.Hour, active, time.Now())
+	removed, err := gcWorkspaces(context.Background(), base, 7*24*time.Hour, active, time.Now(), noRuntime, "")
 	require.NoError(t, err)
 
 	require.DirExists(t, fresh, "fresh dir kept")
@@ -68,7 +70,7 @@ func TestGCWorkspaces(t *testing.T) {
 // yet, e.g. a brand-new agent that hasn't claimed anything.
 func TestGCWorkspaces_NoWorkingDirs(t *testing.T) {
 	base := t.TempDir()
-	removed, err := gcWorkspaces(base, 7*24*time.Hour, nil, time.Now())
+	removed, err := gcWorkspaces(context.Background(), base, 7*24*time.Hour, nil, time.Now(), noRuntime, "")
 	require.NoError(t, err)
 	require.Empty(t, removed)
 }
@@ -86,7 +88,7 @@ func TestGCWorkspaces_RetentionBoundary(t *testing.T) {
 	mt := now.Add(-retention)
 	require.NoError(t, os.Chtimes(boundary, mt, mt))
 
-	removed, err := gcWorkspaces(base, retention, nil, now)
+	removed, err := gcWorkspaces(context.Background(), base, retention, nil, now, noRuntime, "")
 	require.NoError(t, err)
 	require.Empty(t, removed)
 	require.DirExists(t, boundary)
@@ -112,7 +114,7 @@ func TestGCWorkspaces_ProtectsDirRegisteredViaRunSet(t *testing.T) {
 	rs := NewRunSet()
 	rs.Add(agedDir)
 
-	removed, err := gcWorkspaces(base, 7*24*time.Hour, activeWorkDirSet(rs.Snapshot()), time.Now())
+	removed, err := gcWorkspaces(context.Background(), base, 7*24*time.Hour, activeWorkDirSet(rs.Snapshot()), time.Now(), noRuntime, "")
 	require.NoError(t, err)
 	require.Empty(t, removed, "a dir registered in activeWorkDirs must never be swept")
 	require.DirExists(t, agedDir, "aged-but-registered workspace dir must survive the sweep")
@@ -120,7 +122,7 @@ func TestGCWorkspaces_ProtectsDirRegisteredViaRunSet(t *testing.T) {
 	// After the claim retires it (rs.Remove), the same sweep now reclaims it —
 	// confirms the protection is exactly scoped to the active window.
 	rs.Remove(agedDir)
-	removed, err = gcWorkspaces(base, 7*24*time.Hour, activeWorkDirSet(rs.Snapshot()), time.Now())
+	removed, err = gcWorkspaces(context.Background(), base, 7*24*time.Hour, activeWorkDirSet(rs.Snapshot()), time.Now(), noRuntime, "")
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{agedDir}, removed, "once retired, the aged dir is reclaimed")
 	require.NoDirExists(t, agedDir)
@@ -278,7 +280,7 @@ func TestGcWorkspaces_CannotReachAVolume(t *testing.T) {
 	require.NoError(t, os.MkdirAll(job, 0o755))
 	require.NoError(t, os.Chtimes(job, old, old))
 
-	removed, err := gcWorkspaces(base, time.Hour, map[string]struct{}{}, time.Now())
+	removed, err := gcWorkspaces(context.Background(), base, time.Hour, map[string]struct{}{}, time.Now(), noRuntime, "")
 	require.NoError(t, err)
 	require.Equal(t, []string{job}, removed)
 	require.FileExists(t, filepath.Join(vol, "data"))
@@ -286,4 +288,74 @@ func TestGcWorkspaces_CannotReachAVolume(t *testing.T) {
 	// The one way to put a volume in the sweep's path is refused outright.
 	_, err = NewVolumeManager(base, []config.VolumeConfig{{Name: "y", Mode: "exclusive", Path: filepath.Join(base, "working0", "y")}})
 	require.Error(t, err)
+}
+
+// The GC removes aged dirs through the same wipeDir as the per-run sweep, so a
+// tree the agent cannot delete (root-owned files a rootful container left
+// behind) goes through the root cleanup container instead of staying forever.
+func TestGCWorkspaces_RemovalFailureFallsBackToTheCleanupContainer(t *testing.T) {
+	base := t.TempDir()
+	job := filepath.Join(base, "working0", "oldjob")
+	require.NoError(t, os.MkdirAll(job, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(job, "rootfile"), []byte("x"), 0o644))
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	require.NoError(t, os.Chtimes(job, old, old))
+
+	cleaned := false
+	rt := &cleanupRT{dir: job, onExec: func() { cleaned = true }}
+	// The plain removal fails until the cleanup container has run.
+	failRemoval(t, func(string) bool { return !cleaned })
+
+	removed, err := gcWorkspaces(context.Background(), base, 7*24*time.Hour, nil, time.Now(),
+		func() (crt.ContainerRuntime, error) { return rt, nil }, "/host/tools")
+	require.NoError(t, err)
+
+	require.Len(t, rt.created, 1, "the root cleanup container must have run")
+	assert.Equal(t, "0:0", rt.created[0].User)
+	assert.Equal(t, crt.Mount{HostPath: job, ContainerPath: "/w"}, rt.created[0].Mounts[0])
+	assert.Equal(t, []string{job}, removed)
+	assert.NoDirExists(t, job)
+}
+
+// When even the cleanup container cannot remove the tree, the dir is reported
+// as failed (kept, not listed as removed) and the sweep carries on.
+func TestGCWorkspaces_UnremovableDirIsKeptAndNotReported(t *testing.T) {
+	base := t.TempDir()
+	job := filepath.Join(base, "working0", "stuck")
+	require.NoError(t, os.MkdirAll(job, 0o755))
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	require.NoError(t, os.Chtimes(job, old, old))
+	failRemoval(t, func(string) bool { return true })
+
+	removed, err := gcWorkspaces(context.Background(), base, 7*24*time.Hour, nil, time.Now(), noRuntime, "")
+	require.NoError(t, err)
+	assert.Empty(t, removed)
+}
+
+// Scratch directories an agent crash left under wsBase (the startup probe's and
+// the root-copy fallback's) are not job workspaces, so gcWorkspaces never sees
+// them; reapStagingDirs removes the stale ones and nothing else.
+func TestReapStagingDirs(t *testing.T) {
+	wsBase := t.TempDir()
+	now := time.Now()
+	mk := func(name string, age time.Duration) string {
+		p := filepath.Join(wsBase, name)
+		require.NoError(t, os.MkdirAll(filepath.Join(p, "sub"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(p, "sub", "f"), []byte("x"), 0o644))
+		require.NoError(t, os.Chtimes(p, now.Add(-age), now.Add(-age)))
+		return p
+	}
+	oldProbe := mk(".ucd-probe-111", 3*time.Hour)
+	oldCopy := mk(".ucd-root-copy-222", 3*time.Hour)
+	freshProbe := mk(".ucd-probe-333", time.Minute)
+	tools := mk(".ucd-tools", 3*time.Hour)
+	job := mk("working0", 3*time.Hour)
+
+	removed := reapStagingDirs(context.Background(), wsBase, now, noRuntime, "")
+	assert.ElementsMatch(t, []string{oldProbe, oldCopy}, removed)
+	assert.NoDirExists(t, oldProbe)
+	assert.NoDirExists(t, oldCopy)
+	assert.DirExists(t, freshProbe, "a recent one may belong to a live agent sharing wsBase")
+	assert.DirExists(t, tools)
+	assert.DirExists(t, job)
 }

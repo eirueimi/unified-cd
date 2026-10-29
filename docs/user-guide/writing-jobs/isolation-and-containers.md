@@ -191,9 +191,12 @@ so it stays alive as the exec target for `container:`-less steps. Put your
 actual workload in `steps:`, not on the `job` container's `command`/`args`
 — a `command` set there never runs. Sidecar containers still honor
 `command`/`args` as described in the table above. Other unsupported
-PodSpec fields (`volumeMounts`/`securityContext` and any other container
-field outside the host-supported set) already require a Kubernetes agent —
-the run is pinned there rather than degraded on the standard agent. An `env`
+PodSpec fields (`volumeMounts` and any other container field outside the
+host-supported set) already require a Kubernetes agent — the run is pinned
+there rather than degraded on the standard agent. `securityContext` is
+honoured in part: see [Running as a non-root
+user](#running-as-a-non-root-user) for which fields run on a standard agent
+and which still pin the job to Kubernetes. An `env`
 entry without a literal `value` (i.e. `valueFrom`) also now requires a
 Kubernetes agent rather than being silently dropped — see [Kubernetes
 Integration Guide: the remaining intentional
@@ -289,13 +292,15 @@ standard agent and the k8s-agent:
 **Routing is automatic and capability-based**, not selector-based: the
 controller infers whether a `podTemplate` needs real Kubernetes (a named
 agent-side template, an `override` patch, a pod-spec field beyond
-`containers`, a container field the host claim pod can't honor at all, or a
-sub-field of a host-supported field the host only partially honors —
-`resources.requests`; a `resources.limits` key other than `cpu`/`memory` as a
-string, including `resources.claims`; or an `env` entry without a literal
-`value`) or is host-runnable (plain `name`/`image` containers, literal `env`
-values, `resources.limits` restricted to `cpu`/`memory` as strings, a
-`workspace.mountPath`). A host-runnable
+`containers` and `securityContext`, a container field the host claim pod can't
+honor at all, a `securityContext` value the host doesn't honor (see [Running as
+a non-root user](#running-as-a-non-root-user)), or a sub-field of a
+host-supported field the host only partially honors — `resources.requests`; a
+`resources.limits` key other than `cpu`/`memory` as a string, including
+`resources.claims`; or an `env` entry without a literal `value`) or is
+host-runnable (plain `name`/`image` containers, literal `env` values,
+`resources.limits` restricted to `cpu`/`memory` as strings, a
+`workspace.mountPath`, a host-honoured `securityContext`). A host-runnable
 `podTemplate` can run on **either** a standard agent or a k8s-agent with no
 hand-written selector required to make that work; a Kubernetes-only
 `podTemplate` is routed to a k8s-agent only. This is judged on the spec that
@@ -348,6 +353,86 @@ spec:
         - name: trivy
           image: aquasec/trivy:latest
 ```
+
+### Running as a non-root user
+
+A `securityContext` in the `podTemplate` runs the job's containers as a chosen user and group, on
+a Kubernetes agent and on a standard agent alike. The standard agent honours these fields:
+
+| Level | Fields |
+|---|---|
+| Pod (`podTemplate.spec.securityContext`) | `runAsUser`, `runAsGroup`, `runAsNonRoot`, `supplementalGroups`, `fsGroup`, `fsGroupChangePolicy` (`Always` or `OnRootMismatch`), `supplementalGroupsPolicy: Merge` |
+| Pod, hardening | `seccompProfile` and `appArmorProfile` with `type: RuntimeDefault` (the runtime's default profile, which docker and podman already apply where the host supports it; the standard agent emits no flag for it, so on a daemon whose default is unconfined nothing is applied, whereas Kubernetes applies its RuntimeDefault) |
+| Container (`containers[].securityContext`) | `runAsUser`, `runAsGroup`, `runAsNonRoot` (a container value overrides the pod value, as in Kubernetes) |
+| Container, hardening | `allowPrivilegeEscalation: false` (`no-new-privileges`), `capabilities.drop` (any capability, `ALL` included) and `capabilities.add` limited to `NET_BIND_SERVICE`, `readOnlyRootFilesystem: true`, `privileged: false`, `procMount: Default`, `seccompProfile` / `appArmorProfile` with `type: RuntimeDefault` |
+
+A job that sets only these fields is routed to any Kubernetes agent, or to a standard agent that
+advertises the `securitycontext` capability (see [Capabilities and
+routing](../../operator-manual/agents.md#capabilities-and-routing)). A standard agent earns that
+capability with a startup probe; one whose container runtime cannot deliver the semantics never
+claims such a job, rather than running it with the fields silently dropped.
+
+**These still pin the job to a Kubernetes agent**, because the standard agent cannot honour them:
+`sysctls`, `seLinuxOptions`, `windowsOptions`, `supplementalGroupsPolicy: Strict`,
+`seccompProfile` and `appArmorProfile` of type `Unconfined` or `Localhost`, `privileged: true`,
+`capabilities.add` of anything but `NET_BIND_SERVICE`, a `procMount` other than `Default`, and any
+key not listed above. A `securityContext` that mixes honoured and pinned values is pinned as a
+whole.
+
+With `readOnlyRootFilesystem: true` the container's root filesystem, `/tmp` included, is read-only
+on both kinds of agent (a standard agent does not add the writable `/tmp` that podman would
+otherwise mount). The workspace and [named volumes](volumes.md) are mounts, so they stay writable:
+write temporary files under `$UNIFIED_WORKSPACE`. `capabilities.drop: [ALL]` leaves even root with
+no effective capabilities, and `allowPrivilegeEscalation: false` sets `NoNewPrivs` for the
+container. These apply to the container that sets them only, as in Kubernetes.
+
+```yaml
+spec:
+  podTemplate:
+    spec:
+      securityContext:        # pod level: applies to every container and to files the platform writes
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: job
+          image: my-builder:latest
+```
+
+**Set `runAsUser` and `fsGroup` at the pod level.** Files the platform writes into the workspace for
+the job (an artifact download, a cache restore) are owned by the *pod-level* `runAsUser` /
+`runAsGroup`, or by `root:root` when only a container sets `runAsUser`. A job that sets the
+identity only on its container can then not modify the files `download-artifact` fetched. That is
+what Kubernetes does too, and the standard agent reproduces it.
+
+**`fsGroup` and large volumes.** `fsGroup` makes the workspace and every [named volume](volumes.md)
+group-writable for that group. Under the default `fsGroupChangePolicy: Always` the group and mode
+of the whole volume are rewritten on every run, as on Kubernetes. For a volume of tens of GB set
+`fsGroupChangePolicy: OnRootMismatch`: the walk is skipped when the volume root already has the
+right group.
+
+What you can observe, on either kind of agent:
+
+| In a step | Result |
+|---|---|
+| `id -u`, `id -g`, `id -G` | the configured user, group and supplementary groups (`fsGroup` and `supplementalGroups` included) |
+| `stat -c '%a %g' "$UNIFIED_WORKSPACE"`, no `fsGroup` | mode `777`; the group may differ between agents, writability does not |
+| the same, with `fsGroup: F` | `2777 F` |
+| a named volume root, with `fsGroup: F` | `2775 F` on a standard agent; on Kubernetes it depends on the storage driver (below) |
+| owner of a file a step creates | the step's user, and group `F` through the setgid directory (otherwise the step's group) |
+| owner of a downloaded artifact | pod-level user and group (or `root:root`), as above |
+| `runAsUser` above the highest ID of a rootless runtime (typically 65536) | on a standard agent, the run fails at claim-pod start with an explicit message; on Kubernetes it runs |
+
+`runAsNonRoot: true` makes the run fail before any container starts when the effective user would
+be root (`container has runAsNonRoot and image will run as root`), as Kubernetes does.
+
+Two differences remain on Kubernetes. Whether a PersistentVolumeClaim is regrouped by `fsGroup` at
+all depends on the storage driver's `fsGroupPolicy` (`File` always, `ReadWriteOnceWithFSType` only
+with a filesystem type, `None` never); `hostPath` and the `local-path` provisioner never regroup. And
+a pod-level `runAsNonRoot` without a pod-level `runAsUser` can block the platform's own root-image
+helper containers. See [Permission denied writing to a volume as a non-root
+user](../../troubleshooting/steps-and-execution.md#permission-denied-writing-to-a-volume-as-a-non-root-user).
 
 ### podTemplate fields
 

@@ -173,6 +173,11 @@ func Download(ctx context.Context, store objectstore.ObjectStore, runID, name, d
 // DownloadExcluding is Download that extracts nothing at or below the paths in
 // exclude (see ExtractTarZstdExcluding).
 func DownloadExcluding(ctx context.Context, store objectstore.ObjectStore, runID, name, dest string, exclude []string) error {
+	return DownloadWritten(ctx, store, runID, name, dest, exclude, nil)
+}
+
+// DownloadWritten is DownloadExcluding that records what it wrote in w.
+func DownloadWritten(ctx context.Context, store objectstore.ObjectStore, runID, name, dest string, exclude []string, w *Written) error {
 	key, err := ArtifactKey(runID, name)
 	if err != nil {
 		return fmt.Errorf("download artifact: %w", err)
@@ -185,5 +190,5 @@ func DownloadExcluding(ctx context.Context, store objectstore.ObjectStore, runID
 	if dest == "" {
 		dest = "."
 	}
-	return ExtractTarZstdExcluding(rc, dest, exclude)
+	return ExtractTarZstdWritten(rc, dest, exclude, w)
 }

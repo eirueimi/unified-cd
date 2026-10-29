@@ -42,10 +42,10 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   see [Host container command/args
   semantics](#host-container-commandargs-semantics) below for the full truth table
   and per-runtime support matrix. Other host-unsupported `podTemplate` fields (a named
-  agent-side template, an override patch, extra pod-spec beyond `containers`,
-  `volumeMounts`, and any other container field outside the host-supported set)
-  already require a Kubernetes agent — the run is pinned there, not degraded on the
-  standard agent. An
+  agent-side template, an override patch, extra pod-spec beyond `containers` and
+  `securityContext`, `volumeMounts`, and any other container field outside the
+  host-supported set) already require a Kubernetes agent — the run is pinned there, not
+  degraded on the standard agent. An
   `env` entry that sets `valueFrom` instead of a literal `value` also requires a
   Kubernetes agent: the standard agent's docker/podman backend has no Kubernetes API
   to resolve `valueFrom` against, so a container that needs it is pinned to a
@@ -55,6 +55,25 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   share one network namespace (via the pause container), so — unlike the old MVP
   single-container form this replaces — sidecars **are** reachable at `localhost` from
   every claim-pod container, matching k8s.
+- **`securityContext`** — honoured on both agents for the identity and group fields
+  (`runAsUser`, `runAsGroup`, `runAsNonRoot`, `supplementalGroups`, `fsGroup`,
+  `fsGroupChangePolicy`, `supplementalGroupsPolicy: Merge`) at pod and container level, and for
+  the hardening fields `allowPrivilegeEscalation: false`, `capabilities.drop` (with
+  `capabilities.add` limited to `NET_BIND_SERVICE`), `readOnlyRootFilesystem`, `privileged:
+  false`, `procMount: Default` and `seccompProfile` / `appArmorProfile` of type `RuntimeDefault`.
+  A job that sets only those is claimed by a Kubernetes agent or by a standard agent that
+  advertises the `securitycontext` capability. A `securityContext` using anything else still pins
+  the job to a Kubernetes agent: `sysctls`, `seLinuxOptions`, `windowsOptions`,
+  `supplementalGroupsPolicy: Strict`, a `seccompProfile` / `appArmorProfile` of type `Unconfined`
+  or `Localhost`, `privileged: true`, `capabilities.add` of anything but `NET_BIND_SERVICE`, a
+  `procMount` other than `Default`, and any unlisted key. Mixed honoured and pinned values pin the
+  whole job. On a standard agent `readOnlyRootFilesystem` leaves the workspace and named volumes
+  writable (they are mounts) and `/tmp` read-only, as on Kubernetes. See
+  [Running as a non-root
+  user](../user-guide/writing-jobs/isolation-and-containers.md#running-as-a-non-root-user).
+  The k8s-agent advertises `pod` and `container` only; the controller records `pod` as implying
+  `securitycontext`, so every k8s-agent, older or current, claims these jobs. See the [migration
+  note](migrations/2026-10-23-host-security-context.md) for what moves and the upgrade order.
 - **Resource `requests`** (`podTemplate.spec.containers[].resources.requests`) — applied
   only on Kubernetes, because docker/podman/nerdctl have no request concept for the
   standard agent to map it onto. A `podTemplate` container that sets
@@ -480,7 +499,16 @@ podTemplate:
           runAsUser: 1000
 ```
 
-(`securityContext` is Kubernetes-only, so such a job is pinned to a Kubernetes agent.) `fsGroup` and `runAsUser` are allowed by the [Job Pod field policy](#job-pod-field-policy) with no opt-in.
+This `securityContext` uses only honoured fields, so the job is not pinned: a standard agent that
+advertises `securitycontext` applies the same group to its volume and can run it too. Whether
+Kubernetes regroups a PVC at all depends on the storage driver's `fsGroupPolicy`: `File` always,
+`ReadWriteOnceWithFSType` only when the volume has a filesystem type, `None` never. In-tree
+`hostPath` and the `local-path` provisioner never regroup. On such a cluster `fsGroup` has no
+effect on the volume and the permission error persists; that is a storage configuration matter,
+not a unified-cd one. For a very large volume add `fsGroupChangePolicy: OnRootMismatch` so the
+group is not rewritten on every run. A `securityContext` that also sets a pinned field (see the
+`securityContext` item above) keeps the job on a Kubernetes agent. `fsGroup` and `runAsUser` are allowed by the
+[Job Pod field policy](#job-pod-field-policy) with no opt-in.
 
 **Mounting.** A volume is mounted at its `mountPath` in **every** container of the Pod, including
 the `unified-artifact` sidecar, so artifact and cache paths inside a volume work and an archive of

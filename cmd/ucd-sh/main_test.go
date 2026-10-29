@@ -231,3 +231,48 @@ func buildUcdSh(t *testing.T) string {
 	}
 	return bin
 }
+
+func TestUcdSh_Ownership_ArgValidationIsUsageOrBadInput(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"fsgroup no args", []string{"fsgroup"}, 2},
+		{"fsgroup gid only", []string{"fsgroup", "100"}, 2},
+		{"fsgroup policy only", []string{"fsgroup", "--policy=Always", "100"}, 2},
+		{"fsgroup bad policy", []string{"fsgroup", "--policy=Never", "100", "/x"}, 2},
+		{"fsgroup bad gid", []string{"fsgroup", "abc", "/x"}, 2},
+		{"fsgroup negative gid", []string{"fsgroup", "-1", "/x"}, 2},
+		{"chown-as no args", []string{"chown-as"}, 2},
+		{"chown-as no path", []string{"chown-as", "1:2"}, 2},
+		{"chown-as missing colon", []string{"chown-as", "12", "/x"}, 2},
+		{"chown-as bad uid", []string{"chown-as", "a:2", "/x"}, 2},
+		{"chown-as bad gid", []string{"chown-as", "1:b", "/x"}, 2},
+		{"secctx-probe no args", []string{"secctx-probe"}, 2},
+		{"secctx-probe two args", []string{"secctx-probe", "a", "b"}, 2},
+	}
+	for _, tc := range cases {
+		var out, errOut bytes.Buffer
+		code := run(tc.args, strings.NewReader(""), &out, &errOut)
+		if code != tc.want {
+			t.Errorf("%s: exit = %d, want %d (stderr: %s)", tc.name, code, tc.want, errOut.String())
+		}
+		if out.Len() != 0 {
+			t.Errorf("%s: stdout = %q, want empty", tc.name, out.String())
+		}
+		if errOut.Len() == 0 {
+			t.Errorf("%s: stderr empty", tc.name)
+		}
+	}
+}
+
+func TestUcdSh_Usage_MentionsOwnershipCommands(t *testing.T) {
+	var out, errOut bytes.Buffer
+	run(nil, strings.NewReader(""), &out, &errOut)
+	for _, w := range []string{"fsgroup", "chown-as", "secctx-probe"} {
+		if !strings.Contains(errOut.String(), w) {
+			t.Errorf("usage lacks %q: %s", w, errOut.String())
+		}
+	}
+}

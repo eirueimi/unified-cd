@@ -342,7 +342,9 @@ fields](#k8s-agent-config-fields)); this section describes the host agent's.
   `workspaceDir` itself, never removes a `working<slot>` directory itself,
   never touches a dot-prefixed sibling (e.g. the `.ucd-tools` shim directory),
   and never removes a directory belonging to a currently-active run (cross-
-  checked against that agent process's live in-flight claims). See
+  checked against that agent process's live in-flight claims). A directory
+  holding files the agent cannot delete itself is removed through a root
+  cleanup container, like the per-run sweep. See
   [Operations Guide: Workspace and Claim-Container
   Hygiene](../operator-manual/operations.md#workspace-and-claim-container-hygiene) for when to
   enable it.
@@ -381,8 +383,11 @@ needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
 
 - **Rootless podman is the recommended runtime on Linux hosts.** It avoids
   root-owned files leaking into the bind-mounted workspace (the container's
-  root maps to the agent's own user), sidestepping the EPERM-fallback
-  cleanup path entirely — see [Agent Labels and Routing: Workspace
+  root maps to the agent's own user), so a job that runs as root needs no
+  EPERM-fallback cleanup. It does not remove every ownership problem: a job
+  that sets `securityContext.runAsUser` writes as a subordinate UID on the host,
+  which the agent cannot remove, and the cleanup then relies on the same root
+  fallback — see [Agent Labels and Routing: Workspace
   lifecycle](../operator-manual/agents.md#workspace-lifecycle).
 - **On macOS/Windows, `--workspace-dir`/`workspaceDir` must live under a
   path your container runtime's file sharing exposes** — e.g. under
@@ -393,7 +398,35 @@ needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
   namespace). Select it explicitly with `--container-runtime container` only
   for non-isolated `runsIn.image` steps; use docker or podman for isolated
   jobs.
+- **A startup probe decides whether the agent can honour `securityContext`.**
+  Once, after the runtime is detected and the `ucd-sh` shim is installed, the
+  agent measures its runtime instead of consulting an allowlist. It creates a
+  dot-prefixed directory under the workspace directory, starts the pause image
+  twice (about two container starts), and checks:
+    1. a helper started with `--user 0:0`, like the claim pod's pause
+       container, really runs as uid 0;
+    2. after the helper applies `fsGroup 54321` to the directory, a container
+       started with `--user 54322:54323 --group-add 54321` really has that uid,
+       gid and supplementary group;
+    3. a file it creates there is owned `54322:54321` (setgid inheritance), and
+       the directory keeps the setgid bit and group rwx.
 
+  Everything the probe creates is removed afterwards (files owned by another
+  UID go through the pinned cleanup image, see
+  [Default images and the pause image digest](../operator-manual/operations.md#default-images-and-the-pause-image-digest);
+  a directory an agent crash left behind is removed at the next start), and it is bounded by a
+  90 second timeout (it also stops at once if the agent is told to shut down). A failed probe never stops the agent: it only leaves
+  `securitycontext` out of the advertised capabilities, so jobs that set
+  `securityContext` are not routed to this agent, and logs one WARN naming the
+  failed check:
+  `container runtime cannot honour securityContext (<reason>); jobs that set securityContext will not be routed to this agent`.
+  There is no flag to override the result; fix the cause (for example move
+  `--workspace-dir` to a filesystem that honours setgid, since a Windows or
+  macOS file-sharing mount often does not) and restart the agent. The same run
+  reads the user-namespace map of a rootless runtime: a `runAsUser`, `fsGroup`
+  or similar ID above the highest mapped ID (typically 65536) fails the run at
+  claim-pod start. Apple's `container` is never auto-detected and cannot pass
+  the probe, so an agent using it never advertises `securitycontext`.
 ---
 
 ## K8s Agent

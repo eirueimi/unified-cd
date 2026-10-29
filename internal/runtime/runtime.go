@@ -56,6 +56,28 @@ type CreateSpec struct {
 	// arguments after the (possibly overridden) entrypoint. nil means "use
 	// the image's CMD".
 	Args []string
+	// User sets the container's user (docker/podman `--user`): "UID" or
+	// "UID:GID". Empty means the image's default user.
+	User string
+	// GroupAdd lists supplementary groups (`--group-add`, one flag per entry).
+	GroupAdd []string
+	// CapDrop and CapAdd are Linux capabilities to drop/add (`--cap-drop`,
+	// `--cap-add`, one flag per entry).
+	CapDrop []string
+	CapAdd  []string
+	// NoNewPrivileges emits `--security-opt no-new-privileges`.
+	NoNewPrivileges bool
+	// ReadOnlyRootfs emits `--read-only` (podman also gets
+	// `--read-only-tmpfs=false` so /tmp stays read-only like on k8s).
+	ReadOnlyRootfs bool
+}
+
+// ImageInspector is an optional interface a ContainerRuntime may implement to
+// report the user an image is configured to run as.
+type ImageInspector interface {
+	// ImageUser returns the image's Config.User ("" when unset). The image is
+	// pulled first if it is not present locally.
+	ImageUser(ctx context.Context, image string) (string, error)
 }
 
 // Mount is a host-path bind mount for a long-lived container: the host

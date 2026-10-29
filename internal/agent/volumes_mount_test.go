@@ -346,7 +346,7 @@ func TestClaimPod_MountsNamedVolumesOnEveryWorkspaceContainer(t *testing.T) {
 	require.NoError(t, pod.Start(context.Background(), mysqlTemplate()))
 
 	require.Len(t, f.created, 3) // pause, mysql, injected "job"
-	require.Len(t, f.created[0].Mounts, 1, "the pause container mounts only /.ucd")
+	require.Equal(t, f.created[1].Mounts, f.created[0].Mounts, "the pause container mounts what the job containers mount")
 	for _, spec := range f.created[1:] {
 		require.Len(t, spec.Mounts, 3)
 		require.Equal(t, m.PathOf("unity"), spec.Mounts[0].HostPath, "the root volume is the workspace mount")

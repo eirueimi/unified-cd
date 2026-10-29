@@ -207,9 +207,12 @@ k8s: could not clear the reused Pod's workspace: ...
 
 Every ordinary workspace is emptied before every run, so a run never starts on another run's
 files. When emptying fails the run fails too: it used to warn and proceed on the dirty directory.
-The usual cause is **root-owned files** that a rootful docker container wrote into the
-bind-mounted workspace, which the (usually non-root) agent process cannot remove. The agent retries
-through a throwaway root cleanup container (a `busybox` container with the directory mounted), and
+The usual cause is **files owned by another user** that a container wrote into the
+bind-mounted workspace: root-owned files from a rootful docker container, or files a job's
+`securityContext.runAsUser` wrote as another UID (a subordinate UID under rootless podman). The
+(usually non-root) agent process cannot remove either. The agent retries
+through a throwaway root cleanup container (the pinned image
+`docker.io/library/busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662` with the directory mounted), and
 the run fails only if that also fails (no container runtime reachable, the image cannot be pulled,
 the directory is on a filesystem the container cannot see). A reused Kubernetes Pod whose
 workspace cannot be cleared is deleted rather than returned to the pool.
@@ -222,10 +225,14 @@ a native/isolated run](#run-fails-volume-was-last-used-by-a-nativeisolated-run).
 **Fix**
 
 - Run **rootless podman** on the agent host: the container's root maps to the agent's own user, so
-  root-owned leftovers don't occur in the first place.
+  leftovers from a job that ran as root are the agent's own files. This does not cover a job that
+  sets `securityContext.runAsUser`: its files belong to a subordinate UID the agent cannot remove,
+  and only the root cleanup container (above) can. A pod-level `securityContext.fsGroup` makes the
+  files group-owned, so the job itself can reuse them, but the agent still relies on the fallback.
 - With rootful docker, delete the affected `working<N>/<job>` directory by hand with elevated
-  permissions and re-trigger the run, and make sure the agent host can pull `busybox` or has it
-  cached. See [Workspace lifecycle](../operator-manual/agents.md#workspace-lifecycle).
+  permissions and re-trigger the run, and make sure the agent host can pull the pinned cleanup image
+  (`docker.io/library/busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662`) or has it
+  preloaded (an air-gapped host must load it). See [Workspace lifecycle](../operator-manual/agents.md#workspace-lifecycle).
 
 ### Stray `ucd-sh pause` containers on an agent host after an agent crash
 
@@ -489,12 +496,12 @@ the PVC at startup regardless; the cluster cannot bind it, so every Pod that mou
   free one. That gives the same parallelism without RWX, and a local-disk StorageClass is faster
   than a network filesystem for a Go module cache or a Unity `Library/`.
 
-## Permission denied writing to a volume on Kubernetes
+## Permission denied writing to a volume as a non-root user
 
 **Symptom**
 
-On a Kubernetes agent, a step whose container runs as a non-root user fails writing into a mounted
-volume, while the same job works on a host agent:
+A step whose container runs as a non-root user fails writing into a mounted volume (on a standard
+agent, also into the workspace or a volume that earlier root runs left root-owned):
 
 ```
 mkdir: cannot create directory '/workspace/.ucd-cache/go/build': Permission denied
@@ -502,14 +509,19 @@ mkdir: cannot create directory '/workspace/.ucd-cache/go/build': Permission deni
 
 **Cause**
 
-A freshly provisioned PVC is usually owned by root, and many storage provisioners do not change
-that. A container that runs as a non-root user cannot write to it. (On a host agent the volume is a
-directory the agent user created, so it does not arise.)
+On Kubernetes, a freshly provisioned PVC is usually owned by root, and many storage provisioners do
+not change that. A container that runs as a non-root user cannot write to it.
+
+On a standard agent a volume root is a directory the agent user created, so a non-root container
+cannot write to it either unless the job sets a `fsGroup`. A volume that earlier runs left with
+root-owned files (a root container with no `securityContext`) causes the same error for a later run
+that sets `runAsUser`. These are the same problems Kubernetes has, and the same field fixes both.
 
 **Fix**
 
 Set `securityContext.fsGroup` in the job's `podTemplate.spec` (or the agent's named template) to the
-container user's group, so Kubernetes makes the volume group-writable when it mounts it:
+container user's group, so the volume is made group-writable when it is mounted (by the kubelet on
+Kubernetes, by the agent on a standard agent):
 
 ```yaml
 podTemplate:
@@ -523,8 +535,108 @@ podTemplate:
           runAsUser: 1000
 ```
 
-`securityContext` is a Kubernetes-only field, so a job that sets it is pinned to a Kubernetes
-agent.
+A job that sets only the honoured `securityContext` fields (identity, `fsGroup` and the hardening fields) is not pinned to
+Kubernetes: a standard agent that advertises `securitycontext` runs it, applying the group to the
+workspace and every volume and repairing the ownership of root-owned leftovers (under the default
+`fsGroupChangePolicy: Always`). Put `runAsUser` and `fsGroup` at the **pod** level, so files the
+platform writes for the job (artifact downloads, cache restores) are owned by that user too. For a
+volume of tens of GB add `fsGroupChangePolicy: OnRootMismatch` so the group is not rewritten on
+every run.
+
+**If it still fails on Kubernetes**, the storage driver may not apply `fsGroup`. Whether a PVC is
+regrouped depends on the CSI driver's `fsGroupPolicy` (`File` always, `ReadWriteOnceWithFSType` only
+with a filesystem type, `None` never), and `hostPath` and the `local-path` provisioner never
+regroup. Check `kubectl get csidriver <driver> -o yaml`, or use a StorageClass whose driver
+supports it. This is a cluster storage setting; unified-cd cannot change it.
+
+## Run fails: `is not mapped by this agent's rootless container runtime`
+
+**Symptom**
+
+On a standard agent running a rootless container runtime, a run that sets `runAsUser`, `runAsGroup`,
+`supplementalGroups` or `fsGroup` fails before any step starts:
+
+```
+runAsUser 100000 is not mapped by this agent's rootless container runtime (mapped container IDs 0-65535); use an ID within that range or run the job on a Kubernetes agent
+```
+
+**Cause**
+
+A rootless runtime maps only a limited range of container IDs (typically 65536, from `/etc/subuid`
+and `/etc/subgid`). Kubernetes would start the container with a UID above that range; the rootless
+runtime cannot.
+
+**Fix**
+
+Use an ID inside the reported range, widen the agent user's `subuid`/`subgid` range, or pin the job
+to a Kubernetes agent with `agentSelector: [kubernetes]`.
+
+## Run fails: `container has runAsNonRoot and image will run as root`
+
+**Symptom**
+
+A run that sets `runAsNonRoot: true` fails before any container starts:
+
+```
+container has runAsNonRoot and image will run as root (container: job, image: alpine:3.20)
+```
+
+or `container has runAsNonRoot and image has non-numeric user (...), cannot verify user is non-root`.
+
+**Cause**
+
+`runAsNonRoot` is a safety check: no `runAsUser` is set (or it is `0`) and the image's own user is
+root or a name that cannot be verified. Kubernetes refuses the same container, and so does the
+standard agent.
+
+**Fix**
+
+Set a numeric non-zero `runAsUser` on the container or the pod, or use an image that declares a
+numeric non-root `USER`.
+
+## A securityContext job stays Queued: `container runtime cannot honour securityContext`
+
+**Symptom**
+
+A job that sets `securityContext` (identity, `fsGroup` or a hardening field) stays `Queued` with the unschedulable
+warning, or runs only on Kubernetes agents. A standard agent's log has this warning at startup:
+
+```
+WARN container runtime cannot honour securityContext (<reason>); jobs that set securityContext will not be routed to this agent
+```
+
+**Cause**
+
+A standard agent measures its container runtime once at startup. When a check fails (for example the
+workspace directory is on a filesystem that does not honour the setgid bit, as a Windows or macOS
+file-sharing mount often does), the agent does not advertise `securitycontext`, and the controller
+will not give it a run that needs it, rather than letting it drop the fields silently.
+
+**Fix**
+
+Read `<reason>`, fix the cause (typically move `--workspace-dir` to a local filesystem), and restart
+the agent: the probe runs once per process. See [Job isolation
+notes](../reference/configuration.md#job-isolation-notes). An agent that predates the capability
+also never claims these jobs; upgrade it.
+
+## Agent exits after an upgrade: `permanent error, giving up retry` with `status=400`
+
+**Symptom**
+
+After upgrading a standard agent, it exits shortly after start. Its log ends with
+`permanent error, giving up retry` and `status=400`, and it claims no jobs.
+
+**Cause**
+
+The controller is older than the agent. A controller that predates the `securitycontext`
+capability rejects the registration with `400 unknown capability: securitycontext` (that text is
+only in the controller's HTTP response body; the controller does not log it and the agent log shows only `status=400`). A 4xx is
+permanent, so the agent gives up and exits instead of retrying.
+
+**Fix**
+
+Upgrade the controller first, then restart the agent (or let your service manager's restart
+loop do it).
 
 ## Step failed because its `if:` could not be evaluated
 

@@ -70,7 +70,8 @@ func TestClaimPod_StartPauseFirstThenEager(t *testing.T) {
 	pause := f.created[0]
 	assert.Equal(t, "pause:img", pause.Image)
 	assert.Empty(t, pause.NetworkContainer)
-	assert.Empty(t, pause.Mounts, "pause carries no /.ucd mount when toolsDir is empty (this test's newClaimPodManager call)")
+	assert.Equal(t, []crt.Mount{{HostPath: "/host/w", ContainerPath: "/workspace"}}, pause.Mounts,
+		"pause carries the workspace mount and no /.ucd mount when toolsDir is empty (this test's newClaimPodManager call)")
 	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, pause.Entrypoint,
 		"pause container must be kept alive explicitly or the netns it owns collapses")
 

@@ -125,6 +125,11 @@ volume mount failed: spec.volumes[0]: volume "go-cache" is shared and cannot be 
   applied (`mountPath must be a POSIX path`), because it would otherwise be mistaken for a relative
   path and fail much later with an opaque `mkdir` error. Any backslash in a `mountPath` is rejected
   the same way, in every position (`/usr\local` as much as `d:\cache`).
+- **Always the whole volume.** There is no `subPath`: a volume is mounted at its root, on every
+  agent. To keep several tools' data apart, either point each tool at its own subdirectory of one
+  volume through its environment variable (for example `GOMODCACHE=$UNIFIED_VOLUME_GO_CACHE/mod`, see
+  [Reaching a volume from a step](#reaching-a-volume-from-a-step)), or ask the operator for a
+  separate volume per tool.
 
 How the volume is realised depends on where the run executes, but your YAML does not change:
 
@@ -222,7 +227,9 @@ workspace, could not otherwise reach the escape hatch.
   (`"."` for the checkout plus `.ucd-cache/go` for a cache): the checkout is emptied, the cache
   keeps every byte, on host and Kubernetes agents alike.
 - It empties the volume's contents, not the mount point, and falls back to a throwaway root
-  container when a rootful container runtime left root-owned files behind.
+  container (a pinned `busybox` image the agent host must be able to pull) when a rootful container runtime left root-owned files behind, or when a job that
+  set `securityContext.runAsUser` left files owned by another UID (a subordinate UID under
+  rootless podman).
 - An ordinary workspace is always emptied, so the flag changes nothing for a job with no volume at
   `"."`. The agent-wide `--clean-workspace` flag no longer does anything at all and never wipes a
   volume.

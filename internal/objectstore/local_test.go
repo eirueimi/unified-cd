@@ -55,3 +55,39 @@ func TestLocalObjectStore_GetNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrNotFound, "Get on a missing key must return the shared ErrNotFound sentinel, eagerly (not on first Read)")
 }
+
+type failingReader struct {
+	data string
+	sent bool
+}
+
+func (f *failingReader) Read(p []byte) (int, error) {
+	if !f.sent {
+		f.sent = true
+		return copy(p, f.data), nil
+	}
+	return 0, io.ErrUnexpectedEOF
+}
+
+// A Put whose body fails halfway (an archiver that hit a permission error)
+// must not leave a truncated object under the key, and must not destroy the
+// object that was there before.
+func TestLocalObjectStore_FailedPutLeavesNoPartialObject(t *testing.T) {
+	store := NewLocalObjectStore(t.TempDir())
+	ctx := context.Background()
+
+	require.Error(t, store.Put(ctx, "caches/a/b", &failingReader{data: "partial"}, -1))
+	_, err := store.Get(ctx, "caches/a/b")
+	require.ErrorIs(t, err, ErrNotFound)
+	keys, err := store.List(ctx, "")
+	require.NoError(t, err)
+	assert.Empty(t, keys, "no partial object or temp file is left")
+
+	require.NoError(t, store.Put(ctx, "caches/a/b", strings.NewReader("good"), 4))
+	require.Error(t, store.Put(ctx, "caches/a/b", &failingReader{data: "partial"}, -1))
+	rc, err := store.Get(ctx, "caches/a/b")
+	require.NoError(t, err)
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	assert.Equal(t, "good", string(got), "a failed overwrite keeps the previous object")
+}

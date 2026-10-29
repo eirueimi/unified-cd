@@ -83,7 +83,26 @@ type Case struct {
 	// Secrets is served by both drivers' fake FetchSecrets endpoint.
 	Secrets map[string]string
 	Expect  Expectation
+
+	// The fields below are used only by SecurityContextCases and are zero for
+	// every Case in Cases(), which the fake drivers run.
+
+	// Setup lists claims a real-runtime driver runs, in order and against the
+	// same workspace base and volumes, before this Case's own claim. Each is
+	// asserted against its own Expect. They leave state behind (a root-owned
+	// file in a volume) that the main claim then observes.
+	Setup []Case
+	// Artifacts maps a file name to its content. When set, the claim downloads
+	// an artifact named ArtifactName holding exactly these files; a driver
+	// without a real artifact store serves or emulates it.
+	Artifacts map[string]string
+	// HostOnly, when non-empty, names why the Kubernetes driver cannot run this
+	// Case (and is the t.Skip reason there).
+	HostOnly string
 }
+
+// ArtifactName is the artifact a Case with Artifacts downloads.
+const ArtifactName = "art"
 
 // Observation is what a driver (host or k8s) records while running a Case's
 // claim through the real orchestration entrypoint, converted into the shared

@@ -140,7 +140,12 @@ full flag/env/yaml forms.
   older than the retention window. It is deliberately conservative about what
   it will ever touch:
   - **Deletes:** only inactive `wsBase/working<slot>/<job>` directories aged
-    past retention.
+    past retention. A directory the agent's own user cannot remove (files a
+    container left owned by another UID, such as root under rootful docker or a
+    job's `runAsUser`) is removed through the same root cleanup container the
+    per-run sweep falls back to, so the agent needs a working container
+    runtime for that. If that fails too, the sweep logs `workspace gc: remove
+    failed` with the directory and tries again on the next tick.
   - **Protects, always:** `wsBase` itself; `working<slot>` directories
     themselves; any dot-prefixed entry (in particular `.ucd-tools`, the
     `ucd-sh` shim directory); and any `working<slot>/<job>` directory that
@@ -193,7 +198,9 @@ either.
   agent's own usage measurement tolerates this (it warns `volume usage could not be measured
   completely ... the figure is a lower bound` rather than failing), and `cleanWorkspace` falls back
   to a root cleanup container. But reclaiming the directory by hand needs root. Rootless podman
-  avoids all of it.
+  removes the root-owned part (a root container's files belong to the agent's own user), but a
+  job that sets `securityContext.runAsUser` still leaves files owned by a subordinate UID, which
+  the agent cannot remove either; the same root fallback and the same by-hand caveat apply.
 - To reclaim space, empty the directory with the agent stopped or the volume idle. A job with
   `cleanWorkspace: true` (which wipes a volume mounted at the workspace root only) is **not** a way
   out of a volume the gate is withholding: a job that mounts the volume waits like any other, and a
@@ -419,6 +426,20 @@ decide to move to a newer `busybox`:
 
 Do not "make it consistent" by deriving the pause image from the version too:
 there is no `busybox:v0.7.0` for it to resolve to.
+
+The agent also runs one other `busybox` container: the throwaway root **cleanup
+container** that removes files a job's container left owned by another UID
+(workspace sweeps, workspace GC and the startup probe's leftovers). Its image is a
+separate constant, `cleanupImage` in `internal/agent/workspace.go`, fully qualified
+and pinned to the same digest as the default pause image:
+
+```
+docker.io/library/busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+```
+
+It is only pulled when a plain removal fails, so an **air-gapped host must pull or load
+exactly this reference** (the `pauseImage` setting does not change it). When you rotate
+the pause image, rotate `cleanupImage` with it, or the fleet needs two `busybox` images.
 
 ---
 

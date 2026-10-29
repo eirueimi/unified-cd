@@ -165,7 +165,13 @@ func Restore(ctx context.Context, store objectstore.ObjectStore, jobName, path, 
 // volume's mount point still holds files there, and extracting them would write
 // into the volume.
 func RestoreExcluding(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, restoreKeys []string, exclude []string) (bool, error) {
-	return restore(ctx, store, jobName, key, restoreKeys, func(r io.Reader) error { return extract(r, path, exclude) })
+	return RestoreWritten(ctx, store, jobName, path, key, restoreKeys, exclude, nil)
+}
+
+// RestoreWritten is RestoreExcluding that records what it extracted in w (nil
+// records nothing), so the caller can re-own exactly that.
+func RestoreWritten(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, restoreKeys []string, exclude []string, w *artifact.Written) (bool, error) {
+	return restore(ctx, store, jobName, key, restoreKeys, func(r io.Reader) error { return extract(r, path, exclude, w) })
 }
 
 // RestoreIn is RestoreExcluding confined to root: path must lie at or below
@@ -321,7 +327,7 @@ func isUnder(p string, paths []string) bool {
 // extract decompresses a tar+zstd stream into dest.
 // Rejects paths that escape dest (path traversal protection). An entry at or
 // below one of the paths in exclude is skipped.
-func extract(r io.Reader, dest string, exclude []string) error {
+func extract(r io.Reader, dest string, exclude []string, w *artifact.Written) error {
 	dec, err := zstd.NewReader(r)
 	if err != nil {
 		return fmt.Errorf("zstd reader: %w", err)
@@ -361,11 +367,11 @@ func extract(r io.Reader, dest string, exclude []string) error {
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o750); err != nil {
+			if err := w.MkdirAll(target, 0o750); err != nil {
 				return err
 			}
 		default:
-			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			if err := w.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 				return err
 			}
 			f, err := os.Create(target)
@@ -377,6 +383,7 @@ func extract(r io.Reader, dest string, exclude []string) error {
 				return err
 			}
 			f.Close()
+			w.File(target)
 		}
 	}
 	return nil

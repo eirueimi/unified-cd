@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
 
 // gcWorkspaces is the opt-in, age-based sweep for per-job host workspace
@@ -45,7 +48,13 @@ import (
 // and passes its snapshot here as active. Because both this function and the
 // caller build the key from the same wsBase root via filepath.Join, they
 // match exactly regardless of absolute/relative form.
-func gcWorkspaces(wsBase string, retention time.Duration, active map[string]struct{}, now time.Time) ([]string, error) {
+//
+// A dir is removed with wipeDir, so a tree the agent's own user cannot delete
+// (files a container left owned by another UID) goes through the same root
+// cleanup container the per-run sweep falls back to. rtFn and toolsDir are
+// that fallback's inputs (see containerCleanup); with no usable runtime a
+// stuck dir is logged and kept for the next sweep.
+func gcWorkspaces(ctx context.Context, wsBase string, retention time.Duration, active map[string]struct{}, now time.Time, rtFn func() (crt.ContainerRuntime, error), toolsDir string) ([]string, error) {
 	var removed []string
 
 	slotDirs, err := filepath.Glob(filepath.Join(wsBase, "working*"))
@@ -95,7 +104,7 @@ func gcWorkspaces(wsBase string, retention time.Duration, active map[string]stru
 				continue
 			}
 
-			if err := os.RemoveAll(jobDir); err != nil {
+			if err := wipeDir(ctx, jobDir, false, rtFn, toolsDir); err != nil {
 				slog.Warn("workspace gc: remove failed", "dir", jobDir, "error", err)
 				continue
 			}
