@@ -15,7 +15,7 @@ import (
 func TestAuditList_PrintsTable(t *testing.T) {
 	occurred := time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC)
 	list := []api.AuditLog{
-		{ID: 2, OccurredAt: occurred, Actor: "bob", Method: "DELETE", Path: "/api/v1/jobs/foo", Action: "job.delete", Resource: "foo", Status: 204},
+		{ID: 2, OccurredAt: occurred, Actor: "bob", Method: "DELETE", Path: "/api/v1/jobs/foo", Action: "job.delete", Resource: "foo", Status: 204, Permission: "job.delete", GrantedBy: "role:admin (pat)"},
 		{ID: 1, OccurredAt: occurred.Add(-time.Minute), Actor: "alice", Method: "POST", Path: "/api/v1/jobs", Action: "job.apply", Resource: "foo", Status: 200},
 	}
 	body, _ := json.Marshal(list)
@@ -40,6 +40,8 @@ func TestAuditList_PrintsTable(t *testing.T) {
 	assert.Contains(t, got, "204")
 	assert.Contains(t, got, "alice")
 	assert.Contains(t, got, "job.apply")
+	assert.Contains(t, got, "204	job.delete	role:admin (pat)")
+	assert.Contains(t, got, "200	-	-")
 }
 
 func TestAuditList_Empty(t *testing.T) {

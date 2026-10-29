@@ -10,6 +10,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -72,6 +73,18 @@ func recordDecision(r *http.Request, d authzDecision) {
 func deny(w http.ResponseWriter, r *http.Request, perm authz.Permission, scope string, status int, body string) {
 	recordDecision(r, authzDecision{Permission: perm, Scope: scope, Denied: true, Status: status})
 	http.Error(w, body, status)
+}
+
+// hideAnswer writes a hidden answer with hide and returns the status actually
+// written to the client (the hidden answers are 404, 204 or 400 depending on
+// the route), so the audit record names what the caller saw.
+func hideAnswer(w http.ResponseWriter, r *http.Request, hide func(http.ResponseWriter)) int {
+	ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+	hide(ww)
+	if st := ww.Status(); st != 0 {
+		return st
+	}
+	return http.StatusOK
 }
 
 // jobNotFound answers like a missing job: the store's own not-found text.
@@ -223,8 +236,8 @@ func (s *Server) authorizeRun(w http.ResponseWriter, r *http.Request, rule route
 	}
 	missing := missingRunAnswer(rule.Pattern, runID)
 	if !found {
-		recordDecision(r, authzDecision{Permission: rule.Perm, Scope: scopeGlobalName, Denied: true, Status: http.StatusNotFound})
-		missing(w)
+		status := hideAnswer(w, r, missing)
+		recordDecision(r, authzDecision{Permission: rule.Perm, Scope: scopeGlobalName, Denied: true, Status: status})
 		return
 	}
 	if s.requireJob(w, r, rule.Perm, job, missing) {
@@ -282,8 +295,8 @@ func (s *Server) requireJob(w http.ResponseWriter, r *http.Request, perm authz.P
 			deny(w, r, perm, job, http.StatusForbidden, missingPermOnJob(perm, job))
 			return false
 		}
-		recordDecision(r, authzDecision{Permission: perm, Scope: job, Denied: true, Status: http.StatusNotFound})
-		hide(w)
+		status := hideAnswer(w, r, hide)
+		recordDecision(r, authzDecision{Permission: perm, Scope: job, Denied: true, Status: status})
 		return false
 	}
 	allowed, by := p.Grants.Decide(perm, job)

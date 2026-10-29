@@ -23,8 +23,17 @@ func newAuditCmdWithClient(resolve func() (Config, error), httpClient *http.Clie
 	return cmd
 }
 
+// dashIfEmpty keeps an empty column visible in tab-separated output.
+func dashIfEmpty(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 // newAuditListCmdWithClient returns the "audit list" subcommand, printing a
-// table of time, actor, action, resource, and status, newest first.
+// table of time, actor, action, resource, status, permission and grantedBy,
+// newest first.
 func newAuditListCmdWithClient(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	var limit int
 	cmd := &cobra.Command{
@@ -62,8 +71,9 @@ func newAuditListCmdWithClient(resolve func() (Config, error), httpClient *http.
 				return nil
 			}
 			for _, a := range list {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%d\n",
-					a.OccurredAt.Format("2006-01-02T15:04:05Z07:00"), a.Actor, a.Action, a.Resource, a.Status)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+					a.OccurredAt.Format("2006-01-02T15:04:05Z07:00"), a.Actor, a.Action, a.Resource, a.Status,
+					dashIfEmpty(a.Permission), dashIfEmpty(a.GrantedBy))
 			}
 			return nil
 		},

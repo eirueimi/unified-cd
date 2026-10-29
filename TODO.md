@@ -65,13 +65,6 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** `web/src/routes/RunDetail.svelte` opens one event stream and `internal/controller/sse.go` `handleRunEvents` replays stored logs before terminal status, but `web/src/routes/RunDetail.test.js` uses a Running run with an empty stream and `internal/controller/api_runs_test.go` `TestAPI_RunEvents_SSE_ReceivesExistingLogs` does not exercise Web rendering.
 - **Done when:** A component or browser test loads a pre-cancelled run whose event stream backfills known historical lines and then closes with terminal status, and proves those exact lines remain rendered after closure with only one event connection.
 
-### 24. Record run replay operations in the audit log
-
-- **Status:** Partial
-- **Impact:** A human replay of a run mutates system state without recording who performed it or which source run was replayed, leaving the documented audit trail incomplete.
-- **Evidence:** `internal/controller/server.go` registers `POST /api/v1/runs/{id}/replay`, while `internal/controller/audit.go` `auditActionTable` has no replay classification; `docs/operator-manual/audit.md` claims coverage for state-changing human operations.
-- **Done when:** Replay produces a `run.replay` audit record containing the actor, source run ID, method, path, and result status without request or response secret material; an integration test proves the record, `docs/operator-manual/audit.md` lists the action and route coverage, and the stale generic-fallback comment in `internal/controller/audit.go` matches the explicit allow-list behavior.
-
 ### 35b. Exercise AppSource migration 003 through first synchronization
 
 - **Status:** Partial

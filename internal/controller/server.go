@@ -393,7 +393,7 @@ func (s *Server) registerAgentIdentityRoutes() {
 			r = r.With(s.requireAgentPathIdentity)
 		}
 		if route.auth == agentRouteOrServerAuth {
-			r = r.With(s.authorize)
+			r = r.With(auditLogMiddleware(s.store), s.authorize)
 		}
 		r.Method(route.method, route.path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			route.handler(s, w, req)
@@ -453,7 +453,7 @@ func (s *Server) routes() {
 	})
 
 	// The SSE endpoint is registered individually outside the /api/v1 route block.
-	s.r.With(ServerAuth(s.store, s), s.authorize).
+	s.r.With(ServerAuth(s.store, s), auditLogMiddleware(s.store), s.authorize).
 		Get("/api/v1/runs/{id}/events", s.handleRunEvents)
 
 	// Run + outputs reads are also reachable by an enrolled agent (the call:
@@ -468,9 +468,9 @@ func (s *Server) routes() {
 	// below is mounted as its own sub-router, so once /runs/{id} is registered
 	// directly on the top-level tree it would otherwise swallow "active" as an
 	// id before the request ever reaches the mounted group.
-	s.r.With(ServerAuth(s.store, s), s.authorize).Get("/api/v1/runs/active", s.handleListActiveRuns)
-	s.r.With(s.agentOrServerAuth, s.authorize).Get("/api/v1/runs/{id}", s.handleGetRun)
-	s.r.With(s.agentOrServerAuth, s.authorize).Get("/api/v1/runs/{id}/outputs", s.handleGetRunOutputs)
+	s.r.With(ServerAuth(s.store, s), auditLogMiddleware(s.store), s.authorize).Get("/api/v1/runs/active", s.handleListActiveRuns)
+	s.r.With(s.agentOrServerAuth, auditLogMiddleware(s.store), s.authorize).Get("/api/v1/runs/{id}", s.handleGetRun)
+	s.r.With(s.agentOrServerAuth, auditLogMiddleware(s.store), s.authorize).Get("/api/v1/runs/{id}/outputs", s.handleGetRunOutputs)
 
 	s.r.Route("/api/v1", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
@@ -613,13 +613,13 @@ func (s *Server) routes() {
 		// agent credentials are authenticated by the handlers themselves.
 		r.Post("/enroll", s.handleAgentEnroll)
 		r.Post("/token/refresh", s.handleAgentRefresh)
-		r.With(ServerAuth(s.store, s), s.authorize).Get("/", s.handleListAgents)
+		r.With(ServerAuth(s.store, s), auditLogMiddleware(s.store), s.authorize).Get("/", s.handleListAgents)
 		r.With(s.agentAuth).Post("/register", s.handleAgentRegister)
 	})
 
 	s.r.Route("/api/v1/runs/{runID}/artifacts", func(r chi.Router) {
-		r.With(s.agentOrServerAuth, s.authorize).Get("/{name}", s.handleArtifactDownload)
-		r.With(s.agentOrServerAuth, s.authorize).Get("/", s.handleArtifactList)
+		r.With(s.agentOrServerAuth, auditLogMiddleware(s.store), s.authorize).Get("/{name}", s.handleArtifactDownload)
+		r.With(s.agentOrServerAuth, auditLogMiddleware(s.store), s.authorize).Get("/", s.handleArtifactList)
 	})
 
 	// store-credentials is deliberately OUTSIDE ServerAuth/agentAuth/the

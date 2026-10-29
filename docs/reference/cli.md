@@ -755,12 +755,15 @@ unified-cli audit list [--limit int]
   --limit  int   Max number of entries to show (server default: 100)
 ```
 
-Prints a table of time, actor, action, resource, and status, newest first.
+Prints a table of time, actor, action, resource, status, permission, and
+grantedBy, newest first. `permission` is the permission that was checked and
+`grantedBy` the grant that allowed it; both show `-` when not recorded, and
+`grantedBy` is `-` on a denied request.
 
 ```bash
 unified-cli audit list --limit 5
-# => 2026-07-04T09:12:00Z   alice   token.create   token/ci-bot        200
-# => 2026-07-04T09:10:41Z   bob     run.cancel     run/run-abc123      200
+# => 2026-07-04T09:12:00Z   alice   token.create   token/ci-bot    200   token.create   role:admin (pat)
+# => 2026-07-04T09:10:41Z   bob     run.cancel     run/run-abc123  200   run.cancel     role:developer (pat)
 ```
 
 ---

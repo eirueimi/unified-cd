@@ -17,13 +17,15 @@ import (
 // auditActionKey classifies a route (method + chi route pattern) into a short
 // action label like "job.apply" or "secret.set", plus how to resolve the
 // resource name for the audit log row. Only state-changing (POST/PUT/DELETE)
-// human-facing routes need an entry; anything absent from this table is
-// recorded with a generic action derived from the path (see classifyAudit).
+// human-facing routes need an entry. The table is an allow-list: a route absent
+// from it is not recorded, except that a request refused by authorization is
+// always recorded (see auditLogMiddleware).
 var auditActionTable = map[string]string{
 	"POST /api/v1/jobs":                                          "job.apply",
 	"DELETE /api/v1/jobs/*":                                      "job.delete",
 	"POST /api/v1/runs":                                          "run.trigger",
 	"POST /api/v1/runs/{id}/cancel":                              "run.cancel",
+	"POST /api/v1/runs/{id}/replay":                              "run.replay",
 	"DELETE /api/v1/runs/{id}":                                   "run.delete",
 	"POST /api/v1/runs/{runID}/approvals/{stepIndex}":            "run.approval.decide",
 	"POST /api/v1/secrets":                                       "secret.set",
@@ -62,6 +64,7 @@ var auditActionTable = map[string]string{
 var auditResourceParams = map[string]string{
 	"job.delete":               "*",
 	"run.cancel":               "id",
+	"run.replay":               "id",
 	"run.delete":               "id",
 	"run.approval.decide":      "runID",
 	"secret.delete":            "name",
@@ -165,20 +168,63 @@ func classifyAudit(method, pattern string) (action string, ok bool) {
 	return action, ok
 }
 
-// auditLogMiddleware records state-changing (POST/PUT/DELETE) human API calls
-// to the audit_logs table: who (actor from the resolved Principal), what
-// (method/path/action), on what (resource, best-effort), when, and the
-// resulting HTTP status. Read-only (GET) requests are never recorded.
+// auditLogMiddleware records human API calls to the audit_logs table: who
+// (actor from the resolved Principal), what (method/path/action), on what
+// (resource, best-effort), when, the resulting HTTP status, and the
+// authorization decision (the permission checked, its scope and the grant that
+// allowed it).
 //
-// Only routes present in auditActionTable are recorded; this is an explicit
-// allow-list so that new routes must be deliberately classified rather than
-// silently audited (or silently missed). It must run inside ServerAuth so
-// principalFromContext is populated.
+// State-changing (POST/PUT/DELETE) requests are recorded when their route is in
+// auditActionTable; this is an explicit allow-list so that new routes must be
+// deliberately classified rather than silently audited (or silently missed).
+// Any request that authorization refused is recorded as well, including reads
+// and routes absent from the table: the row's action is the permission that
+// was checked, its resource the scope, and its status the one the client
+// actually saw (a hidden resource is answered 404, 204 or 400, not 403).
+// Allowed reads are never recorded. It must run inside ServerAuth so
+// principalFromContext is populated, and outside authorize so the decision
+// slot it attaches is filled.
 func auditLogMiddleware(st interface {
 	InsertAuditLog(ctx context.Context, e store.AuditEntry) error
 }) func(http.Handler) http.Handler {
+	insert := func(r *http.Request, e store.AuditEntry) {
+		e.Actor = "unknown"
+		if p, ok := principalFromContext(r.Context()); ok && p.Name != "" {
+			e.Actor = p.Name
+		}
+		e.Method = r.Method
+		e.Path = r.URL.Path
+		// Recorded synchronously (after the response has already been written
+		// to the client) so that callers/tests observing a completed request
+		// can rely on the audit row already being present. This mirrors
+		// TouchPAT/TouchSession, which fire-and-forget only for non-critical
+		// bookkeeping; the audit trail is treated as part of the request.
+		if err := st.InsertAuditLog(r.Context(), e); err != nil {
+			slog.Warn("audit log insert failed", "error", err, "action", e.Action)
+		}
+	}
+	// recordDenied writes the row for a refused request that has no entry in
+	// auditActionTable (every GET/HEAD, and unclassified writes).
+	recordDenied := func(r *http.Request, d *authzDecision) {
+		insert(r, store.AuditEntry{
+			Action:     string(d.Permission),
+			Resource:   d.Scope,
+			Status:     d.Status,
+			Permission: string(d.Permission),
+			Scope:      d.Scope,
+		})
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r, slot := withDecisionSlot(r)
+
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				next.ServeHTTP(w, r)
+				if slot.Denied {
+					recordDenied(r, slot)
+				}
+				return
+			}
 			if r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodDelete {
 				next.ServeHTTP(w, r)
 				return
@@ -204,6 +250,9 @@ func auditLogMiddleware(st interface {
 			pattern := chi.RouteContext(r.Context()).RoutePattern()
 			action, ok := classifyAudit(r.Method, pattern)
 			if !ok {
+				if slot.Denied {
+					recordDenied(r, slot)
+				}
 				return
 			}
 
@@ -219,19 +268,17 @@ func auditLogMiddleware(st interface {
 				}
 			}
 
-			actor := "unknown"
-			if p, ok := principalFromContext(r.Context()); ok && p.Name != "" {
-				actor = p.Name
+			e := store.AuditEntry{
+				Action:     action,
+				Resource:   resource,
+				Status:     rec.Status(),
+				Permission: string(slot.Permission),
+				Scope:      slot.Scope,
 			}
-
-			// Recorded synchronously (after the response has already been written
-			// to the client) so that callers/tests observing a completed request
-			// can rely on the audit row already being present. This mirrors
-			// TouchPAT/TouchSession, which fire-and-forget only for non-critical
-			// bookkeeping; the audit trail is treated as part of the request.
-			if err := st.InsertAuditLog(r.Context(), store.AuditEntry{Actor: actor, Method: r.Method, Path: r.URL.Path, Action: action, Resource: resource, Status: rec.Status()}); err != nil {
-				slog.Warn("audit log insert failed", "error", err, "action", action)
+			if !slot.Denied {
+				e.GrantedBy = slot.GrantedBy
 			}
+			insert(r, e)
 		})
 	}
 }
