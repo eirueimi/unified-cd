@@ -58,6 +58,28 @@ poolIdleTimeout: ""
 # immutable. The same applies to sidecarImage and shimImage, which default the same way.
 # podImage: ghcr.io/eirueimi/unified-cd-runner@sha256:<digest>
 
+# jobPodPolicy: which Pod fields a JOB's OWN podTemplate content (an inline spec, an override
+# patch) may use on this agent. File-only (no environment variables). Every key is optional and
+# the values below are the defaults: with this block absent or empty, a job that names a
+# ServiceAccount, hostPath, a Kubernetes Secret, a PVC, privileged: true, nodeName, ... is failed
+# at claim time with "k8s: job pod policy: ...", before any Pod is created. The podTemplates below
+# are operator-written and are NOT filtered. Names are listed one by one (no wildcards). The agent
+# refuses to start on an unknown key or a bad name. Uncomment only what your jobs need. See
+# docs/operator-manual/kubernetes-integration.md, "Job Pod field policy".
+# jobPodPolicy:
+#   allowServiceAccounts: []        # serviceAccountName values a job may set; also gates
+#                                   # automountServiceAccountToken: true and projected tokens
+#   allowSecrets: []                # Secrets a job may read (secretKeyRef, secretRef, secret
+#                                   # volumes); may not name sidecarS3SecretName
+#   allowImagePullSecrets: []       # imagePullSecrets a job may name
+#   allowPersistentVolumeClaims: [] # claimName values; may not name <agentName>-<volume>
+#   allowHostAccess: false          # hostPath, hostNetwork/hostPID/hostIPC, hostPort, probe hosts
+#   allowPrivileged: false          # privileged, non-baseline capabilities, procMount, sysctls, ...
+#   allowUnconfinedProfiles: false  # seccomp / AppArmor Unconfined (e.g. rootless BuildKit)
+#   allowNodeName: false            # nodeName
+#   allowPodSpecFields: []          # e.g. [runtimeClassName, priorityClassName, shareProcessNamespace]
+#   allowVolumeTypes: []            # e.g. [nfs, csi, ephemeral]
+
 podTemplates:
   # template name: referenced by podTemplate.name in Job YAML
   golang:
@@ -74,6 +96,11 @@ podTemplates:
           image: golang:1.24-alpine
           # command omitted → agent injects ["/.ucd/ucd-sh", "pause"] automatically
           # workspace volumeMount is injected by the agent — no need to specify it
+        # NOTE: the shipped `ci` namespace enforces Pod Security `baseline`
+        # (manifests/base/namespace/namespace.yaml), which REFUSES `privileged: true`, even in an
+        # operator template like this one. To use this Docker-in-Docker container, run this agent
+        # in a separate namespace labelled pod-security.kubernetes.io/enforce=privileged (or
+        # relabel `ci`). jobPodPolicy does not apply here: templates are not filtered.
         - name: docker
           image: docker:24-dind
           securityContext:

@@ -147,6 +147,7 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		fs := flag.NewFlagSet("cache restore", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		key := fs.String("key", "", "cache key")
+		root := fs.String("root", "", "directory every read and write is confined to (required): the Pod's workspace mount; a symlink or \"..\" that leads outside it is never followed")
 		path := fs.String("path", "", "destination path")
 		job := fs.String("job", "", "qualified job name owning this cache entry")
 		var restoreKeys stringSlice
@@ -160,11 +161,15 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
+		if *root == "" {
+			fmt.Fprintln(stderr, "cache restore: --root is required")
+			return 2
+		}
 		if *job == "" {
 			fmt.Fprintln(stderr, "cache restore: --job is required")
 			return 2
 		}
-		hit, err := cache.RestoreExcluding(ctx, store, *job, *path, *key, restoreKeys, exclude)
+		hit, skippedLinks, err := cache.RestoreIn(ctx, store, *job, *root, *path, *key, restoreKeys, exclude)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			fmt.Fprintf(stderr, "cache restore error (ignored): %v\n", err)
 			// This path deliberately exits 0 (cache never fails a step) and
@@ -175,6 +180,9 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 			// changing that reader: `hit` is false in this branch anyway.
 		} else if hit {
 			fmt.Fprintf(stderr, "cache hit: %s\n", *key)
+			if skippedLinks > 0 {
+				fmt.Fprintf(stderr, "cache restore warning: skipped %d symlink/hardlink entries; links are not restored on the Kubernetes agent, so the cache may be incomplete (tools such as .venv or node_modules/.bin may need re-creating)\n", skippedLinks)
+			}
 			fmt.Fprintln(stdout, "UCD_CACHE_RESULT=hit")
 		} else {
 			fmt.Fprintf(stderr, "cache miss: %s\n", *key)
@@ -185,6 +193,7 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		fs := flag.NewFlagSet("cache save", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		key := fs.String("key", "", "cache key")
+		root := fs.String("root", "", "directory every read and write is confined to (required): the Pod's workspace mount; a symlink or \"..\" that leads outside it is never followed")
 		path := fs.String("path", "", "source path")
 		job := fs.String("job", "", "qualified job name owning this cache entry")
 		ttlDays := fs.Int("ttl-days", 30, "TTL in days")
@@ -194,11 +203,15 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
+		if *root == "" {
+			fmt.Fprintln(stderr, "cache save: --root is required")
+			return 2
+		}
 		if *job == "" {
 			fmt.Fprintln(stderr, "cache save: --job is required")
 			return 2
 		}
-		if err := cache.SaveExcluding(ctx, store, *job, *path, *key, *ttlDays, exclude); err != nil {
+		if err := cache.SaveIn(ctx, store, *job, *root, *path, *key, *ttlDays, exclude); err != nil {
 			fmt.Fprintf(stderr, "cache save error (ignored): %v\n", err)
 		} else {
 			fmt.Fprintf(stderr, "cache saved: %s\n", *key)
@@ -223,6 +236,7 @@ func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string,
 		// FlagSet ever ran.
 		runID := fs.String("run", "", "run ID")
 		name := fs.String("name", "", "artifact name")
+		root := fs.String("root", "", "directory every read and write is confined to (required): the Pod's workspace mount; a symlink or \"..\" that leads outside it is never followed")
 		path := fs.String("path", "", "source path")
 		var exclude stringSlice
 		fs.Var(&exclude, "exclude", "path to leave out of the archive, with everything below it (repeatable)")
@@ -230,7 +244,11 @@ func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string,
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
-		if err := artifact.UploadExcluding(ctx, store, *runID, *name, *path, exclude); err != nil {
+		if *root == "" {
+			fmt.Fprintln(stderr, "artifact upload: --root is required")
+			return 2
+		}
+		if err := artifact.UploadIn(ctx, store, *runID, *name, *root, *path, exclude); err != nil {
 			fmt.Fprintf(stderr, "artifact upload failed: %v\n", err)
 			return 1
 		}
@@ -243,6 +261,7 @@ func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string,
 		// at a run other than the one this Pod executes.
 		runID := fs.String("run", "", "run ID")
 		name := fs.String("name", "", "artifact name")
+		root := fs.String("root", "", "directory every read and write is confined to (required): the Pod's workspace mount; a symlink or \"..\" that leads outside it is never followed")
 		dest := fs.String("dest", ".", "destination directory")
 		var exclude stringSlice
 		fs.Var(&exclude, "exclude", "path to leave alone, with everything below it: no archived entry is extracted there (repeatable)")
@@ -250,7 +269,11 @@ func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string,
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
-		if err := artifact.DownloadExcluding(ctx, store, *runID, *name, *dest, exclude); err != nil {
+		if *root == "" {
+			fmt.Fprintln(stderr, "artifact download: --root is required")
+			return 2
+		}
+		if err := artifact.DownloadIn(ctx, store, *runID, *name, *root, *dest, exclude); err != nil {
 			fmt.Fprintf(stderr, "artifact download failed: %v\n", err)
 			return 1
 		}

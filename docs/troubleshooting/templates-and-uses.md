@@ -80,9 +80,10 @@ opaquely when the agent tried to exec into a nonexistent container.
 **Cause**
 
 A step's `container:` field (or a `uses:`-inlined step's inherited
-`container:`) must name either the reserved primary container (`job`), one
-of the other reserved names, or a container actually declared in
-`spec.podTemplate.spec.containers`. For a **plain job** — no `uses:` step in
+`container:`) must name either the reserved primary container (`job`) or a container
+actually declared in `spec.podTemplate.spec.containers`. The other
+reserved names (`unified-artifact`, `ucd-shim`) are never valid targets; see
+[Step fails: container "unified-artifact" is reserved](steps-and-execution.md#step-fails-container-unified-artifact-is-reserved-for-the-agents-artifact-sidecar). For a **plain job** — no `uses:` step in
 `steps:` or `finally:`, and no named agent-side `podTemplate.name` (whose
 containers live in agent config and aren't visible here) — this is now
 checked at **apply time** via `internal/dsl.Job.Validate` /

@@ -13,6 +13,13 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
+// sidecarBinary is where docker/artifact-sidecar.Dockerfile installs the
+// unified-sidecar binary. The sidecar is started and exec'd by this absolute
+// path, never by a PATH lookup: a job-chosen mount path (the workspace, an
+// absolute spec.volumes entry) is mounted into the sidecar too, and the policy
+// in podmountpaths.go keeps those off the directories this binary lives in.
+const sidecarBinary = "/usr/local/bin/unified-sidecar"
+
 const artifactSidecarName = dsl.ArtifactSidecarContainerName
 
 // primaryContainerName is the exec target for container:-less steps —
@@ -155,7 +162,7 @@ func buildArtifactSidecarContainer(sidecar SidecarSpec) (corev1.Container, *core
 	sc := corev1.Container{
 		Name:    artifactSidecarName,
 		Image:   sidecar.Image,
-		Command: []string{"unified-sidecar", "idle"},
+		Command: []string{sidecarBinary, "idle"},
 	}
 
 	// Broker mode is checked FIRST and independently of S3SecretName: there

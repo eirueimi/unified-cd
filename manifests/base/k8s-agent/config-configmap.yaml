@@ -20,3 +20,8 @@ data:
     # not follow the agent's version. Remove the line to use the runner image
     # matching the agent's version instead.
     podImage: golang:1.24-alpine
+    # jobPodPolicy (not set here) decides which Pod fields a job's own podTemplate may use. With
+    # no block, a job that names a ServiceAccount, hostPath, a Secret, a PVC, privileged: true or
+    # nodeName fails at claim time with "k8s: job pod policy: ...". See
+    # docs/operator-manual/kubernetes-integration.md, "Job Pod field policy", and
+    # examples/config/k8s-agent.yaml for every key.

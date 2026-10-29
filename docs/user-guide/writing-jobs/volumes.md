@@ -42,7 +42,7 @@ spec:
 |---|---|---|---|
 | `name` | string, list of strings, or template | Yes | The volume to mount. A list is a set of *candidates*: the agent picks a free one. A name may contain `{{ .Params.X }}`, expanded when the run is queued. |
 | `as` | string | When `name` is a list or a template | The stable handle steps use to reach the volume. Defaults to the name when it is one literal string. |
-| `mountPath` | string | Yes | Where the volume appears. Relative paths are relative to the workspace and `"."` is the workspace root. An absolute path is a path outside the workspace. |
+| `mountPath` | string | Yes | Where the volume appears. Relative paths are relative to the workspace and `"."` is the workspace root. An absolute path is a path outside the workspace; on a Kubernetes agent it must not be on, inside or above a system directory such as `/usr`, `/etc` or `/usr/local/bin` (the run fails with `k8s: job pod policy: ...`). |
 
 A job can mount several volumes. Two entries must not use the same `mountPath`, and one
 `mountPath` must not sit inside another's (`"."` may be combined with any other entry).
@@ -123,7 +123,8 @@ volume mount failed: spec.volumes[0]: volume "go-cache" is shared and cannot be 
 - **A POSIX path, always.** A `mountPath` is written with `/` on every agent, Windows agents
   included. A Windows drive-qualified path (`C:/cache`, `d:\cache`) is rejected when the job is
   applied (`mountPath must be a POSIX path`), because it would otherwise be mistaken for a relative
-  path and fail much later with an opaque `mkdir` error.
+  path and fail much later with an opaque `mkdir` error. Any backslash in a `mountPath` is rejected
+  the same way, in every position (`/usr\local` as much as `d:\cache`).
 
 How the volume is realised depends on where the run executes, but your YAML does not change:
 

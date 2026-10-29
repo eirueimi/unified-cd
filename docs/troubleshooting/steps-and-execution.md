@@ -77,6 +77,115 @@ cannot honor that (`internal/k8sagent/agent.go`).
 Route `native: true` jobs away from k8s-agents (and toward host agents with the tools the job
 needs) via `agentSelector`.
 
+### Run fails immediately on Kubernetes: "k8s: job pod policy: ..."
+
+**Symptom**
+
+A run on a Kubernetes agent fails at once, before any step runs, and the first line of its log (the
+"System" entry) starts with `k8s: job pod policy:`. No Pod was created. Example (one line in the log):
+
+```
+k8s: job pod policy: the job's podTemplate sets 2 field(s) this agent does not allow: podTemplate.spec.containers[1].securityContext.privileged (container "docker"): privileged: true (allow with jobPodPolicy.allowPrivileged: true in the k8s-agent config); podTemplate.spec.volumes[0].hostPath (volume "root"): a hostPath volume ("/" on the node) (allow with jobPodPolicy.allowHostAccess: true in the k8s-agent config). Agent-side podTemplates (podTemplates: in the k8s-agent config) are not subject to this policy; see "Job Pod field policy" in docs/operator-manual/kubernetes-integration.md
+```
+
+**Cause**
+
+The job's own `podTemplate` (an inline `spec` or an `override` patch) sets Pod fields that this
+agent's `jobPodPolicy` does not allow. By default a Kubernetes agent refuses a ServiceAccount, host
+access, `privileged` and other privilege, `Unconfined` profiles, `nodeName`, Kubernetes Secrets,
+PersistentVolumeClaims, and any field it has not classified. See [Job Pod field
+policy](../operator-manual/kubernetes-integration.md#job-pod-field-policy) for the full tables.
+
+**Fix**
+
+Read every violation: each gives the field path, what it does and an `allow with` hint. The text
+`(no k8s-agent setting allows this)` means no setting allows it and the field must be removed (for
+example a mount of the sidecar's credential volumes, or a `podTemplate.workspace.mountPath` /
+absolute `spec.volumes` `mountPath` such as `/usr/local/bin` that is on, inside or above a system
+directory: choose a path like `/workspace`; a backslash in a `mountPath` is read as `/` there and
+is also rejected by `apply`). `hostAliases`, `dnsPolicy` and `dnsConfig` are
+opt-in through `allowPodSpecFields`.
+
+- **Job author:** remove the field from the job. You cannot allow it from the job.
+- **Operator:** either add the named setting to the `jobPodPolicy:` block of the k8s-agent config
+  and restart the agent (for example `allowPrivileged: true`, or `allowSecrets: ["db-password"]`),
+  or move the content into an agent template (`podTemplates:` in the config) and have the job
+  reference it with `podTemplate.name`. Agent templates are not filtered. Allowing a field widens
+  what every `developer` can do on that agent, so prefer a template or a separate, dedicated
+  agent for privileged work.
+
+If a name you listed is rejected when the agent starts, see [Startup
+validation](../operator-manual/kubernetes-integration.md#job-pod-field-policy).
+
+### Run fails: "k8s: failed to create Pod: ... violates PodSecurity "baseline:latest""
+
+**Symptom**
+
+A run on a Kubernetes agent fails when its Pod is created, with an error like:
+
+```
+k8s: failed to create Pod: pods "ucd-run-..." is forbidden: violates PodSecurity "baseline:latest": privileged (container "docker" must not set securityContext.privileged=true)
+```
+
+This is not the `k8s: job pod policy:` error: the agent policy allowed the Pod (or the Pod comes
+from an operator template, which the policy never checks) and the API server refused it.
+
+**Cause**
+
+The shipped `ci` namespace (`manifests/base/namespace/namespace.yaml`) enforces Pod Security
+`baseline` (`pod-security.kubernetes.io/enforce: baseline`). It refuses privileged containers,
+`hostPath`, host namespaces, `Unconfined` seccomp/AppArmor profiles and similar, **whatever the
+agent config says**, and it applies to operator templates too. The `golang` template in
+`examples/config/k8s-agent.yaml` (Docker-in-Docker, `privileged: true`) and
+`templates/buildkit-rootless-build-push.yaml` (`Unconfined`) are examples.
+
+**Fix**
+
+- Preferred: give those jobs a separate agent and a separate namespace that does not enforce
+  `baseline`, and keep the shipped `ci` namespace strict.
+- Or relabel the job namespace to admit what the workload needs, for example
+  `kubectl label namespace ci pod-security.kubernetes.io/enforce=privileged --overwrite`. This lifts
+  the check for every job in that namespace.
+- Or remove the privileged setting from the template.
+
+See [Job Pod field policy](../operator-manual/kubernetes-integration.md#job-pod-field-policy) and the
+[migration note](../operator-manual/migrations/2026-10-26-k8s-job-pod-field-policy.md#the-ci-namespace-now-enforces-pod-security-baseline).
+
+### Step fails: container "unified-artifact" is reserved for the agent's artifact sidecar
+
+**Symptom**
+
+`unified-cd apply` fails, or a run fails before any step runs, with one of:
+
+```
+spec.steps[0] (upload): container "unified-artifact" is reserved for the agent's artifact sidecar, which holds the object-store credentials; steps cannot run in it. Use the primary container "job" or a container declared in podTemplate
+```
+
+```
+spec.steps[1] (setup): container "ucd-shim" is the agent's ucd-sh installer init container, which has exited before any step runs; steps cannot run in it. Use the primary container "job" or a container declared in podTemplate
+```
+
+```
+k8s: step "upload" targets container "unified-artifact", which is reserved for the agent (the artifact sidecar holds the object-store credentials; ucd-shim has exited before steps run); no step may run in it. Re-apply the job with container: "job" or a podTemplate container
+```
+
+The first two come from `apply` (or, for a step that arrives through a `uses:` template, from the
+run's System log when the controller resolves the template). The third is the Kubernetes agent
+refusing a job that was stored before the check existed.
+
+**Cause**
+
+A step has `container: unified-artifact` or `container: ucd-shim`. The artifact sidecar holds the
+object-store credentials, so no step may run job code in it, and the shim init container has
+already exited. Only `job` and containers declared in the `podTemplate` are valid targets.
+
+**Fix**
+
+Change the step to `container: job` (or remove `container:`), or to a container declared in
+`podTemplate`. For a job stored before the upgrade, edit it and `apply` it again. A step that comes
+from a `uses:` template needs the template (or the `uses:` entry's own `container:`) fixed. See the
+[migration note](../operator-manual/migrations/2026-10-26-k8s-job-pod-field-policy.md#reserved-step-targets).
+
 ### Run fails with `prepare workspace failed: clean workspace ...`
 
 **Symptom**

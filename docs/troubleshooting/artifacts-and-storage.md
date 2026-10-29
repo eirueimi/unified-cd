@@ -403,3 +403,36 @@ release's sidecar; see [Default images and the pause image
 digest](../operator-manual/operations.md#default-images-and-the-pause-image-digest)).
 `unified-sidecar version` inside the container prints its build, so you can compare it with the
 agent's.
+
+## Every artifact and cache step fails: `flag provided but not defined: -root` or `--root is required`
+
+**Symptom**
+
+On a Kubernetes agent, every artifact upload/download and cache save/restore step fails (a cache
+restore reports "not restored"), and the `unified-artifact` sidecar (visible in the **Sidecars**
+group of the run) printed one of:
+
+```
+flag provided but not defined: -root
+```
+
+```
+cache restore: --root is required
+```
+
+(`artifact upload: --root is required` and the other subcommands read the same.) The sidecar exited
+with status 2.
+
+**Cause**
+
+The agent and its sidecar image are on different versions. The agent passes `--root <workspace
+mount>` on every artifact and cache invocation to confine the sidecar to the workspace. A sidecar
+older than the agent does not know the flag (`flag provided but not defined: -root`); a sidecar newer
+than the agent requires it and the agent does not send it (`--root is required`). Unlike
+`-exclude`, this affects every artifact and cache step, not only those on a volume ancestor.
+
+**Fix**
+
+Upgrade the k8s-agent and the sidecar image in lockstep, as described in [Operations:
+Upgrades](../operator-manual/operations.md#upgrades). Leave `sidecarImage` unset so the default
+follows the agent's version, or bump the override to the agent's release.

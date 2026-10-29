@@ -259,6 +259,9 @@ func envSliceToMap(env []string) map[string]string {
 // default pod (runsIn.container), via the same ExecStep path as RunDefault,
 // threading step.Shell through identically.
 func (b *k8sBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
+	if dsl.IsForbiddenStepContainer(container) {
+		return -1, fmt.Errorf("k8s: refusing to exec into reserved container %q", container)
+	}
 	ec, err := b.a.exec.ExecStep(ctx, b.podName, container, script, step.Shell, env, stdout, stderr)
 	return ec, b.explainPodLoss(ctx, b.podName, err)
 }
@@ -971,7 +974,7 @@ func (b *k8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandl
 	if err != nil {
 		return false, err
 	}
-	argv := []string{"unified-sidecar", "cache", "restore", "--key", key, "--path", path, "--job", b.jobName, "--broker-run-id", b.runID}
+	argv := []string{sidecarBinary, "cache", "restore", "--key", key, "--path", path, "--root", b.sidecarRoot(scope), "--job", b.jobName, "--broker-run-id", b.runID}
 	for _, rk := range restoreKeys {
 		argv = append(argv, "--restore-key", rk)
 	}
@@ -1044,7 +1047,7 @@ func (b *k8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, 
 	if err != nil {
 		return err
 	}
-	argv := []string{"unified-sidecar", "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path, "--job", b.jobName, "--broker-run-id", b.runID}
+	argv := []string{sidecarBinary, "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path, "--root", b.sidecarRoot(scope), "--job", b.jobName, "--broker-run-id", b.runID}
 	if scope.IsZero() {
 		argv = append(argv, b.excludeVolumes(ctx, "cache save", path)...)
 	}
@@ -1072,7 +1075,7 @@ func (b *k8sBackend) UploadArtifact(ctx context.Context, scope agentlib.ScopeHan
 	if err != nil {
 		return err
 	}
-	argv := []string{"unified-sidecar", "artifact", "upload", "--run", runID, "--name", name, "--path", path, "--broker-run-id", b.runID}
+	argv := []string{sidecarBinary, "artifact", "upload", "--run", runID, "--name", name, "--path", path, "--root", b.sidecarRoot(scope), "--broker-run-id", b.runID}
 	if scope.IsZero() {
 		argv = append(argv, b.excludeVolumes(ctx, "artifact", path)...)
 	}
@@ -1102,7 +1105,7 @@ func (b *k8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.ScopeH
 	if err != nil {
 		return err
 	}
-	argv := []string{"unified-sidecar", "artifact", "download", "--run", runID, "--name", name, "--dest", destDir, "--broker-run-id", b.runID}
+	argv := []string{sidecarBinary, "artifact", "download", "--run", runID, "--name", name, "--dest", destDir, "--root", b.sidecarRoot(scope), "--broker-run-id", b.runID}
 	if scope.IsZero() {
 		argv = append(argv, b.excludeVolumes(ctx, "artifact download", destDir)...)
 	}
@@ -1176,6 +1179,18 @@ func (b *k8sBackend) ResolveArtifactPath(scope agentlib.ScopeHandle, p string) (
 	return agentlib.ContainWithinSlash(b.mountPath, p)
 }
 
+// sidecarRoot is the directory the sidecar confines every read and write to for
+// an operation in scope: the workspace mount, which is where ResolveArtifactPath
+// puts every path (so none is ever outside it). The sidecar opens it as an
+// os.Root, so a symlink in the workspace that points at the sidecar's own
+// credentials or system files is not followed.
+func (b *k8sBackend) sidecarRoot(scope agentlib.ScopeHandle) string {
+	if !scope.IsZero() {
+		return scopeMountPath
+	}
+	return b.mountPath
+}
+
 // ResolveCachePath is identical to ResolveArtifactPath on k8s: a non-scoped
 // cache path is resolved against the pod's mount path exactly like an
 // artifact path (unlike the pre-fix host agent, which left it unresolved).
@@ -1238,6 +1253,9 @@ func (b *k8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle
 		}
 		targetPod = podName
 		container = "step"
+	}
+	if dsl.IsForbiddenStepContainer(container) {
+		return fmt.Errorf("k8s: refusing to exec into reserved container %q", container)
 	}
 	if targetPod == "" {
 		targetPod = b.podName

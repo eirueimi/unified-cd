@@ -73,6 +73,15 @@ func newTestKubeClient(t *testing.T) (*kubernetes.Clientset, *rest.Config) {
 // The namespace name is derived from t.Name(), sanitized to be a valid DNS label.
 func newTestNamespace(t *testing.T, client *kubernetes.Clientset) string {
 	t.Helper()
+	return newTestNamespaceWithLabels(t, client, nil)
+}
+
+// newTestNamespaceWithLabels is newTestNamespace with labels set at creation.
+// Use it for Pod Security labels: admission reads namespace labels from an
+// informer cache, so labelling a namespace by a later Update can race the
+// first Pod create.
+func newTestNamespaceWithLabels(t *testing.T, client *kubernetes.Clientset, labels map[string]string) string {
+	t.Helper()
 	raw := strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z':
@@ -90,7 +99,7 @@ func newTestNamespace(t *testing.T, client *kubernetes.Clientset) string {
 	}
 	name := "test-" + strings.Trim(raw, "-")
 	_, err := client.CoreV1().Namespaces().Create(context.Background(), &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
 	}, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("create test namespace %s: %v", name, err)

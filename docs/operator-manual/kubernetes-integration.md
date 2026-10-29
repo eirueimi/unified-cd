@@ -200,6 +200,10 @@ podTemplates:
           image: node:20-alpine
 ```
 
+Agent templates are operator-written and are **not** subject to the [Job Pod field policy](#job-pod-field-policy); a template may set any Pod field. The one limit is the namespace's Pod Security level: the shipped `ci` namespace enforces `baseline`, which refuses `privileged: true`, `hostPath` and the like in a template as well. If you add a template with a Docker-in-Docker container (`privileged: true`), relabel the namespace or run it from a separate agent and namespace.
+
+Job-side policy opt-ins go in the same file, in a `jobPodPolicy:` block (see [Job Pod field policy](#job-pod-field-policy)). Leave it out for the most restrictive policy.
+
 ### 2. Starting the agent
 
 Before starting a Pod agent, configure the controller with a Kubernetes cluster verifier and an enabled policy that binds the exact agent ServiceAccount and namespace. The default manifests declare `in-cluster` and `unified-cd-k8s-agents`; its policy accepts only ServiceAccount `unified-cd-k8s-agent` in namespace `unified-cd`, `kind:kubernetes`, and `pod`/`container` capabilities. The controller must run with the TokenReview and bounded Pod-read RBAC in `manifests/base/controller/rbac.yaml`.
@@ -278,6 +282,8 @@ spec:
 ### Pattern 2: Inline PodSpec
 
 Specify the PodSpec directly in the Job without a pre-defined template.
+
+A Kubernetes agent refuses some inline fields (a ServiceAccount, `hostPath`, `privileged`, Secrets, PVCs and more) unless its operator allows them; see [Job Pod field policy](#job-pod-field-policy).
 
 ```yaml
 apiVersion: unified-cd/v1
@@ -474,7 +480,7 @@ podTemplate:
           runAsUser: 1000
 ```
 
-(`securityContext` is Kubernetes-only, so such a job is pinned to a Kubernetes agent.)
+(`securityContext` is Kubernetes-only, so such a job is pinned to a Kubernetes agent.) `fsGroup` and `runAsUser` are allowed by the [Job Pod field policy](#job-pod-field-policy) with no opt-in.
 
 **Mounting.** A volume is mounted at its `mountPath` in **every** container of the Pod, including
 the `unified-artifact` sidecar, so artifact and cache paths inside a volume work and an archive of
@@ -775,6 +781,259 @@ notes](../user-guide/writing-jobs/isolation-and-containers.md#podtemplate-contai
   boolean (`value: 8080`) fails Pod-spec decoding; quote it
   (`value: "8080"`).
 
+### Job Pod field policy
+
+A job's `podTemplate` can name any Kubernetes Pod field, and Roles in unified-cd are global: every
+`developer` can write a job. So the k8s-agent filters what **job-supplied** Pod content may reach
+the Kubernetes API server. By default it refuses, when it claims the run, a job whose own
+`podTemplate` reaches a ServiceAccount, the node, a Kubernetes Secret, a PersistentVolumeClaim, or
+a field the agent has not classified. Each category comes back through an explicit opt-in in the
+agent config (`jobPodPolicy`, below).
+
+**What is checked, and what is not.**
+
+| Source | Checked? |
+|---|---|
+| `podTemplate.spec` (inline), including containers and volumes merged in from `uses:` templates | Yes, the whole decoded PodSpec |
+| `podTemplate.override.containers` / `.volumes` | Yes, each patch container and volume |
+| An override container's `volumeMounts` / `volumeDevices` that mount an **agent template** volume | Yes: the template volume is checked as if the job had declared it, so a job cannot add a container that mounts the operator's `hostPath` or `secret` volume |
+| Agent templates (`podTemplates:` in this config) | **No.** They are operator-written and trusted |
+| `podTemplate.name` alone, `reuse`, `cleanWorkspace`, `spec.volumes` (named volumes), `runsIn.image` | No: none of them lets a job write a Pod field |
+| `podTemplate.workspace.mountPath` set by the **job**, and an absolute `mountPath` of a `spec.volumes` entry | Yes, by [the mount path rule](#job-chosen-mount-paths): these paths are mounted into every container, the artifact sidecar included |
+
+The check runs once, right after the claim, before the pool, any volume lock and `BuildPod`. A
+refused run therefore creates no Pod, takes no lock and cannot be served from an idle pooled Pod.
+Moving the content into an agent template is always an alternative to opting in.
+
+**What is denied by default.** Everything not listed as allowed is denied, and a PodSpec field or
+volume type added by a later Kubernetes library bump is denied until the agent classifies it.
+
+| Pod-level field | Default | Setting that allows it |
+|---|---|---|
+| `containers`, `initContainers`, `volumes`, `securityContext`, `restartPolicy`, `terminationGracePeriodSeconds`, `activeDeadlineSeconds`, `nodeSelector`, `affinity`, `tolerations`, `topologySpreadConstraints`, `hostname`, `subdomain`, `setHostnameAsFQDN`, `enableServiceLinks`, `os`, `hostUsers`, `resources` | allowed (nested content is checked) | none needed |
+| `serviceAccountName`, `serviceAccount` | denied | `allowServiceAccounts: [<name>]` |
+| `automountServiceAccountToken: true` | denied unless the Pod's effective account is allowed (`false` is always allowed) | `allowServiceAccounts: [<effective account>]` |
+| `nodeName` | denied | `allowNodeName: true` |
+| `hostNetwork`, `hostPID`, `hostIPC` set to `true` | denied | `allowHostAccess: true` |
+| `imagePullSecrets` | denied | `allowImagePullSecrets: [<name>]` |
+| `shareProcessNamespace`, `runtimeClassName`, `priorityClassName`, `priority`, `preemptionPolicy`, `schedulerName`, `readinessGates`, `overhead`, `schedulingGates`, `resourceClaims`, `hostnameOverride`, `schedulingGroup`, `hostAliases`, `dnsPolicy`, `dnsConfig` | denied | `allowPodSpecFields: [<field>]` |
+| `ephemeralContainers` | denied; the API server rejects it on Pod create anyway | nothing |
+
+| Container rule (`containers`, `initContainers`, override containers) | Default | Setting that allows it |
+|---|---|---|
+| `ports[].hostPort`, `ports[].hostIP` | denied | `allowHostAccess: true` |
+| `livenessProbe` / `readinessProbe` / `startupProbe` / `lifecycle` hook `httpGet.host` or `tcpSocket.host` | denied | `allowHostAccess: true` |
+| `env[].valueFrom.secretKeyRef`, `envFrom[].secretRef` | denied | `allowSecrets: [<name>]` |
+| `configMapKeyRef`, `fieldRef`, `resourceFieldRef`, `fileKeyRef`, `configMapRef` | allowed | none needed |
+| Mounting `sidecar-s3-credentials` or `sidecar-store-credential-token` | denied | nothing (see below) |
+
+| Volume type | Default | Setting that allows it |
+|---|---|---|
+| `emptyDir`, `configMap`, `downwardAPI`, `image`, `projected` (its `configMap`, `downwardAPI`, `clusterTrustBundle` sources) | allowed | none needed |
+| `projected` `secret` source, `secret` volume | denied | `allowSecrets: [<name>]` |
+| `projected` `serviceAccountToken` / `podCertificate` source | denied unless the Pod's effective account is allowed | `allowServiceAccounts: [<effective account>]` |
+| `persistentVolumeClaim` | denied | `allowPersistentVolumeClaims: [<claim>]` |
+| `hostPath` | denied | `allowHostAccess: true` |
+| `ephemeral`, `csi`, `nfs`, `iscsi`, `fc`, `rbd`, `cephfs`, `glusterfs`, `flexVolume`, `gitRepo`, `cinder`, `flocker`, `azureFile`, `azureDisk`, `awsElasticBlockStore`, `gcePersistentDisk`, `vsphereVolume`, `quobyte`, `photonPersistentDisk`, `portworxVolume`, `scaleIO`, `storageos` | denied | `allowVolumeTypes: [<type>]` |
+
+| Security context (Pod level and container level) | Default | Setting that allows it |
+|---|---|---|
+| `runAsUser` (including `0`), `runAsGroup`, `runAsNonRoot`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`, `supplementalGroups`, `supplementalGroupsPolicy`, `fsGroup`, `fsGroupChangePolicy`, `seLinuxChangePolicy`, `capabilities.drop` | allowed | none needed |
+| `privileged: true` | denied | `allowPrivileged: true` |
+| `capabilities.add` outside the `baseline` set (`AUDIT_WRITE`, `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `FSETID`, `KILL`, `MKNOD`, `NET_BIND_SERVICE`, `SETFCAP`, `SETGID`, `SETPCAP`, `SETUID`, `SYS_CHROOT`) | denied | `allowPrivileged: true` |
+| `procMount` other than `Default`; `seLinuxOptions` with `user`/`role` or a `type` outside the `baseline` set; `sysctls` outside the safe set; `windowsOptions.hostProcess: true` | denied | `allowPrivileged: true` |
+| `seccompProfile.type` or `appArmorProfile.type` of `Unconfined` (`RuntimeDefault` and `Localhost` are allowed) | denied | `allowUnconfinedProfiles: true` |
+
+The default policy is meant to be a subset of Pod Security `baseline` for job content, plus the
+unified-cd categories `baseline` does not cover (ServiceAccounts, Secrets, image pull Secrets,
+PVCs, `nodeName`, the field allowlists). It does not go beyond `baseline` on container hardening:
+`allowPrivilegeEscalation: true` and `runAsUser: 0` pass. Set the `restricted` level on the
+namespace if you want those refused.
+
+**The effective ServiceAccount.** For an inline spec it is `serviceAccountName`, else
+`serviceAccount`, else `default`. For an override it is the **agent template's** account, because a
+patch carries only containers and volumes. `allowServiceAccounts: [deployer]` therefore lets a job
+project a token only into a Pod that really runs as `deployer`.
+
+**Configuration.** A new top-level block in the k8s-agent config file. Every entry is optional, and
+an absent block is the most restrictive policy. It is file-only: there are no environment variables
+for it. See also the [configuration
+reference](../reference/configuration.md#k8s-agent-config-fields).
+
+```yaml
+# k8s-agent-config.yaml
+jobPodPolicy:
+  # Named objects: list each name. There are no wildcards.
+  allowServiceAccounts: []        # serviceAccountName / serviceAccount values a job may set; also gates
+                                  # automountServiceAccountToken: true and projected serviceAccountToken /
+                                  # podCertificate sources (checked against the Pod's effective account)
+  allowSecrets: []                # Secrets a job may read: secretKeyRef, secretRef, secret volumes, projected
+                                  # secret sources. May not name sidecarS3SecretName.
+  allowImagePullSecrets: []       # imagePullSecrets a job may name (the kubelet pulls with the Secret; the
+                                  # job cannot read it)
+  allowPersistentVolumeClaims: [] # claimName values of persistentVolumeClaim volumes. May not name this
+                                  # agent's own named-volume claims (<agentName>-<volume>).
+  # Categories:
+  allowHostAccess: false          # hostPath; hostNetwork / hostPID / hostIPC; hostPort / hostIP; probe and
+                                  # lifecycle httpGet.host / tcpSocket.host
+  allowPrivileged: false          # privileged; non-baseline capabilities.add; procMount; non-baseline
+                                  # seLinuxOptions; unsafe sysctls; windowsOptions.hostProcess
+  allowUnconfinedProfiles: false  # seccompProfile / appArmorProfile type Unconfined
+  allowNodeName: false            # nodeName
+  # Escape hatches for fields that are neither always allowed nor in a category:
+  allowPodSpecFields: []          # e.g. [runtimeClassName, priorityClassName, hostAliases, dnsConfig]
+  allowVolumeTypes: []            # e.g. [nfs, csi, ephemeral]
+```
+
+At startup the agent logs one line, `k8s: job pod policy`, with the effective opt-ins
+(`allowed=none` when there are none).
+
+**Startup validation.** The agent refuses to start (exit 1) on any of these, so a typo cannot
+silently narrow or widen the policy. All but the first are reported as `invalid config:
+jobPodPolicy: ...`:
+
+- An unknown key under `jobPodPolicy:` (reported while loading the file, as `load config: ...:
+  jobPodPolicy: ... field <key> not found`). The block is decoded strictly, although the rest of
+  the config file is not.
+- A name in `allowServiceAccounts`, `allowSecrets`, `allowImagePullSecrets` or
+  `allowPersistentVolumeClaims` that is not a valid Kubernetes object name (a DNS-1123 subdomain).
+  An entry containing `*` gets `wildcards are not supported; list each name`.
+- `allowSecrets` naming `sidecarS3SecretName`:
+  `allowSecrets: "<name>" is sidecarS3SecretName, the artifact sidecar's credentials, which job containers must never read`.
+- `allowPersistentVolumeClaims` naming one of this agent's named-volume claims
+  (`<agentName>-<volume>`):
+  `allowPersistentVolumeClaims: "<claim>" is this agent's named volume "<volume>"; jobs reach it only through spec.volumes, which holds its lock`.
+- An `allowPodSpecFields` or `allowVolumeTypes` entry that is not an opt-in name:
+  `"<x>" is always allowed; remove it`, `"<x>" is governed by jobPodPolicy.<key>; use that instead`,
+  `"<x>" cannot be allowed: it cannot be set when a Pod is created` (`ephemeralContainers`), or
+  `"<x>" is not an opt-in PodSpec field; valid entries: ...` (the message lists the valid names).
+
+**The run error.** A refused run fails immediately. The error is the first thing in the run's own
+log (the "System" entry), the run finishes `Failed`, and nothing was executed. Every violation is
+listed in one message, in a fixed order, each with the setting that would allow it:
+
+```
+k8s: job pod policy: the job's podTemplate sets 4 field(s) this agent does not allow: podTemplate.spec.serviceAccountName: selects ServiceAccount "deployer" (allow with jobPodPolicy.allowServiceAccounts: ["deployer"] in the k8s-agent config); podTemplate.spec.containers[1].securityContext.privileged (container "docker"): privileged: true (allow with jobPodPolicy.allowPrivileged: true in the k8s-agent config); podTemplate.spec.containers[2].env[0].valueFrom.secretKeyRef (container "db"): reads Secret "db-password" (allow with jobPodPolicy.allowSecrets: ["db-password"] in the k8s-agent config); podTemplate.spec.volumes[0].hostPath (volume "root"): a hostPath volume ("/" on the node) (allow with jobPodPolicy.allowHostAccess: true in the k8s-agent config). Agent-side podTemplates (podTemplates: in the k8s-agent config) are not subject to this policy; see "Job Pod field policy" in docs/operator-manual/kubernetes-integration.md
+```
+
+A violation that nothing can allow ends with `(no k8s-agent setting allows this)` instead. The
+grep-able prefix is `k8s: job pod policy:`. For the job author's view, see [Run fails immediately
+on Kubernetes: "k8s: job pod
+policy: ..."](../troubleshooting/steps-and-execution.md#run-fails-immediately-on-kubernetes-k8s-job-pod-policy).
+
+**Names that can never be allowed.**
+
+- The artifact sidecar's credential volumes, `sidecar-s3-credentials` (`file` mode) and
+  `sidecar-store-credential-token` (`broker` mode), can never be mounted by a job container. A
+  `volumeMounts` or `volumeDevices` entry naming either is refused whatever the policy says.
+- `allowSecrets` may not name `sidecarS3SecretName`, and `allowPersistentVolumeClaims` may not name
+  a named-volume claim. The agent refuses to start if the config lists them. A named volume is
+  reachable only through `spec.volumes`, behind its lock, and the sidecar's credentials must stay
+  out of job containers.
+
+**`hostAliases`, `dnsPolicy` and `dnsConfig` are opt-in.** Name resolution is a Pod-wide setting,
+so it applies to the artifact sidecar as well as to the job containers. A job that could set it
+would decide where the sidecar's connections to the controller's store-credentials broker and to
+the object store go. Allow them only for jobs you trust, with `allowPodSpecFields: [hostAliases]`
+(and so on), or put them in an agent template, which is not filtered.
+
+**What the opt-in does not do.** Keeping these three fields out of a job's `podTemplate` stops a job
+from using the PodSpec fields; it does not isolate the sidecar's network path from a job container.
+Every container in the Pod shares one network namespace and the kubelet's single writable
+`/etc/hosts`. A job container that runs as root (the `baseline` profile allows root) can edit that
+`/etc/hosts` for the whole Pod, can listen on `127.0.0.1` on the port the sidecar's broker or
+object-store client uses, and, because `baseline` keeps `NET_RAW`, can sniff the Pod's traffic.
+The mitigations that work are:
+
+- **Serve the controller (the store-credentials broker) over TLS** and point the agent at an
+  `https://` URL. The shipped install reaches it over plain HTTP, so an on-Pod attacker who can
+  redirect or sniff the connection sees the sidecar's token. With TLS and certificate verification
+  the redirect or sniff yields nothing usable.
+- **Run job containers as non-root with a read-only root filesystem** (`securityContext:
+  runAsNonRoot: true`, `readOnlyRootFilesystem: true`, and `capabilities: {drop: [NET_RAW]}`) in
+  your agent templates, so a job cannot rewrite `/etc/hosts` or sniff. This is operator policy in
+  a template; the job Pod field policy does not impose it.
+
+Treat both as recommendations to apply, not as something the policy already guarantees.
+
+**Job-chosen mount paths.**{ #job-chosen-mount-paths } The workspace `emptyDir` and every absolute `spec.volumes` entry are
+mounted into every container of the Pod, and that includes the artifact sidecar. So the agent
+refuses, whatever `jobPodPolicy` says, a run whose job-supplied `podTemplate.workspace.mountPath` or
+absolute `spec.volumes[].mountPath` is not absolute, is not clean (`path.Clean` would change it), is
+`/`, or is equal to, inside or above any of `/usr`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`,
+`/libx32`, `/etc`, `/proc`, `/sys`, `/dev`, `/run`, `/var/run`, `/.ucd`, `/usr/local/bin` or the
+sidecar's credential mount directories. `/workspace` and `/home/runner/work` are fine. A relative
+`spec.volumes` path resolves under the workspace and is covered by the workspace check. The check
+runs on the path the agent will actually mount: a backslash is turned into `/` and the result
+cleaned and, if relative, joined under the workspace before it is compared (`\usr\local\bin` is
+`/usr/local/bin`), through the same helper the mount code uses. `apply` also rejects any backslash
+in a `spec.volumes` or `workspace` `mountPath` (`mountPath must be a POSIX path`). A
+`workspace.mountPath` in an agent template is not checked, and `apply` rejects a bad
+`workspace.mountPath` up front. The agent also starts and execs the sidecar as
+`/usr/local/bin/unified-sidecar`, by absolute path, so a mount cannot redirect a `PATH` lookup.
+
+**The sidecar only reads and writes inside the workspace.**{ #sidecar-filesystem-confinement } A job controls symlinks in the
+workspace, but the sidecar follows them in its own filesystem, where its credential mounts and
+trust store live. So the sidecar opens the workspace mount (the `--root` it is given on every
+artifact and cache invocation) as a confined root and resolves every path beneath it: a symlink or
+`..` that leads outside the workspace is never followed, on upload or on download and restore. An
+`uploadArtifact` of `l/s3-credentials`, where `l` is a symlink to `/etc/unified-cd`, now fails
+instead of archiving the credential, and a download or cache restore into a path below a symlink
+that points outside the workspace fails instead of writing there. A symlink inside the workspace
+that stays inside it keeps working as a path component. A symlink found while archiving a directory
+is stored as a link entry and its target is not read. The sidecar and the agent must be upgraded
+together, because the agent now passes `--root`.
+
+**No step can target the sidecar.** Independently of the Pod policy, and on every agent type, a
+step's `container:` can never be `unified-artifact` (the sidecar) or `ucd-shim` (the init
+container, which has exited before any step runs). It is rejected when the job is applied, again
+after `uses:` templates are resolved, and on the k8s-agent when the run is claimed and when the
+exec is attempted. See [Reserved container name](#reserved-container-name) and the [migration
+note](migrations/2026-10-26-k8s-job-pod-field-policy.md#reserved-step-targets).
+
+**The shipped namespace enforces Pod Security `baseline`.** `manifests/base/namespace/namespace.yaml`
+labels the `ci` namespace `pod-security.kubernetes.io/enforce: baseline` and
+`pod-security.kubernetes.io/audit: restricted`. This is a second, independent layer: the agent
+policy is the unified-cd-side floor, and admission is the cluster-side ceiling. There is no
+`warn: restricted` label, because every agent-built Pod (shim init container, sidecar) violates
+`restricted` and the agent log would get a warning on every Pod create. The audit annotation costs
+nothing and tells you what a move to `restricted` would break. No version labels are set, so the
+level follows the cluster's own `latest`. The `unified-cd` namespace that holds the controller and
+the agent is not labelled. A namespace you create yourself carries no such labels; add them.
+
+`baseline` is enforced by the API server whatever the agent config says, so it also refuses
+**operator** templates that use `privileged: true`, `hostPath`, host namespaces, `Unconfined`
+profiles and the like. The create fails with `k8s: failed to create Pod: pods "ucd-run-..." is
+forbidden: violates PodSecurity "baseline:latest": ...`. If a template needs one of these (the
+`golang` example's Docker-in-Docker container, rootless BuildKit), either relabel the job
+namespace (`pod-security.kubernetes.io/enforce: privileged`) or, better, give those jobs a
+separate agent with its own namespace. See [Run fails: violates PodSecurity
+"baseline:latest"](../troubleshooting/steps-and-execution.md#run-fails-k8s-failed-to-create-pod-violates-podsecurity-baselinelatest).
+
+**Recommended: switch off the `default` ServiceAccount's token.** A Pod that names no
+`serviceAccountName` runs as the namespace's `default` ServiceAccount, and Kubernetes mounts that
+account's token unless the account or the Pod opts out. The policy does not force
+`automountServiceAccountToken: false` onto job Pods, because jobs that rely on the `default`
+account's token would break silently; it checks only what a job *chooses*. If your jobs do not need
+that token, opt the account out in the job namespace:
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: ci
+automountServiceAccountToken: false
+```
+
+**Keep an admission policy for `serviceAccountName` as defence in depth.** Neither layer replaces
+a cluster policy: Pod Security does not restrict `serviceAccountName`, and the agent policy is only
+as good as its config. Keep ServiceAccounts with API permissions out of the job namespace, or deny
+their use with an admission policy (Kyverno, Gatekeeper, or a `ValidatingAdmissionPolicy`).
+
+**Existing deployments.** The policy and the namespace labels are breaking changes. See the
+[migration note](migrations/2026-10-26-k8s-job-pod-field-policy.md).
+
 ---
 
 ## Artifacts and Cache
@@ -783,7 +1042,7 @@ The k8s-agent supports `uploadArtifact`, `downloadArtifact`, and `cache` steps v
 
 ### How it works
 
-When a job pod is created, the agent automatically adds a sidecar container named `unified-artifact` to the pod, running the `unified-sidecar` binary (a static, distroless image — no shell, `tar`, or `curl` inside it). The container is kept alive with `unified-sidecar idle`; individual transfers are dispatched into it via `exec` with an explicit argv (e.g. `unified-sidecar artifact upload --run <id> --name <name> --path <dir>`), never through a shell string. The sidecar shares the pod's workspace volume and reads/writes objects in the S3-compatible bucket configured for the agent.
+When a job pod is created, the agent automatically adds a sidecar container named `unified-artifact` to the pod, running the `unified-sidecar` binary, always invoked by its absolute path `/usr/local/bin/unified-sidecar` (a static, distroless image — no shell, `tar`, or `curl` inside it). The container is kept alive with `unified-sidecar idle`; individual transfers are dispatched into it via `exec` with an explicit argv (e.g. `unified-sidecar artifact upload --run <id> --name <name> --path <dir>`), never through a shell string. The sidecar shares the pod's workspace volume and reads/writes objects in the S3-compatible bucket configured for the agent.
 
 Cache transfers additionally carry a `--job <qualifiedJobName>` argument (e.g. `unified-sidecar cache restore --key <key> --path <dir> --job team-a/build`), required and non-empty, so cache entries stay namespaced per job — see "Cache entries are namespaced per job" below.
 
@@ -801,6 +1060,8 @@ The `unified-artifact` sidecar's own `exec` output (the transfers themselves) is
 ### Reserved container name
 
 The container name `unified-artifact` is **reserved**. A `podTemplate` must not define a container with that name. The agent returns a `BuildPod` error at job start if the name conflicts.
+
+It is also never a valid step target: a step's `container: unified-artifact` (or `container: ucd-shim`) is rejected at apply time and refused by the k8s-agent at claim time, because the sidecar holds the object-store credentials. Only `job` and containers you declare in the `podTemplate` can be targeted. See [Job Pod field policy](#job-pod-field-policy).
 
 ### Sidecar image
 
@@ -993,7 +1254,7 @@ See `docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md`
 
 ### Security note / threat model
 
-Bucket-scoped S3 credentials reach the sidecar one of three ways (`env`, `file`, or `broker`; see above), but in every mode they land in the **sidecar container's** environment or a mount only — the job container never sees them (container-boundary isolation, the same trust boundary Argo Workflows and Tekton use for their artifact sidecars/init-containers). Under all three modes the credential is today the SAME long-lived, bucket-scoped one: any workload able to exec into the `unified-artifact` container (or, under `env`/`file`, read the Secret directly if RBAC allows `get`/`list` on Secrets in the namespace) can read/write the whole bucket for as long as that credential is valid.
+Bucket-scoped S3 credentials reach the sidecar one of three ways (`env`, `file`, or `broker`; see above), but in every mode they land in the **sidecar container's** environment or a mount only — **by default** the job container never sees them (container-boundary isolation, the same trust boundary Argo Workflows and Tekton use for their artifact sidecars/init-containers). Six things keep that true: the [Job Pod field policy](#job-pod-field-policy) refuses a job's `secretKeyRef` / `secret` volume for any Secret the operator has not listed (and `allowSecrets` can never name `sidecarS3SecretName`) and refuses any mount of the agent-injected credential volumes; it refuses a job-chosen workspace or volume mount path over the sidecar's binaries, libraries, configuration or credential mounts (checked on the path as the agent will mount it, and the agent runs the sidecar by absolute path), the sidecar confines all of its file access to the workspace so a job-planted symlink cannot make it read its own credentials or write over its own files, and it denies `hostAliases`, `dnsPolicy` and `dnsConfig` unless the operator opts in, so a job cannot set Pod-wide name resolution (this does not stop a root job container from editing the shared `/etc/hosts` or listening in the shared network namespace; see "What the opt-in does not do" above); no step can target the sidecar (`container: unified-artifact` is rejected at apply time, after `uses:` resolution, and on the k8s-agent at claim and exec time); and the default policy does not allow `shareProcessNamespace`. The remaining exceptions are operator opt-ins, and none should be set on an agent that runs untrusted jobs: `jobPodPolicy.allowPodSpecFields: [shareProcessNamespace]` lets the job container read the sidecar's `/proc/<pid>/environ` and root filesystem and so defeats the container boundary, and `[hostAliases, dnsPolicy, dnsConfig]` let a job set Pod-wide name resolution that redirects the sidecar's broker and object-store connections. Even without them, a job container running as root can edit the Pod's shared `/etc/hosts` or listen and sniff in the shared network namespace; the real mitigations are serving the broker over TLS (the shipped install uses plain HTTP) and running job containers non-root with `readOnlyRootFilesystem` and `NET_RAW` dropped. Under all three modes the credential is today the SAME long-lived, bucket-scoped one: any workload able to exec into the `unified-artifact` container (or, under `env`/`file`, read the Secret directly if RBAC allows `get`/`list` on Secrets in the namespace) can read/write the whole bucket for as long as that credential is valid.
 
 This is comparable to how most CI systems hand artifact/cache sidecars static bucket credentials, but it is **not** least-privilege per run, under any of the three modes. `broker` (§5.6 above) removes the per-namespace Secret and is the mechanism a future short-lived or per-pod-scoped credential would be built on — bare-metal, EKS and GKE alike, unlike IAM Roles for Service Accounts (IRSA, EKS-only) or Workload Identity (GKE-only) — but it does not deliver that scoping today; see the `broker` section above for exactly what it does and does not change. Until a scoped credential ships, restrict RBAC `get`/`list`/`watch` on Secrets and `pods/exec` in the agent's namespace to trusted operators under `env`/`file`, and restrict `agentAuth.kubernetesStoreCredentialPolicies` to only the namespaces/ServiceAccounts that actually run jobs under `broker`.
 

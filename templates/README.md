@@ -50,7 +50,7 @@ deliberately forbids) and is meant to be applied and invoked via `call:` directl
 | `github-pr-comment.yaml` | Post a comment on a GitHub PR/Issue | curl | - | `token_secret` (default: `github-token`) |
 | `gitlab-commit-status.yaml` | Update a GitLab commit status | curl | - | `token_secret` (default: `gitlab-token`) |
 | `docker-build-push.yaml` | Build & push a Docker image (supports buildx multi-platform) | docker, (docker buildx) | `docker:true` | Specified via `username_secret` / `password_secret` (optional) |
-| `buildkit-rootless-build-push.yaml` | Build & push an image with rootless BuildKit — no privileged; native multi-platform. Auto-pins to a Kubernetes agent | (bundles its own buildkitd sidecar) | auto (k8s) | Specified via `username_secret` / `password_secret` (optional) |
+| `buildkit-rootless-build-push.yaml` | Build & push an image with rootless BuildKit — no privileged; native multi-platform. Auto-pins to a Kubernetes agent. Needs `jobPodPolicy.allowUnconfinedProfiles: true` on the k8s agent **and** a namespace that admits `Unconfined` (Pod Security `privileged`; the shipped `ci` namespace enforces `baseline` and refuses it) | (bundles its own buildkitd sidecar) | auto (k8s) | Specified via `username_secret` / `password_secret` (optional) |
 | `setup-go.yaml` | Set up Go module/build cache | go | `go:true` | none |
 | `setup-node.yaml` | Set up Node.js dependency cache (npm ci) | node, npm | `node:true` | none |
 | `github-release.yaml` | Create a GitHub release & upload assets (curl only, no gh required) | curl | - | `token_secret` (default: `github-token`) |

@@ -23,6 +23,8 @@ unified-cd has three roles — **admin**, **developer**, **viewer** — resolved
 | Agent enrollments / identities / enrollment policies | viewer reads; admin creates, changes, revokes, or disables | viewer/admin | viewer/admin |
 | Agents — register/heartbeat/claim | per-agent principal (not a human role) | | |
 
+Roles apply to the whole controller: there is no per-job or per-team scoping, so a `developer` can change and trigger every job. Treat creating a job as running code with the agent's reach. On a Kubernetes agent, what a job can reach through its Pod (a ServiceAccount, host access, Kubernetes Secrets, PVCs) is limited by the agent's `jobPodPolicy`, which refuses those fields by default until the operator allows them, plus the job namespace's admission policy (the shipped `ci` namespace enforces Pod Security `baseline`). Roles do not change what the policy allows; see [Job Pod field policy](kubernetes-integration.md#job-pod-field-policy).
+
 Secret *values* are never returned by the API (names only). Artifact download requires an authenticated caller (agent token or any human role).
 
 ## How roles are resolved

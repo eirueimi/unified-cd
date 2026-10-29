@@ -413,20 +413,33 @@ func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittem
 			bo.Success(r.ID)
 			continue
 		}
+		// failResolved fails the run with a clear System-log reason; the
+		// authoring errors below are deterministic, so retrying cannot help.
+		failResolved := func(msg string, verr error) {
+			slog.Error("git resolver: "+msg+", failing run", "runID", r.ID, "error", verr)
+			if _, lerr := st.AppendLog(ctx, r.ID, systemLogStepIndex, "stderr", time.Now(), verr.Error()); lerr != nil {
+				slog.Warn("git resolver: append system log", "runID", r.ID, "error", lerr)
+			}
+			if ferr := st.MarkRunFinished(ctx, r.ID, api.RunFailed); ferr != nil {
+				slog.Warn("git resolver: mark run failed failed", "runID", r.ID, "error", ferr)
+			}
+			bo.Success(r.ID)
+		}
+		// No step may exec into the artifact sidecar or the shim init
+		// container. This needs no podTemplate knowledge, so it runs on every
+		// resolved spec, including named-podTemplate ones (uses: templates
+		// can introduce such a step after apply-time validation).
+		if verr := dsl.ValidateStepContainerTargets(rspec); verr != nil {
+			failResolved("forbidden step container target", verr)
+			continue
+		}
 		// A named podTemplate (podTemplate.name) references a template whose
 		// containers live in agent config — the controller cannot see them, so
 		// container references cannot be validated here. They are validated at
 		// pod build time on the agent instead.
 		if rspec.PodTemplate == nil || rspec.PodTemplate.Name == "" {
 			if verr := dsl.ValidateContainerReferences(rspec); verr != nil {
-				slog.Error("git resolver: invalid container reference, failing run", "runID", r.ID, "error", verr)
-				if _, lerr := st.AppendLog(ctx, r.ID, systemLogStepIndex, "stderr", time.Now(), verr.Error()); lerr != nil {
-					slog.Warn("git resolver: append system log", "runID", r.ID, "error", lerr)
-				}
-				if ferr := st.MarkRunFinished(ctx, r.ID, api.RunFailed); ferr != nil {
-					slog.Warn("git resolver: mark run failed failed", "runID", r.ID, "error", ferr)
-				}
-				bo.Success(r.ID)
+				failResolved("invalid container reference", verr)
 				continue
 			}
 		}
