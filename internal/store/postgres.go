@@ -223,6 +223,9 @@ func (p *Postgres) GetJob(ctx context.Context, name string) (*api.Job, error) {
 	var j api.Job
 	err := p.pool.QueryRow(ctx, q, name).
 		Scan(&j.ID, &j.Name, &j.APIVersion, &j.Spec, &j.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, JobNotFoundError()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get job: %w", err)
 	}
@@ -368,6 +371,25 @@ func (p *Postgres) ListChildRunIDs(ctx context.Context, parentRunID string) ([]s
 // while surfacing infrastructure failures as 5xx. Match it with errors.Is.
 var ErrRunNotFound = errors.New("run not found")
 
+// RunNotFoundError is the error GetRun returns for the run id. The HTTP layer
+// reuses it so a run the caller may not see answers exactly like a missing one.
+func RunNotFoundError(id string) error {
+	return fmt.Errorf("%w: %s", ErrRunNotFound, id)
+}
+
+// RunSpecNotFoundError is the error GetRunSpec returns when no run has the
+// requested id (see RunNotFoundError).
+func RunSpecNotFoundError() error {
+	return fmt.Errorf("get run spec: %w", pgx.ErrNoRows)
+}
+
+// JobNotFoundError is the error GetJob returns when no job has the requested
+// name. The HTTP layer reuses it so a job the caller may not see answers
+// exactly like a missing one.
+func JobNotFoundError() error {
+	return fmt.Errorf("get job: %w", pgx.ErrNoRows)
+}
+
 // ErrArchiveIncomplete is returned by TrimRunLogs when the run's logs table
 // holds more rows (or a higher seq) than the archive record claims to cover
 // — either the run's log count exceeded the archiver's TailLogs cap, or
@@ -386,7 +408,7 @@ func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
 	err := p.pool.QueryRow(ctx, q, id).
 		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &claimedBy, &displayName)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, id)
+		return nil, RunNotFoundError(id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get run: %w", err)
@@ -409,6 +431,9 @@ func (p *Postgres) GetRunSpec(ctx context.Context, id string) ([]byte, error) {
 	const q = `SELECT spec FROM runs WHERE id = $1`
 	var spec []byte
 	err := p.pool.QueryRow(ctx, q, id).Scan(&spec)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, RunSpecNotFoundError()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get run spec: %w", err)
 	}
@@ -2424,6 +2449,20 @@ func (p *Postgres) RunJobName(ctx context.Context, runID string) (string, bool, 
 		return "", false, nil
 	}
 	return "", false, fmt.Errorf("run job name: %w", err)
+}
+
+// ScheduleJobName returns the job a schedule currently targets, read from
+// schedules.job_name alone. A missing schedule is found=false, not an error.
+func (p *Postgres) ScheduleJobName(ctx context.Context, name string) (string, bool, error) {
+	var job string
+	err := p.pool.QueryRow(ctx, `SELECT job_name FROM schedules WHERE name = $1`, name).Scan(&job)
+	if err == nil {
+		return job, true, nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	return "", false, fmt.Errorf("schedule job name: %w", err)
 }
 
 // patColumns is the column list every PAT read returns, in patScan order.

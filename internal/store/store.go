@@ -248,6 +248,8 @@ type Store interface {
 	GetRun(ctx context.Context, id string) (*api.Run, error)
 	// RunJobName returns the job a run belongs to without requiring the job row; a malformed run ID is found=false, not an error.
 	RunJobName(ctx context.Context, runID string) (job string, found bool, err error)
+	// ScheduleJobName returns the job a schedule currently targets; a missing schedule is found=false, not an error.
+	ScheduleJobName(ctx context.Context, name string) (job string, found bool, err error)
 	GetRunSpec(ctx context.Context, id string) ([]byte, error)
 	ListRunsByJob(ctx context.Context, jobName string, limit int) ([]api.Run, error)
 	ListActiveRuns(ctx context.Context) ([]api.Run, error)

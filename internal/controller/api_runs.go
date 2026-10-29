@@ -454,7 +454,7 @@ func (s *Server) handleLogsArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if arch == nil {
-		http.Error(w, "log archive not available yet", http.StatusNotFound)
+		http.Error(w, msgLogArchiveUnavailable, http.StatusNotFound)
 		return
 	}
 	if s.objStore == nil {

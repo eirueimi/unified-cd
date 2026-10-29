@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// legacyMinRole is frozen from the requireMinRole / viewerOrAgent registrations
+// legacyMinRole is frozen from the minimum-role route registrations
 // in server.go before matrix authorization (spec section 7.2, "Today" column).
 // "" means any authenticated human.
 var legacyMinRole = map[string]string{

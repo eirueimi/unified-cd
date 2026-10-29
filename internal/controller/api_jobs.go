@@ -125,19 +125,33 @@ func (s *Server) listJobsDecorated(ctx context.Context) ([]api.Job, error) {
 	return jobs, nil
 }
 
-// extractJobName returns the catch-all wildcard as the job name.
-func extractJobName(wild string) string {
-	return strings.TrimPrefix(wild, "/")
-}
+// jobVariant says which representation of a job a /jobs/* request addresses.
+type jobVariant uint8
 
-// extractJobNameAndYAML strips an optional trailing "/yaml" segment, reporting
-// whether it was present.
-func extractJobNameAndYAML(wild string) (name string, yaml bool) {
-	wild = strings.TrimPrefix(wild, "/")
-	if strings.HasSuffix(wild, "/yaml") {
-		return strings.TrimSuffix(wild, "/yaml"), true
+const (
+	jobVariantJob jobVariant = iota
+	jobVariantYAML
+	jobVariantSchedulability
+)
+
+// parseJobWildcard derives the job name and representation from the catch-all
+// wildcard of a /jobs/* request. It is the single derivation shared by the
+// authorization middleware and the job handlers, so what is authorized is
+// what is served. For GET a trailing "/schedulability" is read first, then a
+// trailing "/yaml"; every other method addresses the job named by the whole
+// wildcard.
+func parseJobWildcard(r *http.Request) (name string, variant jobVariant) {
+	wild := strings.TrimPrefix(chi.URLParam(r, "*"), "/")
+	if r.Method != http.MethodGet {
+		return wild, jobVariantJob
 	}
-	return wild, false
+	if strings.HasSuffix(wild, "/schedulability") {
+		return strings.TrimSuffix(wild, "/schedulability"), jobVariantSchedulability
+	}
+	if strings.HasSuffix(wild, "/yaml") {
+		return strings.TrimSuffix(wild, "/yaml"), jobVariantYAML
+	}
+	return wild, jobVariantJob
 }
 
 // NOTE: a job whose leaf is literally "yaml" or "schedulability" (qualified
@@ -148,17 +162,15 @@ func extractJobNameAndYAML(wild string) (name string, yaml bool) {
 // handleGetJobOrYAML dispatches GET /jobs/* to the job, its YAML, or its
 // schedulability evaluation.
 func (s *Server) handleGetJobOrYAML(w http.ResponseWriter, r *http.Request) {
-	wild := strings.TrimPrefix(chi.URLParam(r, "*"), "/")
-	if strings.HasSuffix(wild, "/schedulability") {
-		s.serveJobSchedulability(w, r, strings.TrimSuffix(wild, "/schedulability"))
-		return
-	}
-	name, yaml := extractJobNameAndYAML(wild)
-	if yaml {
+	name, variant := parseJobWildcard(r)
+	switch variant {
+	case jobVariantSchedulability:
+		s.serveJobSchedulability(w, r, name)
+	case jobVariantYAML:
 		s.serveJobYAML(w, r, name)
-		return
+	default:
+		s.serveJob(w, r, name)
 	}
-	s.serveJob(w, r, name)
 }
 
 // serveJob returns the Job with the given name.
@@ -218,7 +230,7 @@ func (s *Server) serveJobSchedulability(w http.ResponseWriter, r *http.Request, 
 
 // handleDeleteJob deletes the Job with the given name. Associated Run history is also cascade-deleted.
 func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
-	name := extractJobName(chi.URLParam(r, "*"))
+	name, _ := parseJobWildcard(r)
 	if err := s.guardManagedResource(r.Context(), "Job", name); err != nil {
 		writeGuardError(w, err)
 		return
