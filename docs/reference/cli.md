@@ -571,16 +571,21 @@ Refusals, printed as `server error: <message>` (the HTTP status in parentheses):
 | `cannot grant permissions: this token has no owner; use --role` | 400 | `--permission` used with the break-glass `UNIFIED_TOKEN` or another role-only PAT |
 | `token name "env:x" is reserved` | 400 | A name equal to `env:UNIFIED_TOKEN` or starting with `env:` |
 
-Against a controller that predates `--permission`, the server ignores the field and would create a
-full-role token. The CLI detects this (the response carries no matching `permissions`), revokes the
-token immediately without printing it, and fails with
-`the server does not support --permission (it ignored the requested permissions); the token was revoked; upgrade the controller`.
-If the revoke itself fails, the error prints the token ID and tells you to revoke it manually
-(`unified-cd token delete <id>`); the process exits non-zero either way.
 | `cannot create a token: this login predates group-aware tokens; log out and log in again, then retry` | 403 | You are using a browser session created before the upgrade |
 | `cannot create a token: your OIDC token carries no "groups" claim; log in again so the token includes it, then retry` | 403 | Your CLI login's id_token has no roles claim while the config has group-keyed grants (log in again with a current CLI, which requests the roles-claim scope the server advertises) (`groups` is the configured `oidc.rolesClaim`) |
 | `cannot create a token: your identity has no subject (sub); log in again, then retry` | 403 | Your identity carries no `sub` |
 | `forbidden: missing permission "token.create"` | 403 | You do not hold `token.create` (add it in `oidc.permissions.global` for a folder-only user) |
+
+Against a controller that predates `--permission`, the server ignores the field and would create a
+full-role token. The CLI detects this (the response carries no `permissions`), revokes the
+token immediately without printing it, and fails with
+`the server does not support --permission (it ignored the requested permissions); the token was revoked; upgrade the controller`.
+If the revoke itself fails, the error prints the token ID and tells you to revoke it manually
+(`unified-cd token delete <id>`); the process exits non-zero either way.
+If the server instead returns permissions that were not requested, the token is revoked too
+(`the server returned permissions that were not requested; the token was revoked`). When you create
+a token with a PAT, the server may return fewer permissions than requested (the ones you hold); the
+CLI keeps that token and prints `warning: the token was narrowed to the permissions you hold: <list>` to stderr.
 
 ```bash
 unified-cli token create ci-bot

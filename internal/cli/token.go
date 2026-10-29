@@ -61,18 +61,34 @@ func newTokenCreateCmd(resolve func() (Config, error), httpClient *http.Client) 
 			if err := json.Unmarshal(b, &result); err != nil {
 				return err
 			}
-			if len(permissions) > 0 && !samePermissionSet(permissions, result.Permissions) {
-				// An older controller ignores "permissions" and mints a token
-				// with the creator's full role. Revoke it; never print the secret.
+			narrowed := false
+			if len(permissions) > 0 {
 				const refusal = "the server does not support --permission (it ignored the requested permissions)"
-				if err := revokeToken(cmd.Context(), httpClient, cfg, result.ID); err != nil {
-					return fmt.Errorf("%s; the token (ID %s) could not be revoked: %v; revoke it manually (unified-cd token delete %s) and upgrade the controller", refusal, result.ID, err, result.ID)
+				switch {
+				case len(result.Permissions) == 0:
+					// An older controller ignores "permissions" and mints a token
+					// with the creator's full role. Revoke it; never print the secret.
+					if err := revokeToken(cmd.Context(), httpClient, cfg, result.ID); err != nil {
+						return fmt.Errorf("%s; the token (ID %s) could not be revoked: %v; revoke it manually (unified-cd token delete %s) and upgrade the controller", refusal, result.ID, err, result.ID)
+					}
+					return fmt.Errorf("%s; the token was revoked; upgrade the controller", refusal)
+				case !isSubsetOf(result.Permissions, permissions):
+					const foreign = "the server returned permissions that were not requested"
+					if err := revokeToken(cmd.Context(), httpClient, cfg, result.ID); err != nil {
+						return fmt.Errorf("%s; the token (ID %s) could not be revoked: %v; revoke it manually (unified-cd token delete %s)", foreign, result.ID, err, result.ID)
+					}
+					return fmt.Errorf("%s; the token was revoked", foreign)
+				default:
+					// A PAT creator gets requested ∩ its own ceiling.
+					narrowed = !isSubsetOf(permissions, result.Permissions)
 				}
-				return fmt.Errorf("%s; the token was revoked; upgrade the controller", refusal)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Token created (shown only once):\n\n  %s\n\nName: %s  ID: %s  Role: %s\n", result.Token, result.Name, result.ID, result.Role)
 			if len(result.Permissions) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "Permissions: %s\n", strings.Join(result.Permissions, ", "))
+			}
+			if narrowed {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: the token was narrowed to the permissions you hold: %s\n", strings.Join(result.Permissions, ", "))
 			}
 			return nil
 		},
@@ -158,22 +174,14 @@ func newTokenDeleteCmd(resolve func() (Config, error), httpClient *http.Client) 
 	}
 }
 
-// samePermissionSet reports whether a and b hold the same permissions,
-// ignoring order and duplicates.
-func samePermissionSet(a, b []string) bool {
-	set := func(l []string) map[string]bool {
-		m := make(map[string]bool, len(l))
-		for _, v := range l {
-			m[v] = true
-		}
-		return m
+// isSubsetOf reports whether every element of a is in b.
+func isSubsetOf(a, b []string) bool {
+	in := make(map[string]bool, len(b))
+	for _, v := range b {
+		in[v] = true
 	}
-	sa, sb := set(a), set(b)
-	if len(sa) != len(sb) {
-		return false
-	}
-	for k := range sa {
-		if !sb[k] {
+	for _, v := range a {
+		if !in[v] {
 			return false
 		}
 	}
