@@ -105,7 +105,7 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 					pat, err := st.GetPATByHash(r.Context(), hash)
 					if err == nil && pat != nil {
 						go func() { _ = st.TouchPAT(context.Background(), pat.ID) }()
-						p, ok := srv.patPrincipal(pat)
+						p, ok := srv.patPrincipal(pat, hash)
 						if !ok {
 							http.Error(w, "forbidden: no role", http.StatusForbidden)
 							return
@@ -189,11 +189,22 @@ func nonNilClaims(values []string) []string {
 	return values
 }
 
+// isBreakGlass reports whether pat is the break-glass credential: the server
+// has a configured bootstrap token, the presented token hashes to it, and the
+// PAT has no owner. The PAT name alone never grants break-glass.
+func (srv *Server) isBreakGlass(pat *store.PAT, presentedHash string) bool {
+	if srv == nil || srv.cfg.Token == "" || pat.Owner != nil {
+		return false
+	}
+	want := HashToken(srv.cfg.Token)
+	return subtle.ConstantTimeCompare([]byte(presentedHash), []byte(want)) == 1
+}
+
 // patPrincipal builds the principal for an authenticated PAT (spec 5.15).
 // srv may be nil (ServerAuth(st, nil)); owner PATs then carry no grants.
 // ok=false means the PAT is refused with "forbidden: no role".
-func (srv *Server) patPrincipal(pat *store.PAT) (Principal, bool) {
-	if pat.Name == BootstrapPATName {
+func (srv *Server) patPrincipal(pat *store.PAT, presentedHash string) (Principal, bool) {
+	if srv.isBreakGlass(pat, presentedHash) {
 		// Break-glass is always admin, checked before OIDC resolution.
 		return Principal{Name: pat.Name, Kind: "pat", Role: "admin", BreakGlass: true,
 			Grants: authz.AllGrants("break-glass")}, true

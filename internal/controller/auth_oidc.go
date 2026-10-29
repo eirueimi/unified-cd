@@ -295,6 +295,12 @@ func (s *Server) completeOIDCLogin(ctx context.Context, claims map[string]any, r
 	}
 	values := nonNilClaims(extractRoleValues(claims, s.oidcCfg.RolesClaim))
 	role, _, admitted := s.identityGrants(values, email, sub)
+	// Refresh the owner snapshot of the user's PATs before deciding admission,
+	// so a denied login still drops stale claims (spec 5.5), and before the
+	// session exists so a failure leaves no orphaned session row.
+	if _, err := s.store.UpdatePATOwnerSnapshot(ctx, sub, email, values); err != nil {
+		return "", time.Time{}, http.StatusInternalServerError, "session store error"
+	}
 	if !admitted {
 		return "", time.Time{}, http.StatusForbidden, "forbidden: no role assigned"
 	}
@@ -311,9 +317,6 @@ func (s *Server) completeOIDCLogin(ctx context.Context, claims map[string]any, r
 	expiresAt = time.Now().Add(sessionDuration)
 
 	if _, err := s.createSessionWithRefreshToken(ctx, tokenHash, sub, email, role, values, refreshToken, expiresAt); err != nil {
-		return "", time.Time{}, http.StatusInternalServerError, "session store error"
-	}
-	if _, err := s.store.UpdatePATOwnerSnapshot(ctx, sub, email, values); err != nil {
 		return "", time.Time{}, http.StatusInternalServerError, "session store error"
 	}
 	return sessionToken, expiresAt, 0, ""

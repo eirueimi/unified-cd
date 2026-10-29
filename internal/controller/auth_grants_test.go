@@ -3,7 +3,9 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -42,6 +44,7 @@ func mustOwnedPAT(t *testing.T, st store.Store, token, role string, perms []stri
 
 func TestServerAuth_BreakGlassHoldsAll25(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
+	s.cfg.Token = "bg-token" // break-glass requires the configured bootstrap token
 	_, err := pg.UpsertBootstrapPAT(context.Background(), BootstrapPATName, HashToken("bg-token"))
 	require.NoError(t, err)
 
@@ -444,4 +447,84 @@ func TestHandleMe_Unauthenticated(t *testing.T) {
 	s, _ := newAuthzTestServer(t, authz.Legacy{}, "")
 	rec := doAs(t, s, http.MethodGet, "/api/v1/auth/me", "", nil)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestServerAuth_NameAloneIsNotBreakGlass(t *testing.T) {
+	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
+	s.cfg.Token = "real-bootstrap"
+	ctx := context.Background()
+	// An attacker-created developer PAT that merely carries the reserved name.
+	_, err := pg.CreatePAT(ctx, BootstrapPATName, HashToken("attacker-tok"), "developer", nil)
+	require.NoError(t, err)
+
+	p, rec := authenticate(t, s, "attacker-tok", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.False(t, p.BreakGlass)
+	assert.Equal(t, "developer", p.Role)
+	assert.True(t, p.Grants.Can(authz.RunTrigger, "x"))
+	assert.False(t, p.Grants.Can(authz.AuthzRead, ""))
+	assert.False(t, p.Grants.Can(authz.SecretWrite, ""))
+
+	// The real bootstrap token is break-glass.
+	_, err = pg.UpsertBootstrapPAT(ctx, "other-row", HashToken("real-bootstrap"))
+	require.NoError(t, err)
+	p, rec = authenticate(t, s, "real-bootstrap", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.True(t, p.BreakGlass)
+	assert.Equal(t, "admin", p.Role)
+	assert.True(t, p.Grants.Can(authz.AuthzRead, ""))
+}
+
+func TestServerAuth_NoServerOrNoTokenMeansNoBreakGlass(t *testing.T) {
+	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
+	_, err := pg.UpsertBootstrapPAT(context.Background(), BootstrapPATName, HashToken("bg-token"))
+	require.NoError(t, err)
+
+	// No configured bootstrap token: the row is an ordinary PAT (role admin
+	// from the row, but not BreakGlass).
+	p, rec := authenticate(t, s, "bg-token", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.False(t, p.BreakGlass)
+
+	// ServerAuth(st, nil): no break-glass at all.
+	var got Principal
+	h := ServerAuth(pg, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = principalFromContext(r.Context())
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.Header.Set("Authorization", bearerPrefix+"bg-token")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	assert.False(t, got.BreakGlass)
+}
+
+func TestCreateToken_ReservedNamesRefused(t *testing.T) {
+	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
+	_, err := pg.CreatePAT(context.Background(), "dev", HashToken("dev-tok"), "developer", nil)
+	require.NoError(t, err)
+	for _, name := range []string{"env:UNIFIED_TOKEN", "env:x"} {
+		body, _ := json.Marshal(map[string]string{"name": name})
+		rec := doAs(t, s, http.MethodPost, "/api/v1/tokens", "dev-tok", body)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, name)
+		assert.Equal(t, fmt.Sprintf("token name %q is reserved\n", name), rec.Body.String())
+	}
+}
+
+func TestCompleteOIDCLogin_DeniedLoginStillRefreshesPATOwnerSnapshot(t *testing.T) {
+	s, pg := newAuthzTestServer(t, authz.Legacy{RoleMap: map[string]string{"g1": "developer"}}, "")
+	ctx := context.Background()
+	mustOwnedPAT(t, pg, "stale", "developer", nil, []string{"g1"})
+
+	p, rec := authenticate(t, s, "stale", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.True(t, p.Grants.Can(authz.RunTrigger, "x"))
+
+	_, _, status, msg := s.completeOIDCLogin(ctx, map[string]any{
+		"sub": "sub-stale", "email": "stale@example.com", "groups": []any{"unrelated"},
+	}, "rt")
+	assert.Equal(t, http.StatusForbidden, status)
+	assert.Equal(t, "forbidden: no role assigned", msg)
+
+	p, rec = authenticate(t, s, "stale", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.True(t, p.Grants.IsEmpty(), "PAT must resolve against the refreshed claims")
 }
