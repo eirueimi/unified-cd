@@ -5,13 +5,6 @@ Last audited: 2026-07-26 against `1e46459`.
 
 ## Critical
 
-### 13. Verify that the default Kubernetes sidecar image is anonymously pullable
-
-- **Status:** Needs verification
-- **Impact:** If the version-derived default tag is unavailable without registry credentials, installations that omit `sidecarImage` cannot start the sidecar and Kubernetes jobs remain blocked.
-- **Evidence:** `internal/k8sagent/config.go` `defaultSidecarImage()` derives the default from the agent's stamped version (`:vX.Y.Z` for a release, `:latest` otherwise) and it is consumed by the rendered `install.yaml` bundle (built from `manifests/install` and published as a release asset); `internal/k8sagent/config_test.go` `TestDefaultImagesCarryNoDigest` and `TestDefaultImagesResolveThroughVersionedImage` check only its shape, never that the tag is anonymously pullable.
-- **Done when:** A credential-isolated Docker pull of the image derived from `defaultSidecarImage` exits zero within 120 seconds, and a temporary Kubernetes namespace with a ServiceAccount that has no image pull secrets starts that exact image with pull policy `Always` and reaches `Ready` within 120 seconds with no pull waiting reason and an image ID matching the digest the registry reports for that tag; every external Docker and Kubernetes setup, pull, wait, inspection, and namespace-deletion subprocess is bounded, safe-target checks guard cleanup, any cleanup failure fails the experiment and is combined with rather than hidden by any primary failure, and all three documents state the verified version-derived default.
-
 ### 33c. Prevent AppSource repository credentials from reaching API and UI output
 
 - **Status:** Partial
