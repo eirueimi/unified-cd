@@ -485,7 +485,7 @@ func TestOrchestrate_UploadArtifactDispatchesToSidecar(t *testing.T) {
 	rec, statuses, final := runOrchestrateArtifact(t, c, 0 /*exit*/)
 	require.Len(t, rec, 1)
 	assert.Equal(t, artifactSidecarName, rec[0].container)
-	assert.Equal(t, []string{"unified-sidecar", "artifact", "upload",
+	assert.Equal(t, []string{sidecarBinary, "artifact", "upload",
 		"--run", "r1", "--name", "app", "--path", "/workspace/bin/app"}, rec[0].argv)
 	assert.Equal(t, "Succeeded", statuses["up"])
 	assert.Equal(t, "Succeeded", final)
@@ -499,7 +499,7 @@ func TestOrchestrate_DownloadArtifactDispatchesToSidecar(t *testing.T) {
 	rec, statuses, _ := runOrchestrateArtifact(t, c, 0)
 	require.Len(t, rec, 1)
 	assert.Equal(t, artifactSidecarName, rec[0].container)
-	assert.Equal(t, []string{"unified-sidecar", "artifact", "download",
+	assert.Equal(t, []string{sidecarBinary, "artifact", "download",
 		"--run", "r1", "--name", "app", "--dest", "/workspace/out"}, rec[0].argv)
 	assert.Equal(t, "Succeeded", statuses["dl"])
 }
@@ -528,7 +528,7 @@ func TestOrchestrate_CacheRestoreAndDeferredSave(t *testing.T) {
 	var restoreIdx, saveIdx = -1, -1
 	var restoreCall, saveCall *artifactCall
 	for i := range rec {
-		if len(rec[i].argv) >= 2 && rec[i].argv[0] == "unified-sidecar" && rec[i].argv[1] == "cache" {
+		if len(rec[i].argv) >= 2 && rec[i].argv[0] == sidecarBinary && rec[i].argv[1] == "cache" {
 			if len(rec[i].argv) >= 3 && rec[i].argv[2] == "restore" {
 				require.Equal(t, -1, restoreIdx, "expected exactly one cache restore call, got: %+v", rec)
 				restoreIdx = i
@@ -574,7 +574,7 @@ func TestOrchestrate_CacheEmptyKeySkips(t *testing.T) {
 	rec, statuses, final := runOrchestrateArtifact(t, c, 0 /*exit*/)
 
 	for i := range rec {
-		if len(rec[i].argv) >= 2 && rec[i].argv[0] == "unified-sidecar" && rec[i].argv[1] == "cache" {
+		if len(rec[i].argv) >= 2 && rec[i].argv[0] == sidecarBinary && rec[i].argv[1] == "cache" {
 			t.Fatalf("expected no cache restore/save argv calls for an empty-key template, got: %+v", rec[i])
 		}
 	}
@@ -596,7 +596,7 @@ func TestOrchestrate_CachePathTemplateExpanded(t *testing.T) {
 
 	var restoreCall, saveCall *artifactCall
 	for i := range rec {
-		if len(rec[i].argv) >= 3 && rec[i].argv[0] == "unified-sidecar" && rec[i].argv[1] == "cache" {
+		if len(rec[i].argv) >= 3 && rec[i].argv[0] == sidecarBinary && rec[i].argv[1] == "cache" {
 			switch rec[i].argv[2] {
 			case "restore":
 				restoreCall = &rec[i]
@@ -629,7 +629,7 @@ func TestOrchestrate_CacheEmptyPathSkips(t *testing.T) {
 	rec, statuses, final := runOrchestrateArtifact(t, c, 0 /*exit*/)
 
 	for i := range rec {
-		if len(rec[i].argv) >= 2 && rec[i].argv[0] == "unified-sidecar" && rec[i].argv[1] == "cache" {
+		if len(rec[i].argv) >= 2 && rec[i].argv[0] == sidecarBinary && rec[i].argv[1] == "cache" {
 			t.Fatalf("expected no cache restore/save argv calls for an empty-path template, got: %+v", rec[i])
 		}
 	}
@@ -656,7 +656,7 @@ func TestOrchestrate_DownloadArtifactRunIDOverridesSidecarRun(t *testing.T) {
 	}}
 	rec, statuses, _ := runOrchestrateArtifact(t, c, 0)
 	require.Len(t, rec, 1)
-	assert.Equal(t, []string{"unified-sidecar", "artifact", "download",
+	assert.Equal(t, []string{sidecarBinary, "artifact", "download",
 		"--run", "r-child", "--name", "app", "--dest", "/workspace/out"}, rec[0].argv)
 	assert.Equal(t, "Succeeded", statuses["dl"])
 }

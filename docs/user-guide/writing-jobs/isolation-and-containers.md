@@ -99,7 +99,13 @@ steps:
 ```
 
 `container: X` requires a `podTemplate` that defines a container named `X`;
-this is checked at apply time. See [Kubernetes Pod Template
+this is checked at apply time. The only reserved name a step may target is
+`job`, the primary container. `unified-artifact` (the artifact sidecar, which
+holds the object-store credentials) and `ucd-shim` (an init container that has
+exited before any step runs) are **never** valid targets: `apply` rejects them
+with `container "unified-artifact" is reserved for the agent's artifact
+sidecar ...`, on every agent type, whether the step is in `steps`, `finally`,
+a `parallel:` group or a `uses:` entry. See [Kubernetes Pod Template
 (`podTemplate`)](#kubernetes-pod-template-podtemplate) below for the
 container fields the standard agent understands.
 
@@ -165,7 +171,8 @@ independent of the job's own isolation mode.
 ## Kubernetes Pod Template (`podTemplate`)
 
 Defines the sidecar containers for an isolated job. On the `k8s-agent`, this
-is (mostly) a real Kubernetes PodSpec. On the standard agent, the same
+is (mostly) a real Kubernetes PodSpec, filtered by the agent's [job Pod field
+policy](../../operator-manual/kubernetes-integration.md#job-pod-field-policy). On the standard agent, the same
 `podTemplate` drives the claim pod described in [Job Isolation: `native` and
 the claim pod](#job-isolation-native-and-the-claim-pod) — it reads
 `spec.containers` (name/image/`command`/`args`/env/`resources.limits`) to
@@ -196,6 +203,20 @@ Integration Guide: the remaining intentional
 differences](../../operator-manual/kubernetes-integration.md) and the
 [migration
 guide](../../operator-manual/migrations/podtemplate-subfield-routing.md).
+
+**A Kubernetes agent refuses some fields unless its operator allows them.** What you write in
+`podTemplate.spec` or `podTemplate.override` reaches the cluster's API server, so the k8s-agent
+checks it first. By default it refuses a ServiceAccount (`serviceAccountName`), host access
+(`hostPath`, `hostNetwork`, `hostPID`, `hostIPC`, `hostPort`), `privileged` and non-baseline
+capabilities, `Unconfined` seccomp/AppArmor profiles, `nodeName`, Kubernetes Secrets
+(`secretKeyRef`, `secretRef`, `secret` volumes), PersistentVolumeClaims, and any field it has not
+classified. A refused run fails at claim time, before a Pod exists, with an error that starts
+`k8s: job pod policy:` and names each field and the agent setting that would allow it. Your
+operator either adds that setting or moves the content into an agent template (`podTemplate.name`),
+which is not filtered. See [Job Pod field
+policy](../../operator-manual/kubernetes-integration.md#job-pod-field-policy) and
+[Run fails immediately on Kubernetes: "k8s: job pod
+policy: ..."](../../troubleshooting/steps-and-execution.md#run-fails-immediately-on-kubernetes-k8s-job-pod-policy).
 
 ### podTemplate container parity notes (host and k8s)
 
@@ -418,12 +439,12 @@ user](../../troubleshooting/steps-and-execution.md#permission-denied-writing-to-
 | Field | Type | Description |
 |---|---|---|
 | `name` | string | Name of a template defined in the k8s-agent config file |
-| `spec` | map | Inline Kubernetes PodSpec (used when `name` is empty) |
-| `workspace.mountPath` | string | Path inside the pod where the (ephemeral) workspace is mounted |
+| `spec` | map | Inline Kubernetes PodSpec (used when `name` is empty). A Kubernetes agent refuses some fields unless its operator allows them (`k8s: job pod policy: ...`); see [Job Pod field policy](../../operator-manual/kubernetes-integration.md#job-pod-field-policy) |
+| `workspace.mountPath` | string | Path inside the pod where the (ephemeral) workspace is mounted. Must be absolute and clean, and not `/` or on, inside or above a system directory such as `/usr`, `/etc`, `/proc`, `/var/run` or `/.ucd`; `apply` rejects it otherwise |
 | `reuse` | bool | Return the pod to a pool after the run and reuse it for subsequent runs. This only saves Pod start-up: the workspace of a reused pod is emptied before every run, and the run fails (the pod is deleted) if that is impossible. Not allowed together with `spec.volumes` |
 | `cleanWorkspace` | bool | Empty a [volume](volumes.md) mounted at the workspace root (`mountPath: "."`) before the run. Equivalent to `spec.cleanWorkspace`; the two are ORed. An ordinary workspace is always emptied, so this changes nothing without such a volume |
-| `override.containers` | []map | Additional containers to merge into the pod spec |
-| `override.volumes` | []map | Additional volumes to merge into the pod spec |
+| `override.containers` | []map | Additional containers to merge into the pod spec. Subject to the same agent-side [field policy](../../operator-manual/kubernetes-integration.md#job-pod-field-policy) as `spec`, including volumes of the agent template that a patch container mounts |
+| `override.volumes` | []map | Additional volumes to merge into the pod spec. Subject to the same agent-side field policy as `spec` (`hostPath`, Secret and PVC volumes are refused unless allowed) |
 
 The workspace is **always ephemeral**. The `pvc` block that an earlier release accepted under `workspace`
 (a persistent claim or a per-Pod ephemeral one) has been removed, and a job that

@@ -306,8 +306,8 @@ func TestBuildPod_SidecarSecretEnvAndIdle(t *testing.T) {
 	if len(sc.EnvFrom) != 1 || sc.EnvFrom[0].SecretRef == nil || sc.EnvFrom[0].SecretRef.Name != "ucd-s3" {
 		t.Fatalf("expected EnvFrom secretRef ucd-s3, got %+v", sc.EnvFrom)
 	}
-	if len(sc.Command) < 2 || sc.Command[0] != "unified-sidecar" || sc.Command[1] != "idle" {
-		t.Fatalf("expected command [unified-sidecar idle], got %v", sc.Command)
+	if len(sc.Command) < 2 || sc.Command[0] != "/usr/local/bin/unified-sidecar" || sc.Command[1] != "idle" {
+		t.Fatalf("expected command [/usr/local/bin/unified-sidecar idle], got %v", sc.Command)
 	}
 }
 

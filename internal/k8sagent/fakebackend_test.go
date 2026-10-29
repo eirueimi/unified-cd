@@ -162,7 +162,7 @@ func (f *fakeK8sBackend) sidecarResult() (int, error) {
 }
 
 func (f *fakeK8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandle, key string, restoreKeys []string, path string) (bool, error) {
-	argv := []string{"unified-sidecar", "cache", "restore", "--key", key, "--path", path}
+	argv := []string{sidecarBinary, "cache", "restore", "--key", key, "--path", path}
 	for _, rk := range restoreKeys {
 		argv = append(argv, "--restore-key", rk)
 	}
@@ -175,14 +175,14 @@ func (f *fakeK8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeH
 }
 
 func (f *fakeK8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, key, path string, ttlDays int) error {
-	argv := []string{"unified-sidecar", "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path}
+	argv := []string{sidecarBinary, "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path}
 	f.recordArtifactCall(f.scopePodName(scope), artifactSidecarName, argv)
 	_, err := f.sidecarResult()
 	return err
 }
 
 func (f *fakeK8sBackend) UploadArtifact(ctx context.Context, scope agentlib.ScopeHandle, runID, name, path string) error {
-	argv := []string{"unified-sidecar", "artifact", "upload", "--run", runID, "--name", name, "--path", path}
+	argv := []string{sidecarBinary, "artifact", "upload", "--run", runID, "--name", name, "--path", path}
 	f.recordArtifactCall(f.scopePodName(scope), artifactSidecarName, argv)
 	ec, err := f.sidecarResult()
 	if err != nil {
@@ -195,7 +195,7 @@ func (f *fakeK8sBackend) UploadArtifact(ctx context.Context, scope agentlib.Scop
 }
 
 func (f *fakeK8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.ScopeHandle, runID, name, destDir string) error {
-	argv := []string{"unified-sidecar", "artifact", "download", "--run", runID, "--name", name, "--dest", destDir}
+	argv := []string{sidecarBinary, "artifact", "download", "--run", runID, "--name", name, "--dest", destDir}
 	f.recordArtifactCall(f.scopePodName(scope), artifactSidecarName, argv)
 	ec, err := f.sidecarResult()
 	if err != nil {

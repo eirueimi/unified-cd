@@ -27,6 +27,14 @@
 #     securityContext). `appArmorProfile` is a securityContext field on k8s >= 1.30;
 #     on older clusters use the equivalent pod annotation instead.
 #   - the node must allow user namespaces / rootless (most modern clusters do).
+#   - the k8s agent must set `jobPodPolicy.allowUnconfinedProfiles: true` in its
+#     config. The Unconfined profiles above are job-supplied Pod content, which an
+#     agent refuses by default (`k8s: job pod policy: ...`). Nothing else in this
+#     template needs an opt-in.
+#   - the job namespace must admit `Unconfined` profiles, i.e. Pod Security
+#     `privileged`. The shipped `ci` namespace enforces `baseline`, which refuses
+#     them (`violates PodSecurity "baseline:latest"`), so run this job from a
+#     separate agent and namespace, or relabel the namespace.
 #   - buildkitd validates registry TLS with the CA bundle in its own image,
 #     independently of the node. If your base-image registry sits behind a TLS-
 #     intercepting proxy, or buildkitd can't validate its chain, point buildkitd
