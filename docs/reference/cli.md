@@ -538,16 +538,42 @@ Manage Personal Access Tokens (PATs) for authentication.
 ### token create
 
 ```
-unified-cli token create <name> [--expires-in duration] [--role role]
+unified-cli token create <name> [--expires-in duration] [--role role] [--permission name]...
 
   --expires-in  string   Token expiry duration (e.g. "720h", "8760h"). No expiry if omitted.
-  --role        string   Role for the token: admin, developer, or viewer
-                         (default: your own role; capped at your own role)
+  --role        string   Role ceiling for the token: admin, developer, or viewer.
+                         Must not exceed your own global role; it is refused, never reduced.
+  --permission  string   Permission ceiling, e.g. job.read. Repeatable. You must hold each one
+                         (globally or on at least one folder). Cannot be combined with --role.
 ```
 
 Generates a new PAT. The token value is shown only once.
+
+A PAT created by an SSO user records that user as its **owner**. Its permissions are always the
+owner's permissions under the current config, intersected with the ceiling; with neither `--role`
+nor `--permission` there is no ceiling (the token carries everything its owner has).
+`--role` no longer reduces your request to your own role: a role above your own global role is refused with a `400`, so a script
+discovers the problem at creation instead of at a later `403`. A user who holds only folder grants
+has no global role and uses `--permission`. See [Authorization: Personal access tokens](../operator-manual/authorization.md#personal-access-tokens).
+
 Names equal to `env:UNIFIED_TOKEN` or starting with `env:` are reserved and rejected
 (`token name "env:..." is reserved`).
+
+Refusals, printed as `server error: <message>` (the HTTP status in parentheses):
+
+| Message | Status | Cause |
+|---|---|---|
+| `cannot grant role "developer": it exceeds your global role "viewer"; use --permission to grant folder permissions you hold` | 400 | `--role` above your global role. With no global role the tail reads `it exceeds your global role (none)`. |
+| `cannot grant permission "secret.write": you do not hold it` | 400 | A `--permission` you hold neither globally nor on any folder |
+| `unknown role "x"` / `unknown permission "x"` | 400 | A misspelled `--role` / `--permission` |
+| `role and permissions are mutually exclusive` | 400 | `--role` together with `--permission` |
+| `permissions must not be empty` | 400 | An API request with `"permissions": []` |
+| `cannot grant permissions: this token has no owner; use --role` | 400 | `--permission` used with the break-glass `UNIFIED_TOKEN` or another role-only PAT |
+| `token name "env:x" is reserved` | 400 | A name equal to `env:UNIFIED_TOKEN` or starting with `env:` |
+| `cannot create a token: this login predates group-aware tokens; log out and log in again, then retry` | 403 | You are using a browser session created before the upgrade |
+| `cannot create a token: your OIDC token carries no "groups" claim; log in again so the token includes it, then retry` | 403 | Your CLI login's id_token has no roles claim while the config has group-keyed grants (`groups` is the configured `oidc.rolesClaim`) |
+| `cannot create a token: your identity has no subject (sub); log in again, then retry` | 403 | Your identity carries no `sub` |
+| `forbidden: missing permission "token.create"` | 403 | You do not hold `token.create` (add it in `oidc.permissions.global` for a folder-only user) |
 
 ```bash
 unified-cli token create ci-bot
@@ -556,12 +582,18 @@ unified-cli token create ci-bot
 # =>   exc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # =>
 # => Name: ci-bot  ID: 08c1779c-812f-4d68-9971-25ff3467637e  Role: developer
+#    (Role is empty for an SSO user's token that has no --role ceiling)
 
 # With expiry
 unified-cli token create deploy-bot --expires-in 8760h
 
-# With an explicit role (cannot exceed the caller's own role)
+# With an explicit role ceiling (cannot exceed the caller's own global role)
 unified-cli token create viewer-bot --role viewer
+
+# With a permission ceiling (each one must be held by the caller)
+unified-cli token create ci-trigger --permission job.read --permission run.trigger
+# => Name: ci-trigger  ID: 5d0e...  Role:
+# => Permissions: job.read, run.trigger
 ```
 
 Use the printed token as a bearer token in CLI, API calls, or agent configuration.
@@ -572,7 +604,10 @@ Use the printed token as a bearer token in CLI, API calls, or agent configuratio
 unified-cli token list
 ```
 
-Lists all tokens (IDs, names, and roles only; values are never retrievable).
+Lists the tokens you may see (IDs, names, and the ceiling only; values are never retrievable): your own
+tokens with `token.create`, every token with `token.manage` (admin). The ceiling column is the role,
+or the comma-separated permission list for a permission-ceiling token. A role-only (pre-upgrade)
+token has no owner, so a caller without `token.manage` does not see it.
 
 ```
 a7c3fec8-1922-4278-b7ca-1ec489839a61   env:UNIFIED_TOKEN   admin       (2026-07-03)   ← bootstrap token from UNIFIED_TOKEN env var
@@ -585,7 +620,9 @@ a7c3fec8-1922-4278-b7ca-1ec489839a61   env:UNIFIED_TOKEN   admin       (2026-07-
 unified-cli token delete <id>
 ```
 
-Revokes a token immediately.
+Revokes a token immediately. With `token.create` you can revoke only your own tokens; any other id,
+including a role-only (pre-upgrade) token, answers `server error: token not found`. `token.manage`
+(admin) revokes any token.
 
 ```bash
 unified-cli token delete 08c1779c-812f-4d68-9971-25ff3467637e
@@ -747,7 +784,7 @@ unified-cli webhook delete github-push
 
 ## audit
 
-View the audit log. Admin only — the server returns 403 for non-admin tokens.
+View the audit log. Requires the `audit.read` permission (admin bundle only); other callers get `403 forbidden: missing permission "audit.read"`.
 
 ### audit list
 
@@ -788,8 +825,12 @@ config file: the built-in role bundles, every `roleMap` / `userMap` entry and
 `defaultRole` with the role it resolves to (a value that is not a known role is
 marked `ignored`), and every `oidc.permissions` entry in file order with the
 grant as written and its expansion at that scope. It contains no secrets and no
-per-user data. The table has the sections `BUNDLES`, `LEGACY`, `GLOBAL` and
-`FOLDER <name>` with the columns `SUBJECT  NAME  GRANT  PERMISSIONS`.
+per-user data. The default `-o table` has the sections `BUNDLES`, `LEGACY`, `GLOBAL`
+and `FOLDER <name>` with the columns `SUBJECT  NAME  GRANT  PERMISSIONS`; `-o json` and
+`-o yaml` print the server's answer. Any other format is refused before a request is
+made: `unsupported output format "x" (use table, yaml or json)`. Without OIDC only the
+bundles are listed. Entries keep their file order, with group entries before user entries
+within a scope; the `roleMap` / `userMap` entries are sorted by key.
 
 ### authz explain
 
@@ -812,7 +853,24 @@ ceiling is not applied.
 
 ```bash
 unified-cli authz explain --user dev@example.com --group my-org:team-a --job team-a/build
+# => identity       dev@example.com
+# => groups (request)  my-org:team-a
+# => scope          job team-a/build
+# => global role    -
+# => login allowed  true
+# =>
+# => PERMISSION   GRANTED BY
+# => job.read     folder:team-a (groups["my-org:team-a"])
+# => job.configure  folder:team-a (groups["my-org:team-a"])
+# => ...
 ```
+
+At least one of `--user` / `--group` is required (`user or groups is required`), and
+`--job` / `--folder` cannot be combined (`job and folder are mutually exclusive`). A
+`--folder` is validated like a config folder key. The table also prints `global role`
+(the legacy `roleMap` / `userMap` / `defaultRole` result, `-` if it denies) and
+`login allowed`, the login rule from [Authorization](../operator-manual/authorization.md#how-a-callers-permissions-are-resolved).
+Within a scope, group grants are listed before user grants.
 
 The same data is available as `GET /api/v1/authz/policy` and
 `POST /api/v1/authz/explain` (body `{"user", "groups", "job", "folder"}`).

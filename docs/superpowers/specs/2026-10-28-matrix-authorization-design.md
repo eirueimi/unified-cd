@@ -1,8 +1,10 @@
 # Matrix authorization (fine-grained, per-folder permissions) — Design
 
 Date: 2026-10-28
-Status: Draft for review. Direction and every former open question decided by
-the owner (§4); the designer's calls (§5) await review. No code, no plan.
+Status: Implemented. Direction and every former open question decided by
+the owner (§4); the designer's calls (§5) were reviewed. Amended on
+2026-10-29 so that this document matches the implementation; where the two
+disagree, the code is the source of truth.
 
 ## 1. Intent and why
 
@@ -103,8 +105,10 @@ path prefix of the qualified job name.
   recorded. `GET /api/v1/tokens` and `DELETE /api/v1/tokens/{id}` operate on
   every PAT in the store for any developer, including other users' PATs and
   the bootstrap `env:UNIFIED_TOKEN` row.
-- **Break-glass.** The PAT named `env:UNIFIED_TOKEN` (`BootstrapPATName`) is
-  always admin (`ServerAuth`), checked before OIDC resolution. Must remain so.
+- **Break-glass.** The bootstrap token (`UNIFIED_TOKEN`), synced as the PAT
+  named `env:UNIFIED_TOKEN` (`BootstrapPATName`), is always admin
+  (`ServerAuth`), checked before OIDC resolution. Must remain so. It is
+  recognised by its token hash and not by its name (§5.15).
 - **Agents are a different kind of principal.** `AgentPrincipal` carries no
   role (`docs/contributing/auth-implementation.md`). Agent routes are declared
   in `agentRouteIdentityMatrix`; agent authorization (path identity binding,
@@ -115,8 +119,10 @@ path prefix of the qualified job name.
 - **Qualified names** (`internal/dsl/qualname.go`):
   `QualifyName(path, name)` trims `/` from both and joins them with `/`; the
   `path` is the reserved `metadata.annotations.path`. On direct apply
-  (`storeJob`) each non-empty `path` segment must be DNS-1123 and repeated
-  slashes are collapsed. On AppSource sync (`applyResource`,
+  (`storeJob`) each non-empty `path` segment must be DNS-1123. Repeated
+  slashes are **not** collapsed: `QualifyName` trims only the ends, so a path
+  `team-a//sub` is stored as `team-a//sub/<name>`, and authorization runs on
+  exactly the stored string. On AppSource sync (`applyResource`,
   `appsource_reconciler.go`) the controller **overwrites** `annotations.path`
   with the file's directory relative to `spec.path` (`relDir`), and those
   directory names are *not* DNS-validated. The leaf (`metadata.name`) is always
@@ -349,7 +355,9 @@ otherwise not DNS-validated, because AppSource-derived folders (directory
 names) are not either (§3).
 
 **Legacy maps.** Today a `roleMap` value that is not a known role (a typo
-such as `develper`) is silently never matched. Designer's call: keep booting
+such as `develper`) is silently never matched. Only `roleMap` is checked
+(an unknown `userMap` role denies that user rather than being ignored, so it
+is not reported here). Designer's call: keep booting
 but log a warning (`oidc.roleMap["my-org:devs"]: unknown role "develper" is
 ignored (valid: admin, developer, viewer)`) when there is no `permissions`
 block, and make it a startup error when there is one — at that point the
@@ -380,6 +388,9 @@ Designer's call. This is the PAT rule.
   - group changes in the IdP are seen when the owner next logs in through
     the browser: an OIDC login refreshes the group snapshot on every PAT whose
     owner `sub` matches (bounded staleness, the same class as sessions today).
+    The refresh happens even when the login is then denied, and before the
+    session row is created, so a failure leaves neither stale claims nor an
+    orphaned session. Silent session refresh does not touch PAT owners.
 - **Creation checks.** `token.create` is required, the creator's identity
   must be known (§5.14), and the ceiling must lie within the owner's grants
   (§5.15). Both are refusals with a `4xx`, never a silent clamp.
@@ -391,7 +402,10 @@ Designer's call. This is the PAT rule.
   This is what makes the upgrade non-widening and non-narrowing for existing
   tokens.
 - **Break-glass** short-circuits to all 25 permissions globally, before any of
-  the above, exactly where `ServerAuth` short-circuits today.
+  the above, exactly where `ServerAuth` short-circuits today. It requires the
+  presented token's hash to equal the hash of the configured `UNIFIED_TOKEN`
+  (constant-time comparison) **and** the PAT row to have no owner; the PAT's
+  name alone grants nothing (§5.15).
 - A PAT whose owner now resolves to nothing authenticates but gets `403
   forbidden: token owner has no permissions` on every route, so the failure is
   diagnosable rather than looking like a bad token.
@@ -493,7 +507,8 @@ already presents its claims on every request.
 ### 5.11 The Web UI gets the caller's grants from `/api/v1/auth/me`
 
 Designer's call. `GET /api/v1/auth/me` additionally returns the caller's
-effective grants — only the caller's, never the config:
+effective grants — only the caller's, never the config. It also returns `sub`
+and `email` when they are non-empty:
 
 ```json
 {
@@ -525,8 +540,14 @@ Designer's call. Each audited row gains `permission` (e.g. `run.trigger`),
 `grantedBy` — a short, stable description of the first grant that allowed it
 (`role:developer (roleMap["my-org:devs"])`, `folder:team-a
 (groups["my-org:team-a"])`, `pat-ceiling`, `break-glass`) or empty on a deny.
-The allow-list nature and the secret-body special case are unchanged; the
-"no GETs" rule is relaxed to record denied reads only (§5.16 rule 6). `run.replay` is classified at the same time (it is TODO item 24 and
+`scope` is empty for a global decision and for a refusal by the pre-check
+(§5.13) that happens before any job is known. The allow-list nature and the
+secret-body special case are unchanged; the "no GETs" rule is relaxed to record
+denied reads only (§5.16 rule 6). A refusal is recorded with the status the
+client actually saw (a hidden resource is answered `404`, `204` or `400`, not
+`403`). Not recorded: denials of agent principals (a different kind of
+caller, §5.9), `401` responses, and the `403 forbidden: unclassified route`
+answer (there is no decision to record). `run.replay` is classified at the same time (it is TODO item 24 and
 the route table touches it anyway).
 
 ### 5.13 Route classification lives in one table
@@ -534,15 +555,21 @@ the route table touches it anyway).
 Designer's call. Human routes move to a declarative table analogous to
 `agentRouteIdentityMatrix`: `{method, pattern, permission, scope}` where scope
 is `global` or a job resolver (`jobFromBody`, `jobFromPath`, `jobFromRunID`,
-`jobFromScheduleBody`, `jobFromSchedulePath`, `filtered`). Middleware does a
-cheap "holds this permission anywhere" pre-check (so a caller with no
-`run.trigger` at all is refused before the body is read); the exact per-job
-check happens where the job name becomes known. Every non-human route is also
+`jobFromScheduleBody`, `jobFromSchedulePath`, `filtered`). The single enforcement entry
+point is the middleware `(*Server).authorize`, driven by that table
+(`routeTable` in `internal/controller/authz_routes.go`). It does a cheap
+"holds this permission anywhere" pre-check (so a caller with no `run.trigger`
+at all is refused before the body is read); the exact per-job check happens
+where the job name becomes known (`requireJob`). A row may carry an `AltPerm`,
+an alternative permission that also satisfies the route (`GET` and `DELETE
+/api/v1/tokens`: `token.create` for the caller's own tokens or `token.manage`
+for everyone's), and an `AgentBypass` flag for the agent-or-human routes. Every non-human route is also
 listed, as `public`, `self` (authenticates itself, e.g. `/auth/me`,
 `/agents/enroll`, `/store-credentials`, `/webhook/{name}`) or `agent`, so the
-classification test (§9) can be exhaustive in both directions. `requireMinRole`
-and `viewerOrAgent` are retired in favour of `requirePermission` and
-`requirePermissionOrAgent`.
+classification test (§9) can be exhaustive in both directions.
+`requireMinRole` and `viewerOrAgent` are retired in favour of `authorize`; a
+route that reaches it without a row is refused with `403 forbidden:
+unclassified route`.
 
 ### 5.14 A PAT is not created from an unknown identity
 
@@ -566,6 +593,14 @@ For these, `POST /api/v1/tokens` is refused with `403` and no PAT is written:
 - bearer: `cannot create a token: your OIDC token carries no "groups" claim; log in again so the token includes it, then retry`
   (the claim name is the configured `rolesClaim`).
 
+Two more refusals complete the set. An owned PAT cannot be stored with an
+empty owner `sub`, so an identity that carries none is refused with `403`
+`cannot create a token: your identity has no subject (sub); log in again, then retry`.
+And an explicitly empty ceiling list is a `400` `permissions must not be empty`
+(omit the field for "no ceiling"). Further `400`s: `role and permissions are mutually exclusive`,
+`unknown role "x"`, `unknown permission "x"`, and, for a role-only creator,
+`cannot grant permissions: this token has no owner; use --role`.
+
 Rejected alternatives: (a) create a role-only PAT from `sessions.role` — that
 is a PAT which bypasses folder grants for as long as it lives, i.e. a widening
 the moment the operator introduces folders; (b) record the owner with an empty
@@ -586,6 +621,19 @@ admins or pre-upgrade tokens by construction.
 Designer's call. A user matched only by folder grants has an empty global
 role. That must be representable end to end without reopening "unknown or
 empty role means denied" for principals that have no grants.
+
+**Break-glass is bound to the configured token.** A PAT is the break-glass
+credential only when the presented token's hash matches the hash of the
+configured `UNIFIED_TOKEN` (compared in constant time) **and** the PAT has no
+owner. Its name grants nothing: a PAT merely named `env:UNIFIED_TOKEN` is an
+ordinary PAT with its own stored role. The `env:` name prefix is reserved:
+`POST /api/v1/tokens` rejects a name equal to `env:UNIFIED_TOKEN` or starting
+with `env:` with `400` `token name "<name>" is reserved`. At startup
+`SyncBootstrapPAT` deletes, in one transaction, every PAT named
+`env:UNIFIED_TOKEN` whose hash is not the configured token's (a stale row
+after rotation, or a user-created one) and upserts the real bootstrap row; a
+warning logs the count, ids and roles of what was removed (see
+`docs/troubleshooting/controller-and-database.md`).
 
 **Storage.** `pats.role` and `sessions.role` stay `NOT NULL`, and may be `''`
 when the row carries an owner (`pats.owner_sub IS NOT NULL`) or claims
@@ -861,8 +909,8 @@ Every route registered in `server.go` (including `agentRouteIdentityMatrix`).
 | GET | `/api/v1/gitcredentials` | admin | `gitcredential.read` | global |
 | DELETE | `/api/v1/gitcredentials/{name}` | admin | `gitcredential.write` | global |
 | POST | `/api/v1/tokens` | developer | `token.create` | global |
-| GET | `/api/v1/tokens` | developer | `token.create` (own) / `token.manage` (all) | global |
-| DELETE | `/api/v1/tokens/{id}` | developer | `token.create` (own) / `token.manage` (any) | global |
+| GET | `/api/v1/tokens` | developer | `token.create` (own) / `token.manage` (all); route row `Perm: token.create`, `AltPerm: token.manage` | global |
+| DELETE | `/api/v1/tokens/{id}` | developer | `token.create` (own) / `token.manage` (any); route row `Perm: token.create`, `AltPerm: token.manage` | global |
 | POST | `/api/v1/agent-enrollments` | admin | `agent.manage` | global |
 | GET | `/api/v1/agent-enrollments` | viewer | `agent.read` | global |
 | DELETE | `/api/v1/agent-enrollments/{id}` | admin | `agent.manage` | global |
@@ -892,6 +940,11 @@ Every route registered in `server.go` (including `agentRouteIdentityMatrix`).
 | GET | `/api/v1/appsources/{name}` | viewer | `appsource.read` | global |
 | DELETE | `/api/v1/appsources/{name}` | admin | `appsource.write` | global |
 | POST | `/api/v1/appsources/{name}/sync` | admin | `appsource.write` | global |
+
+Both token rows (`GET /api/v1/tokens`, `DELETE /api/v1/tokens/{id}`) carry an
+`AltPerm`: the route is satisfied by `token.create` or `token.manage`, and the
+handler then narrows to the caller's own tokens unless it holds
+`token.manage`.
 
 The legacy-equivalence test (§9) proves that, with no `permissions` block,
 each row's decision for each role is unchanged — except `GET`/`DELETE
@@ -1022,11 +1075,12 @@ role and may be empty.
 
 - **Exhaustive classification (two-way).** Walk the router with `chi.Walk`
   (including mounted sub-routers) and assert every `(method, pattern)` is in
-  the route table, and every table entry is registered — the same shape as
-  `TestEveryDefaultImageIsClassified` in the host-security-context work. A new
-  route fails with "`POST /api/v1/foo` has no permission: classify it in the
-  route table". The `/jobs/*` sub-dispatch (job, `/yaml`, `/schedulability`)
-  is enumerated explicitly.
+  the route table (`TestEveryRegisteredRouteIsClassified`), and every table
+  entry is registered (`TestEveryRouteTableEntryIsRegistered`). A new route
+  fails with "`POST /api/v1/foo` has no permission: classify it in the route
+  table". The `/jobs/*` wildcard has one row per method; its variants (the
+  job, `/yaml`, `/schedulability`) are told apart by one function,
+  `parseJobWildcard`, shared by the handler and the authorization check.
 - **Per-permission table test.** For every row: a principal holding exactly
   that permission globally is not refused; one holding every *other*
   permission is refused. For folder-scopable rows: a grant on `team-a`

@@ -234,6 +234,26 @@ leave there, and use `cleanWorkspace` or a `finally:` step to remove it.
 
 ---
 
+## Authorization startup warnings
+
+Matrix authorization (see [Authorization](authorization.md)) adds operator
+responsibilities that show up as controller startup log lines. Treat them as
+actions, not noise:
+
+| Log line | What to do |
+|---|---|
+| `UNIFIED_TOKEN is set while SSO is configured: the env:UNIFIED_TOKEN token is always admin and bypasses oidc.permissions; unset it once SSO works and keep it only as a break-glass credential` | The break-glass token is still enabled next to SSO. Once SSO works, unset `UNIFIED_TOKEN`, or keep it stored securely and unused; rotate it periodically. |
+| `role-only personal access tokens with a role above viewer bypass folder grants until revoked` (attribute `count`) | Folder grants are configured but pre-existing role-only PATs still carry a global role. **Re-issue role-only team PATs** as owned tokens (ideally with `--permission` ceilings) and revoke the old ones after enabling folder grants. |
+| `oidc.roleMap["..."]: unknown role "..." is ignored (valid: admin, developer, viewer)` | A `roleMap` typo; fix it (an error once `oidc.permissions` is set). |
+| `removed personal access tokens named "env:UNIFIED_TOKEN" that do not match the configured UNIFIED_TOKEN ...` | A stale or user-created token with the reserved name was deleted; review who created it. |
+
+Policy changes need a controller restart (the config is read at startup);
+`unified-cli authz show` prints what the running controller resolved. Group
+changes at the IdP reach sessions at the next login or silent refresh and
+reach PATs at their owner's next browser login. Every refused request is
+recorded in the [audit log](audit.md#denied-reads) with the permission that was
+missing.
+
 ## Monitoring Points
 
 - **`/healthz`** — liveness endpoint; returns `200` while the process is running and `503` while draining/shutting down. Use it only to decide whether the process must be restarted.

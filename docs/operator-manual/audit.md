@@ -1,7 +1,7 @@
 # Audit Log
 
-unified-cd records a persistent audit trail of state-changing API operations: who did what, on
-which resource, when, and with what result. This complements the existing per-run approval
+unified-cd records a persistent audit trail of state-changing API operations and of refused reads: who did what, on
+which resource, when, with what result, and which permission was checked and which grant allowed it. This complements the existing per-run approval
 audit trail (`run_approvals` — see [Job Reference](../user-guide/writing-jobs/index.md) for the `approval` step type), which
 only covered approve/reject decisions.
 
@@ -11,7 +11,8 @@ only covered approve/reject decisions.
 ## What is recorded
 
 Every **state-changing** (`POST`, `PUT`, `DELETE`) call to the controller's human-facing API is
-recorded, for the following actions:
+recorded, allowed or denied, for the following actions. A **denied read** is recorded too (see
+[Denied reads](#denied-reads)):
 
 | Action | Route |
 |---|---|
@@ -19,6 +20,7 @@ recorded, for the following actions:
 | `job.delete` | `DELETE /api/v1/jobs/{name}` |
 | `run.trigger` | `POST /api/v1/runs` |
 | `run.cancel` | `POST /api/v1/runs/{id}/cancel` |
+| `run.replay` | `POST /api/v1/runs/{id}/replay` |
 | `run.delete` | `DELETE /api/v1/runs/{id}` |
 | `run.approval.decide` | `POST /api/v1/runs/{runID}/approvals/{stepIndex}` |
 | `secret.set` | `POST /api/v1/secrets` |
@@ -29,6 +31,8 @@ recorded, for the following actions:
 | `token.delete` | `DELETE /api/v1/tokens/{id}` |
 | `webhook.apply` | `POST /api/v1/webhooks` |
 | `webhook.delete` | `DELETE /api/v1/webhooks/{name}` |
+| `vars.apply` | `POST /api/v1/vars` |
+| `vars.delete` | `DELETE /api/v1/vars/{name}` |
 | `schedule.apply` | `POST /api/v1/schedules` |
 | `schedule.delete` | `DELETE /api/v1/schedules/{name}` |
 | `appsource.apply` | `POST /api/v1/appsources` |
@@ -48,7 +52,41 @@ Each recorded entry contains:
 | `path` | Request path |
 | `action` | Short classification from the table above |
 | `resource` | Best-effort name/id of the target (e.g. job name, secret name, token id) |
-| `status` | HTTP response status code |
+| `status` | HTTP response status code the client actually saw |
+| `permission` | The permission the request was checked against (for example `run.trigger`); empty when no decision applied |
+| `scope` | The job name for a folder-scopable decision; empty for a global decision and for a refusal before any job was looked at |
+| `grantedBy` | A short description of the first grant that allowed the request; empty on a denial |
+
+### Permission, scope and grantedBy
+
+`permission`, `scope` and `grantedBy` record the authorization decision. The `grantedBy` string
+names the first grant that allowed the request (global grants are listed before folder grants,
+shallower folders before deeper ones). The forms are:
+
+| `grantedBy` | Meaning |
+|---|---|
+| `role:developer (roleMap["my-org:devs"])` | The global role came from a `roleMap` entry (also `userMap["alice@example.com"]`, `userMap["<sub>"]` or `defaultRole`) |
+| `global (groups["my-org:engineering"])` / `global (users["alice@example.com"])` | An `oidc.permissions.global` entry |
+| `folder:team-a (groups["my-org:team-a"])` / `folder:team-a (users["contractor@example.com"])` | An `oidc.permissions.folders` entry |
+| `role:developer (pat)` | A role-only PAT (no owner) with that stored role |
+| `role:developer (session)` | A session created before the upgrade (no stored claims) |
+| `... & pat-ceiling` | The grant above, as narrowed by an owner PAT's ceiling |
+| `break-glass` | The `UNIFIED_TOKEN` token |
+
+`unified-cli authz explain` prints the same strings, so you can ask why a call was allowed.
+`scope` is empty for global decisions (secrets, tokens, agents, ...) and also when a request is
+refused by the cheap pre-check ("you hold this permission nowhere") before the job is known.
+
+### Denied reads
+
+Allowed reads are never recorded (log tailing and list polling would flood the table). Every
+**denied** read is: a `403`, and a request answered as hidden because the caller lacks `job.read`
+(the client saw `404`, but the row is recorded as a denial). The row's `status` is the status the
+client actually saw: a hidden resource is answered `404`, `204` (deleting a hidden schedule), or
+`400` (applying a schedule whose target is hidden), not `403`. For a denied read or an unclassified
+write the row's `action` is the permission that was checked (for example `job.read`) and `resource`
+is the scope. Denied calls to `GET /api/v1/authz/policy` and `POST /api/v1/authz/explain` are
+recorded this way (`authz.read`); allowed calls are not.
 
 **Secrets are special-cased:** for `secret.set`, only the secret's `name` is ever read out of the
 request body — the `value` field is never inspected, logged, or stored anywhere in the audit
@@ -72,13 +110,19 @@ The following are deliberately **not** recorded:
   authentication mechanism itself, not a state-changing operation on a managed resource.
 - **Log-append-style / high-volume routes** (agent log/step/output submission) — see
   "agent-facing endpoints" above; these are the same set.
-- **All `GET` requests** — read-only calls are never audited, regardless of route.
-- **Artifact upload/download** — agent-authenticated (upload) or shared with agents (download);
-  excluded along with the rest of the agent-facing surface.
+- **Allowed `GET` requests** — read-only calls are audited only when authorization refuses them
+  (see [Denied reads](#denied-reads)).
+- **Refusals that involve no human authorization decision** — an agent principal calling a
+  human-only route, `401 unauthorized` responses, and `403 forbidden: unclassified route` are not
+  recorded.
+- **Artifact upload and allowed downloads** — upload is agent-authenticated and excluded along with the
+  rest of the agent-facing surface; a download is a read, so only a refused one (no `job.read` on the
+  run's job) is recorded.
 
-Only routes explicitly present in the middleware's action table are recorded (an allow-list, not
-a deny-list) — a newly added human-facing route must be deliberately classified before it starts
-appearing in the audit log.
+Allowed state-changing calls are recorded only for routes explicitly present in the middleware's
+action table (an allow-list, not a deny-list) — a newly added human-facing route must be
+deliberately classified before it starts appearing in the audit log. A request that authorization
+refused is recorded even when its route is not in the table.
 
 ## Storage
 
@@ -98,14 +142,17 @@ CREATE TABLE audit_logs (
 CREATE INDEX idx_audit_logs_occurred_at ON audit_logs (occurred_at);
 ```
 
+Migration `024_matrix_authorization` adds the nullable columns `permission`, `scope` and `granted_by`.
+They are `NULL` for rows written before the upgrade.
+
 ## API
 
 ```
 GET /api/v1/audit?limit=N&offset=M
 ```
 
-- **Admin role only** — same RBAC enforcement (`requireMinRole`) as other admin-only endpoints
-  (see [Authorization](authorization.md)). Non-admin callers get `403 Forbidden`.
+- Requires the `audit.read` permission, which only the `admin` bundle holds (see
+  [Authorization](authorization.md)). Other callers get `403 forbidden: missing permission "audit.read"`.
 - `limit` — default `100`, capped at `1000`.
 - `offset` — default `0`.
 - Results are ordered **newest first** (`occurred_at DESC`).
@@ -127,7 +174,9 @@ curl -H "Authorization: Bearer $TOKEN" \
     "path": "/api/v1/secrets/AWS_KEY",
     "action": "secret.delete",
     "resource": "AWS_KEY",
-    "status": 204
+    "status": 204,
+    "permission": "secret.write",
+    "grantedBy": "role:admin (roleMap[\"unified-admins\"])"
   }
 ]
 ```
@@ -138,17 +187,18 @@ curl -H "Authorization: Bearer $TOKEN" \
 unified-cli audit list [--limit N]
 ```
 
-Prints a table (time, actor, action, resource, status), newest first:
+Prints a table (time, actor, action, resource, status, permission, grantedBy), newest first.
+A column with no value shows `-`:
 
 ```
 $ unified-cli audit list --limit 5
-2026-07-05T10:30:00Z	alice	secret.delete	AWS_KEY	204
-2026-07-05T10:28:11Z	bob	job.apply	deploy-prod	200
-2026-07-05T10:15:02Z	alice	token.create	ci-bot	200
+2026-07-05T10:30:00Z	alice	secret.delete	AWS_KEY	204	secret.write	role:admin (roleMap["unified-admins"])
+2026-07-05T10:28:11Z	bob	run.cancel	run-abc123	403	run.cancel	-
+2026-07-05T10:15:02Z	alice	token.create	ci-bot	200	token.create	role:admin (roleMap["unified-admins"])
 ...
 ```
 
-Requires an admin-role token/session, same as the API endpoint.
+Requires the `audit.read` permission, same as the API endpoint.
 
 ## Retention
 

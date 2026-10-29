@@ -177,3 +177,69 @@ import { apiFetch } from '../lib/api.js';
 const jobs = await apiFetch('/api/v1/jobs');
 await apiFetch('/api/v1/runs', { method: 'POST', body: JSON.stringify({ jobName, params }) });
 ```
+
+## Permissions in the UI
+
+The server authorizes every request. The UI only decides what to **show**, from
+the caller's grants, and a UI control is **never the only enforcement**: a
+hidden button that is called anyway (devtools, a stale page, a crafted request)
+gets the same `403`/`404` the CLI would, and the UI renders it as an ordinary
+error without retrying.
+
+### Where the grants come from
+
+`GET /api/v1/auth/me` returns the caller's effective grants under
+`permissions` (`{global: [...], folders: {"team-a": [...]}}`; folder keys
+appear only where a grant matched the caller). `web/src/lib/api.js` loads it
+into the `currentUser` store and exposes the derived `grants` store, and it
+re-reads `/auth/me` once after any `403` so a page left open across a config
+change converges without a reload.
+
+### `can()` and `allows()`
+
+`web/src/lib/authz.js` mirrors the Go rule (`internal/authz`
+`Grants.Can`): permission `P` is held on job `J` if it is in `global` or in the
+grants of any proper ancestor folder of `J` (`team-a` covers `team-a/x` and
+`team-a/sub/x`, not `team-ab/x`, and not a root job named `team-a`).
+
+- `can(grants, permission, jobName)` is the exact check.
+- `canAnywhere(grants, permission)` asks whether the permission is held
+  globally or on any folder (use it for navigation and global pages).
+- `allows(grants, permission, jobName?)` is what components call. While the
+  grants are not yet known (`null`) it is permissive so the page renders as it
+  used to and the server decides; with a job name it calls `can`, without one
+  `canAnywhere`.
+- `requiresText(permission, jobName?)` builds the tooltip, for example
+  `requires run.approve on team-a/prod`.
+
+### The shared fixture
+
+The JS rule and the Go rule are tested against one file,
+`web/src/lib/authz-cases.json`, a list of `(grants, permission, job) -> want`
+cases. `internal/authz/grants_test.go` (`TestCanFixture`) and
+`web/src/lib/authz.test.js` both read it, so the file is the specification of
+the prefix and union rule. Change the rule in both languages and add a case.
+
+### Hide versus disable
+
+- A control for an action the caller could never take anywhere is **hidden**:
+  navigation to Secrets, GitCredentials, AppSources, Webhooks and Schedules, the
+  Agents and Tokens links (`allows($grants, 'secret.list')`, ...).
+- A per-job control the caller lacks on *this* job is **disabled** with a
+  tooltip naming the permission, so a user can tell why the button is greyed
+  out: the Run link on a job, Cancel, Rerun and Approve/Reject on a run. The
+  token page offers only ceilings the caller holds.
+- Lists (jobs, active runs, agent run history, schedules) come from filtered
+  server responses, so unreadable jobs never reach the browser; a direct link to
+  an unreadable job or run is a `404` and renders the ordinary not-found view.
+
+### The UI action inventory
+
+`web/src/lib/ui-actions.json` lists every state-changing call the UI makes:
+file, action, method, route and permission. `web/src/lib/ui-actions.test.js`
+scans the source for `method:` assignments and fails when one is missing from
+the inventory, and `TestUIActionInventoryIsEnforced`
+(`internal/controller/ui_actions_test.go`) proves each listed route is
+classified and refuses a caller without its permission. **When you add a UI
+action, add its row** to the inventory, gate the control with `allows()`, and
+make sure the route is in `routeTable`.

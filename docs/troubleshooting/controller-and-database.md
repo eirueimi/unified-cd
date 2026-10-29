@@ -18,6 +18,148 @@ The `env:` name prefix is reserved for the token synced from `UNIFIED_TOKEN`. Ad
 
 Choose a token name that does not start with `env:`. If the warning appears without a rotation you performed, a user-created PAT was removed; review who created it and rotate any credentials it could have reached.
 
+## Controller refuses to start with an `oidc.permissions` error
+
+**Symptom**
+
+The controller exits at startup and logs `config file` with one of these errors (the first problem found is reported):
+
+| Error | Cause |
+|---|---|
+| `oidc.permissions.folders["team-a"].groups["my-org:team-a"]: unknown permission or role "jobs.read"` | A grant names something that is not one of the 25 permissions or `viewer` / `developer` / `admin` (a typo) |
+| `oidc.permissions.folders["team-a"].groups["my-org:team-a"]: permission "secret.write" is global-only and cannot be granted on a folder` | A global-only permission appears in a folder entry |
+| `oidc.permissions.folders["team-a//x"]: invalid folder: segments must be non-empty and must not be "." or ".."` | An empty, `.` or `..` segment in a folder key |
+| `oidc.permissions.folders["team-*"]: invalid folder: folders are literal job-name prefixes, "*", "?", "[" are not allowed` | A wildcard in a folder key |
+| `oidc.permissions.folders["team a"]: invalid folder: whitespace is not allowed` | Whitespace in a folder key |
+| `oidc.permissions.folders: "team-a" and "/team-a/" are the same folder` | Two keys that are the same folder after trimming `/` |
+| `oidc.permissions.folders["team-a"]: no groups or users` | A folder entry with neither |
+| `oidc.permissions.global.groups["my-org:x"]: empty grant` | A key with no value (or `[]`) |
+| `oidc.permissions: unknown field "deny"` | An unknown key; only `global` and `folders` exist (and `groups` / `users` below them) |
+| `oidc.permissions is set but oidc.issuer is not` | The block needs an OIDC issuer; every grant matches an OIDC identity |
+| `oidc.roleMap["my-org:devs"]: unknown role "develper" is ignored (valid: admin, developer, viewer)` | With a `permissions` block present, a `roleMap` value that is not a role is an error |
+
+Structural mistakes give `oidc.permissions...: must be a mapping`, `...: duplicate key "<key>"`, `...: keys must be scalars` or `...: grant must be a role or permission name or a list of them`.
+
+**Fix**
+
+Correct the key named in the error and restart. `unified-cli authz show` prints the resolved result once the controller is up. The reference and examples are in [Authorization](../operator-manual/authorization.md#configuring-grants-oidcpermissions).
+
+## Startup warning: unknown role in `roleMap` is ignored
+
+**Symptom**
+
+The controller logs `oidc.roleMap["my-org:devs"]: unknown role "develper" is ignored (valid: admin, developer, viewer)` at startup and users in that group get the `defaultRole` (or nothing).
+
+**Cause and fix**
+
+A `roleMap` value that is not `admin`, `developer` or `viewer` never matches. Without an `oidc.permissions` block this is only a warning (refusing to start would break existing setups); with the block it is a startup error. Fix the spelling. Only `roleMap` is checked: an unknown `userMap` role denies that user.
+
+## Startup warning: `UNIFIED_TOKEN is set while SSO is configured`
+
+**Symptom**
+
+The controller logs `UNIFIED_TOKEN is set while SSO is configured: the env:UNIFIED_TOKEN token is always admin and bypasses oidc.permissions; unset it once SSO works and keep it only as a break-glass credential`.
+
+**Cause and fix**
+
+Both an OIDC issuer and the bootstrap token (`--token`, `UNIFIED_TOKEN`, or `token` in the config file) are set. The bootstrap token holds all 25 permissions and ignores every folder grant. That is its purpose as a break-glass credential, so the controller keeps booting. Once SSO works, either unset `UNIFIED_TOKEN` or keep it stored securely and unused. Without an issuer the token is the only login and nothing is logged.
+
+## Startup warning: role-only personal access tokens bypass folder grants
+
+**Symptom**
+
+With folder grants configured, the controller logs `role-only personal access tokens with a role above viewer bypass folder grants until revoked` with a `count` attribute.
+
+**Cause and fix**
+
+PATs created before matrix authorization have no owner; they carry a global role (`developer` or `admin`) that applies everywhere, so folder grants do not narrow them. The break-glass row is not counted. List them with `unified-cli token list` (as an admin) and re-issue them as owned tokens, ideally with `--permission` ceilings, then revoke the old ones.
+
+## Startup warning: `oidc.permissions is set but oidc.clientId is not`
+
+**Symptom**
+
+The controller logs `oidc.permissions is set but oidc.clientId is not; no OIDC caller can authenticate`.
+
+**Cause and fix**
+
+OIDC is only active when both `oidc.issuer` and `oidc.clientId` are set, so the grants are dead configuration. Set the client ID (and secret for browser SSO).
+
+## `403 forbidden: missing permission "..."`
+
+**Symptom**
+
+A call fails with `403 forbidden: missing permission "run.trigger" on job "team-a/build"` (a folder-scopable permission) or `403 forbidden: missing permission "secret.write"` (a global-only one).
+
+**Cause**
+
+The caller can read the target (or the permission is global-only) but does not hold the named permission, globally or on an ancestor folder of that job. Folder `team-a` covers `team-a/x` and `team-a/sub/x`, not `team-ab/x` and not a root-level job.
+
+**Fix**
+
+Ask which permission the caller holds where: `unified-cli authz explain --user <email> --job <job>` (needs `authz.read`). Grant the permission in `oidc.permissions` and restart. The denial is also in the [audit log](../operator-manual/audit.md#denied-reads) with `permission` and `scope`.
+
+## A job or run returns 404 although the caller expects to read it
+
+**Symptom**
+
+A job that exists, or a run ID that is correct, returns `404` for one caller and works for another. It is absent from that caller's job list.
+
+**Cause**
+
+The caller has no `job.read` on that job, and a hidden job answers exactly like a missing one so existence is not leaked. A new team member with only global `viewer` permissions on a deployment that uses `defaultRole: deny` sees the same.
+
+**Fix**
+
+Grant `job.read` (or a bundle containing it) on the job's folder. Check with `unified-cli authz explain --user <email> --job <job>`; the audit log records the hidden `404` as a denied `job.read`.
+
+## `403 forbidden: no permissions` / `token owner has no permissions`
+
+**Symptom**
+
+Every call from a caller that authenticates fine returns `403 forbidden: no permissions` (browser session or CLI login) or `403 forbidden: token owner has no permissions` (an owned PAT).
+
+**Cause**
+
+The identity authenticated, but nothing in the **current** config grants it anything: it was removed from `roleMap` / `userMap` / `permissions`, its groups changed, or (for a PAT) its owner's grants are gone. Permissions are recomputed on every request.
+
+**Fix**
+
+Restore the grant, or have the user log in again if their groups changed at the IdP (a browser login refreshes the group snapshot of their PATs). Check with `unified-cli authz explain`.
+
+## `403 forbidden: no role` / `forbidden: no role assigned`
+
+**Symptom**
+
+An SSO login ends in `403 forbidden: no role assigned`, a CLI bearer token gets `403 forbidden: no role`, or a role-only PAT or pre-upgrade session gets `403 forbidden: no role`.
+
+**Cause**
+
+For SSO: nothing in `userMap` / `roleMap` / `defaultRole` produced a role **and** no `oidc.permissions` entry matched the identity. For a role-only PAT or a pre-upgrade session: its stored role is empty or unknown. A role-only PAT with an empty role also meets this on the artifact routes, which now require `job.read`.
+
+**Fix**
+
+Map the user's group or email to a role or a grant, or set `defaultRole`. Re-create a role-less PAT with a role.
+
+## Token creation is refused: `cannot create a token`
+
+**Symptom**
+
+`unified-cli token create` (or the Tokens page) fails with one of:
+
+- `cannot create a token: this login predates group-aware tokens; log out and log in again, then retry` (403)
+- `cannot create a token: your OIDC token carries no "groups" claim; log in again so the token includes it, then retry` (403; the claim name is your configured `oidc.rolesClaim`)
+- `cannot create a token: your identity has no subject (sub); log in again, then retry` (403)
+- `cannot grant role "developer": it exceeds your global role "viewer"; use --permission to grant folder permissions you hold` (400; `(none)` instead of the quoted role for a user with only folder grants)
+- `cannot grant permission "secret.write": you do not hold it` (400)
+
+**Cause**
+
+A PAT records the creator's identity and groups so that it can never exceed them. The first message is a browser session created before the upgrade (it has no stored groups); log in again. The second is a CLI login whose id_token does not carry the roles claim while the config has group-keyed grants. The CLI device flow requests only the `openid`, `email` and `profile` scopes, so an IdP that emits groups only on request (Dex does) omits them; with a config that has no group-keyed grants an absent claim is simply recorded as no groups and creation works. The 400s are deliberate, nothing is silently reduced: ask for a role or permissions you hold.
+
+**Fix**
+
+Create the token from the Web UI Tokens page (a browser session carries the groups), or log in again; use `--permission` instead of `--role` when you have no global role. For a folder-only user, `token.create` must be granted in `oidc.permissions.global`.
+
 ## Controller logs `dropping log line for sealed run`
 
 **Symptom**

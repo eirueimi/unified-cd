@@ -811,8 +811,9 @@ notes](../user-guide/writing-jobs/isolation-and-containers.md#podtemplate-contai
 
 ### Job Pod field policy
 
-A job's `podTemplate` can name any Kubernetes Pod field, and Roles in unified-cd are global: every
-`developer` can write a job. So the k8s-agent filters what **job-supplied** Pod content may reach
+A job's `podTemplate` can name any Kubernetes Pod field, and anyone with `job.configure` (every
+`developer`, and anyone granted it on any folder) can write a job; folder permissions do not confine
+what a job's Pod reaches. So the k8s-agent filters what **job-supplied** Pod content may reach
 the Kubernetes API server. By default it refuses, when it claims the run, a job whose own
 `podTemplate` reaches a ServiceAccount, the node, a Kubernetes Secret, a PersistentVolumeClaim, or
 a field the agent has not classified. Each category comes back through an explicit opt-in in the

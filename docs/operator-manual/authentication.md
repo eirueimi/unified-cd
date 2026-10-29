@@ -3,7 +3,7 @@
 This document covers the authentication methods for the unified-cd controller API.
 Both the minimal non-SSO setup and the Dex-based OIDC SSO setup are described.
 
-> **Authorization (roles/RBAC):** see [Authorization](authorization.md) for the 3-role model, OIDC group/role mapping, and per-role permissions.
+> **Authorization:** see [Authorization](authorization.md) for the permission catalogue, the three role bundles, OIDC group/role mapping, per-folder grants (`oidc.permissions`) and the PAT rule.
 
 > The CLI is referred to as `unified-cd` throughout. This is the built binary (`./bin/unified-cd`);
 > source is under `cmd/unified-cli`. During development you can also use `go run ./cmd/unified-cli ...`.
@@ -26,10 +26,11 @@ which tries the following **3 methods** in order. The first successful method gr
 
 `ServerAuth` has no name-based branch for static tokens; break-glass admin comes only from matching the configured token's hash. **`UNIFIED_TOKEN` is automatically synced to the DB
 as a PAT named `env:UNIFIED_TOKEN` at startup and is treated as one of the method-1 PATs.**
-This means it appears in `token list` / `token delete` like any other PAT.
-Its admin (break-glass) status comes from matching the configured `UNIFIED_TOKEN` value, not from the name:
-the `env:` name prefix is reserved and cannot be used for new PATs, and at startup any other PAT
+This means it appears in `token list` / `token delete` like any other PAT (for a caller who may manage every token).
+Its break-glass status requires the presented token's hash to match the configured `UNIFIED_TOKEN` value (constant-time) **and** the PAT to have no owner; the name alone grants nothing.
+The `env:` name prefix is reserved and cannot be used for new PATs, and at startup any other PAT
 named `env:UNIFIED_TOKEN` (different hash, e.g. a stale row after rotation) is removed with a warning in the controller log.
+See [Authorization: Break-glass](authorization.md#break-glass) for the reserved-name error, the startup purge warning and the warning logged when `UNIFIED_TOKEN` stays set alongside SSO.
 (Note: deleting it via `token delete` while `UNIFIED_TOKEN` is still set in the environment
 will cause it to be re-synced on the next restart. To fully disable it, remove or change
 the environment variable.)
@@ -105,11 +106,38 @@ unified-cli token create ci-bot --server http://localhost:8080 --token <UNIFIED_
 ```
 
 PATs are stored as SHA-256 hashes in the DB and managed via `token list` / `token delete`.
-`token list` also shows `env:UNIFIED_TOKEN`, the PAT derived from `UNIFIED_TOKEN`
-(as noted above, deleting it is ineffective while the environment variable is still set).
+`token list` also shows `env:UNIFIED_TOKEN`, the PAT derived from `UNIFIED_TOKEN`, to a caller
+who holds `token.manage` (as noted above, deleting it is ineffective while the environment variable is still set).
+A token created with `UNIFIED_TOKEN` has no owner: it is role-only, `--role` defaults to `admin`
+and `--permission` is not available (see [PAT owners and ceilings](#pat-owners-and-ceilings)).
 
 > **Production note**: The default value `dev-token-change-me` in `docker-compose.yaml` is
 > committed in plaintext. Change it for any non-local deployment.
+
+## PAT owners and ceilings
+
+A PAT created by an SSO user (a browser session or a CLI device-flow login) records its **owner**:
+that user's `sub`, `email` and the group claim values (`oidc.rolesClaim`) they presented. At use,
+the PAT's permissions are recomputed on every request as *the owner's permissions under the
+current config, intersected with the PAT's optional ceiling*:
+
+- **Ceiling.** `--role <role>` bounds the token to that bundle; `--permission <name>` (repeatable)
+  bounds it to a list. With neither, the PAT carries everything its owner has. A ceiling above what
+  the creator holds is refused with a `400`, never silently weakened (for example
+  `cannot grant role "developer": it exceeds your global role "viewer"; use --permission to grant folder permissions you hold`).
+- **A PAT never exceeds its owner**, globally or on any folder. Removing the owner from `roleMap` /
+  `userMap` / `permissions` takes effect for all their PATs at the next controller start, with no re-issue.
+- **Group changes at the IdP** reach a PAT when its owner next logs in through the browser: every
+  browser login refreshes the group snapshot on all PATs of that `sub`, even when the login itself is refused.
+  Silent session refresh does not refresh PAT owners.
+- **Role-only PATs** have no owner: every PAT created before this feature, and any PAT created with
+  the break-glass token or another role-only PAT. They are evaluated as before, as the global bundle
+  of their stored role, and they bypass folder grants until revoked; re-issue them when you introduce folders.
+- A PAT created from an identity whose groups are unknown is refused with `403` (a session from
+  before the upgrade, or a CLI login whose id_token carries no roles claim while the config has
+  group-keyed grants). The exact strings and fixes are in
+  [Troubleshooting](../troubleshooting/controller-and-database.md#token-creation-is-refused-cannot-create-a-token).
+- Each user lists and revokes only their own PATs (`token.create`); `token.manage` (admin) sees and revokes everyone's.
 
 ## Agent authentication and enrollment
 
@@ -217,6 +245,19 @@ environment:
 Sessions are valid for 24 hours; they are silently refreshed via the refresh token
 when less than 5 minutes remain. Logout via `POST /api/v1/auth/logout`.
 
+A session stores the caller's `rolesClaim` values (groups) captured at login, not a fixed role.
+Permissions are recomputed from those stored claims and the **current** config on every request,
+so editing `roleMap` / `userMap` / `permissions` affects live sessions after a controller restart
+without a re-login. The stored claims are updated on silent refresh when the refreshed id_token
+carries the roles claim. Group changes at the IdP therefore appear at the next login or refresh.
+A session created before the upgrade has no stored claims; it is evaluated as role-only from its
+stored role and cannot create PATs until the user logs in again (at most 24 hours).
+
+The Web UI reads the caller's effective permissions from `GET /api/v1/auth/me`, which answers
+for any authenticated principal (PAT, OIDC bearer or session) and returns `name`, `kind`, `role`
+(empty for a user admitted only by folder grants), `permissions` (`global` list and a `folders` map
+containing only folders where a grant matched the caller) and, when known, `sub` and `email`.
+
 ### CLI login (device flow)
 
 ```bash
@@ -282,6 +323,7 @@ you only need `--server` (or `server` in the config file) without specifying a t
 | `Unregistered redirect_uri ("/device/callback")` | Dex is running with old config. Run `docker compose ... restart dex`. Check that `/device/callback` is registered in `dex-config.sso.yaml`. |
 | `invalid_client / Invalid client credentials` (device callback) | CLI is using the confidential client. Verify `UNIFIED_OIDC_DEVICE_CLIENT_ID=unified-cd-cli` (public, no secret) is set and that client exists in Dex. |
 | `404` on device authorization | `/dex/*` proxy is not active. Check `UNIFIED_OIDC_ISSUER_INTERNAL` is set (a WARN log is emitted at startup if it is missing). |
+| `403 forbidden: no role assigned` after SSO login, or `403 forbidden: no role` on a bearer token | Nothing in `roleMap` / `userMap` / `defaultRole` matched the caller **and** no `oidc.permissions` entry matched. See [Authorization: How a caller's permissions are resolved](authorization.md#how-a-callers-permissions-are-resolved) and run `unified-cli authz explain`. |
 | Config changes not taking effect | Controller or Dex needs a restart. Dex does not detect file changes automatically — run `restart dex`. |
 
 ### Diagnostic commands
