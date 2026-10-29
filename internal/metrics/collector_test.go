@@ -83,6 +83,7 @@ var storageFamilies = []string{
 	"unifiedcd_agent_volume_measured_timestamp_seconds",
 	"unifiedcd_agent_min_free_disk_bytes",
 	"unifiedcd_agent_claim_blocked_by_disk",
+	"unifiedcd_agent_volume_claim_blocked",
 }
 
 func TestCollector_ExportsWorkspaceVolumeAndThreshold(t *testing.T) {
@@ -101,9 +102,12 @@ func TestCollector_ExportsWorkspaceVolumeAndThreshold(t *testing.T) {
 # HELP unifiedcd_agent_claim_blocked_by_disk 1 if the agent is currently declining to claim work because free disk is below its minFreeDisk threshold, else 0. Absent for an agent that performs no claim-time disk check.
 # TYPE unifiedcd_agent_claim_blocked_by_disk gauge
 unifiedcd_agent_claim_blocked_by_disk{agent="agent-1"} 1
-# HELP unifiedcd_agent_min_free_disk_bytes The agent's configured minFreeDisk threshold in bytes; 0 means the claim-time disk check is disabled. Absent for an agent with no such setting.
+# HELP unifiedcd_agent_min_free_disk_bytes The agent's minFreeDisk threshold for its workspace, resolved to bytes (a percentage is resolved against the workspace size); 0 means the claim-time disk check is disabled. Absent when the agent has no such setting or the threshold cannot be resolved yet.
 # TYPE unifiedcd_agent_min_free_disk_bytes gauge
 unifiedcd_agent_min_free_disk_bytes{agent="agent-1"} 500
+# HELP unifiedcd_agent_volume_claim_blocked 1 if the agent is keeping runs that mount this named volume queued because its free space is below minFreeDisk, else 0.
+# TYPE unifiedcd_agent_volume_claim_blocked gauge
+unifiedcd_agent_volume_claim_blocked{agent="agent-1",agent_name="build-host",volume="unity"} 0
 # HELP unifiedcd_agent_volume_filesystem_free_bytes Free bytes on the filesystem backing a named volume, as last measured by the agent.
 # TYPE unifiedcd_agent_volume_filesystem_free_bytes gauge
 unifiedcd_agent_volume_filesystem_free_bytes{agent="agent-1",agent_name="build-host",volume="unity"} 40
@@ -194,7 +198,7 @@ func TestCollector_PublishesReportedZeroAndFalse(t *testing.T) {
 # HELP unifiedcd_agent_claim_blocked_by_disk 1 if the agent is currently declining to claim work because free disk is below its minFreeDisk threshold, else 0. Absent for an agent that performs no claim-time disk check.
 # TYPE unifiedcd_agent_claim_blocked_by_disk gauge
 unifiedcd_agent_claim_blocked_by_disk{agent="agent-1"} 0
-# HELP unifiedcd_agent_min_free_disk_bytes The agent's configured minFreeDisk threshold in bytes; 0 means the claim-time disk check is disabled. Absent for an agent with no such setting.
+# HELP unifiedcd_agent_min_free_disk_bytes The agent's minFreeDisk threshold for its workspace, resolved to bytes (a percentage is resolved against the workspace size); 0 means the claim-time disk check is disabled. Absent when the agent has no such setting or the threshold cannot be resolved yet.
 # TYPE unifiedcd_agent_min_free_disk_bytes gauge
 unifiedcd_agent_min_free_disk_bytes{agent="agent-1"} 0
 # HELP unifiedcd_agent_workspace_filesystem_free_bytes Free bytes on the agent's workspace filesystem, as last measured by the agent.
@@ -297,7 +301,7 @@ func TestCollector_ThresholdAndBlockedDoNotDependOnWorkspace(t *testing.T) {
 # HELP unifiedcd_agent_claim_blocked_by_disk 1 if the agent is currently declining to claim work because free disk is below its minFreeDisk threshold, else 0. Absent for an agent that performs no claim-time disk check.
 # TYPE unifiedcd_agent_claim_blocked_by_disk gauge
 unifiedcd_agent_claim_blocked_by_disk{agent="agent-1"} 0
-# HELP unifiedcd_agent_min_free_disk_bytes The agent's configured minFreeDisk threshold in bytes; 0 means the claim-time disk check is disabled. Absent for an agent with no such setting.
+# HELP unifiedcd_agent_min_free_disk_bytes The agent's minFreeDisk threshold for its workspace, resolved to bytes (a percentage is resolved against the workspace size); 0 means the claim-time disk check is disabled. Absent when the agent has no such setting or the threshold cannot be resolved yet.
 # TYPE unifiedcd_agent_min_free_disk_bytes gauge
 unifiedcd_agent_min_free_disk_bytes{agent="agent-1"} 0
 `
@@ -328,4 +332,47 @@ func TestCollector_AStoreErrorIncrementsCollectorErrors(t *testing.T) {
 	}
 	assert.True(t, got["unifiedcd_agents"], "an unrelated family must survive a storage error")
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.collectorErrors))
+}
+
+const volumeClaimBlockedHelp = `# HELP unifiedcd_agent_volume_claim_blocked 1 if the agent is keeping runs that mount this named volume queued because its free space is below minFreeDisk, else 0.
+# TYPE unifiedcd_agent_volume_claim_blocked gauge
+`
+
+func TestCollector_ExportsVolumeClaimBlocked(t *testing.T) {
+	at := time.Unix(1700000000, 0)
+	m := New()
+	m.RegisterDBCollector(&fakeCounts{storage: map[string]api.AgentStorage{
+		"a": {AgentName: "n", Volumes: map[string]api.VolumeStats{
+			"full":    {MeasuredAt: at, ClaimBlocked: true},
+			"roomy":   {MeasuredAt: at},
+			"dropped": {ClaimBlocked: true}, // MeasuredAt zero: whole volume dropped (rulings #10)
+		}},
+		"novols": {AgentName: "m"},
+	}}, 90*time.Second)
+
+	expected := volumeClaimBlockedHelp +
+		`unifiedcd_agent_volume_claim_blocked{agent="a",agent_name="n",volume="full"} 1
+` +
+		`unifiedcd_agent_volume_claim_blocked{agent="a",agent_name="n",volume="roomy"} 0
+`
+	require.NoError(t, testutil.GatherAndCompare(m.reg, strings.NewReader(expected), "unifiedcd_agent_volume_claim_blocked"))
+}
+
+// nil means "unknown yet" (percent configured, no workspace sample): omit the
+// series. A resolved byte value and a disabled 0 are both published.
+func TestCollector_MinFreeDiskNilIsOmittedZeroAndBytesArePublished(t *testing.T) {
+	m := New()
+	m.RegisterDBCollector(&fakeCounts{storage: map[string]api.AgentStorage{
+		"unknown":  {AgentName: "u"},
+		"disabled": {AgentName: "d", MinFreeDiskBytes: u64(0)},
+		"bytes":    {AgentName: "b", MinFreeDiskBytes: u64(1073741824)},
+	}}, 90*time.Second)
+
+	expected := `
+# HELP unifiedcd_agent_min_free_disk_bytes The agent's minFreeDisk threshold for its workspace, resolved to bytes (a percentage is resolved against the workspace size); 0 means the claim-time disk check is disabled. Absent when the agent has no such setting or the threshold cannot be resolved yet.
+# TYPE unifiedcd_agent_min_free_disk_bytes gauge
+unifiedcd_agent_min_free_disk_bytes{agent="bytes"} 1.073741824e+09
+unifiedcd_agent_min_free_disk_bytes{agent="disabled"} 0
+`
+	require.NoError(t, testutil.GatherAndCompare(m.reg, strings.NewReader(expected), "unifiedcd_agent_min_free_disk_bytes"))
 }

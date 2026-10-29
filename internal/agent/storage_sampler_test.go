@@ -210,7 +210,7 @@ func TestHeartbeat_ClaimBlockedStaysTrueWhileAnyOneSlotIsStillDeclining(t *testi
 	a := &Agent{
 		ID:          "a1",
 		Client:      NewClient(srv.URL, "t"),
-		MinFreeDisk: uint64(1) << 30,
+		MinFreeDisk: config.DiskThreshold{Bytes: 1 << 30, Set: true},
 		diskStatsFn: func(string) (uint64, uint64, error) {
 			if calls.Add(1) == 4 {
 				return uint64(2) << 30, uint64(1) << 40, nil

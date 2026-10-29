@@ -197,10 +197,12 @@ guide](../operator-manual/migrations/2026-10-20-named-volumes.md#workspacepvc-is
 **Symptom**
 
 Runs sit `Queued` although an agent that matches them is connected and heartbeating, and that agent's
-log repeats (every 2 seconds per concurrency slot):
+log says, once when the agent starts declining (with a reminder at most once a minute while it
+stays blocked, and an `INFO` line, `free disk space is no longer below minimum, claiming again`,
+when it recovers):
 
 ```
-level=WARN msg="free disk space below minimum, skipping claim" freeBytes=4203003904 minFreeDisk=5368709120 slot=0
+level=WARN msg="free disk space below minimum, skipping claim" freeBytes=4203003904 thresholdBytes=5368709120 minFreeDisk=1% thresholdPercent=1 totalBytes=536870912000
 ```
 
 On `/metrics` the agent shows:
@@ -211,18 +213,31 @@ unifiedcd_agent_claim_blocked_by_disk{agent="build-agent-01"} 1
 
 **Cause**
 
-The agent's `minFreeDisk` is set and the free space on its workspace filesystem has dropped below it,
-so the agent declines to claim anything until space frees up. Nothing is deleted and no run fails; the
-queue just stops draining on that agent. `unifiedcd_agent_workspace_filesystem_free_bytes` against
-`unifiedcd_agent_min_free_disk_bytes` shows by how much. The value is reported with the agent's 15s
-heartbeat, so it can trail the log line by up to that long.
+The free space on the agent's **workspace** filesystem (`workspaceDir`) has dropped below its
+`minFreeDisk`, so the agent declines to claim anything until space frees up. `minFreeDisk` is on by
+default at `1%` of the filesystem, so you do not have to have set it. Nothing is deleted and no run
+fails; the queue just stops draining on that agent. The line tells you the numbers: `freeBytes`
+against `thresholdBytes` (the threshold resolved to bytes), `minFreeDisk` is the configured form
+and, for a percentage, `thresholdPercent` and `totalBytes` show how it was resolved.
+`unifiedcd_agent_workspace_filesystem_free_bytes` against `unifiedcd_agent_min_free_disk_bytes`
+shows the same on `/metrics`; the value is reported with the agent's 15s heartbeat, so it can trail
+the log line by up to that long.
 
-If the metric is `0`, the agent is not declining because of disk: look at labels, concurrency and
-volumes instead ([Run stays `Queued` forever](runs-and-scheduling.md#run-stays-queued-forever)). If
-the series is absent, the agent is a Kubernetes agent (which has no claim-time disk check), is not
-alive, or predates the metric, so its absence says nothing about disk. If
-`unifiedcd_agent_min_free_disk_bytes` is `0`, `minFreeDisk` is unset and this check is disabled: a full
-disk will fail runs instead of pausing claims.
+**How to tell the workspace gate from the volume gate.** The workspace gate stops *all* claiming and
+is logged as above, with `unifiedcd_agent_claim_blocked_by_disk` at `1`. The volume gate only keeps
+back runs that mount the low volume, is logged as `volume below minFreeDisk, not claiming runs that
+mount it` and shows as `unifiedcd_agent_volume_claim_blocked{volume="..."} 1`; see [Run stays Queued:
+the volume it mounts is below
+`minFreeDisk`](runs-and-scheduling.md#run-stays-queued-the-volume-it-mounts-is-below-minfreedisk).
+If only some jobs wait, it is the volume gate.
+
+If the metric `unifiedcd_agent_claim_blocked_by_disk` is `0`, the agent is not declining because of
+disk: look at labels, concurrency and volumes instead ([Run stays `Queued`
+forever](runs-and-scheduling.md#run-stays-queued-forever)). If the series is absent, the agent is a
+Kubernetes agent (which has no workspace gate), is not alive, or predates the metric, so its absence
+says nothing about disk. If `unifiedcd_agent_min_free_disk_bytes` is `0`, `minFreeDisk` was set to
+`0` / `off` and this check is disabled: a full disk will fail runs instead of pausing claims. (It is
+omitted, not `0`, in the first seconds after start while a percentage cannot be resolved yet.)
 
 **Fix**
 
@@ -230,8 +245,15 @@ Free space on the filesystem that holds `workspaceDir`: remove workspaces a cras
 prune container images and stopped claim containers, or enable `workspaceRetentionDays`
 (see [Operations Guide: Workspace and Claim-Container
 Hygiene](../operator-manual/operations.md#workspace-and-claim-container-hygiene)). The agent resumes
-claiming on its own at the next check, and `unifiedcd_agent_claim_blocked_by_disk` returns to `0`. A
-named volume on a different filesystem is not covered by this check; watch
-`unifiedcd_agent_volume_filesystem_free_bytes` for it. If you see `free disk space check failed,
-proceeding with claim` instead, the agent could not measure the filesystem and kept claiming; check
-that `workspaceDir` exists and is readable.
+claiming on its own at the next check, and `unifiedcd_agent_claim_blocked_by_disk` returns to `0`. If
+the threshold itself is too high for this disk (a `1%` default that is larger than the room you
+actually keep free, or an absolute value copied from a bigger host), lower it or set `minFreeDisk:
+0` and restart the agent; see [Operations: Choosing a
+threshold](../operator-manual/operations.md#choosing-a-threshold). If you see `free disk space check
+failed, proceeding with claim` instead, the agent could not measure the filesystem and kept
+claiming; check that `workspaceDir` exists and is readable.
+
+If the agent fails at startup with `UNIFIED_AGENT_MIN_FREE_DISK: invalid minFreeDisk "..."` (or
+`--min-free-disk: ...`, or a `minFreeDisk` error from the config file), the value is malformed:
+use a percentage (`1%`), a size (`10GiB`), a byte count or `off`. See the [migration
+note](../operator-manual/migrations/2026-10-23-disk-gating-defaults.md).

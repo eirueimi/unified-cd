@@ -112,10 +112,16 @@ func main() {
 	containerRuntime := flag.String("container-runtime", "", "container runtime for runsIn.image steps; empty = auto-detect (docker|podman|nerdctl|wslc). Apple's 'container' is explicit-only (not auto-detected) and cannot run isolated/claim-pod jobs")
 	pauseImage := flag.String("pause-image", orDefault(eff.PauseImage, defaultPauseImage), "image for the claim pod's pause (netns-holder) container")
 	runnerImage := flag.String("runner-image", orDefault(eff.RunnerImage, defaultRunnerImage()), "default primary container image for isolated jobs without a podTemplate job container")
-	minFreeDisk := flag.Uint64("min-free-disk", eff.MinFreeDisk, "minimum free space in bytes on the workspace filesystem required to keep claiming runs; 0 disables the check (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)")
+	minFreeDisk := flag.String("min-free-disk", eff.MinFreeDisk.String(), "minimum free space on the workspace filesystem required to keep claiming runs: a percentage of the filesystem (1%), a size (10GiB) or a byte count; 0 disables the check; default 1% (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)")
 	workspaceRetentionDays := flag.Int("workspace-retention-days", eff.WorkspaceRetentionDays, "age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; workspaces are already emptied around every run, so this only reclaims what an agent crash left behind) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)")
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
+
+	minFreeDiskThreshold, err := parseMinFreeDiskFlag(*minFreeDisk)
+	if err != nil {
+		slog.Error("invalid minimum free disk setting", "error", err)
+		os.Exit(1)
+	}
 
 	tokenValue := *enrollmentToken
 	if tokenValue == "-" {
@@ -239,7 +245,8 @@ func main() {
 	a.PauseImage = *pauseImage
 	a.RunnerImage = *runnerImage
 	a.ToolsDir = toolsDir
-	a.MinFreeDisk = *minFreeDisk
+	a.MinFreeDisk = minFreeDiskThreshold.OrDefault()
+	slog.Info("disk gate: " + minFreeDiskLogValue(minFreeDiskThreshold))
 	a.WorkspaceRetentionDays = *workspaceRetentionDays
 	a.Volumes = volumes
 
@@ -270,5 +277,30 @@ func main() {
 	if err := a.Run(ctx); err != nil && ctx.Err() == nil {
 		slog.Error("agent run", "error", err)
 		os.Exit(1)
+	}
+}
+
+// parseMinFreeDiskFlag parses the effective --min-free-disk value (the flag's
+// default is the env/file value, so an explicit flag overrides both). A
+// malformed value fails startup rather than silently falling back.
+func parseMinFreeDiskFlag(v string) (config.DiskThreshold, error) {
+	t, err := config.ParseDiskThreshold(v)
+	if err != nil {
+		return config.DiskThreshold{}, fmt.Errorf("--min-free-disk: %w", err)
+	}
+	return t, nil
+}
+
+// minFreeDiskLogValue describes the threshold for the startup log line.
+func minFreeDiskLogValue(t config.DiskThreshold) string {
+	switch {
+	case !t.Set:
+		return "minFreeDisk=" + config.DefaultDiskThreshold().String() + " (default)"
+	case t.Off:
+		return "disabled"
+	case t.Bytes != 0:
+		return fmt.Sprintf("minFreeDisk=%d bytes", t.Bytes)
+	default:
+		return "minFreeDisk=" + t.String()
 	}
 }

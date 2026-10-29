@@ -10,6 +10,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -19,6 +21,12 @@ import (
 // assert on the pod spec and exec target.
 type fakePM struct {
 	mu          sync.Mutex
+	// GetPod fixture: getPod is served (NotFound when nil), getErr fails the
+	// call, getBlock waits for ctx. getCalls counts calls.
+	getPod   *corev1.Pod
+	getErr   error
+	getBlock bool
+	getCalls int
 	createCount int
 
 	created   *corev1.Pod
@@ -186,6 +194,26 @@ func (f *fakePM) DeletePod(ctx context.Context, name string) error {
 	f.deleted = append(f.deleted, name)
 	f.mu.Unlock()
 	return nil
+}
+
+// GetPod serves the getPod fixture. getBlock makes it wait for ctx so a test
+// can prove the caller bounds the lookup; getErr fails it outright.
+func (f *fakePM) GetPod(ctx context.Context, name string) (*corev1.Pod, error) {
+	f.mu.Lock()
+	pod, err, block := f.getPod, f.getErr, f.getBlock
+	f.getCalls++
+	f.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		return nil, err
+	}
+	if pod == nil {
+		return nil, apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, name)
+	}
+	return pod.DeepCopy(), nil
 }
 func (f *fakePM) ListPods(_ context.Context, _ string) (*corev1.PodList, error) {
 	return &corev1.PodList{}, nil

@@ -112,6 +112,49 @@ kubectl -n ci get secret unified-cd-s3-creds
 If it is not there, create it there (copying it from the agent's namespace is
 fine), or clear `sidecarS3SecretName` if you do not need sidecar transfers yet.
 
+## Kubernetes run fails: pod was evicted: Usage of EmptyDir volume "workspace" exceeds the limit
+
+**Symptom**
+
+A run on the Kubernetes agent fails part-way through, and its error starts with the kubelet's own
+words:
+
+```
+k8s: pod <pod name> was evicted: Usage of EmptyDir volume "workspace" exceeds the limit "20Gi".
+The workspace emptyDir is limited to 20Gi by the agent workspaceSizeLimit; use a larger podTemplate (podTemplates.<name>.workspaceSizeLimit), or keep large data in a named volume (spec.volumes).
+(exec error: ...)
+```
+
+The second line (the hint) appears only when the agent has a `workspaceSizeLimit` configured and the kubelet message mentions `emptyDir` or ephemeral storage. The
+cluster shows the eviction: `kubectl -n ci get events --field-selector reason=Evicted`.
+
+**Cause**
+
+The agent caps the workspace `emptyDir` with `workspaceSizeLimit`, and this run wrote more than the
+cap, so the kubelet evicted the pod. The cap exists so one runaway run cannot fill the node's disk
+and evict unrelated pods. With no limit configured (the default) the same eviction can still happen
+for node-pressure reasons; the kubelet message is then shown without the hint.
+
+**Fix**
+
+Pick whichever fits the job:
+
+1. **Raise the limit for the template this job uses**: `podTemplates.<name>.workspaceSizeLimit`
+   (a Kubernetes quantity such as `80Gi`) overrides the global value. Restart the agent after
+   changing its config.
+2. **Raise the global `workspaceSizeLimit`** (or `UNIFIED_K8S_WORKSPACE_SIZE_LIMIT`) if every job needs
+   more room.
+3. **Keep the large data out of the workspace**: put it in a [named
+   volume](../user-guide/writing-jobs/volumes.md) (`spec.volumes`), which is a PVC and not subject to
+   the `emptyDir` cap.
+
+Check the key spelling in the agent config: it ignores unknown keys, so a misspelled
+`workspaceSizeLimit` leaves the workspace uncapped (or at the old cap) without any error. A pod
+template that already sets an `ephemeral-storage` request or limit, or a `sizeLimit` on the
+workspace, is left as you wrote it and `workspaceSizeLimit` does not apply to it. See [Kubernetes
+Integration: Disk limits and
+headroom](../operator-manual/kubernetes-integration.md#disk-limits-and-headroom).
+
 ## k8s pod `ImagePullBackOff` on `unified-artifact`
 
 **Symptom**

@@ -136,6 +136,7 @@ nav:
           - "Unevaluable if: Fails the Step": operator-manual/migrations/2026-10-23-unevaluable-if-fails-step.md
           - "Ephemeral Workspaces and Named Volumes": operator-manual/migrations/2026-10-20-named-volumes.md
           - "Version-Derived Default Images": operator-manual/migrations/2026-10-22-version-derived-default-images.md
+          - "Disk Gating on by Default": operator-manual/migrations/2026-10-23-disk-gating-defaults.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md

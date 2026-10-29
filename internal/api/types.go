@@ -154,7 +154,10 @@ type ClaimRequest struct {
 	// they occupy. The controller does not hand the agent a run that needs a
 	// volume named here. It is an optimisation that stops an agent claiming a
 	// run it would then wait on while holding a concurrency slot; the agent's
-	// own reservation is what actually enforces exclusion. Absolute paths match
+	// own reservation is what actually enforces exclusion. A host agent also
+	// lists here every volume that is unavailable because its free space is
+	// below the agent's minFreeDisk threshold, so the controller does not hand
+	// it a run that needs that volume. Absolute paths match
 	// no volume name and are ignored by the controller.
 	BusyVolumes []string `json:"busyVolumes,omitempty"`
 	// Volumes is every volume the agent declares, as it advertised at
@@ -475,6 +478,10 @@ type FilesystemStats struct {
 type VolumeStats struct {
 	FilesystemStats
 	MeasuredAt time.Time `json:"measuredAt"`
+	// ClaimBlocked is true while the agent keeps this volume out of its claims
+	// (BusyVolumes) because its free space is below minFreeDisk. Runs that need
+	// the volume stay queued; other runs are unaffected.
+	ClaimBlocked bool `json:"claimBlocked,omitempty"`
 }
 
 // AgentStorage is one agent's disk headroom, as carried on a heartbeat and
@@ -501,10 +508,13 @@ type AgentStorage struct {
 	// Volumes is keyed by volume name; nil or empty when the agent declares none
 	// or cannot measure them.
 	Volumes map[string]VolumeStats `json:"volumes,omitempty"`
-	// MinFreeDiskBytes is the agent's minFreeDisk threshold. nil means the agent
-	// has no such setting at all (a Kubernetes agent); a non-nil 0 means it is
-	// configured as 0, i.e. the check is disabled. The two must stay distinct:
-	// the disabled case is itself a warning an operator needs to see.
+	// MinFreeDiskBytes is the agent's minFreeDisk threshold resolved to bytes
+	// for the workspace filesystem (a percentage is resolved against its total).
+	// nil means the threshold is not known: the agent has no such setting at all
+	// (a Kubernetes agent), or it is a percentage and the workspace has no fresh
+	// measurement to resolve it against. A non-nil 0 means the check is
+	// disabled. These must stay distinct: the disabled case is itself a warning
+	// an operator needs to see, and an unknown threshold must not look like it.
 	MinFreeDiskBytes *uint64 `json:"minFreeDiskBytes,omitempty"`
 	// ClaimBlockedByDisk reports whether the agent is currently declining to
 	// claim work because free space is below the threshold. nil means the agent

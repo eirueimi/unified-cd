@@ -19,6 +19,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -40,6 +41,7 @@ type podManager interface {
 	WaitForPodRunning(ctx context.Context, name string) error
 	DeletePod(ctx context.Context, name string) error
 	ListPods(ctx context.Context, labelSelector string) (*corev1.PodList, error)
+	GetPod(ctx context.Context, name string) (*corev1.Pod, error)
 }
 
 type stepExecutor interface {
@@ -85,6 +87,9 @@ type K8sAgent struct {
 	// volumeStats caches the latest in-pod measurement of each named volume
 	// (see measureVolumes). It is written by runs and read by the heartbeat.
 	volumeStats volumeReadings
+	// volGate remembers which volumes the claim gate is withholding, to log
+	// each transition once (volume_gate.go).
+	volGate k8sVolumeGate
 }
 
 // k8sAgentCapabilities reports what the k8s agent can execute: it always
@@ -96,6 +101,7 @@ func NewK8sAgent(cfg Config, agentClient *agentlib.Client, pm *PodManager, exec 
 	a := &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: exec, pool: pool, podBindings: newPodBindingSet()}
 	if pool != nil {
 		a.kube = pool.client
+		pool.limitFor = func(name string) (resource.Quantity, bool) { return resolveWorkspaceSizeLimit(a.cfg, name) }
 	}
 	a.dispatch = a.executeRun
 	return a
@@ -543,6 +549,9 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// run. It stays off the heartbeat goroutine, which only reads the result.
 	// The run is measured again after it ends (below).
 	a.measureVolumes(ctx, podName, firstStepContainer(c), mountPath, volumeMounts)
+	// A run that gets here on a volume still under minFreeDisk is the probe the
+	// gate lets through once a reading is stale: say so in its own log.
+	a.warnLowVolumes(ctx, c.RunID, volumeMounts)
 
 	// backend is the seam between the shared step-orchestration loop
 	// (agentlib.RunClaim) and this pod's concrete execution environment. Its
@@ -551,6 +560,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// installs the masker itself via SetMasker after fetching secrets, so
 	// this wrapper does neither).
 	backend := newK8sBackend(a, c.RunID, c.JobName, podName, mountPath, dsl.SidecarContainerNames(c.PodTemplate), claimSince)
+	backend.tmplName = claimTemplateName(c.PodTemplate)
 	backend.volumePaths = volumePaths
 	backend.volumes = mountedVolumes(mountPath, volumeMounts)
 

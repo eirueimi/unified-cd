@@ -107,23 +107,32 @@ Three pieces of agent-host state can accumulate over time and, unlike the k8s-ag
 
 Two agent config knobs give operators direct levers over the workspace directories — a
 preflight to stop the bleeding, and an opt-in sweep to reclaim space — without
-requiring an external cron job. Both are host-agent only (the k8s-agent's
-workspaces are pod `emptyDir`s, reclaimed with the pod). See [Configuration
+requiring an external cron job. The sweep is host-agent only (the k8s-agent's
+workspaces are pod `emptyDir`s, reclaimed with the pod); the preflight exists on both
+agents (the Kubernetes agent applies it to its volumes, see [Kubernetes Integration: Disk
+limits and headroom](kubernetes-integration.md#disk-limits-and-headroom)). See [Configuration
 Reference: Agent Config File](../reference/configuration.md#agent-config-file) for the
 full flag/env/yaml forms.
 
 - **`minFreeDisk` (`--min-free-disk` / `UNIFIED_AGENT_MIN_FREE_DISK`) — preflight lever.**
-  When set, each concurrency slot checks free space on the workspace
-  filesystem before claiming a run; below the threshold it skips claiming and
-  backs off briefly instead. This is **not an error and not destructive** —
-  it never deletes anything and never fails a run — it simply stops that
-  agent from making the disk problem worse until space frees up (an operator
-  clears old workspaces, an unrelated process on the host frees space, or the
-  opt-in GC below runs). Watch the agent log for `free disk space below
-  minimum, skipping claim` to know when the lever is engaged, or alert on
-  `unifiedcd_agent_claim_blocked_by_disk` (see [Watching agent disk
-  headroom](#watching-agent-disk-headroom)). `0` (default) disables the check,
-  matching prior behavior.
+  Each concurrency slot checks free space on the workspace filesystem before
+  claiming a run; below the threshold it skips claiming and backs off briefly
+  instead. The same threshold is applied to every [named
+  volume](#named-volume-hygiene): a volume below it is withheld from the claim, so
+  only the runs that mount it wait (they stay `Queued`) while other jobs keep
+  flowing. This is **not an error and not destructive** — it never deletes
+  anything and never fails a run — it simply stops that agent from making the
+  disk problem worse until space frees up (an operator clears old workspaces,
+  an unrelated process on the host frees space, or the opt-in GC below runs).
+  Watch the agent log for `free disk space below minimum, skipping claim`
+  (workspace; logged once when the agent starts declining, then a reminder at most once a minute) or `volume below minFreeDisk, not claiming runs that mount it`
+  (volume) to know when the lever is engaged, or alert on
+  `unifiedcd_agent_claim_blocked_by_disk` and
+  `unifiedcd_agent_volume_claim_blocked` (see [Watching agent disk
+  headroom](#watching-agent-disk-headroom)). **The default is `1%` of the
+  filesystem, so the check is on unless you set `0` / `off`.** The value may be a
+  percentage (`"1%"`), a size (`"10GiB"`) or a byte count; how to pick one is
+  under [Choosing a threshold](#choosing-a-threshold).
 - **`workspaceRetentionDays` (`--workspace-retention-days` /
   `UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS`) — opt-in GC.** When set to a
   positive number of days, the agent runs a sweep at startup and then hourly
@@ -168,8 +177,9 @@ either.
   controller's checkouts share.
 - `size` is **advisory**. After each run the agent measures the volume and logs
   `volume usage exceeds its advisory size; the size is not enforced` when it is over; alert on that
-  line. It never stops a run. `minFreeDisk` checks the *workspace* filesystem only, so it does not
-  protect a volume that lives elsewhere. The real number is on `/metrics`:
+  line. It never stops a run. `minFreeDisk` is the guard that does act: a volume whose filesystem
+  has less free space than the threshold keeps new runs that mount it queued (the default is `1%` of
+  the volume's filesystem, so it is on unless you turned it off). The real number is on `/metrics`:
   `unifiedcd_agent_volume_filesystem_free_bytes` reports the free space of the filesystem under each
   volume ([Watching agent disk headroom](#watching-agent-disk-headroom)).
 - Two copies of a name on two agents are two independent copies, so total usage is the sum.
@@ -184,9 +194,14 @@ either.
   completely ... the figure is a lower bound` rather than failing), and `cleanWorkspace` falls back
   to a root cleanup container. But reclaiming the directory by hand needs root. Rootless podman
   avoids all of it.
-- To reclaim space, empty the directory with the agent stopped or the volume idle, or have a job
-  with `cleanWorkspace: true` run once (that wipes a volume mounted at the workspace root only).
-  Deleting a volume's directory while a run holds it breaks that run.
+- To reclaim space, empty the directory with the agent stopped or the volume idle. A job with
+  `cleanWorkspace: true` (which wipes a volume mounted at the workspace root only) is **not** a way
+  out of a volume the gate is withholding: a job that mounts the volume waits like any other, and a
+  host agent has no probe run. If the volume is below `minFreeDisk`, free the space on the host
+  directly, or temporarily set `minFreeDisk: 0` (or a lower value) and restart the agent so the
+  cleanup job can run. (A Kubernetes agent re-probes a stale reading after 10 minutes, so
+  runs are let through eventually.) Deleting a volume's directory while a run holds it breaks that
+  run.
 
 **Kubernetes agents.**
 
@@ -455,8 +470,9 @@ Key metrics:
 | `unifiedcd_agent_volume_filesystem_free_bytes{agent,agent_name,volume}` | gauge | Free bytes on the filesystem backing a [named volume](#named-volume-hygiene) |
 | `unifiedcd_agent_volume_filesystem_size_bytes{agent,agent_name,volume}` | gauge | Total bytes of that filesystem |
 | `unifiedcd_agent_volume_measured_timestamp_seconds{agent,agent_name,volume}` | gauge | Unix time at which the agent measured that volume: how old the free/size figures are |
-| `unifiedcd_agent_min_free_disk_bytes{agent}` | gauge | A host agent's configured `minFreeDisk`. **`0` means the claim-time disk check is disabled**, not that the disk is full |
-| `unifiedcd_agent_claim_blocked_by_disk{agent}` | gauge | `1` while a host agent is declining to claim because free disk is below `minFreeDisk`, else `0` |
+| `unifiedcd_agent_min_free_disk_bytes{agent}` | gauge | A host agent's `minFreeDisk` **resolved to bytes** (a percentage is applied to the workspace filesystem's size). **`0` means the claim-time disk check is disabled** (explicit `minFreeDisk: 0`), not that the disk is full. Omitted while a percentage cannot be resolved yet (the workspace has not been measured) |
+| `unifiedcd_agent_claim_blocked_by_disk{agent}` | gauge | `1` while a host agent is declining to claim anything because workspace free disk is below `minFreeDisk`, else `0` |
+| `unifiedcd_agent_volume_claim_blocked{agent,agent_name,volume}` | gauge | `1` while the agent withholds this [named volume](#named-volume-hygiene) from claims because its free space is below `minFreeDisk` (runs that mount it stay `Queued`; other runs are unaffected), else `0`. Reported by host and Kubernetes agents |
 | `go_*`, `process_*` | various | Standard Go runtime and process collectors (goroutines, heap, GC pause, RSS, CPU, open FDs) |
 
 ### Watching the background workers
@@ -561,6 +577,7 @@ filesystem's headroom, so do not add them up.
 | `unifiedcd_agent_volume_measured_timestamp_seconds` | `agent`, `agent_name`, `volume` | Both |
 | `unifiedcd_agent_min_free_disk_bytes` | `agent` | Host agents |
 | `unifiedcd_agent_claim_blocked_by_disk` | `agent` | Host agents |
+| `unifiedcd_agent_volume_claim_blocked` | `agent`, `agent_name`, `volume` | Both |
 
 `agent` is the agent ID. `agent_name` is the Kubernetes agent's configured `agentName`; on a host
 agent it is the machine's hostname. All are gauges.
@@ -568,17 +585,21 @@ agent it is the machine's hostname. All are gauges.
 **A missing series never means "fine".** Each series exists only while the agent can answer it, and
 a series that is not there is not a zero. The cases:
 
-- **`minFreeDisk` defaults to `0`, and `0` means the claim-time check is disabled** (not "no space
-  left"). An operator who has never set it has no protection at all, and
+- **`minFreeDisk` defaults to `1%`, and `0` means the claim-time check is disabled** (not "no space
+  left"). A host agent that has not set it is protected at 1% of each filesystem; only an operator
+  who set `minFreeDisk: 0` (or `off`) has no protection, and
   `unifiedcd_agent_min_free_disk_bytes` publishes that `0` so the gap is visible. The headroom
-  series are a warning; **setting `minFreeDisk` is what turns the warning into protection**, because
-  it is what makes the agent stop claiming before the disk fills. See [Workspace and Claim-Container
-  Hygiene](#workspace-and-claim-container-hygiene).
-- **A Kubernetes agent omits the series it cannot answer.** It has no workspace directory (every
-  claim pod gets an ephemeral `emptyDir`), `minFreeDisk` is a host-only setting, and the claim-time
-  check exists only in the host agent's claim loop. So a Kubernetes agent publishes no
-  `workspace_filesystem_*`, no `min_free_disk_bytes` and no `claim_blocked_by_disk`. Absent means
-  "not applicable", and it must not be read as "not blocked".
+  series are a warning; **`minFreeDisk` is what turns the warning into protection**, because it is
+  what makes the agent stop claiming before the disk fills. See [Workspace and Claim-Container
+  Hygiene](#workspace-and-claim-container-hygiene) and [Choosing a
+  threshold](#choosing-a-threshold).
+- **A Kubernetes agent omits the workspace series, and only those.** It has no workspace directory
+  (every claim pod gets an ephemeral `emptyDir`), so it publishes no `workspace_filesystem_*`, no
+  `min_free_disk_bytes` and no `claim_blocked_by_disk`. It does gate claims on its named volumes
+  with `minFreeDisk`, so it **does** publish `volume_claim_blocked` for each volume it has a reading
+  for. Absent means "not applicable", and it must not be read as "not blocked". Conversely, a `0`
+  does not prove the volume is fine: agents that do not gate (older agents, or `minFreeDisk`
+  disabled) also publish `0` for their volumes.
 - **A Kubernetes volume figure is only as fresh as the last run that mounted the volume.** The agent
   measures it from inside the claim pod, which already has the PVC mounted, both before the run
   starts and again after it ends (so it includes what the run just wrote). Nothing measures an idle
@@ -586,7 +607,11 @@ a series that is not there is not a zero. The cases:
   `unifiedcd_agent_volume_measured_timestamp_seconds`. A measurement that fails leaves the previous
   reading and its timestamp in place; it never publishes a zero. A restarted Kubernetes agent holds
   no readings at all, so a volume's series are **absent** until a run next mounts that volume,
-  deliberately, rather than showing a number from before the restart.
+  deliberately, rather than showing a number from before the restart. The same readings drive the
+  volume gate, which is why a restart is also the way to clear it, and why a reading older than 10
+  minutes stops gating (see [Kubernetes Integration: Disk limits and
+  headroom](kubernetes-integration.md#disk-limits-and-headroom)): `volume_claim_blocked` reads `0`
+  once the reading it rests on is more than 10 minutes old, even if the volume is still full.
 - **A host agent measures every 15s**, in the background, and omits a filesystem whose measurement
   failed or went stale (no fresh answer for about two intervals, which is what a hung network mount
   looks like) rather than reporting a zero or an old number. The workspace and each volume are
@@ -641,16 +666,59 @@ time() - max by (agent_name, volume) (unifiedcd_agent_volume_measured_timestamp_
 1 - unifiedcd_agent_workspace_filesystem_free_bytes
   / unifiedcd_agent_workspace_filesystem_size_bytes > 0.9
 
-# Host agents with no claim-time disk check at all (minFreeDisk unset)
+# Host agents whose claim-time disk check is switched off (minFreeDisk: 0 / off). An agent
+# that left minFreeDisk at its 1% default publishes a non-zero value here, and a series that is
+# absent (a percentage not yet resolved, or a Kubernetes agent) does not match
 max by (agent) (unifiedcd_agent_min_free_disk_bytes) == 0
 
-# Host agents within 2 GiB of the point where they stop claiming (only where minFreeDisk is set)
+# Host agents within 2 GiB of the point where they stop claiming (only where the check is on)
 unifiedcd_agent_workspace_filesystem_free_bytes - unifiedcd_agent_min_free_disk_bytes < 2 * 1024^3
   and unifiedcd_agent_min_free_disk_bytes > 0
 
 # A host agent is declining to claim because of disk right now
 max by (agent) (unifiedcd_agent_claim_blocked_by_disk) == 1
+
+# A volume is being withheld from claims because it is nearly full (runs that mount it stay Queued).
+# Aggregate over replicas, which share one physical volume on Kubernetes
+max by (agent_name, volume) (unifiedcd_agent_volume_claim_blocked) == 1
 ```
+
+### Choosing a threshold
+
+`minFreeDisk` is a **floor**, not a margin. It is the free space below which the agent stops
+starting new work; it does not reserve anything for the runs already in progress, and it cannot stop
+a single run from filling the disk once it has been admitted. Two consequences:
+
+- **Pick a value larger than what one run can write between two checks.** A percentage is easy to
+  start with and scales with the disk (the default `1%` is 10 GiB of a 1 TiB disk, but only 1 GiB
+  of a 100 GiB one, which a single large checkout can eat). An absolute value says what you
+  actually mean: "never start a run with less than this much room".
+- **Size it from your workload.** If your biggest job writes 40 GiB of intermediate output, a 10 GiB
+  floor lets a second run start with room for only a quarter of what it needs, while all running
+  jobs keep writing. A Unity project that keeps a 200 GiB `Library/` in a named volume and writes
+  tens of gigabytes of build output per run wants something like `60GiB` on that volume's
+  filesystem, so that a build is never admitted to a disk that cannot hold it. **The same value
+  also gates the workspace filesystem**, so do not set it from the volume alone (see the warning
+  below).
+
+**Warning (host agents): the workspace gate has no exemption.** The threshold is one value applied to the
+workspace filesystem and to every volume. (A Kubernetes agent has no workspace gate, so this warning
+does not apply to it: it only gates named volumes.) A named volume whose filesystem is no bigger than an
+*absolute* threshold is skipped (it can never satisfy it): that volume is not gated and the agent
+logs a WARN once, naming the volume and both numbers. The workspace filesystem is **never**
+skipped. If an absolute value is larger than the workspace's normal free space, the agent stops
+claiming on every slot (`free disk space below minimum, skipping claim`), whatever the volumes hold.
+So pick an absolute value that fits the workspace filesystem too; or put the big volume on its own
+filesystem and use a percentage, which scales to each filesystem separately; or keep the default.
+A host agent's volume gate reads the 15s background sample rather than measuring in the claim path,
+so it reacts to a filling volume within about that time, not instantly.
+
+**Cost of the workspace check (host agents).** With the check on by default, every claim slot (the
+`maxConcurrent` ones and the detached ones) does one inline `statfs` of `workspaceDir` per claim
+loop iteration. That is cheap on a local disk. On a hard-mounted NFS workspace that has hung, the
+call blocks and wedges those claim slots; runs on such a workspace would hang anyway. If the
+workspace is on such a mount and you would rather not take that risk, set `minFreeDisk: 0` for the
+workspace (this also disables the volume gate).
 
 The shipped alerting rules in
 [`deployments/observability/prometheus-alerts.yaml`](https://github.com/eirueimi/unified-cd/blob/main/deployments/observability/prometheus-alerts.yaml)

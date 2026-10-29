@@ -608,3 +608,59 @@ func TestLoneWorkspaceMountPath(t *testing.T) {
 	assert.Equal(t, []string{"/data"}, mounts)
 	assert.Equal(t, "/data", pod.Spec.Containers[0].WorkingDir)
 }
+
+// claimedPVCs runs a claim with the given mounts and returns the PVC claim
+// names of the run's pod.
+func claimedPVCs(t *testing.T, f *volFixture, mounts []dsl.VolumeMount) []string {
+	t.Helper()
+	var observed []corev1.Pod
+	f.a.exec = &podCapturingExec{inner: f.ex, onExec: func() { observed = f.createdPods(t) }}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	f.a.executeRun(ctx, f.claim(mounts))
+	require.Equal(t, api.RunSucceeded, f.waitFinish(t))
+	var claims []string
+	for _, p := range observed {
+		for _, v := range p.Spec.Volumes {
+			if v.PersistentVolumeClaim != nil {
+				claims = append(claims, v.PersistentVolumeClaim.ClaimName)
+			}
+		}
+	}
+	return claims
+}
+
+// name: [cache-1, cache-2] with cache-1 below minFreeDisk: the controller let
+// the run through on the strength of cache-2, so the pod must mount cache-2.
+func TestExecuteRun_PrefersAnUngatedCandidate(t *testing.T) {
+	f := newVolFixture(t, []config.VolumeConfig{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
+	now := time.Now().UTC()
+	f.a.volumeStats.set("cache-1", api.FilesystemStats{FreeBytes: 5, TotalBytes: 1000}, now)
+	f.a.volumeStats.set("cache-2", api.FilesystemStats{FreeBytes: 500, TotalBytes: 1000}, now)
+
+	claims := claimedPVCs(t, f, []dsl.VolumeMount{{Name: dsl.StringOrSlice{"cache-1", "cache-2"}, As: "cache", MountPath: ".cache"}})
+
+	assert.Equal(t, []string{"agent1-cache-2"}, claims)
+}
+
+// Every candidate gated: the run is already claimed, so it falls back to the
+// first free one and still starts.
+func TestExecuteRun_FallsBackWhenEveryCandidateIsGated(t *testing.T) {
+	f := newVolFixture(t, []config.VolumeConfig{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
+	now := time.Now().UTC()
+	f.a.volumeStats.set("cache-1", api.FilesystemStats{FreeBytes: 5, TotalBytes: 1000}, now)
+	f.a.volumeStats.set("cache-2", api.FilesystemStats{FreeBytes: 5, TotalBytes: 1000}, now)
+
+	claims := claimedPVCs(t, f, []dsl.VolumeMount{{Name: dsl.StringOrSlice{"cache-1", "cache-2"}, As: "cache", MountPath: ".cache"}})
+
+	assert.Equal(t, []string{"agent1-cache-1"}, claims)
+}
+
+// Nothing gated: the first listed free candidate, as before.
+func TestExecuteRun_NothingGatedKeepsListedOrder(t *testing.T) {
+	f := newVolFixture(t, []config.VolumeConfig{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
+
+	claims := claimedPVCs(t, f, []dsl.VolumeMount{{Name: dsl.StringOrSlice{"cache-1", "cache-2"}, As: "cache", MountPath: ".cache"}})
+
+	assert.Equal(t, []string{"agent1-cache-1"}, claims)
+}

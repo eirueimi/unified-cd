@@ -8,6 +8,7 @@ import (
 	"time"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
+	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -380,4 +381,160 @@ func TestKubernetesCredentialConfigRejectsRemoteHTTPEnrollment(t *testing.T) {
 
 	explicitDev := Config{Server: "http://controller.dev.svc", EnrollmentPolicy: "cluster-agents", AllowInsecureHTTP: true}
 	require.NoError(t, explicitDev.Validate())
+}
+
+func validCfg() Config { return Config{Server: "https://s", EnrollmentPolicy: "p"} }
+
+func TestConfig_MinFreeDisk(t *testing.T) {
+	t.Run("unset defaults to 1 percent", func(t *testing.T) {
+		c := validCfg()
+		require.NoError(t, c.Validate())
+		assert.Equal(t, 1.0, c.MinFreeDisk.Percent)
+		assert.False(t, c.MinFreeDisk.Off)
+		assert.Equal(t, 1.0, c.EffectiveMinFreeDisk().Percent)
+	})
+	t.Run("accessor defaults even without Validate", func(t *testing.T) {
+		var c Config
+		assert.Equal(t, 1.0, c.EffectiveMinFreeDisk().Percent)
+	})
+	t.Run("yaml forms", func(t *testing.T) {
+		cases := []struct {
+			yaml    string
+			percent float64
+			bytes   uint64
+			off     bool
+		}{
+			{"minFreeDisk: 0", 0, 0, true},
+			{`minFreeDisk: "0"`, 0, 0, true},
+			{"minFreeDisk: off", 0, 0, true},
+			{"minFreeDisk: 5368709120", 0, 5368709120, false},
+			{`minFreeDisk: "10Gi"`, 0, 10 << 30, false},
+			{`minFreeDisk: "5%"`, 5, 0, false},
+		}
+		for _, tc := range cases {
+			p := writeTempYAML(t, "server: https://s\nenrollmentPolicy: p\n"+tc.yaml+"\n")
+			c, err := LoadConfig(p)
+			require.NoError(t, err, tc.yaml)
+			require.NoError(t, c.Validate(), tc.yaml)
+			assert.Equal(t, tc.percent, c.MinFreeDisk.Percent, tc.yaml)
+			assert.Equal(t, tc.bytes, c.MinFreeDisk.Bytes, tc.yaml)
+			assert.Equal(t, tc.off, c.MinFreeDisk.Off, tc.yaml)
+			assert.True(t, c.MinFreeDisk.Set, tc.yaml)
+		}
+	})
+	t.Run("malformed yaml fails load", func(t *testing.T) {
+		p := writeTempYAML(t, "server: https://s\nenrollmentPolicy: p\nminFreeDisk: banana\n")
+		_, err := LoadConfig(p)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "minFreeDisk")
+	})
+	t.Run("env overrides yaml", func(t *testing.T) {
+		t.Setenv("UNIFIED_K8S_MIN_FREE_DISK", "10Gi")
+		c := validCfg()
+		c.MinFreeDisk = config.DiskThreshold{Percent: 5, Set: true}
+		require.NoError(t, c.Validate())
+		assert.Equal(t, uint64(10<<30), c.MinFreeDisk.Bytes)
+	})
+	t.Run("env 0 disables", func(t *testing.T) {
+		t.Setenv("UNIFIED_K8S_MIN_FREE_DISK", "0")
+		c := validCfg()
+		require.NoError(t, c.Validate())
+		assert.True(t, c.MinFreeDisk.Off)
+		assert.True(t, c.EffectiveMinFreeDisk().Off)
+	})
+	t.Run("malformed env is a Validate error naming the field", func(t *testing.T) {
+		t.Setenv("UNIFIED_K8S_MIN_FREE_DISK", "banana")
+		c := validCfg()
+		err := c.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "minFreeDisk")
+		assert.Contains(t, err.Error(), "UNIFIED_K8S_MIN_FREE_DISK")
+	})
+}
+
+func TestConfig_WorkspaceSizeLimit(t *testing.T) {
+	t.Run("unset by default", func(t *testing.T) {
+		c := validCfg()
+		require.NoError(t, c.Validate())
+		assert.Equal(t, "", c.WorkspaceSizeLimit)
+		assert.True(t, c.WorkspaceSizeLimitUnset())
+		_, ok, err := c.WorkspaceSizeLimitFor("")
+		require.NoError(t, err)
+		assert.False(t, ok)
+	})
+	t.Run("valid global", func(t *testing.T) {
+		c := validCfg()
+		c.WorkspaceSizeLimit = "20Gi"
+		require.NoError(t, c.Validate())
+		assert.False(t, c.WorkspaceSizeLimitUnset())
+		q, ok, err := c.WorkspaceSizeLimitFor("nope")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, int64(20<<30), q.Value())
+	})
+	t.Run("template overrides global", func(t *testing.T) {
+		c := validCfg()
+		c.WorkspaceSizeLimit = "20Gi"
+		c.PodTemplates = map[string]AgentPodTemplate{"big": {WorkspaceSizeLimit: "100Gi"}, "plain": {}}
+		require.NoError(t, c.Validate())
+		q, ok, _ := c.WorkspaceSizeLimitFor("big")
+		require.True(t, ok)
+		assert.Equal(t, int64(100<<30), q.Value())
+		q, ok, _ = c.WorkspaceSizeLimitFor("plain")
+		require.True(t, ok)
+		assert.Equal(t, int64(20<<30), q.Value())
+	})
+	t.Run("template alone counts only for that template", func(t *testing.T) {
+		c := validCfg()
+		c.PodTemplates = map[string]AgentPodTemplate{"big": {WorkspaceSizeLimit: "1Gi"}}
+		require.NoError(t, c.Validate())
+		assert.True(t, c.WorkspaceSizeLimitUnset())
+		_, ok, _ := c.WorkspaceSizeLimitFor("big")
+		assert.True(t, ok)
+	})
+	t.Run("yaml keys", func(t *testing.T) {
+		p := writeTempYAML(t, "server: https://s\nenrollmentPolicy: p\nworkspaceSizeLimit: 20Gi\npodTemplates:\n  big:\n    workspaceSizeLimit: 50Gi\n    spec: {}\n")
+		c, err := LoadConfig(p)
+		require.NoError(t, err)
+		assert.Equal(t, "20Gi", c.WorkspaceSizeLimit)
+		assert.Equal(t, "50Gi", c.PodTemplates["big"].WorkspaceSizeLimit)
+	})
+	t.Run("env overrides", func(t *testing.T) {
+		t.Setenv("UNIFIED_K8S_WORKSPACE_SIZE_LIMIT", "5Gi")
+		c := validCfg()
+		c.WorkspaceSizeLimit = "20Gi"
+		require.NoError(t, c.Validate())
+		assert.Equal(t, "5Gi", c.WorkspaceSizeLimit)
+	})
+	t.Run("rejects bad values", func(t *testing.T) {
+		for _, bad := range []string{"banana", "0", "0Gi", "-5Gi", "10 Gi"} {
+			c := validCfg()
+			c.WorkspaceSizeLimit = bad
+			err := c.Validate()
+			require.Error(t, err, bad)
+			assert.Contains(t, err.Error(), "workspaceSizeLimit", bad)
+
+			c = validCfg()
+			c.PodTemplates = map[string]AgentPodTemplate{"big": {WorkspaceSizeLimit: bad}}
+			err = c.Validate()
+			require.Error(t, err, bad)
+			assert.Contains(t, err.Error(), "workspaceSizeLimit", bad)
+			assert.Contains(t, err.Error(), "big", bad)
+		}
+	})
+	t.Run("malformed env is an error", func(t *testing.T) {
+		t.Setenv("UNIFIED_K8S_WORKSPACE_SIZE_LIMIT", "banana")
+		c := validCfg()
+		err := c.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "workspaceSizeLimit")
+	})
+}
+
+// loadYAML is lenient about unknown keys today (documented on
+// rejectRemovedWorkspacePVC); this pins that the new fields did not change that.
+func TestConfig_UnknownKeysBehaviourUnchanged(t *testing.T) {
+	p := writeTempYAML(t, "server: https://s\nenrollmentPolicy: p\nnotAField: 1\n")
+	_, err := LoadConfig(p)
+	assert.NoError(t, err)
 }

@@ -116,10 +116,12 @@ type AgentConfig struct {
 	PauseImage  string `yaml:"pauseImage"`
 	RunnerImage string `yaml:"runnerImage"`
 
-	// MinFreeDisk is the minimum free space (bytes) required on the
-	// workspace filesystem for the host agent to keep claiming runs. Zero
-	// disables the check. Host-only: k8s agents use pod volumes.
-	MinFreeDisk uint64 `yaml:"minFreeDisk"`
+	// MinFreeDisk is the minimum free space required on the workspace
+	// filesystem for the host agent to keep claiming runs: a percentage
+	// ("1%"), a size ("10GiB"), a byte count, or 0/"off" to disable. Unset
+	// means the default (see DefaultDiskThreshold). Host-only: k8s agents use
+	// pod volumes.
+	MinFreeDisk DiskThreshold `yaml:"minFreeDisk"`
 
 	// WorkspaceRetentionDays is the age (in days) after which an inactive
 	// per-job workspace directory (working<slot>/<job>) becomes eligible
@@ -223,9 +225,11 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 		}
 	}
 	if minFreeDiskEnv := os.Getenv("UNIFIED_AGENT_MIN_FREE_DISK"); minFreeDiskEnv != "" {
-		if v, err := strconv.ParseUint(minFreeDiskEnv, 10, 64); err == nil {
-			eff.MinFreeDisk = v
+		v, err := ParseDiskThreshold(minFreeDiskEnv)
+		if err != nil {
+			return nil, fmt.Errorf("UNIFIED_AGENT_MIN_FREE_DISK: %w", err)
 		}
+		eff.MinFreeDisk = v
 	}
 	if retentionEnv := os.Getenv("UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS"); retentionEnv != "" {
 		if v, err := strconv.Atoi(retentionEnv); err == nil {
@@ -308,7 +312,7 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	if file.RunnerImage != "" {
 		eff.RunnerImage = file.RunnerImage
 	}
-	if file.MinFreeDisk != 0 {
+	if file.MinFreeDisk.Set {
 		eff.MinFreeDisk = file.MinFreeDisk
 	}
 	if file.WorkspaceRetentionDays != 0 {
