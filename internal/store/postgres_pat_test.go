@@ -90,3 +90,47 @@ func TestPostgres_PATListAndDelete(t *testing.T) {
 	list2, _ := pg.ListPATs(ctx)
 	assert.Len(t, list2, 1)
 }
+
+func TestPostgres_SyncBootstrapPAT(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	const name = "env:UNIFIED_TOKEN"
+	real := tokenHash("real")
+
+	_, err := pg.CreatePAT(ctx, name, tokenHash("attacker1"), "developer", nil)
+	require.NoError(t, err)
+	_, err = pg.CreatePAT(ctx, name, tokenHash("attacker2"), "admin", nil)
+	require.NoError(t, err)
+	_, err = pg.CreatePAT(ctx, "other", tokenHash("other"), "developer", nil)
+	require.NoError(t, err)
+
+	removed, err := pg.SyncBootstrapPAT(ctx, name, real)
+	require.NoError(t, err)
+	require.Len(t, removed, 2)
+	assert.ElementsMatch(t, []string{"developer", "admin"}, []string{removed[0].Role, removed[1].Role})
+	assert.NotEmpty(t, removed[0].ID)
+
+	pats, err := pg.ListPATs(ctx)
+	require.NoError(t, err)
+	var boot, other int
+	for _, p := range pats {
+		switch p.Name {
+		case name:
+			boot++
+		case "other":
+			other++
+		}
+	}
+	assert.Equal(t, 1, boot, "exactly one bootstrap row")
+	assert.Equal(t, 1, other, "unrelated rows untouched")
+	got, err := pg.GetPATByHash(ctx, real)
+	require.NoError(t, err)
+	assert.Equal(t, "admin", got.Role)
+	_, err = pg.GetPATByHash(ctx, tokenHash("attacker1"))
+	require.Error(t, err)
+
+	// Idempotent: nothing left to purge, the real row survives.
+	removed, err = pg.SyncBootstrapPAT(ctx, name, real)
+	require.NoError(t, err)
+	assert.Empty(t, removed)
+}

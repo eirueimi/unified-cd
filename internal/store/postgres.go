@@ -2535,6 +2535,48 @@ func (p *Postgres) UpsertBootstrapPAT(ctx context.Context, name, tokenHash strin
 	return &pat, nil
 }
 
+// SyncBootstrapPAT deletes every row named name whose token_hash is not tokenHash and then
+// upserts the bootstrap row, in one transaction (no window without a bootstrap row).
+func (p *Postgres) SyncBootstrapPAT(ctx context.Context, name, tokenHash string) ([]PAT, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("sync bootstrap pat: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `DELETE FROM pats WHERE name = $1 AND token_hash <> $2 RETURNING id, name, role, created_at`, name, tokenHash)
+	if err != nil {
+		return nil, fmt.Errorf("remove mismatched bootstrap pats: %w", err)
+	}
+	var removed []PAT
+	for rows.Next() {
+		var r PAT
+		if err := rows.Scan(&r.ID, &r.Name, &r.Role, &r.CreatedAt); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan removed bootstrap pat: %w", err)
+		}
+		removed = append(removed, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("remove mismatched bootstrap pats: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `UPDATE pats SET token_hash = $2, role = 'admin' WHERE name = $1`, name, tokenHash)
+	if err != nil {
+		return nil, fmt.Errorf("rotate bootstrap pat: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		if _, err := tx.Exec(ctx, `INSERT INTO pats(name, token_hash, role) VALUES ($1, $2, 'admin')`, name, tokenHash); err != nil {
+			return nil, fmt.Errorf("create bootstrap pat: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("sync bootstrap pat: %w", err)
+	}
+	return removed, nil
+}
+
 // DeleteBootstrapPATByName deletes the PAT row identified by name (no-op if it does not exist).
 func (p *Postgres) DeleteBootstrapPATByName(ctx context.Context, name string) error {
 	_, err := p.pool.Exec(ctx, `DELETE FROM pats WHERE name = $1`, name)

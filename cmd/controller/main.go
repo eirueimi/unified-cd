@@ -290,9 +290,22 @@ func main() {
 	// and deleted (revoked) via /api/v1/tokens just like regular PATs. If the
 	// token is later unset, the previously synced row is removed.
 	if *token != "" {
-		if _, err := pg.UpsertBootstrapPAT(ctx, controller.BootstrapPATName, controller.HashToken(*token)); err != nil {
+		// One transaction: drop every other row carrying the reserved name (a stale
+		// row after rotation, or a user-created one) and upsert the real bootstrap row.
+		removed, err := pg.SyncBootstrapPAT(ctx, controller.BootstrapPATName, controller.HashToken(*token))
+		if err != nil {
 			slog.Error("sync UNIFIED_TOKEN as bootstrap PAT", "error", err)
 			os.Exit(1)
+		}
+		if len(removed) > 0 {
+			ids := make([]string, 0, len(removed))
+			roles := make([]string, 0, len(removed))
+			for _, r := range removed {
+				ids = append(ids, r.ID)
+				roles = append(roles, r.Role)
+			}
+			slog.Warn(`removed personal access tokens named "env:UNIFIED_TOKEN" that do not match the configured UNIFIED_TOKEN (a stale row after token rotation, or a user-created token)`,
+				"count", len(removed), "ids", ids, "roles", roles)
 		}
 	} else if err := pg.DeleteBootstrapPATByName(ctx, controller.BootstrapPATName); err != nil {
 		slog.Error("remove stale bootstrap PAT", "error", err)

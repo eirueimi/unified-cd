@@ -32,7 +32,8 @@ func TestServerAuth_SetsPATRole(t *testing.T) {
 func TestServerAuth_BootstrapIsAdmin(t *testing.T) {
 	s, pg := newTestServer(t)
 	s.cfg.Token = "exc_boot" // break-glass requires the configured bootstrap token
-	_, err := pg.UpsertBootstrapPAT(t.Context(), BootstrapPATName, HashToken("exc_boot"))
+	// Stored role is developer: admin must come from the hash match (break-glass).
+	_, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("exc_boot"), "developer", nil)
 	require.NoError(t, err)
 
 	var gotRole string
