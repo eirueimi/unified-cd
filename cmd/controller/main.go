@@ -427,6 +427,9 @@ func main() {
 			Policy:         eff.OIDC.Policy,
 		})
 		oidcConfigured = true
+		if err := controller.WarnRoleOnlyPATs(ctx, st, eff.OIDC.Policy, slog.Default()); err != nil {
+			slog.Error("role-only PAT check failed", "error", err)
+		}
 		slog.Info("OIDC configured", "issuer", eff.OIDC.Issuer, "issuerInternal", eff.OIDC.IssuerInternal, "browserSSO", eff.OIDC.ClientSecret != "")
 		if eff.OIDC.IssuerInternal == "" {
 			slog.Warn("UNIFIED_OIDC_ISSUER_INTERNAL not set: /dex/* proxy is disabled. CLI device flow will fail. Use docker-compose.sso.yml")

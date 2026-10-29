@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/spf13/cobra"
@@ -14,17 +15,23 @@ import (
 
 // newTokenCmd returns the command group for managing PATs.
 func newTokenCmd(resolve func() (Config, error)) *cobra.Command {
+	return newTokenCmdWithClient(resolve, http.DefaultClient)
+}
+
+// newTokenCmdWithClient is newTokenCmd with an injectable HTTP client (for tests).
+func newTokenCmdWithClient(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	cmd := &cobra.Command{Use: "token", Short: "Manage Personal Access Tokens"}
-	cmd.AddCommand(newTokenCreateCmd(resolve))
-	cmd.AddCommand(newTokenListCmd(resolve))
-	cmd.AddCommand(newTokenDeleteCmd(resolve))
+	cmd.AddCommand(newTokenCreateCmd(resolve, httpClient))
+	cmd.AddCommand(newTokenListCmd(resolve, httpClient))
+	cmd.AddCommand(newTokenDeleteCmd(resolve, httpClient))
 	return cmd
 }
 
 // newTokenCreateCmd returns the subcommand for creating a new PAT.
-func newTokenCreateCmd(resolve func() (Config, error)) *cobra.Command {
+func newTokenCreateCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	var expiresIn string
 	var role string
+	var permissions []string
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a new Personal Access Token",
@@ -34,14 +41,14 @@ func newTokenCreateCmd(resolve func() (Config, error)) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body, _ := json.Marshal(api.CreatePATRequest{Name: args[0], ExpiresIn: expiresIn, Role: role})
+			body, _ := json.Marshal(api.CreatePATRequest{Name: args[0], ExpiresIn: expiresIn, Role: role, Permissions: permissions})
 			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, cfg.Server+"/api/v1/tokens", bytes.NewReader(body))
 			if err != nil {
 				return err
 			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			req.Header.Set("Content-Type", "application/json")
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := httpClient.Do(req)
 			if err != nil {
 				return err
 			}
@@ -55,16 +62,20 @@ func newTokenCreateCmd(resolve func() (Config, error)) *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Token created (shown only once):\n\n  %s\n\nName: %s  ID: %s  Role: %s\n", result.Token, result.Name, result.ID, result.Role)
+			if len(result.Permissions) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Permissions: %s\n", strings.Join(result.Permissions, ", "))
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&expiresIn, "expires-in", "", "expiry duration (e.g. 720h, 8760h)")
-	cmd.Flags().StringVar(&role, "role", "", "role for the token: admin, developer, or viewer (default: your own role; capped at it)")
+	cmd.Flags().StringVar(&role, "role", "", "role ceiling for the token: admin, developer, or viewer (must not exceed your global role)")
+	cmd.Flags().StringArrayVar(&permissions, "permission", nil, "permission ceiling for the token, e.g. job.read (repeatable; you must hold each one; cannot be combined with --role)")
 	return cmd
 }
 
 // newTokenListCmd returns the subcommand for listing PATs.
-func newTokenListCmd(resolve func() (Config, error)) *cobra.Command {
+func newTokenListCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List Personal Access Tokens",
@@ -78,7 +89,7 @@ func newTokenListCmd(resolve func() (Config, error)) *cobra.Command {
 				return err
 			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := httpClient.Do(req)
 			if err != nil {
 				return err
 			}
@@ -96,7 +107,11 @@ func newTokenListCmd(resolve func() (Config, error)) *cobra.Command {
 				return nil
 			}
 			for _, t := range list {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t(%s)\n", t.ID, t.Name, t.Role, t.CreatedAt.Format("2006-01-02"))
+				ceiling := t.Role
+				if len(t.Permissions) > 0 {
+					ceiling = strings.Join(t.Permissions, ",")
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t(%s)\n", t.ID, t.Name, ceiling, t.CreatedAt.Format("2006-01-02"))
 			}
 			return nil
 		},
@@ -104,7 +119,7 @@ func newTokenListCmd(resolve func() (Config, error)) *cobra.Command {
 }
 
 // newTokenDeleteCmd returns the subcommand for deleting (revoking) a PAT.
-func newTokenDeleteCmd(resolve func() (Config, error)) *cobra.Command {
+func newTokenDeleteCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <id>",
 		Short: "Revoke a Personal Access Token",
@@ -119,7 +134,7 @@ func newTokenDeleteCmd(resolve func() (Config, error)) *cobra.Command {
 				return err
 			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := httpClient.Do(req)
 			if err != nil {
 				return err
 			}
