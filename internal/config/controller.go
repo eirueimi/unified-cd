@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"gopkg.in/yaml.v3"
 )
@@ -114,6 +115,13 @@ type ControllerOIDCConfig struct {
 	RoleMap     map[string]string `yaml:"roleMap"`
 	UserMap     map[string]string `yaml:"userMap"`
 	DefaultRole string            `yaml:"defaultRole"`
+
+	// Permissions is the optional matrix-authorization block (config file only).
+	Permissions *authz.PolicyConfig `yaml:"permissions"`
+	// Policy is Permissions compiled at startup; PolicyWarnings are the
+	// startup warnings Compile produced. Neither is read from YAML.
+	Policy         *authz.Policy `yaml:"-"`
+	PolicyWarnings []string      `yaml:"-"`
 }
 
 // ControllerConfig holds all configuration for the controller binary.
@@ -306,6 +314,25 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		if file.OIDC.DefaultRole != "" {
 			eff.OIDC.DefaultRole = file.OIDC.DefaultRole
 		}
+		if file.OIDC.Permissions != nil {
+			eff.OIDC.Permissions = file.OIDC.Permissions
+		}
+	}
+	// Compile only here: roleMap, userMap and permissions are config-file only,
+	// so the early return above for an empty config path has nothing to compile
+	// or warn about.
+	if eff.OIDC != nil {
+		policy, warnings, err := authz.Compile(eff.OIDC.Permissions, authz.Legacy{
+			RolesClaim:  eff.OIDC.RolesClaim,
+			RoleMap:     eff.OIDC.RoleMap,
+			UserMap:     eff.OIDC.UserMap,
+			DefaultRole: eff.OIDC.DefaultRole,
+		}, eff.OIDC.Issuer)
+		if err != nil {
+			return nil, err
+		}
+		eff.OIDC.Policy = policy
+		eff.OIDC.PolicyWarnings = warnings
 	}
 	if file.AgentAuth != nil {
 		// Cluster credentials remain YAML-only.

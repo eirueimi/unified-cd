@@ -424,11 +424,23 @@ func main() {
 			RoleMap:        eff.OIDC.RoleMap,
 			UserMap:        eff.OIDC.UserMap,
 			DefaultRole:    eff.OIDC.DefaultRole,
+			Policy:         eff.OIDC.Policy,
 		})
 		oidcConfigured = true
 		slog.Info("OIDC configured", "issuer", eff.OIDC.Issuer, "issuerInternal", eff.OIDC.IssuerInternal, "browserSSO", eff.OIDC.ClientSecret != "")
 		if eff.OIDC.IssuerInternal == "" {
 			slog.Warn("UNIFIED_OIDC_ISSUER_INTERNAL not set: /dex/* proxy is disabled. CLI device flow will fail. Use docker-compose.sso.yml")
+		}
+	}
+	if eff.OIDC != nil {
+		for _, w := range eff.OIDC.PolicyWarnings {
+			slog.Warn(w)
+		}
+		if eff.OIDC.Policy.Configured() && eff.OIDC.ClientID == "" {
+			slog.Warn("oidc.permissions is set but oidc.clientId is not; no OIDC caller can authenticate")
+		}
+		if w := bootstrapTokenWarning(eff.OIDC.Issuer, *token); w != "" {
+			slog.Warn(w)
 		}
 	}
 
@@ -579,4 +591,14 @@ func envIntOr(name string, def int, warning *string) int {
 		}
 	}
 	return def
+}
+
+// bootstrapTokenWarning returns the break-glass warning logged when SSO is
+// configured while the bootstrap token (--token, UNIFIED_TOKEN or config
+// token) is also set, or "" otherwise.
+func bootstrapTokenWarning(issuer, token string) string {
+	if issuer == "" || token == "" {
+		return ""
+	}
+	return "UNIFIED_TOKEN is set while SSO is configured: the env:UNIFIED_TOKEN token is always admin and bypasses oidc.permissions; unset it once SSO works and keep it only as a break-glass credential"
 }

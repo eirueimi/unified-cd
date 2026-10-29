@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/secrets"
@@ -119,6 +120,9 @@ type OIDCConfig struct {
 	RoleMap     map[string]string
 	UserMap     map[string]string
 	DefaultRole string
+
+	// Policy is the compiled oidc.permissions block; nil means none.
+	Policy *authz.Policy
 }
 
 // Server represents the master HTTP server.
