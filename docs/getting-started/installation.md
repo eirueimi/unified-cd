@@ -26,7 +26,7 @@ unified-cli keygen --out ./kek
 docker compose --env-file .env -f deployments/docker/docker-compose.yaml up -d
 ```
 
-Pin a release by setting `UNIFIED_CD_VERSION` (e.g. `v0.0.3`) in `.env`.
+Pin a release by setting `UNIFIED_CD_VERSION` (e.g. `v0.0.3`) in `.env`. The default is `latest`; the controller image for both `latest` and `v0.11.0` was verified to start from this Compose file with PostgreSQL and Garage and report `healthy` (the health check uses the BusyBox `wget` in the Alpine-based image).
 
 The repository-root Compose files are development-only and do not define a
 production security boundary. Production controllers require HTTPS. Per-agent

@@ -42,13 +42,6 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** Finish writes use compare-and-set finalization, but `internal/controller/api_agent.go` `handleAgentStepReport` checks run status separately from `internal/store/postgres.go` `UpsertStepReport`, leaving finalization between the read and write unguarded.
 - **Done when:** Once a run becomes terminal, no concurrent or later step report can change its step state, and a deterministic store or controller concurrency test forces finalization between validation and write and proves the late report is rejected without mutation.
 
-### 33e. Verify that the published quickstart controller image passes its health check
-
-- **Status:** Needs verification
-- **Impact:** If the published default controller image lacks the `wget` used by the quickstart health check, the controller remains unhealthy and dependent quickstart services do not start.
-- **Evidence:** `deployments/docker/docker-compose.yaml` defines the controller image and `wget` health check, while `docker/controller.Dockerfile` uses an Alpine runtime that supplies BusyBox `wget`; source inspection cannot establish the contents of the published default image.
-- **Done when:** A credential-isolated pull of the image derived from the Compose controller image expression completes within 120 seconds, then a uniquely named Compose project starts PostgreSQL, Garage, and the controller without building and reports the controller `healthy` within 120 seconds; every Docker subprocess is bounded, prior version environment state is restored, project containers, volumes, and orphans plus the isolated Docker configuration are always cleaned up, and any failure is corrected and the experiment repeated.
-
 ## Medium
 
 ### 8. Verify that artifact downloads preserve configured step metadata
