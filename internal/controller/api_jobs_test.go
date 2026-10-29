@@ -251,7 +251,7 @@ func applyJobYAML(t *testing.T, s *Server, yaml string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.storeJob(context.Background(), job)
+	_, err = s.storeJob(context.Background(), job, job.Metadata.QualifiedName())
 	return err
 }
 

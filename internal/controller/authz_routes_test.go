@@ -98,6 +98,9 @@ func TestRouteTableShape(t *testing.T) {
 
 		require.Equalf(t, agentBypassRows[key], row.AgentBypass, "%s: AgentBypass", key)
 		require.Equalf(t, key == "GET /api/v1/agents/{agentId}/runs", row.FiltersRows, "%s: FiltersRows", key)
+		if row.Scope == scopeFiltered || row.FiltersRows {
+			require.NotNilf(t, filterTests[key], "%s: row-filtering route needs a TestFilter_* test in filterTests", key)
+		}
 
 		alt, wantAlt := altPermRows[key]
 		require.Equalf(t, alt, row.AltPerm, "%s: AltPerm", key)
