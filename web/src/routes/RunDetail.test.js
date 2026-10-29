@@ -233,6 +233,74 @@ describe('RunDetail — single SSE/events connection per run (TODO #10)', () => 
   });
 });
 
+// A cancelled run's historical log lines must stay rendered after the event
+// stream delivers the terminal status and closes. The stream mirrors what
+// internal/controller/sse.go handleRunEvents writes for an already-terminal
+// run: the stored "log" events, then one "status" event, then EOF.
+describe('RunDetail — cancelled run keeps its historical logs', () => {
+  it('keeps backfilled lines rendered after the terminal status event and stream close, with one connection', async () => {
+    const enc = new TextEncoder();
+    const history = [
+      { seq: 1, stepIndex: 0, stream: 'stdout', line: 'compiling module A' },
+      { seq: 2, stepIndex: 0, stream: 'stderr', line: 'warning: slow disk' },
+      { seq: 3, stepIndex: 0, stream: 'stdout', line: 'tests started' },
+    ];
+    const sse = (ev) => enc.encode(`data: ${JSON.stringify(ev)}\n\n`);
+    const chunks = [
+      ...history.map((l) => sse({ type: 'log', timestamp: '2026-01-01T00:00:00Z', ...l })),
+      sse({ type: 'status', status: 'Cancelled' }),
+    ];
+    let eventsSignal = null;
+    const eventsResponse = (init) => {
+      eventsSignal = init?.signal ?? null;
+      let i = 0;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        body: {
+          getReader() {
+            return {
+              read: async () => {
+                if (i < chunks.length) return { done: false, value: chunks[i++] };
+                return { done: true, value: undefined };
+              },
+            };
+          },
+        },
+      });
+    };
+    const windowed = statsAndRange(history.length, (row) => history[row]);
+    const fetchMock = vi.fn((url, init) => {
+      const u = String(url);
+      if (u.includes('/events')) return eventsResponse(init);
+      const w = windowed(url);
+      if (w) return w;
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      if (u.includes('/artifacts')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-cx', status: 'Cancelled', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-cx' } } });
+
+    // After the terminal status event the component closes the stream by
+    // aborting the request; wait for that, then assert on the rows.
+    await vi.waitFor(() => expect(eventsSignal?.aborted).toBe(true));
+    const renderedLines = () =>
+      Array.from(container.querySelectorAll('.log-row')).map(
+        (r) => r.querySelector('.log-stdout, .log-stderr')?.textContent,
+      );
+    await vi.waitFor(() => {
+      expect(renderedLines()).toEqual(history.map((l) => l.line));
+    });
+
+    expect(container.textContent).not.toContain('Waiting for logs');
+    expect(container.textContent).toContain('Cancelled');
+    expect(countEventsCalls(fetchMock)).toBe(1);
+  });
+});
+
 // run-display-name feature: RunDetail's field grid shows a run's displayName
 // (interpolated at run-creation time from the job's `displayName:` DSL field)
 // as a "Name" row when present, and renders nothing extra when absent.
