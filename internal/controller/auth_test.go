@@ -203,3 +203,32 @@ func TestServer_Root_Redirects_To_UI(t *testing.T) {
 	assert.Equal(t, http.StatusFound, rec.Code)
 	assert.Contains(t, rec.Header().Get("Location"), "/ui/")
 }
+
+func TestOIDCScopes(t *testing.T) {
+	base := []string{"openid", "email", "profile"}
+	assert.Equal(t, append(append([]string{}, base...), "groups"), oidcScopes("groups"))
+	assert.Equal(t, base, oidcScopes(""))
+	assert.Equal(t, base, oidcScopes("https://unified-cd.example.com/roles"))
+	assert.Equal(t, base, oidcScopes("urn:roles"))
+}
+
+func TestServer_OIDCConfig_ReturnsScopes(t *testing.T) {
+	s := NewServer(Config{Token: "t"}, nil)
+	s.SetOIDCConfig(&OIDCConfig{Issuer: "https://accounts.example.com", ClientID: "c", RolesClaim: "groups"})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc-config", nil)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var result struct {
+		Scopes []string `json:"scopes"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&result))
+	assert.Equal(t, []string{"openid", "email", "profile", "groups"}, result.Scopes)
+
+	s2 := NewServer(Config{Token: "t"}, nil)
+	s2.SetOIDCConfig(&OIDCConfig{Issuer: "https://accounts.example.com", ClientID: "c", RolesClaim: "https://x.example.com/roles"})
+	rec = httptest.NewRecorder()
+	s2.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc-config", nil))
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&result))
+	assert.Equal(t, []string{"openid", "email", "profile"}, result.Scopes)
+}

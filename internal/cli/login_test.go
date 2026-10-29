@@ -213,3 +213,55 @@ func TestTokenPromptLogin_VerificationServerError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "token verification failed")
 }
+
+func TestDeviceScopes(t *testing.T) {
+	def := []string{"openid", "email", "profile"}
+	assert.Equal(t, def, deviceScopes(nil))
+	assert.Equal(t, def, deviceScopes(&serverOIDCConfig{}))
+	assert.Equal(t, []string{"openid", "email", "profile", "groups"},
+		deviceScopes(&serverOIDCConfig{Scopes: []string{"openid", "email", "profile", "groups"}}))
+}
+
+func TestLogin_DeviceFlow_RequestsServerScopes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		scopesJSON string
+		want       string
+	}{
+		"server scopes": {`,"scopes":["openid","email","profile","groups"]`, "openid email profile groups"},
+		"older server":  {``, "openid email profile"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var srv *httptest.Server
+			got := make(chan string, 1)
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/auth/oidc-config":
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"issuer":"` + srv.URL + `","deviceClientId":"cli","deviceAuthEndpoint":"` + srv.URL + `/device","tokenEndpoint":"` + srv.URL + `/token"` + tc.scopesJSON + `}`))
+				case "/device":
+					_ = r.ParseForm()
+					select {
+					case got <- r.Form.Get("scope"):
+					default:
+					}
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":"invalid_request"}`))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			cmd := newLoginCmd()
+			cmd.SetArgs([]string{"--server", srv.URL})
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			_ = cmd.ExecuteContext(context.Background())
+			select {
+			case s := <-got:
+				assert.Equal(t, tc.want, s)
+			default:
+				t.Fatal("device authorization was not requested")
+			}
+		})
+	}
+}

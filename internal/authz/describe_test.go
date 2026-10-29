@@ -127,7 +127,8 @@ func TestDescribeMarksUnknownLegacyRoleIgnored(t *testing.T) {
 		byKey[e.Key] = e.Ignored
 	}
 	assert.Equal(t, map[string]bool{"my-org:devs": true, "my-org:ok": false, "my-org:none": false}, byKey)
-	assert.True(t, d.Legacy.UserMap[0].Ignored)
+	assert.False(t, d.Legacy.UserMap[0].Ignored, "an unknown userMap role is not ignored")
+	assert.True(t, d.Legacy.UserMap[0].Denies, "it denies the user at runtime")
 	assert.Empty(t, d.Legacy.UserMap[0].Permissions)
 	assert.False(t, d.Legacy.DefaultRole.Ignored)
 	assert.Equal(t, "groups", d.RolesClaim, "an empty rolesClaim defaults to groups")

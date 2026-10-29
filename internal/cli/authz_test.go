@@ -19,6 +19,7 @@ func authzPolicyFixture() api.AuthzPolicy {
 		Bundles:    map[string][]string{"admin": {"authz.read", "job.read"}, "developer": {"job.read"}, "viewer": {"job.read"}},
 		Legacy: api.AuthzLegacy{
 			RoleMap:     []api.AuthzLegacyEntry{{Key: "my-org:devs", Role: "develper", Ignored: true, Permissions: []string{}}},
+			UserMap:     []api.AuthzLegacyEntry{{Key: "x@example.com", Role: "superuser", Denies: true, Permissions: []string{}}},
 			DefaultRole: api.AuthzLegacyEntry{Key: "defaultRole", Role: "deny", Permissions: []string{}},
 		},
 		Global: []api.AuthzGrantEntry{{Subject: "group", Name: "my-org:auditors", Grant: []string{"viewer", "audit.read"}, Permissions: []string{"audit.read", "job.read"}}},

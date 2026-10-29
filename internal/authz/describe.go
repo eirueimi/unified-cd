@@ -30,9 +30,9 @@ func (p *Policy) Describe(legacy Legacy) api.AuthzPolicy {
 		RolesClaim: claim,
 		Bundles:    Bundles(),
 		Legacy: api.AuthzLegacy{
-			RoleMap:     legacyEntries(legacy.RoleMap),
-			UserMap:     legacyEntries(legacy.UserMap),
-			DefaultRole: legacyEntry("defaultRole", legacy.DefaultRole),
+			RoleMap:     legacyEntries(legacy.RoleMap, true),
+			UserMap:     legacyEntries(legacy.UserMap, false),
+			DefaultRole: legacyEntry("defaultRole", legacy.DefaultRole, false),
 		},
 		Global:  []api.AuthzGrantEntry{},
 		Folders: []api.AuthzFolderEntry{},
@@ -65,7 +65,7 @@ func describeGrants(subject string, grants []policyGrant) []api.AuthzGrantEntry 
 	return out
 }
 
-func legacyEntries(m map[string]string) []api.AuthzLegacyEntry {
+func legacyEntries(m map[string]string, ignoreUnknown bool) []api.AuthzLegacyEntry {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -73,19 +73,25 @@ func legacyEntries(m map[string]string) []api.AuthzLegacyEntry {
 	sort.Strings(keys)
 	out := []api.AuthzLegacyEntry{}
 	for _, k := range keys {
-		out = append(out, legacyEntry(k, m[k]))
+		out = append(out, legacyEntry(k, m[k], ignoreUnknown))
 	}
 	return out
 }
 
 // legacyEntry resolves a legacy role value. "" and "deny" grant nothing and
-// are not ignored; any other value that is not a built-in role is ignored.
-func legacyEntry(key, role string) api.AuthzLegacyEntry {
+// are not flagged. Any other value that is not a built-in role is flagged as
+// Ignored for a roleMap entry (it never matches) and as Denies for a userMap or
+// defaultRole entry (the runtime denies the user).
+func legacyEntry(key, role string, ignoreUnknown bool) api.AuthzLegacyEntry {
 	e := api.AuthzLegacyEntry{Key: key, Role: role, Permissions: []string{}}
 	if set, ok := Bundle(role); ok {
 		e.Permissions = set.Names()
 	} else if role != "" && role != "deny" {
-		e.Ignored = true
+		if ignoreUnknown {
+			e.Ignored = true
+		} else {
+			e.Denies = true
+		}
 	}
 	return e
 }

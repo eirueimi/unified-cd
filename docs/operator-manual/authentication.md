@@ -264,7 +264,7 @@ containing only folders where a grant matched the caller) and, when known, `sub`
 unified-cli login --server http://localhost:8080
 ```
 
-1. CLI fetches issuer, `deviceClientId`, and endpoints from `/api/v1/auth/oidc-config`
+1. CLI fetches issuer, `deviceClientId`, and endpoints from `/api/v1/auth/oidc-config` and the scopes to request (`openid`, `email`, `profile` plus the bare `oidc.rolesClaim`, so the IdP emits groups; an older CLI requests only the first three)
 2. Starts device authorization and displays the URL to open in a browser
 3. Authenticate with `admin@example.com` / `password` and approve
 4. CLI receives the **id_token (JWT)** and saves it to `~/.config/unified-cd/config.yaml`

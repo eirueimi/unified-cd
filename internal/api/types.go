@@ -761,12 +761,15 @@ type AuthzLegacy struct {
 	DefaultRole AuthzLegacyEntry   `json:"defaultRole"`
 }
 
-// AuthzLegacyEntry is one legacy mapping. Ignored is true when Role is not a
-// built-in role (and is neither empty nor "deny").
+// AuthzLegacyEntry is one legacy mapping. When Role is not a built-in role
+// (and is neither empty nor "deny"), a roleMap entry is Ignored (it never
+// matches) while a userMap or defaultRole entry is Denies (the runtime denies
+// the user, or everyone the default would have covered).
 type AuthzLegacyEntry struct {
 	Key         string   `json:"key"`
 	Role        string   `json:"role"`
 	Ignored     bool     `json:"ignored,omitempty"`
+	Denies      bool     `json:"denies,omitempty"`
 	Permissions []string `json:"permissions"`
 }
 

@@ -91,7 +91,7 @@ func newLoginCmd() *cobra.Command {
 			oauth2cfg := &oauth2.Config{
 				ClientID: clientID,
 				Endpoint: endpoint,
-				Scopes:   []string{"openid", "email", "profile"},
+				Scopes:   deviceScopes(serverCfg),
 			}
 
 			// The Dex device authorization endpoint does not use redirect_uri
@@ -148,6 +148,18 @@ type serverOIDCConfig struct {
 	DeviceClientID     string `json:"deviceClientId"`
 	DeviceAuthEndpoint string `json:"deviceAuthEndpoint"`
 	TokenEndpoint      string `json:"tokenEndpoint"`
+	// Scopes are the scopes the server wants the device flow to request
+	// (including the roles claim). Absent on older servers.
+	Scopes []string `json:"scopes"`
+}
+
+// deviceScopes returns the scopes for the device flow: the server's when it
+// sent any, else openid/email/profile (older servers, or manual --issuer).
+func deviceScopes(cfg *serverOIDCConfig) []string {
+	if cfg != nil && len(cfg.Scopes) > 0 {
+		return cfg.Scopes
+	}
+	return []string{"openid", "email", "profile"}
 }
 
 // fetchServerOIDCConfig fetches OIDC configuration from the master server's OIDC config endpoint.

@@ -82,6 +82,19 @@ func generateState() (string, error) {
 // server-side discovery, token exchange, and JWKS fetches all go through the internal URL.
 // The auth URL sent to the browser remains the external Issuer URL.
 // The returned ctx has the transport injected and can be passed directly to Exchange / Verify.
+// oidcScopes returns the scopes both the browser login and the CLI device flow
+// request. When the roles claim is a bare scope-like token (e.g. "groups" for
+// Dex) it is requested as a scope too, so the IdP emits it. Namespaced or
+// `:`-bearing claim names (Auth0/Entra app-roles) are emitted without an extra
+// scope and are skipped.
+func oidcScopes(rolesClaim string) []string {
+	scopes := []string{oidc.ScopeOpenID, "email", "profile"}
+	if rolesClaim != "" && !strings.ContainsAny(rolesClaim, "/:") {
+		scopes = append(scopes, rolesClaim)
+	}
+	return scopes
+}
+
 func (s *Server) oidcProvider(ctx context.Context, host string) (context.Context, *oidc.Provider, *oauth2.Config, error) {
 	if s.oidcCfg.IssuerInternal != "" {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, &http.Client{
@@ -100,13 +113,7 @@ func (s *Server) oidcProvider(ctx context.Context, host string) (context.Context
 		redirectBase = strings.TrimRight(s.oidcCfg.ExternalURL, "/")
 	}
 	redirectURL := redirectBase + "/api/v1/auth/oidc-callback"
-	scopes := []string{oidc.ScopeOpenID, "email", "profile"}
-	// When the role claim is a bare scope-like token (e.g. "groups" for Dex),
-	// request it as a scope. Namespaced/`:`-bearing claim names (Auth0/Entra
-	// app-roles) are emitted without an extra scope and are skipped here.
-	if rc := s.oidcCfg.RolesClaim; rc != "" && !strings.ContainsAny(rc, "/:") {
-		scopes = append(scopes, rc)
-	}
+	scopes := oidcScopes(s.oidcCfg.RolesClaim)
 	cfg := &oauth2.Config{
 		ClientID:     s.oidcCfg.ClientID,
 		ClientSecret: s.oidcCfg.ClientSecret,

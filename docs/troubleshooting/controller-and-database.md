@@ -154,11 +154,11 @@ Map the user's group or email to a role or a grant, or set `defaultRole`. Re-cre
 
 **Cause**
 
-A PAT records the creator's identity and groups so that it can never exceed them. The first message is a browser session created before the upgrade (it has no stored groups); log in again. The second is a CLI login whose id_token does not carry the roles claim while the config has group-keyed grants. The CLI device flow requests only the `openid`, `email` and `profile` scopes, so an IdP that emits groups only on request (Dex does) omits them; with a config that has no group-keyed grants an absent claim is simply recorded as no groups and creation works. The 400s are deliberate, nothing is silently reduced: ask for a role or permissions you hold.
+A PAT records the creator's identity and groups so that it can never exceed them. The first message is a browser session created before the upgrade (it has no stored groups); log in again. The second is a CLI login whose id_token does not carry the roles claim while the config has group-keyed grants. The controller advertises the scopes the device flow must request (`openid`, `email`, `profile` plus the bare `oidc.rolesClaim`, e.g. `groups`, exactly as the browser login does), and a current `unified-cli login` uses them. A CLI built before this behaviour requests only `openid`, `email` and `profile`, so an IdP that emits groups only on request (Dex does) omits the claim; with a config that has no group-keyed grants an absent claim is simply recorded as no groups and creation works. The 400s are deliberate, nothing is silently reduced: ask for a role or permissions you hold.
 
 **Fix**
 
-Create the token from the Web UI Tokens page (a browser session carries the groups), or log in again; use `--permission` instead of `--role` when you have no global role. For a folder-only user, `token.create` must be granted in `oidc.permissions.global`.
+Upgrade the CLI and run `unified-cli login` again (a browser session or a re-login with a current CLI carries the groups); use `--permission` instead of `--role` when you have no global role. For a folder-only user, `token.create` must be granted in `oidc.permissions.global`.
 
 ## Controller logs `dropping log line for sealed run`
 

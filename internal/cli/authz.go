@@ -150,6 +150,9 @@ func printPolicyTable(w io.Writer, p api.AuthzPolicy) {
 			if e.Ignored {
 				role += " (ignored)"
 			}
+			if e.Denies {
+				role += " (denies login)"
+			}
 			row(subject, e.Key, role, joinOrDash(e.Permissions))
 		}
 		for _, e := range p.Legacy.RoleMap {
