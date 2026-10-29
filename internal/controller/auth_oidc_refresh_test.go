@@ -17,7 +17,7 @@ func TestSession_RefreshTokenIsNotStoredInPlaintext(t *testing.T) {
 	ctx := context.Background()
 	const plaintextRT = "refresh-token-plaintext-marker"
 
-	sess, err := s.createSessionWithRefreshToken(ctx, "hash-1", "sub-1", "u@example.com", "admin", plaintextRT, time.Now().Add(time.Hour))
+	sess, err := s.createSessionWithRefreshToken(ctx, "hash-1", "sub-1", "u@example.com", "admin", nil, plaintextRT, time.Now().Add(time.Hour))
 	require.NoError(t, err)
 	require.NotEmpty(t, sess.ID)
 
@@ -41,9 +41,9 @@ func TestSession_RefreshTokenIsBoundToItsSession(t *testing.T) {
 	s, pg := newTestServerWithKM(t)
 	ctx := context.Background()
 
-	_, err := s.createSessionWithRefreshToken(ctx, "hash-a", "sub-a", "a@example.com", "admin", "token-a", time.Now().Add(time.Hour))
+	_, err := s.createSessionWithRefreshToken(ctx, "hash-a", "sub-a", "a@example.com", "admin", nil, "token-a", time.Now().Add(time.Hour))
 	require.NoError(t, err)
-	b, err := s.createSessionWithRefreshToken(ctx, "hash-b", "sub-b", "b@example.com", "admin", "token-b", time.Now().Add(time.Hour))
+	b, err := s.createSessionWithRefreshToken(ctx, "hash-b", "sub-b", "b@example.com", "admin", nil, "token-b", time.Now().Add(time.Hour))
 	require.NoError(t, err)
 
 	stolen, err := pg.GetSessionByHash(ctx, "hash-a")

@@ -153,6 +153,11 @@ type Server struct {
 	oidcProviderV    *oidc.Provider
 	oidcProviderVErr error
 
+	// verifyIDTokenHook, when non-nil, replaces the go-oidc id_token
+	// verification in the bearer branch, the login callback and silent
+	// refresh. It returns the verified claims. Tests only.
+	verifyIDTokenHook func(ctx context.Context, raw, audience string) (map[string]any, error)
+
 	// logNotify fans out live "this run's logs changed" wake-ups to SSE
 	// viewers in-process (see log_notify.go); logNotifyOnce starts the ONE
 	// shared Postgres LISTEN connection that feeds it on the first SSE
@@ -607,7 +612,7 @@ func (s *Server) routes() {
 	s.r.Get("/api/v1/auth/oidc-login", s.handleOIDCLogin)
 	s.r.Get("/api/v1/auth/oidc-callback", s.handleOIDCCallback)
 	s.r.Post("/api/v1/auth/logout", s.handleLogout)
-	s.r.Get("/api/v1/auth/me", s.handleMe)
+	s.r.With(ServerAuth(s.store, s)).Get("/api/v1/auth/me", s.handleMe)
 
 	s.r.Route("/api/v1/agents", func(r chi.Router) {
 		// Bootstrap and refresh are intentionally outside ServerAuth: their opaque

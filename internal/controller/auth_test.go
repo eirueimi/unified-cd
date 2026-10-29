@@ -133,7 +133,7 @@ func (f *fakePATStore) TouchPAT(_ context.Context, _ string) error { return nil 
 
 func TestServerAuth_AcceptsPAT(t *testing.T) {
 	st := &fakePATStore{pats: map[string]*store.PAT{
-		HashToken("exc_abc"): {ID: "1", Name: "ci"},
+		HashToken("exc_abc"): {ID: "1", Name: "ci", Role: "viewer"},
 	}}
 	handler := ServerAuth(st, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
