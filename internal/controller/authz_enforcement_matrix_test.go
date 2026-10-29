@@ -12,6 +12,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/authz"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
@@ -22,6 +23,9 @@ import (
 // g-r job.read on team-a and developer on team-b (a caller who holds every
 // action somewhere but can only read team-a).
 const matrixPolicy = `
+global:
+  groups:
+    "g-sc": [schedule.configure]
 folders:
   team-a:
     groups:
@@ -31,6 +35,7 @@ folders:
     groups:
       "g-b": developer
       "g-r": developer
+      "g-sc": [job.read]
 `
 
 var matrixJobs = []string{"team-a/x", "team-a/sub/x", "team-b/x", "team-ab/x", "x"}
@@ -74,7 +79,7 @@ func requestFor(rule routeRule, job, runID string) matrixRequest {
 	if runRoute {
 		repl = append(repl, "{id}", runID, "{runID}", runID)
 	} else {
-		repl = append(repl, "{id}", "x")
+		repl = append(repl, "{id}", "00000000-0000-0000-0000-000000000000")
 	}
 	if rule.Scope == scopeSchedulePath {
 		repl = append(repl, "{name}", "sch")
@@ -160,7 +165,9 @@ outer:
 // that list.
 func matrixServer(t *testing.T) (*Server, store.Store) {
 	t.Helper()
-	return newAuthzTestServer(t, authz.Legacy{RoleMap: map[string]string{"all": "admin"}}, matrixPolicy)
+	s, st := newAuthzTestServer(t, authz.Legacy{RoleMap: map[string]string{"all": "admin"}}, matrixPolicy)
+	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
+	return s, st
 }
 
 func ceilingToken(t *testing.T, st store.Store, token string, perms []authz.Permission) string {
@@ -180,18 +187,19 @@ func hiddenAnswer(rule routeRule, runID string) string {
 }
 
 // isHidden reports whether rec is the answer given for a job or run the caller
-// cannot read. The log archive route answers an existing run that has no
-// archive with the very same text, so an admitted request there cannot be told
-// apart by its body.
+// cannot read. Three routes answer an existing run with nothing to show
+// (no archive, no pending approval, no such artifact) with the very same text,
+// so an admitted request there cannot be told apart by its body.
 func isHidden(rule routeRule, rec *httptest.ResponseRecorder, runID string) bool {
 	return rec.Code == http.StatusNotFound && rec.Body.String() == hiddenAnswer(rule, runID)
 }
 
 func isAdmitted(rule routeRule, rec *httptest.ResponseRecorder, runID string) bool {
-	if rec.Code == http.StatusForbidden {
+	if rec.Code == http.StatusForbidden || rec.Code == http.StatusUnauthorized || rec.Code >= http.StatusInternalServerError {
 		return false
 	}
-	if rule.Pattern == "/api/v1/runs/{id}/logs/archive" {
+	switch rule.Pattern {
+	case "/api/v1/runs/{id}/logs/archive", "/api/v1/runs/{runID}/approvals/{stepIndex}", "/api/v1/runs/{runID}/artifacts/{name}":
 		return true
 	}
 	return !isHidden(rule, rec, runID)
@@ -281,7 +289,7 @@ func TestAuthorize_HiddenRunIndistinguishableFromMissing(t *testing.T) {
 	const missingID = "11111111-1111-1111-1111-111111111111"
 
 	for _, rule := range humanRows() {
-		if rule.Scope != scopeJobRunID || rule.Method != http.MethodGet || rule.Perm != authz.JobRead {
+		if rule.Scope != scopeJobRunID {
 			continue
 		}
 		t.Run(rowName(rule), func(t *testing.T) {
@@ -309,6 +317,8 @@ func TestAuthorize_HiddenRunIndistinguishableFromMissing(t *testing.T) {
 				t.Logf("handler answers %d for a missing run (no 404 to compare)", adminMissing.Code)
 				return
 			}
+			f = seedMatrix(t, st) // a mutating row above may have removed the run
+			hiddenID = f.runs["team-b/x"]
 			hidden := doTimed(t, s, requestFor(rule, "", hiddenID), teamA)
 			assert.Equal(t, adminMissing.Code, hidden.Code)
 			assert.Equal(t, normalizeID(adminMissing.Body.String(), missingID), normalizeID(hidden.Body.String(), hiddenID))
@@ -419,11 +429,20 @@ func TestAuthorize_ApprovalCheckedAgainstCurrentJobName(t *testing.T) {
 	body := []byte(`{"decision":"approve"}`)
 	req := matrixRequest{method: http.MethodPost, path: path, body: body}
 
-	rec := doTimed(t, s, req, bearer("dev-a@example.com", "g-a"))
+	devA, devB := bearer("dev-a@example.com", "g-a"), bearer("dev-b@example.com", "g-b")
+	rec := doTimed(t, s, req, devA)
 	assert.NotEqual(t, http.StatusForbidden, rec.Code, rec.Body.String())
-	assert.NotEqual(t, store.RunNotFoundError(run.ID).Error()+"\n", rec.Body.String())
 
-	rec = doTimed(t, s, req, bearer("dev-b@example.com", "g-b"))
+	// A run of another team's job answers like a run with nothing to decide.
+	rec = doTimed(t, s, req, devB)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Equal(t, msgNoPendingApproval+"\n", rec.Body.String())
+
+	// The same lookup decides readability: the renamed job's run is visible to
+	// team-a and hidden from team-b.
+	get := matrixRequest{method: http.MethodGet, path: "/api/v1/runs/" + run.ID}
+	assert.Equal(t, http.StatusOK, doTimed(t, s, get, devA).Code)
+	rec = doTimed(t, s, get, devB)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 	assert.Equal(t, store.RunNotFoundError(run.ID).Error()+"\n", rec.Body.String())
 }
@@ -451,16 +470,19 @@ func TestAuthorize_SchedulePath(t *testing.T) {
 	seedMatrix(t, st)
 	del := matrixRequest{method: http.MethodDelete, path: "/api/v1/schedules/sch"}
 
-	// Developer on team-b only: the schedule targets team-a/x, which it cannot read.
-	rec := doTimed(t, s, del, bearer("dev-b@example.com", "g-b"))
-	assert.Equal(t, http.StatusForbidden, rec.Code)
-	assert.Equal(t, missingPermOnJob(authz.ScheduleConfigure, "team-a/x")+"\n", rec.Body.String())
-	_, found, err := st.ScheduleJobName(context.Background(), "sch")
-	require.NoError(t, err)
-	assert.True(t, found, "a refused delete must leave the schedule")
+	// Developer on team-b only: the schedule targets team-a/x, which it cannot
+	// read, so the delete answers like one for a schedule that does not exist.
+	for _, who := range []string{bearer("dev-b@example.com", "g-b"),
+		// schedule.configure globally but job.read only on team-b.
+		bearer("sc@example.com", "g-sc")} {
+		rec := doTimed(t, s, del, who)
+		assert.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+		_, err := st.GetSchedule(context.Background(), "sch")
+		require.NoError(t, err, "a hidden schedule must not be deleted")
+	}
 
 	// Developer on team-a: allowed.
-	rec = doTimed(t, s, del, bearer("dev-a@example.com", "g-a"))
+	rec := doTimed(t, s, del, bearer("dev-a@example.com", "g-a"))
 	assert.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 
 	// Deleting a schedule that no longer exists is idempotent for a folder caller.

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -18,6 +20,12 @@ const (
 	// msgLogArchiveUnavailable is what the log archive route answers (404) when
 	// the run has no archive, including a run that does not exist.
 	msgLogArchiveUnavailable = "log archive not available yet"
+	// msgNoPendingApproval is what deciding an approval answers (404) when there
+	// is nothing to decide, including for a run that does not exist.
+	msgNoPendingApproval = "no pending approval"
+	// msgArtifactNotFound is what an artifact download answers (404) when there
+	// is no such artifact, including for a run that does not exist.
+	msgArtifactNotFound = "artifact not found"
 )
 
 // missingPerm is the 403 body for a refusal that names only the permission
@@ -83,6 +91,10 @@ func missingRunAnswer(pattern, runID string) func(http.ResponseWriter) {
 		body = store.RunSpecNotFoundError().Error()
 	case "/api/v1/runs/{id}/logs/archive":
 		body = msgLogArchiveUnavailable
+	case "/api/v1/runs/{runID}/approvals/{stepIndex}":
+		body = msgNoPendingApproval
+	case "/api/v1/runs/{runID}/artifacts/{name}":
+		body = msgArtifactNotFound
 	}
 	return func(w http.ResponseWriter) { http.Error(w, body, http.StatusNotFound) }
 }
@@ -224,24 +236,31 @@ func (s *Server) authorizeRun(w http.ResponseWriter, r *http.Request, rule route
 // schedule named in the path.
 func (s *Server) authorizeSchedule(w http.ResponseWriter, r *http.Request, rule routeRule, next http.Handler) {
 	p, _ := principalFromContext(r.Context())
-	if ok, by := p.Grants.Decide(rule.Perm, ""); ok {
+	g := p.Grants
+	// Global fast path: both permissions are held everywhere, so the target job
+	// cannot change the answer.
+	if g.Can(rule.Perm, "") && g.Can(authz.JobRead, "") {
+		_, by := g.Decide(rule.Perm, "")
 		recordDecision(r, authzDecision{Permission: rule.Perm, Scope: scopeGlobalName, GrantedBy: by})
 		next.ServeHTTP(w, r)
 		return
 	}
 	name := chi.URLParam(r, "name")
-	job, found, err := s.store.ScheduleJobName(r.Context(), name)
-	if err != nil {
-		slog.Error("authorize: schedule job lookup failed", "schedule", name, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if !found {
+	sc, err := s.store.GetSchedule(r.Context(), name)
+	if errors.Is(err, pgx.ErrNoRows) {
 		// Deleting a schedule that does not exist is idempotent.
 		next.ServeHTTP(w, r)
 		return
 	}
-	if s.requireJob(w, r, rule.Perm, job, nil) {
+	if err != nil {
+		slog.Error("authorize: schedule lookup failed", "schedule", name, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	// A schedule whose target the caller cannot read answers like a missing one
+	// (the idempotent delete) without being touched.
+	hide := func(w http.ResponseWriter) { w.WriteHeader(http.StatusNoContent) }
+	if s.requireJob(w, r, rule.Perm, sc.JobName, hide) {
 		next.ServeHTTP(w, r)
 	}
 }

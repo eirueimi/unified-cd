@@ -199,24 +199,6 @@ func TestRunJobName(t *testing.T) {
 	assert.False(t, found)
 }
 
-func TestScheduleJobName(t *testing.T) {
-	pg := NewTestPostgres(t)
-	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "team-a/build", "unified-cd/v1", []byte(`{}`))
-	require.NoError(t, err)
-	_, err = pg.UpsertSchedule(ctx, "nightly", "0 3 * * *", "team-a/build", nil)
-	require.NoError(t, err)
-
-	job, found, err := pg.ScheduleJobName(ctx, "nightly")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "team-a/build", job)
-
-	_, found, err = pg.ScheduleJobName(ctx, "missing")
-	require.NoError(t, err)
-	assert.False(t, found)
-}
-
 func TestAuditLogDecisionColumns(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()

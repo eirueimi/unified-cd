@@ -47,7 +47,7 @@ func (s *Server) handleDecideApproval(w http.ResponseWriter, r *http.Request) {
 		// state here cannot reopen the TOCTOU window the SQL guard closed.
 		a, gerr := s.store.GetApproval(r.Context(), runID, stepIndex)
 		if gerr != nil {
-			http.Error(w, "no pending approval", http.StatusNotFound)
+			http.Error(w, msgNoPendingApproval, http.StatusNotFound)
 			return
 		}
 		if a.Status != "Pending" {

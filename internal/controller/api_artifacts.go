@@ -102,7 +102,7 @@ func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) 
 		// other error (e.g. a transient backend failure) is a 500 so it isn't
 		// mistaken for "artifact doesn't exist".
 		if errors.Is(err, objectstore.ErrNotFound) {
-			http.Error(w, "artifact not found", http.StatusNotFound)
+			http.Error(w, msgArtifactNotFound, http.StatusNotFound)
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -2451,20 +2451,6 @@ func (p *Postgres) RunJobName(ctx context.Context, runID string) (string, bool, 
 	return "", false, fmt.Errorf("run job name: %w", err)
 }
 
-// ScheduleJobName returns the job a schedule currently targets, read from
-// schedules.job_name alone. A missing schedule is found=false, not an error.
-func (p *Postgres) ScheduleJobName(ctx context.Context, name string) (string, bool, error) {
-	var job string
-	err := p.pool.QueryRow(ctx, `SELECT job_name FROM schedules WHERE name = $1`, name).Scan(&job)
-	if err == nil {
-		return job, true, nil
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
-	}
-	return "", false, fmt.Errorf("schedule job name: %w", err)
-}
-
 // patColumns is the column list every PAT read returns, in patScan order.
 const patColumns = `id, name, role, created_at, expires_at, last_used_at, owner_sub, owner_email, owner_claims, permissions`
 
