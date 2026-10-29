@@ -223,6 +223,9 @@ func (p *Postgres) GetJob(ctx context.Context, name string) (*api.Job, error) {
 	var j api.Job
 	err := p.pool.QueryRow(ctx, q, name).
 		Scan(&j.ID, &j.Name, &j.APIVersion, &j.Spec, &j.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, JobNotFoundError()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get job: %w", err)
 	}
@@ -368,6 +371,25 @@ func (p *Postgres) ListChildRunIDs(ctx context.Context, parentRunID string) ([]s
 // while surfacing infrastructure failures as 5xx. Match it with errors.Is.
 var ErrRunNotFound = errors.New("run not found")
 
+// RunNotFoundError is the error GetRun returns for the run id. The HTTP layer
+// reuses it so a run the caller may not see answers exactly like a missing one.
+func RunNotFoundError(id string) error {
+	return fmt.Errorf("%w: %s", ErrRunNotFound, id)
+}
+
+// RunSpecNotFoundError is the error GetRunSpec returns when no run has the
+// requested id (see RunNotFoundError).
+func RunSpecNotFoundError() error {
+	return fmt.Errorf("get run spec: %w", pgx.ErrNoRows)
+}
+
+// JobNotFoundError is the error GetJob returns when no job has the requested
+// name. The HTTP layer reuses it so a job the caller may not see answers
+// exactly like a missing one.
+func JobNotFoundError() error {
+	return fmt.Errorf("get job: %w", pgx.ErrNoRows)
+}
+
 // ErrArchiveIncomplete is returned by TrimRunLogs when the run's logs table
 // holds more rows (or a higher seq) than the archive record claims to cover
 // — either the run's log count exceeded the archiver's TailLogs cap, or
@@ -386,7 +408,7 @@ func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
 	err := p.pool.QueryRow(ctx, q, id).
 		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &claimedBy, &displayName)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, id)
+		return nil, RunNotFoundError(id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get run: %w", err)
@@ -409,6 +431,9 @@ func (p *Postgres) GetRunSpec(ctx context.Context, id string) ([]byte, error) {
 	const q = `SELECT spec FROM runs WHERE id = $1`
 	var spec []byte
 	err := p.pool.QueryRow(ctx, q, id).Scan(&spec)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, RunSpecNotFoundError()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get run spec: %w", err)
 	}
@@ -2407,15 +2432,81 @@ func (p *Postgres) DeleteSecret(ctx context.Context, name string) error {
 	return err
 }
 
-// CreatePAT creates a Personal Access Token and returns its metadata.
+// RunJobName returns the job a run belongs to, read from runs.job_name alone
+// so it never depends on the job row still existing. A run ID that is not a
+// valid UUID (SQLSTATE 22P02) is reported as not found, not as an error.
+func (p *Postgres) RunJobName(ctx context.Context, runID string) (string, bool, error) {
+	var job string
+	err := p.pool.QueryRow(ctx, `SELECT job_name FROM runs WHERE id = $1`, runID).Scan(&job)
+	if err == nil {
+		return job, true, nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "22P02" {
+		return "", false, nil
+	}
+	return "", false, fmt.Errorf("run job name: %w", err)
+}
+
+// patColumns is the column list every PAT read returns, in patScan order.
+const patColumns = `id, name, role, created_at, expires_at, last_used_at, owner_sub, owner_email, owner_claims, permissions`
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanPAT scans a patColumns row. owner_sub IS NULL means a role-only PAT, so
+// Owner stays nil; permissions NULL stays a nil slice.
+func scanPAT(row rowScanner) (PAT, error) {
+	var pat PAT
+	var ownerSub, ownerEmail *string
+	var ownerClaims []string
+	if err := row.Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt,
+		&ownerSub, &ownerEmail, &ownerClaims, &pat.Permissions); err != nil {
+		return PAT{}, err
+	}
+	if ownerSub != nil {
+		o := &PATOwner{Sub: *ownerSub, Claims: ownerClaims}
+		if ownerEmail != nil {
+			o.Email = *ownerEmail
+		}
+		if o.Claims == nil {
+			o.Claims = []string{}
+		}
+		pat.Owner = o
+	}
+	return pat, nil
+}
+
+// CreatePAT creates a role-only Personal Access Token (no owner) and returns its metadata.
 func (p *Postgres) CreatePAT(ctx context.Context, name, tokenHash, role string, expiresAt *time.Time) (*PAT, error) {
 	const q = `INSERT INTO pats(name, token_hash, role, expires_at) VALUES ($1, $2, $3, $4)
-		RETURNING id, name, role, created_at, expires_at, last_used_at;`
-	var pat PAT
-	err := p.pool.QueryRow(ctx, q, name, tokenHash, role, expiresAt).
-		Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt)
+		RETURNING ` + patColumns
+	pat, err := scanPAT(p.pool.QueryRow(ctx, q, name, tokenHash, role, expiresAt))
 	if err != nil {
 		return nil, fmt.Errorf("create pat: %w", err)
+	}
+	return &pat, nil
+}
+
+// CreateOwnedPAT creates a PAT bound to the OIDC identity that minted it. A nil
+// Owner.Claims is stored as the empty array, never NULL, because a NULL
+// owner_claims would be indistinguishable from "no snapshot taken".
+func (p *Postgres) CreateOwnedPAT(ctx context.Context, in NewOwnedPAT) (*PAT, error) {
+	claims := in.Owner.Claims
+	if claims == nil {
+		claims = []string{}
+	}
+	const q = `INSERT INTO pats(name, token_hash, role, expires_at, owner_sub, owner_email, owner_claims, permissions)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING ` + patColumns
+	pat, err := scanPAT(p.pool.QueryRow(ctx, q, in.Name, in.TokenHash, in.Role, in.ExpiresAt,
+		in.Owner.Sub, in.Owner.Email, claims, in.Permissions))
+	if err != nil {
+		return nil, fmt.Errorf("create owned pat: %w", err)
 	}
 	return &pat, nil
 }
@@ -2426,10 +2517,8 @@ func (p *Postgres) CreatePAT(ctx context.Context, name, tokenHash, role string, 
 // the row must be identified uniquely by name).
 func (p *Postgres) UpsertBootstrapPAT(ctx context.Context, name, tokenHash string) (*PAT, error) {
 	const updateQ = `UPDATE pats SET token_hash = $2, role = 'admin' WHERE name = $1
-		RETURNING id, name, role, created_at, expires_at, last_used_at;`
-	var pat PAT
-	err := p.pool.QueryRow(ctx, updateQ, name, tokenHash).
-		Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt)
+		RETURNING ` + patColumns
+	pat, err := scanPAT(p.pool.QueryRow(ctx, updateQ, name, tokenHash))
 	if err == nil {
 		return &pat, nil
 	}
@@ -2438,9 +2527,9 @@ func (p *Postgres) UpsertBootstrapPAT(ctx context.Context, name, tokenHash strin
 	}
 
 	const insertQ = `INSERT INTO pats(name, token_hash, role) VALUES ($1, $2, 'admin')
-		RETURNING id, name, role, created_at, expires_at, last_used_at;`
-	if err := p.pool.QueryRow(ctx, insertQ, name, tokenHash).
-		Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt); err != nil {
+		RETURNING ` + patColumns
+	pat, err = scanPAT(p.pool.QueryRow(ctx, insertQ, name, tokenHash))
+	if err != nil {
 		return nil, fmt.Errorf("create bootstrap pat: %w", err)
 	}
 	return &pat, nil
@@ -2496,28 +2585,25 @@ func (p *Postgres) DeleteBootstrapPATByName(ctx context.Context, name string) er
 
 // GetPATByHash retrieves a PAT by token_hash (expired tokens are excluded).
 func (p *Postgres) GetPATByHash(ctx context.Context, tokenHash string) (*PAT, error) {
-	const q = `SELECT id, name, role, created_at, expires_at, last_used_at FROM pats
+	const q = `SELECT ` + patColumns + ` FROM pats
 		WHERE token_hash = $1 AND (expires_at IS NULL OR expires_at > NOW())`
-	var pat PAT
-	err := p.pool.QueryRow(ctx, q, tokenHash).
-		Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt)
+	pat, err := scanPAT(p.pool.QueryRow(ctx, q, tokenHash))
 	if err != nil {
 		return nil, fmt.Errorf("get pat: %w", err)
 	}
 	return &pat, nil
 }
 
-// ListPATs returns all PATs ordered by creation date ascending.
-func (p *Postgres) ListPATs(ctx context.Context) ([]PAT, error) {
-	rows, err := p.pool.Query(ctx, `SELECT id, name, role, created_at, expires_at, last_used_at FROM pats ORDER BY created_at`)
+func (p *Postgres) queryPATs(ctx context.Context, q string, args ...any) ([]PAT, error) {
+	rows, err := p.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []PAT
 	for rows.Next() {
-		var pat PAT
-		if err := rows.Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt); err != nil {
+		pat, err := scanPAT(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, pat)
@@ -2525,10 +2611,74 @@ func (p *Postgres) ListPATs(ctx context.Context) ([]PAT, error) {
 	return out, rows.Err()
 }
 
+// ListPATs returns all PATs ordered by creation date ascending.
+func (p *Postgres) ListPATs(ctx context.Context) ([]PAT, error) {
+	return p.queryPATs(ctx, `SELECT `+patColumns+` FROM pats ORDER BY created_at, id`)
+}
+
+// ListPATsByOwner returns the PATs owned by ownerSub, oldest first.
+func (p *Postgres) ListPATsByOwner(ctx context.Context, ownerSub string) ([]PAT, error) {
+	return p.queryPATs(ctx, `SELECT `+patColumns+` FROM pats WHERE owner_sub = $1 ORDER BY created_at, id`, ownerSub)
+}
+
 // DeletePAT deletes a PAT by ID.
+//
+// An id that is not a valid UUID (SQLSTATE 22P02) yields ErrPATNotFound.
 func (p *Postgres) DeletePAT(ctx context.Context, id string) error {
 	_, err := p.pool.Exec(ctx, `DELETE FROM pats WHERE id = $1`, id)
+	if isInvalidTextRepresentation(err) {
+		return ErrPATNotFound
+	}
 	return err
+}
+
+// ErrPATNotFound reports a PAT id that cannot match any row (not a UUID).
+var ErrPATNotFound = errors.New("token not found")
+
+// isInvalidTextRepresentation reports a Postgres invalid_text_representation
+// error (SQLSTATE 22P02), e.g. a malformed UUID.
+func isInvalidTextRepresentation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "22P02"
+}
+
+// DeleteOwnedPAT deletes a PAT by ID only if it is owned by ownerSub. It
+// reports whether a row was deleted. Role-only PATs (owner_sub IS NULL) never
+// match, whatever ownerSub is.
+func (p *Postgres) DeleteOwnedPAT(ctx context.Context, id, ownerSub string) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM pats WHERE id = $1 AND owner_sub = $2`, id, ownerSub)
+	if isInvalidTextRepresentation(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// UpdatePATOwnerSnapshot refreshes the email and claim snapshot of every PAT
+// owned by ownerSub and returns the number of rows updated. A nil claims is
+// stored as the empty array.
+func (p *Postgres) UpdatePATOwnerSnapshot(ctx context.Context, ownerSub, email string, claims []string) (int64, error) {
+	if claims == nil {
+		claims = []string{}
+	}
+	tag, err := p.pool.Exec(ctx,
+		`UPDATE pats SET owner_email = $2, owner_claims = $3 WHERE owner_sub = $1`, ownerSub, email, claims)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// CountRoleOnlyPATsAboveViewer counts role-only PATs (owner_sub IS NULL) whose
+// role is anything other than viewer, ignoring the row named excludeName
+// (the UNIFIED_TOKEN bootstrap PAT).
+func (p *Postgres) CountRoleOnlyPATsAboveViewer(ctx context.Context, excludeName string) (int, error) {
+	var n int
+	err := p.pool.QueryRow(ctx,
+		`SELECT count(*) FROM pats WHERE owner_sub IS NULL AND role <> 'viewer' AND name <> $1`, excludeName).Scan(&n)
+	return n, err
 }
 
 // TouchPAT updates the last_used_at of a PAT to the current time.
@@ -2659,14 +2809,15 @@ func (p *Postgres) DeleteExpiredOIDCStates(ctx context.Context) error {
 	return err
 }
 
-// CreateSession saves a browser session to the database.
-func (p *Postgres) CreateSession(ctx context.Context, tokenHash, sub, email, role string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error) {
-	const q = `INSERT INTO sessions(token_hash, sub, email, role, refresh_token_dek, refresh_token_ct, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, token_hash, sub, email, role, refresh_token_dek, refresh_token_ct, expires_at, last_used_at, created_at`
+// CreateSession saves a browser session to the database. A nil claims is
+// stored as NULL (a role-only session); an empty non-nil slice as '{}'.
+func (p *Postgres) CreateSession(ctx context.Context, tokenHash, sub, email, role string, claims []string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error) {
+	const q = `INSERT INTO sessions(token_hash, sub, email, role, claims, refresh_token_dek, refresh_token_ct, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, token_hash, sub, email, role, claims, refresh_token_dek, refresh_token_ct, expires_at, last_used_at, created_at`
 	var s Session
-	err := p.pool.QueryRow(ctx, q, tokenHash, sub, email, role, refreshDEK, refreshCT, expiresAt).
-		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.RefreshTokenDEK, &s.RefreshTokenCT, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
+	err := p.pool.QueryRow(ctx, q, tokenHash, sub, email, role, claims, refreshDEK, refreshCT, expiresAt).
+		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.Claims, &s.RefreshTokenDEK, &s.RefreshTokenCT, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
@@ -2675,11 +2826,11 @@ func (p *Postgres) CreateSession(ctx context.Context, tokenHash, sub, email, rol
 
 // GetSessionByHash retrieves a session by token_hash.
 func (p *Postgres) GetSessionByHash(ctx context.Context, tokenHash string) (*Session, error) {
-	const q = `SELECT id, token_hash, sub, email, role, refresh_token_dek, refresh_token_ct, expires_at, last_used_at, created_at
+	const q = `SELECT id, token_hash, sub, email, role, claims, refresh_token_dek, refresh_token_ct, expires_at, last_used_at, created_at
 		FROM sessions WHERE token_hash = $1`
 	var s Session
 	err := p.pool.QueryRow(ctx, q, tokenHash).
-		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.RefreshTokenDEK, &s.RefreshTokenCT, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
+		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.Claims, &s.RefreshTokenDEK, &s.RefreshTokenCT, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -2687,6 +2838,33 @@ func (p *Postgres) GetSessionByHash(ctx context.Context, tokenHash string) (*Ses
 		return nil, fmt.Errorf("get session: %w", err)
 	}
 	return &s, nil
+}
+
+// UpdateSessionClaims replaces the claim snapshot of a session. A nil claims
+// stores NULL.
+func (p *Postgres) UpdateSessionClaims(ctx context.Context, id string, claims []string) error {
+	_, err := p.pool.Exec(ctx, `UPDATE sessions SET claims = $2 WHERE id = $1`, id, claims)
+	return err
+}
+
+// LatestSessionClaims returns the claim snapshot of the newest session whose
+// sub or email is user and whose claims are not NULL.
+func (p *Postgres) LatestSessionClaims(ctx context.Context, user string) ([]string, bool, error) {
+	const q = `SELECT claims FROM sessions
+		WHERE (sub = $1 OR email = $1) AND claims IS NOT NULL
+		ORDER BY created_at DESC, id DESC LIMIT 1`
+	var claims []string
+	err := p.pool.QueryRow(ctx, q, user).Scan(&claims)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("latest session claims: %w", err)
+	}
+	if claims == nil {
+		claims = []string{}
+	}
+	return claims, true, nil
 }
 
 // UpdateSessionExpiry updates the expiry time and refresh token of a session.
@@ -2761,19 +2939,21 @@ func (p *Postgres) DeleteGitCredential(ctx context.Context, name string) error {
 	return err
 }
 
-// InsertAuditLog records a single state-changing API operation.
-func (p *Postgres) InsertAuditLog(ctx context.Context, actor, method, path, action, resource string, status int) error {
+// InsertAuditLog records a single state-changing API operation. Empty
+// Permission, Scope and GrantedBy are stored as NULL.
+func (p *Postgres) InsertAuditLog(ctx context.Context, e AuditEntry) error {
 	const q = `
-		INSERT INTO audit_logs(actor, method, path, action, resource, status)
-		VALUES ($1, $2, $3, $4, $5, $6)`
-	_, err := p.pool.Exec(ctx, q, actor, method, path, action, resource, status)
+		INSERT INTO audit_logs(actor, method, path, action, resource, status, permission, scope, granted_by)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''))`
+	_, err := p.pool.Exec(ctx, q, e.Actor, e.Method, e.Path, e.Action, e.Resource, e.Status, e.Permission, e.Scope, e.GrantedBy)
 	return err
 }
 
 // ListAuditLogs returns audit log entries newest-first, with limit/offset pagination.
 func (p *Postgres) ListAuditLogs(ctx context.Context, limit, offset int) ([]api.AuditLog, error) {
 	const q = `
-		SELECT id, occurred_at, actor, method, path, action, resource, status
+		SELECT id, occurred_at, actor, method, path, action, resource, status,
+		       COALESCE(permission, ''), COALESCE(scope, ''), COALESCE(granted_by, '')
 		FROM audit_logs
 		ORDER BY occurred_at DESC, id DESC
 		LIMIT $1 OFFSET $2`
@@ -2785,7 +2965,8 @@ func (p *Postgres) ListAuditLogs(ctx context.Context, limit, offset int) ([]api.
 	list := make([]api.AuditLog, 0)
 	for rows.Next() {
 		var a api.AuditLog
-		if err := rows.Scan(&a.ID, &a.OccurredAt, &a.Actor, &a.Method, &a.Path, &a.Action, &a.Resource, &a.Status); err != nil {
+		if err := rows.Scan(&a.ID, &a.OccurredAt, &a.Actor, &a.Method, &a.Path, &a.Action, &a.Resource, &a.Status,
+			&a.Permission, &a.Scope, &a.GrantedBy); err != nil {
 			return nil, err
 		}
 		list = append(list, a)

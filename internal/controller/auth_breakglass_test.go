@@ -17,11 +17,15 @@ import (
 func adminOnly(t *testing.T, st store.Store, srv *Server, token string) (int, string) {
 	t.Helper()
 	var role string
-	h := ServerAuth(st, srv)(requireMinRole("admin")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := ServerAuth(st, srv)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, _ := principalFromContext(r.Context())
 		role = p.Role
+		if p.Role != "admin" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
-	})))
+	}))
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()

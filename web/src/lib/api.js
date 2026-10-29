@@ -1,9 +1,21 @@
-import { writable, get } from 'svelte/store';
+import { writable, get, derived } from 'svelte/store';
 
 export const token = writable(localStorage.getItem('ecd_token') || '');
 export const serverURL = writable(localStorage.getItem('ecd_server') || window.location.origin);
 export const browserSSOEnabled = writable(false);
 export const currentUser = writable(null);
+// The caller's grants (the `permissions` object of /auth/me), or null while not
+// yet known. Feed it to allows()/can() from authz.js.
+export const grants = derived(currentUser, (u) => (u ? u.permissions ?? null : null));
+
+// ApiError is thrown for non-OK API responses; message is the response body.
+export class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
 // Server-set display preference (from /api/v1/ui-config): when true, the run log
 // renders step stderr the same color as stdout instead of red. Default: red.
 export const stderrPlain = writable(false);
@@ -40,6 +52,24 @@ export function restorePostLoginHash() {
   }
 }
 
+let meInflight = null;
+
+// refreshMe re-reads /auth/me into currentUser. Concurrent callers share one
+// in-flight request. It uses raw fetch (not apiFetch) so a 403 here cannot
+// trigger another refresh, and it never rejects.
+export function refreshMe() {
+  if (meInflight) return meInflight;
+  meInflight = (async () => {
+    try {
+      const t = get(token);
+      const headers = t ? { Authorization: 'Bearer ' + t } : {};
+      const resp = await fetch(get(serverURL) + '/api/v1/auth/me', { headers, credentials: 'include' });
+      if (resp.ok) currentUser.set(await resp.json());
+    } catch { }
+  })().finally(() => { meInflight = null; });
+  return meInflight;
+}
+
 export async function initAuth() {
   const url = get(serverURL);
   try {
@@ -49,12 +79,7 @@ export async function initAuth() {
       browserSSOEnabled.set(cfg.browserSSOEnabled === true);
     }
   } catch { }
-  try {
-    const t = get(token);
-    const headers = t ? { Authorization: 'Bearer ' + t } : {};
-    const resp = await fetch(url + '/api/v1/auth/me', { headers, credentials: 'include' });
-    if (resp.ok) currentUser.set(await resp.json());
-  } catch { }
+  await refreshMe();
   try {
     const resp = await fetch(url + '/api/v1/ui-config');
     if (resp.ok) {
@@ -63,6 +88,14 @@ export async function initAuth() {
     }
   } catch { }
   authReady.set(true);
+}
+
+// failResponse throws an ApiError for a non-OK response. On a 403 it first
+// re-reads /auth/me once (shared promise) so the UI picks up changed grants.
+async function failResponse(resp) {
+  const body = await resp.text();
+  if (resp.status === 403) await refreshMe();
+  throw new ApiError(body, resp.status);
 }
 
 export async function apiFetch(path, options = {}) {
@@ -77,9 +110,9 @@ export async function apiFetch(path, options = {}) {
       window.location.href = url + '/api/v1/auth/oidc-login';
       throw new Error('sso-redirect');
     }
-    throw new Error('Unauthorized — check your token');
+    throw new ApiError('Unauthorized — check your token', 401);
   }
-  if (!resp.ok) throw new Error(await resp.text());
+  if (!resp.ok) await failResponse(resp);
   if (resp.status === 204) return null;
   return resp.json();
 }
@@ -96,9 +129,9 @@ export async function apiFetchText(path, options = {}) {
       window.location.href = url + '/api/v1/auth/oidc-login';
       throw new Error('sso-redirect');
     }
-    throw new Error('Unauthorized — check your token');
+    throw new ApiError('Unauthorized — check your token', 401);
   }
-  if (!resp.ok) throw new Error(await resp.text());
+  if (!resp.ok) await failResponse(resp);
   return resp.text();
 }
 

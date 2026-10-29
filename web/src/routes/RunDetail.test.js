@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
-import { token, serverURL, stderrPlain } from '../lib/api.js';
+import { token, serverURL, stderrPlain, currentUser } from '../lib/api.js';
 import RunDetail from './RunDetail.svelte';
 
 // Regression test for TODO #10: RunDetail used to call init() twice on load
@@ -4010,5 +4010,76 @@ describe('RunDetail — initial load fetches the tail range authoritatively', ()
         return cu.includes('/logs/range') && cu.includes(`offset=${TOTAL - 5000}`);
       })).toBe(true);
     });
+  });
+});
+
+// Matrix authorization (spec 5.16): controls are disabled with a tooltip when
+// the caller lacks the permission on the run's job; a 404 renders not-found.
+describe('RunDetail — permission-aware controls', () => {
+  const origFetch = global.fetch;
+  beforeEach(() => {
+    token.set('');
+    serverURL.set('http://localhost:8080');
+  });
+  afterEach(() => {
+    currentUser.set(null);
+    global.fetch = origFetch;
+  });
+
+  function mockRun(run, steps = [], approvals = []) {
+    global.fetch = vi.fn((url) => {
+      const u = new URL(String(url), 'http://localhost');
+      if (u.pathname.endsWith('/events')) return emptyEventsResponse();
+      if (u.pathname.endsWith('/steps')) return jsonResponse(steps);
+      if (u.pathname.endsWith('/approvals')) return jsonResponse(approvals);
+      if (u.pathname.endsWith('/artifacts')) return jsonResponse([]);
+      if (u.pathname.includes('/logs/')) return jsonResponse({ count: 0, minSeq: 0, maxSeq: 0, lines: [] });
+      return jsonResponse(run);
+    });
+  }
+  const waiting = { index: 0, name: 'gate', status: 'WaitingApproval' };
+
+  it('disables Approve with a tooltip naming the permission', async () => {
+    currentUser.set({ email: 'a@example.com', permissions: { global: [], folders: { 'team-a': ['job.read'] } } });
+    mockRun({ id: 'r1', jobName: 'team-a/prod/deploy', status: 'Running' }, [waiting]);
+    const { findByText } = render(RunDetail, { props: { params: { id: 'r1' } } });
+    const approve = await findByText('Approve');
+    expect(approve.disabled).toBe(true);
+    expect(approve.title).toBe('requires run.approve on team-a/prod/deploy');
+  });
+
+  it("enables Cancel when run.cancel is held on the run's folder", async () => {
+    currentUser.set({ email: 'a@example.com', permissions: { global: [], folders: { 'team-a': ['run.cancel'] } } });
+    mockRun({ id: 'r2', jobName: 'team-a/prod/deploy', status: 'Running' });
+    const { findByText } = render(RunDetail, { props: { params: { id: 'r2' } } });
+    const cancel = await findByText('Cancel');
+    expect(cancel.disabled).toBe(false);
+  });
+
+  it('disables Cancel on a job in another folder', async () => {
+    currentUser.set({ email: 'a@example.com', permissions: { global: [], folders: { 'team-a': ['run.cancel'] } } });
+    mockRun({ id: 'r3', jobName: 'team-b/deploy', status: 'Running' });
+    const { findByText } = render(RunDetail, { props: { params: { id: 'r3' } } });
+    const cancel = await findByText('Cancel');
+    expect(cancel.disabled).toBe(true);
+    expect(cancel.title).toBe('requires run.cancel on team-b/deploy');
+  });
+
+  it('shows the server message, not the not-found view, for a 403', async () => {
+    global.fetch = vi.fn(() => Promise.resolve({ ok: false, status: 403, text: async () => 'forbidden: missing permission "job.read"' }));
+    const { findByText, queryByText } = render(RunDetail, { props: { params: { id: 'r9' } } });
+    expect(await findByText('forbidden: missing permission "job.read"')).toBeTruthy();
+    expect(queryByText('Run not found')).toBeNull();
+  });
+
+  it('renders the not-found view for a 404', async () => {
+    global.fetch = vi.fn((url) => {
+      if (String(url).endsWith('/api/v1/runs/missing')) {
+        return Promise.resolve({ ok: false, status: 404, text: async () => 'run not found' });
+      }
+      return jsonResponse([]);
+    });
+    const { findByText } = render(RunDetail, { props: { params: { id: 'missing' } } });
+    expect(await findByText('Run not found')).toBeTruthy();
   });
 });

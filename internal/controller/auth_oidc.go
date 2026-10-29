@@ -77,6 +77,19 @@ func generateState() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// oidcScopes returns the scopes both the browser login and the CLI device flow
+// request. When the roles claim is a bare scope-like token (e.g. "groups" for
+// Dex) it is requested as a scope too, so the IdP emits it. Namespaced or
+// `:`-bearing claim names (Auth0/Entra app-roles) are emitted without an extra
+// scope and are skipped.
+func oidcScopes(rolesClaim string) []string {
+	scopes := []string{oidc.ScopeOpenID, "email", "profile"}
+	if rolesClaim != "" && !strings.ContainsAny(rolesClaim, "/:") {
+		scopes = append(scopes, rolesClaim)
+	}
+	return scopes
+}
+
 // oidcProvider builds a provider and oauth2.Config from OIDCConfig.
 // When IssuerInternal is set, it injects a hostRewriteTransport into the context so that
 // server-side discovery, token exchange, and JWKS fetches all go through the internal URL.
@@ -100,13 +113,7 @@ func (s *Server) oidcProvider(ctx context.Context, host string) (context.Context
 		redirectBase = strings.TrimRight(s.oidcCfg.ExternalURL, "/")
 	}
 	redirectURL := redirectBase + "/api/v1/auth/oidc-callback"
-	scopes := []string{oidc.ScopeOpenID, "email", "profile"}
-	// When the role claim is a bare scope-like token (e.g. "groups" for Dex),
-	// request it as a scope. Namespaced/`:`-bearing claim names (Auth0/Entra
-	// app-roles) are emitted without an extra scope and are skipped here.
-	if rc := s.oidcCfg.RolesClaim; rc != "" && !strings.ContainsAny(rc, "/:") {
-		scopes = append(scopes, rc)
-	}
+	scopes := oidcScopes(s.oidcCfg.RolesClaim)
 	cfg := &oauth2.Config{
 		ClientID:     s.oidcCfg.ClientID,
 		ClientSecret: s.oidcCfg.ClientSecret,
@@ -117,11 +124,9 @@ func (s *Server) oidcProvider(ctx context.Context, host string) (context.Context
 	return ctx, provider, cfg, nil
 }
 
-// verifyOIDCBearer verifies a Bearer token as a Dex-issued id_token.
-// Used to accept id_tokens obtained via the CLI device flow for API authentication.
-// The provider is lazily initialized and cached (JWKS is internally cached by go-oidc).
-// Prefers the CLI public client (DeviceClientID) as the audience.
-func (s *Server) verifyOIDCBearer(ctx context.Context, rawToken string) (*oidc.IDToken, error) {
+// verifierProvider returns the lazily initialised, cached provider used to
+// verify id_tokens outside the login redirect flow (JWKS is cached by go-oidc).
+func (s *Server) verifierProvider() (*oidc.Provider, error) {
 	s.oidcVerifyOnce.Do(func() {
 		pctx := context.Background()
 		if s.oidcCfg.IssuerInternal != "" {
@@ -134,15 +139,54 @@ func (s *Server) verifyOIDCBearer(ctx context.Context, rawToken string) (*oidc.I
 		}
 		s.oidcProviderV, s.oidcProviderVErr = oidc.NewProvider(pctx, s.oidcCfg.Issuer)
 	})
-	if s.oidcProviderVErr != nil {
-		return nil, s.oidcProviderVErr
+	return s.oidcProviderV, s.oidcProviderVErr
+}
+
+// verifyOIDCBearer verifies a Bearer token as a Dex-issued id_token.
+// Used to accept id_tokens obtained via the CLI device flow for API authentication.
+// Prefers the CLI public client (DeviceClientID) as the audience.
+func (s *Server) verifyOIDCBearer(ctx context.Context, rawToken string) (*oidc.IDToken, error) {
+	provider, err := s.verifierProvider()
+	if err != nil {
+		return nil, err
 	}
-	audience := s.oidcCfg.DeviceClientID
-	if audience == "" {
-		audience = s.oidcCfg.ClientID
-	}
-	verifier := s.oidcProviderV.Verifier(&oidc.Config{ClientID: audience})
+	verifier := provider.Verifier(&oidc.Config{ClientID: s.bearerAudience()})
 	return verifier.Verify(ctx, rawToken)
+}
+
+// bearerAudience is the audience CLI id_tokens are issued for.
+func (s *Server) bearerAudience() string {
+	if s.oidcCfg.DeviceClientID != "" {
+		return s.oidcCfg.DeviceClientID
+	}
+	return s.oidcCfg.ClientID
+}
+
+// verifyIDTokenClaims verifies a raw id_token for the given audience and
+// returns its claims. The verifyIDTokenHook, when set, replaces the real
+// go-oidc verification (used by tests).
+func (s *Server) verifyIDTokenClaims(ctx context.Context, raw, audience string) (map[string]any, error) {
+	if s.verifyIDTokenHook != nil {
+		return s.verifyIDTokenHook(ctx, raw, audience)
+	}
+	provider, err := s.verifierProvider()
+	if err != nil {
+		return nil, err
+	}
+	idToken, err := provider.Verifier(&oidc.Config{ClientID: audience}).Verify(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	var claims map[string]any
+	if err := idToken.Claims(&claims); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
+// verifyBearerClaims verifies a Bearer id_token (CLI device flow) and returns its claims.
+func (s *Server) verifyBearerClaims(ctx context.Context, raw string) (map[string]any, error) {
+	return s.verifyIDTokenClaims(ctx, raw, s.bearerAudience())
 }
 
 // handleOIDCLogin initiates the OIDC Authorization Code Flow.
@@ -215,50 +259,74 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing id_token", http.StatusBadRequest)
 		return
 	}
-	verifier := provider.Verifier(&oidc.Config{ClientID: s.oidcCfg.ClientID})
-	idToken, err := verifier.Verify(ctx, rawIDToken)
-	if err != nil {
-		http.Error(w, "id_token verification failed: "+err.Error(), http.StatusUnauthorized)
-		return
-	}
-
 	var claims map[string]any
-	if err := idToken.Claims(&claims); err != nil {
-		http.Error(w, "claims parse error: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	sub, _ := claims["sub"].(string)
-	email, _ := claims["email"].(string)
-	if email == "" {
-		email = sub
-	}
-	values := extractRoleValues(claims, s.oidcCfg.RolesClaim)
-	role, ok := resolveRole(values, email, sub, s.roleMapping())
-	if !ok {
-		http.Error(w, "forbidden: no role assigned", http.StatusForbidden)
-		return
-	}
-
-	if s.km == nil {
-		http.Error(w, "key manager not configured", http.StatusInternalServerError)
-		return
+	if s.verifyIDTokenHook != nil {
+		claims, err = s.verifyIDTokenHook(ctx, rawIDToken, s.oidcCfg.ClientID)
+		if err != nil {
+			http.Error(w, "id_token verification failed: "+err.Error(), http.StatusUnauthorized)
+			return
+		}
+	} else {
+		verifier := provider.Verifier(&oidc.Config{ClientID: s.oidcCfg.ClientID})
+		idToken, err := verifier.Verify(ctx, rawIDToken)
+		if err != nil {
+			http.Error(w, "id_token verification failed: "+err.Error(), http.StatusUnauthorized)
+			return
+		}
+		if err := idToken.Claims(&claims); err != nil {
+			http.Error(w, "claims parse error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
-	sessionToken, err := generatePAT()
-	if err != nil {
-		http.Error(w, "session token generation error", http.StatusInternalServerError)
-		return
-	}
-	tokenHash := HashToken(sessionToken)
-	expiresAt := time.Now().Add(sessionDuration)
-
-	if _, err := s.createSessionWithRefreshToken(r.Context(), tokenHash, sub, email, role, oauthToken.RefreshToken, expiresAt); err != nil {
-		http.Error(w, "session store error", http.StatusInternalServerError)
+	sessionToken, expiresAt, status, msg := s.completeOIDCLogin(r.Context(), claims, oauthToken.RefreshToken)
+	if status != 0 {
+		http.Error(w, msg, status)
 		return
 	}
 
 	http.SetCookie(w, s.sessionCookie(sessionToken, expiresAt, 0))
 	http.Redirect(w, r, savedState.RedirectTo, http.StatusFound)
+}
+
+// completeOIDCLogin turns verified id_token claims into a stored session. It
+// admits the user when the legacy role resolution succeeds or an
+// oidc.permissions entry matches, stores the claim values on the session, and
+// refreshes the owner snapshot of every PAT the user owns. On failure it
+// returns the HTTP status and message to send; status is 0 on success.
+func (s *Server) completeOIDCLogin(ctx context.Context, claims map[string]any, refreshToken string) (sessionToken string, expiresAt time.Time, status int, msg string) {
+	sub, _ := claims["sub"].(string)
+	email, _ := claims["email"].(string)
+	if email == "" {
+		email = sub
+	}
+	values := nonNilClaims(extractRoleValues(claims, s.oidcCfg.RolesClaim))
+	role, _, admitted := s.identityGrants(values, email, sub)
+	// Refresh the owner snapshot of the user's PATs before deciding admission,
+	// so a denied login still drops stale claims (spec 5.5), and before the
+	// session exists so a failure leaves no orphaned session row.
+	if _, err := s.store.UpdatePATOwnerSnapshot(ctx, sub, email, values); err != nil {
+		return "", time.Time{}, http.StatusInternalServerError, "session store error"
+	}
+	if !admitted {
+		return "", time.Time{}, http.StatusForbidden, "forbidden: no role assigned"
+	}
+
+	if s.km == nil {
+		return "", time.Time{}, http.StatusInternalServerError, "key manager not configured"
+	}
+
+	sessionToken, err := generatePAT()
+	if err != nil {
+		return "", time.Time{}, http.StatusInternalServerError, "session token generation error"
+	}
+	tokenHash := HashToken(sessionToken)
+	expiresAt = time.Now().Add(sessionDuration)
+
+	if _, err := s.createSessionWithRefreshToken(ctx, tokenHash, sub, email, role, values, refreshToken, expiresAt); err != nil {
+		return "", time.Time{}, http.StatusInternalServerError, "session store error"
+	}
+	return sessionToken, expiresAt, 0, ""
 }
 
 // createSessionWithRefreshToken stores a session with its OIDC refresh token
@@ -267,10 +335,10 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 // The binding needs the ID, which Postgres assigns on insert, so the row is
 // created with a placeholder and immediately re-encrypted under the real ID.
 // This costs one extra UPDATE per login and keeps every stored blob bound.
-func (s *Server) createSessionWithRefreshToken(ctx context.Context, tokenHash, sub, email, role, refreshToken string, expiresAt time.Time) (*store.Session, error) {
+func (s *Server) createSessionWithRefreshToken(ctx context.Context, tokenHash, sub, email, role string, claims []string, refreshToken string, expiresAt time.Time) (*store.Session, error) {
 	// Empty slices, not nil: pgx encodes a nil []byte as SQL NULL, and both
 	// refresh-token columns are NOT NULL. `''::bytea` is a valid non-null value.
-	sess, err := s.store.CreateSession(ctx, tokenHash, sub, email, role, []byte{}, []byte{}, expiresAt)
+	sess, err := s.store.CreateSession(ctx, tokenHash, sub, email, role, claims, []byte{}, []byte{}, expiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
@@ -297,65 +365,89 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleMe returns information about the currently logged-in user. Returns 401 when unauthenticated.
-// Supports both Bearer token (PAT) and session cookie auth.
+// handleMe returns the caller's identity and effective grants. It runs behind
+// ServerAuth, so every authenticated principal kind (PAT, OIDC bearer, session)
+// is served and an unauthenticated caller gets 401 from the middleware.
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	// 1. Bearer token (PAT)
-	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, bearerPrefix) {
-		token := strings.TrimPrefix(h, bearerPrefix)
-		hash := HashToken(token)
-		pat, err := s.store.GetPATByHash(r.Context(), hash)
-		if err == nil && pat != nil {
-			writeJSON(w, http.StatusOK, map[string]string{
-				"sub":  pat.Name,
-				"name": pat.Name,
-			})
-			return
-		}
-	}
-
-	// 2. Session cookie (browser SSO)
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil {
+	p, ok := principalFromContext(r.Context())
+	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	hash := HashToken(cookie.Value)
-	sess, err := s.store.GetSessionByHash(r.Context(), hash)
-	if err != nil || sess == nil || sess.ExpiresAt.Before(time.Now()) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+	out := map[string]any{
+		"name":        p.Name,
+		"kind":        p.Kind,
+		"role":        p.Role,
+		"permissions": p.Grants.View(),
 	}
-	writeJSON(w, http.StatusOK, map[string]string{
-		"sub":   sess.Sub,
-		"email": sess.Email,
-	})
+	if p.Sub != "" {
+		out["sub"] = p.Sub
+	}
+	if p.Email != "" {
+		out["email"] = p.Email
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // refreshSession extends the session expiry using the refresh token.
-func (s *Server) refreshSession(ctx context.Context, sess *store.Session, host string) error {
+//
+// When the refreshed id_token verifies and carries the roles claim, the
+// session's stored claims are updated and returned with ok=true.
+func (s *Server) refreshSession(ctx context.Context, sess *store.Session, host string) ([]string, bool, error) {
 	rtBytes, err := secrets.Decrypt(ctx, s.km, sess.RefreshTokenDEK, sess.RefreshTokenCT,
 		secrets.SessionRefreshBinding(sess.ID))
 	if err != nil {
 		logSecretDecryptFailure("oidc-refresh", sess.ID, err)
-		return fmt.Errorf("decrypt refresh token: %w", err)
+		return nil, false, fmt.Errorf("decrypt refresh token: %w", err)
 	}
 
 	ctx, _, oauth2Cfg, err := s.oidcProvider(ctx, host)
 	if err != nil {
-		return fmt.Errorf("oidc provider: %w", err)
+		return nil, false, fmt.Errorf("oidc provider: %w", err)
 	}
 	newToken, err := oauth2Cfg.TokenSource(ctx, &oauth2.Token{
 		RefreshToken: string(rtBytes),
 	}).Token()
 	if err != nil {
-		return fmt.Errorf("token refresh: %w", err)
+		return nil, false, fmt.Errorf("token refresh: %w", err)
 	}
 
 	dek, ct, err := secrets.Encrypt(ctx, s.km, []byte(newToken.RefreshToken),
 		secrets.SessionRefreshBinding(sess.ID))
 	if err != nil {
-		return fmt.Errorf("re-encrypt refresh token: %w", err)
+		return nil, false, fmt.Errorf("re-encrypt refresh token: %w", err)
 	}
-	return s.store.UpdateSessionExpiry(ctx, sess.ID, dek, ct, time.Now().Add(sessionDuration))
+	if err := s.store.UpdateSessionExpiry(ctx, sess.ID, dek, ct, time.Now().Add(sessionDuration)); err != nil {
+		return nil, false, err
+	}
+	rawIDToken, _ := newToken.Extra("id_token").(string)
+	claims, ok := s.refreshedClaims(ctx, rawIDToken)
+	if ok {
+		if err := s.store.UpdateSessionClaims(ctx, sess.ID, claims); err != nil {
+			return nil, false, fmt.Errorf("store session claims: %w", err)
+		}
+	}
+	return claims, ok, nil
+}
+
+// refreshedClaims verifies the id_token returned by a refresh (browser client
+// audience) and returns its roles-claim values. ok is false when the token is
+// absent, unverifiable, or lacks the roles claim, in which case the stored
+// claims must be kept.
+func (s *Server) refreshedClaims(ctx context.Context, rawIDToken string) ([]string, bool) {
+	if rawIDToken == "" {
+		return nil, false
+	}
+	claims, err := s.verifyIDTokenClaims(ctx, rawIDToken, s.oidcCfg.ClientID)
+	if err != nil {
+		return nil, false
+	}
+	rolesClaim := s.oidcCfg.RolesClaim
+	if rolesClaim == "" {
+		rolesClaim = "groups"
+	}
+	if _, present := claims[rolesClaim]; !present {
+		return nil, false
+	}
+	return nonNilClaims(extractRoleValues(claims, s.oidcCfg.RolesClaim)), true
 }

@@ -139,6 +139,7 @@ nav:
           - "Disk Gating on by Default": operator-manual/migrations/2026-10-23-disk-gating-defaults.md
           - "Host Agents Honour securityContext": operator-manual/migrations/2026-10-23-host-security-context.md
           - "Kubernetes Job Pod Field Policy": operator-manual/migrations/2026-10-26-k8s-job-pod-field-policy.md
+          - "Matrix Authorization": operator-manual/migrations/2026-10-28-matrix-authorization.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md

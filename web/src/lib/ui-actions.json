@@ -1,0 +1,10 @@
+[
+  { "file": "App.svelte", "action": "logout", "method": "POST", "route": "/api/v1/auth/logout", "permission": null },
+  { "file": "routes/AppSourceList.svelte", "action": "sync", "method": "POST", "route": "/api/v1/appsources/{name}/sync", "permission": "appsource.write" },
+  { "file": "routes/JobRun.svelte", "action": "trigger", "method": "POST", "route": "/api/v1/runs", "permission": "run.trigger" },
+  { "file": "routes/RunDetail.svelte", "action": "approve", "method": "POST", "route": "/api/v1/runs/{runID}/approvals/{stepIndex}", "permission": "run.approve" },
+  { "file": "routes/RunDetail.svelte", "action": "cancel", "method": "POST", "route": "/api/v1/runs/{id}/cancel", "permission": "run.cancel" },
+  { "file": "routes/RunDetail.svelte", "action": "rebuild", "method": "POST", "route": "/api/v1/runs", "permission": "run.trigger" },
+  { "file": "routes/TokenList.svelte", "action": "create", "method": "POST", "route": "/api/v1/tokens", "permission": "token.create" },
+  { "file": "routes/TokenList.svelte", "action": "delete", "method": "DELETE", "route": "/api/v1/tokens/{id}", "permission": "token.create" }
+]

@@ -53,6 +53,7 @@ var schemaSentinels = []sentinel{
 	{version: 21, migration: "021_drop_redundant_logs_index", table: "logs", indexAbsent: "logs_run_idx"},
 	{version: 22, migration: "022_agent_volumes", table: "agents", column: "volumes"},
 	{version: 23, migration: "023_agent_storage", table: "agents", column: "storage"},
+	{version: 24, migration: "024_matrix_authorization", table: "audit_logs", column: "granted_by"},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel

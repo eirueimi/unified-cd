@@ -384,17 +384,19 @@ type AgentFetchSecretsResponse struct {
 
 // CreatePATRequest is the request for creating a PAT.
 type CreatePATRequest struct {
-	Name      string `json:"name"`
-	ExpiresIn string `json:"expiresIn,omitempty"`
-	Role      string `json:"role,omitempty"`
+	Name        string   `json:"name"`
+	ExpiresIn   string   `json:"expiresIn,omitempty"`
+	Role        string   `json:"role,omitempty"`
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 // CreatePATResponse is the PAT creation response (the token is shown only once).
 type CreatePATResponse struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Role  string `json:"role"`
-	Token string `json:"token"` // returned only at creation time
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Role        string   `json:"role"`
+	Token       string   `json:"token"` // returned only at creation time
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 // PATMeta is the metadata for a PAT (does not include the token hash).
@@ -405,6 +407,9 @@ type PATMeta struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+	// Owner is the owner's email, else its sub; empty for a role-only token.
+	Owner       string   `json:"owner,omitempty"`
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 // ---- webhook ----
@@ -616,6 +621,9 @@ type AuditLog struct {
 	Action     string    `json:"action"`
 	Resource   string    `json:"resource,omitempty"`
 	Status     int       `json:"status"`
+	Permission string    `json:"permission,omitempty"`
+	Scope      string    `json:"scope,omitempty"`
+	GrantedBy  string    `json:"grantedBy,omitempty"`
 }
 
 // ---- appsource ----
@@ -730,4 +738,92 @@ type StoreCredentialsResponse struct {
 	SecretKey string    `json:"secretKey"`
 	Token     string    `json:"sessionToken,omitempty"`
 	ExpiresAt time.Time `json:"expiresAt,omitempty"`
+}
+
+// ---- authz policy view (spec 5.18) ----
+
+// AuthzPolicy is the authorization policy as the controller resolved it at
+// startup (GET /api/v1/authz/policy). It carries no secrets.
+type AuthzPolicy struct {
+	OIDC       bool                `json:"oidc"`
+	RolesClaim string              `json:"rolesClaim"`
+	Bundles    map[string][]string `json:"bundles"`
+	Legacy     AuthzLegacy         `json:"legacy"`
+	Global     []AuthzGrantEntry   `json:"global"`
+	Folders    []AuthzFolderEntry  `json:"folders"`
+}
+
+// AuthzLegacy lists the roleMap, userMap and defaultRole settings with the
+// role and global permissions each resolves to.
+type AuthzLegacy struct {
+	RoleMap     []AuthzLegacyEntry `json:"roleMap"`
+	UserMap     []AuthzLegacyEntry `json:"userMap"`
+	DefaultRole AuthzLegacyEntry   `json:"defaultRole"`
+}
+
+// AuthzLegacyEntry is one legacy mapping. When Role is not a built-in role
+// (and is neither empty nor "deny"), a roleMap entry is Ignored (it never
+// matches) while a userMap or defaultRole entry is Denies (the runtime denies
+// the user, or everyone the default would have covered).
+type AuthzLegacyEntry struct {
+	Key         string   `json:"key"`
+	Role        string   `json:"role"`
+	Ignored     bool     `json:"ignored,omitempty"`
+	Denies      bool     `json:"denies,omitempty"`
+	Permissions []string `json:"permissions"`
+}
+
+// AuthzGrantEntry is one oidc.permissions entry. Subject is "group" or "user";
+// Grant is the configured list as written, Permissions its expansion at the
+// scope of the entry.
+type AuthzGrantEntry struct {
+	Subject     string   `json:"subject"`
+	Name        string   `json:"name"`
+	Grant       []string `json:"grant"`
+	Permissions []string `json:"permissions"`
+}
+
+// AuthzFolderEntry holds the entries of one oidc.permissions folder.
+type AuthzFolderEntry struct {
+	Folder  string            `json:"folder"`
+	Entries []AuthzGrantEntry `json:"entries"`
+}
+
+// AuthzExplainRequest is the body of POST /api/v1/authz/explain. Groups is a
+// pointer so that an omitted list and an empty list are distinguishable.
+type AuthzExplainRequest struct {
+	User   string    `json:"user,omitempty"`
+	Groups *[]string `json:"groups,omitempty"`
+	Job    string    `json:"job,omitempty"`
+	Folder string    `json:"folder,omitempty"`
+}
+
+// AuthzExplainIdentity is the identity an explanation was computed for.
+// GroupsSource is "request", "login" or "none".
+type AuthzExplainIdentity struct {
+	User         string   `json:"user"`
+	Groups       []string `json:"groups"`
+	GroupsSource string   `json:"groupsSource"`
+}
+
+// AuthzExplainScope is the scope an explanation was computed at. Kind is
+// "global", "job" or "folder".
+type AuthzExplainScope struct {
+	Kind string `json:"kind"`
+	Name string `json:"name,omitempty"`
+}
+
+// AuthzExplainedPermission is one held permission with every grant that gave it.
+type AuthzExplainedPermission struct {
+	Permission string   `json:"permission"`
+	GrantedBy  []string `json:"grantedBy"`
+}
+
+// AuthzExplainResponse is the answer of POST /api/v1/authz/explain.
+type AuthzExplainResponse struct {
+	Identity     AuthzExplainIdentity       `json:"identity"`
+	Scope        AuthzExplainScope          `json:"scope"`
+	GlobalRole   string                     `json:"globalRole"`
+	LoginAllowed bool                       `json:"loginAllowed"`
+	Permissions  []AuthzExplainedPermission `json:"permissions"`
 }

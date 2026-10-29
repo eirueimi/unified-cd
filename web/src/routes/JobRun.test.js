@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
-import { token, serverURL } from '../lib/api.js';
+import { token, serverURL, currentUser } from '../lib/api.js';
 import JobRun from './JobRun.svelte';
 
 function jsonResponse(body) {
@@ -182,5 +182,31 @@ describe('JobRun — choices dropdown for job inputs', () => {
       b.textContent.includes('Run'),
     );
     expect(button.disabled).toBe(false);
+  });
+});
+
+describe('JobRun — permission-aware submit', () => {
+  const origFetch = global.fetch;
+  afterEach(() => {
+    currentUser.set(null);
+    global.fetch = origFetch;
+  });
+
+  it('disables Run without run.trigger on the job and names the permission', async () => {
+    currentUser.set({ email: 'a@example.com', permissions: { global: [], folders: { 'team-a': ['job.read'] } } });
+    global.fetch = vi.fn(() => jsonResponse({ name: 'team-a/deploy', inputs: [] }));
+    const { container } = render(JobRun, { props: { params: { name: 'team-a/deploy' } } });
+    await vi.waitFor(() => expect(container.querySelector('button.btn')).toBeTruthy());
+    const btn = container.querySelector('button.btn');
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toBe('requires run.trigger on team-a/deploy');
+  });
+
+  it('enables Run with run.trigger on the job folder', async () => {
+    currentUser.set({ email: 'a@example.com', permissions: { global: [], folders: { 'team-a': ['run.trigger'] } } });
+    global.fetch = vi.fn(() => jsonResponse({ name: 'team-a/deploy', inputs: [] }));
+    const { container } = render(JobRun, { props: { params: { name: 'team-a/deploy' } } });
+    await vi.waitFor(() => expect(container.querySelector('button.btn')).toBeTruthy());
+    expect(container.querySelector('button.btn').disabled).toBe(false);
   });
 });

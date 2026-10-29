@@ -174,6 +174,38 @@ feature then makes security worse.
 
 ---
 
+### Every route is classified, or it is refused
+
+Every route the router registers has exactly one row in `routeTable`
+(`internal/controller/authz_routes.go`): a permission and a scope for a human
+route, or `public`, `self` or `agent` for the rest.
+`TestEveryRegisteredRouteIsClassified` walks the router with `chi.Walk` and
+fails with `POST /api/v1/foo has no permission: classify it in the route
+table`; `TestEveryRouteTableEntryIsRegistered` fails for a row whose route no
+longer exists. At runtime `authorize` answers `403 forbidden: unclassified
+route` for a route that slipped past, rather than letting any authenticated
+human in. The `/jobs/*` wildcard has one row per method; its variants (the job,
+`/yaml`, `/schedulability`) are told apart by `parseJobWildcard`, the same
+function the handler uses, so the permission and the handler cannot disagree
+about which job a path names.
+
+*What this prevents:* the old model gated each route with a
+role check made where the route was registered, so a route added
+without the check was silently open to any authenticated human (artifact
+download was exactly that). If you add a route, add its row first; if you add a
+permission, it goes in `internal/authz/catalogue.go` and the bundles, and the
+table-driven enforcement tests then require a refusal for a caller who holds
+every *other* permission.
+
+### The Web UI hides; the server decides
+
+A Web UI control may be hidden or disabled from the caller's grants, but it is
+never the only thing protecting an action. Every state-changing call the UI
+makes is listed in `web/src/lib/ui-actions.json`, and
+`TestUIActionInventoryIsEnforced` proves each one is a classified route whose
+server check refuses a caller without the permission. See
+[Frontend Development](frontend-development.md#permissions-in-the-ui).
+
 ## Metrics
 
 ### The registry is private, so nothing is registered for you

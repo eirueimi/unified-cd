@@ -3,7 +3,8 @@
   import { push } from "svelte-spa-router";
   import { get } from "svelte/store";
   import AuthSetup from "../components/AuthSetup.svelte";
-  import { apiFetch, token, serverURL, stderrPlain } from "../lib/api.js";
+  import { apiFetch, token, serverURL, stderrPlain, grants, ApiError } from "../lib/api.js";
+  import { allows, requiresText } from "../lib/authz.js";
   import { statusBadge, fmtTime, collapseCarriageReturns } from "../lib/utils.js";
 
   export let params;
@@ -656,12 +657,39 @@
       Math.floor(ms / 60000) + "m " + Math.floor((ms % 60000) / 1000) + "s"
     );
   }
+  // A 404 from the main load means the run is missing or hidden from the
+  // caller; the two are deliberately indistinguishable.
+  let notFound = false;
+  // Per-job controls are disabled (not hidden) when the caller lacks the
+  // permission on the run's job; the server still decides.
+  $: canCancel = allows($grants, "run.cancel", run?.jobName);
+  $: canRerun = allows($grants, "run.trigger", run?.jobName);
+  $: canApprove = allows($grants, "run.approve", run?.jobName);
   async function loadRun() {
+    notFound = false;
     try {
       run = await apiFetch("/api/v1/runs/" + runID);
     } catch (e) {
-      error = e.message;
+      if (e instanceof ApiError && e.status === 404) {
+        notFound = true;
+        run = null;
+        stopAllStreams();
+      } else {
+        error = e.message;
+      }
     }
+  }
+  // Stops everything the component started for a run that turned out to be
+  // missing or hidden: step polling, the event stream and pending log fetches.
+  function stopAllStreams() {
+    stopStepPolling();
+    if (abortController) {
+      abortController.abort();
+      abortController = null;
+    }
+    if (logSearchDebounce) clearTimeout(logSearchDebounce);
+    logSearchToken++;
+    windowFetchToken++;
   }
   async function loadSteps() {
     try {
@@ -1088,6 +1116,7 @@
     loading = false;
     await tick();
     measureLogMetrics();
+    if (notFound) return;
     if (run && !["Succeeded", "Failed", "Cancelled"].includes(run.status))
       startStepPolling();
     startSSE();
@@ -1130,10 +1159,10 @@
     {#if run}<a href="#/jobs/{encodeURIComponent(run.jobName)}">← {run.jobName}</a>{/if}
     <h1>Run Detail</h1>
     {#if run && ["Running", "Queued", "Pending"].includes(run.status)}
-      <button class="btn btn-danger" on:click={cancelRun}>Cancel</button>
+      <button class="btn btn-danger" disabled={!canCancel} title={canCancel ? "" : requiresText("run.cancel", run.jobName)} on:click={cancelRun}>Cancel</button>
     {/if}
     {#if run && ["Succeeded", "Failed", "Cancelled"].includes(run.status)}
-      <button class="btn" on:click={rebuild}>↺ Rerun</button>
+      <button class="btn" disabled={!canRerun} title={canRerun ? "" : requiresText("run.trigger", run.jobName)} on:click={rebuild}>↺ Rerun</button>
     {/if}
   </div>
   <div style="border-bottom:1px solid var(--border);margin-bottom:1.5rem">
@@ -1141,6 +1170,7 @@
     <a href="#/runs/{runID}/yaml" class="tab-link">YAML</a>
   </div>
   {#if loading}<div class="loading">Loading...</div>
+  {:else if notFound}<div class="error">Run not found</div>
   {:else if error}<div class="error">{error}</div>
   {:else if run}
     {#if run.calledBy}
@@ -1263,10 +1293,12 @@
                     <div class="approval-actions">
                       <button
                         class="btn btn-success"
+                        disabled={!canApprove} title={canApprove ? "" : requiresText("run.approve", run?.jobName)}
                         on:click|stopPropagation={() => decideApproval(s.index, 'approve', approvalComments[s.index])}
                       >Approve</button>
                       <button
                         class="btn btn-danger"
+                        disabled={!canApprove} title={canApprove ? "" : requiresText("run.approve", run?.jobName)}
                         on:click|stopPropagation={() => decideApproval(s.index, 'reject', approvalComments[s.index])}
                       >Reject</button>
                     </div>
@@ -1311,10 +1343,12 @@
                   <div class="approval-actions">
                     <button
                       class="btn btn-success"
+                      disabled={!canApprove} title={canApprove ? "" : requiresText("run.approve", run?.jobName)}
                       on:click|stopPropagation={() => decideApproval(s0.index, 'approve', approvalComments[s0.index])}
                     >Approve</button>
                     <button
                       class="btn btn-danger"
+                      disabled={!canApprove} title={canApprove ? "" : requiresText("run.approve", run?.jobName)}
                       on:click|stopPropagation={() => decideApproval(s0.index, 'reject', approvalComments[s0.index])}
                     >Reject</button>
                   </div>

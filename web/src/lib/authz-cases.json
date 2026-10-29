@@ -1,0 +1,16 @@
+[
+  {"name": "folder-covers-child", "grants": {"global": [], "folders": {"team-a": ["job.read"]}}, "permission": "job.read", "job": "team-a/build", "want": true},
+  {"name": "folder-covers-grandchild", "grants": {"global": [], "folders": {"team-a": ["job.read"]}}, "permission": "job.read", "job": "team-a/sub/build", "want": true},
+  {"name": "folder-not-prefix-sibling", "grants": {"global": [], "folders": {"team-a": ["job.read"]}}, "permission": "job.read", "job": "team-ab/build", "want": false},
+  {"name": "folder-not-root-namesake", "grants": {"global": [], "folders": {"team-a": ["job.read"]}}, "permission": "job.read", "job": "team-a", "want": false},
+  {"name": "root-job-global-only", "grants": {"global": ["job.read"], "folders": {}}, "permission": "job.read", "job": "x", "want": true},
+  {"name": "root-job-folder-grant", "grants": {"global": [], "folders": {"team-a": ["job.read"]}}, "permission": "job.read", "job": "x", "want": false},
+  {"name": "nested-folder", "grants": {"global": [], "folders": {"team-a/prod": ["run.approve"]}}, "permission": "run.approve", "job": "team-a/prod/deploy", "want": true},
+  {"name": "nested-folder-outside", "grants": {"global": [], "folders": {"team-a/prod": ["run.approve"]}}, "permission": "run.approve", "job": "team-a/deploy", "want": false},
+  {"name": "union-global-and-folder", "grants": {"global": ["job.read"], "folders": {"team-a": ["run.trigger"]}}, "permission": "run.trigger", "job": "team-a/x", "want": true},
+  {"name": "global-only-job-empty", "grants": {"global": [], "folders": {"team-a": ["job.read"]}}, "permission": "job.read", "job": "", "want": false},
+  {"name": "case-sensitive-folder-miss", "grants": {"global": [], "folders": {"team-a": ["job.read"]}}, "permission": "job.read", "job": "Team-A/x", "want": false},
+  {"name": "case-sensitive-folder-hit", "grants": {"global": [], "folders": {"Team-A": ["job.read"]}}, "permission": "job.read", "job": "Team-A/x", "want": true},
+  {"name": "absent-permission", "grants": {"global": [], "folders": {"team-a": ["job.read"]}}, "permission": "run.cancel", "job": "team-a/x", "want": false},
+  {"name": "empty-grants", "grants": {"global": [], "folders": {}}, "permission": "job.read", "job": "x", "want": false}
+]

@@ -63,6 +63,8 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_OIDC_CLIENT_ID` | No (SSO only) | OIDC client ID for browser SSO (confidential client) |
 | `UNIFIED_OIDC_CLIENT_SECRET` | No (SSO only) | OIDC client secret |
 | `UNIFIED_OIDC_DEVICE_CLIENT_ID` | No (SSO only) | OIDC public client ID for CLI device flow. Falls back to `UNIFIED_OIDC_CLIENT_ID` if unset. |
+| `UNIFIED_OIDC_ROLES_CLAIM` | No (SSO only) | ID-token claim that carries group/role values (default `groups`). See [Authorization](../operator-manual/authorization.md). |
+| `UNIFIED_OIDC_DEFAULT_ROLE` | No (SSO only) | Global role for a user nothing in `roleMap` / `userMap` matches; `""` or `deny` means no global role. |
 | `UNIFIED_AUDIT_RETENTION_DAYS` | No | Days to keep `audit_logs` rows before a leader-only background task deletes them. Default `90`. `0` = keep forever. See [Audit Log](../operator-manual/audit.md). |
 | `UNIFIED_RUN_RETENTION_DAYS` | No | Days to keep terminal (Succeeded/Failed/Cancelled) runs. When a run expires, its database records **and** its object-store data (archived logs, artifacts) are deleted. `0` (default) keeps runs forever. Deletion is irreversible — an expired run can no longer be replayed, because `run replay` uses the run's stored spec snapshot. |
 | `UNIFIED_LOG_TRIM_DAYS` | No | Days after a run's logs are archived before its database log rows are deleted (tiered log storage). Reads (WebUI viewer, CLI, SSE) transparently switch to the archived `logs.ndjson` in the object store; the first view of a trimmed run pays one object fetch. `0` (default) never trims. Requires an object store; must be smaller than `--run-retention-days` when both are set (otherwise retention deletes runs before trimming would fire — the controller logs a warning). |
@@ -110,6 +112,11 @@ oidc:
     unified-admins: admin
   userMap:                               # email/subject -> unified-cd role
     alice@example.com: admin
+  permissions:                           # optional, additive; config file only (see below)
+    folders:
+      team-a:
+        groups:
+          "my-org:team-a": developer
 
 # Kubernetes workload enrollment for the default controller and k8s-agent manifests.
 # An omitted kubeconfig uses the controller Pod's ServiceAccount identity.
@@ -128,6 +135,38 @@ agentAuth:
 ```
 
 Config-file keys map 1:1 to the flags above (e.g. `dataDir` ↔ `--data-dir`), with OIDC settings under the nested `oidc:` block. See `internal/config/controller.go` for the authoritative field list.
+
+#### `oidc.permissions` (config file only)
+
+`oidc.permissions` grants permissions to OIDC groups and users, globally and per job folder, on top of the global role that `roleMap` / `userMap` / `defaultRole` produce. It is a nested map, so — like `roleMap` and `userMap` — **it can only be set in the config file; there is no environment variable and no flag for it**. It requires `oidc.issuer`, it is read at startup (change it, then restart), and it is strictly validated: the controller refuses to start on an unknown key, an unknown permission or role, a global-only permission on a folder, or a malformed folder key.
+
+```yaml
+oidc:
+  permissions:
+    global:                              # applies to every job and to global-only permissions
+      groups:
+        "my-org:engineering": [agent.read, appsource.read, webhook.read, vars.read, token.create]
+        "my-org:auditors":    [viewer, audit.read]
+    folders:                             # literal job-name prefixes; each covers its sub-folders
+      team-a:
+        groups:
+          "my-org:team-a": developer
+      team-a/prod:
+        groups:
+          "my-org:sre": [job.read, run.approve]
+      team-b:
+        groups:
+          "my-org:team-b": developer
+        users:                           # matched against the token's email and sub
+          contractor@example.com: [job.read, run.trigger]
+```
+
+| Key | Value |
+|---|---|
+| `global.groups.<claim value>` / `global.users.<email or sub>` | A role name (`viewer`, `developer`, `admin`), a permission name, or a list mixing both. Any of the 25 permissions is allowed. |
+| `folders.<folder>.groups.<claim value>` / `folders.<folder>.users.<email or sub>` | The same, but only folder-scopable permissions (`job.read`, `job.configure`, `job.delete`, `run.trigger`, `run.replay`, `run.cancel`, `run.delete`, `run.approve`, `schedule.configure`). A role name contributes only its folder-scopable members. |
+
+Group keys are compared to the values of `oidc.rolesClaim`; user keys to the token's `email` and `sub`. Folder keys are normalised by trimming leading and trailing `/`; `*`, `?`, `[`, whitespace and empty, `.` or `..` segments are rejected. The full semantics, the list of startup error strings and recipes are in [Authorization](../operator-manual/authorization.md#configuring-grants-oidcpermissions); `examples/config/controller.yaml` carries a commented example.
 
 ---
 

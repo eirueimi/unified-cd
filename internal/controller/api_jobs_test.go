@@ -12,6 +12,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -250,7 +251,7 @@ func applyJobYAML(t *testing.T, s *Server, yaml string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.storeJob(context.Background(), job)
+	_, err = s.storeJob(context.Background(), job, job.Metadata.QualifiedName())
 	return err
 }
 
@@ -350,17 +351,35 @@ func TestListJobs_DerivesPathAndLeaf(t *testing.T) {
 	assert.Equal(t, "build", jobs[0].Leaf)
 }
 
-func TestExtractJobName(t *testing.T) {
-	assert.Equal(t, "team-a/build", extractJobName("team-a/build"))
-	assert.Equal(t, "team-a/build", extractJobName("/team-a/build"))
-
-	name, isYAML := extractJobNameAndYAML("team-a/build/yaml")
-	assert.Equal(t, "team-a/build", name)
-	assert.True(t, isYAML)
-
-	name2, isYAML2 := extractJobNameAndYAML("team-a/build")
-	assert.Equal(t, "team-a/build", name2)
-	assert.False(t, isYAML2)
+func TestParseJobWildcard(t *testing.T) {
+	cases := []struct {
+		method, wild string
+		name         string
+		variant      jobVariant
+	}{
+		{http.MethodGet, "/x", "x", jobVariantJob},
+		{http.MethodGet, "x", "x", jobVariantJob},
+		{http.MethodGet, "x/yaml", "x", jobVariantYAML},
+		{http.MethodGet, "x/schedulability", "x", jobVariantSchedulability},
+		// Only the last segment is a discriminator, and /schedulability is read first.
+		{http.MethodGet, "x/schedulability/yaml", "x/schedulability", jobVariantYAML},
+		{http.MethodGet, "team-a/sub/x", "team-a/sub/x", jobVariantJob},
+		{http.MethodGet, "team-a/sub/x/yaml", "team-a/sub/x", jobVariantYAML},
+		// DELETE addresses the whole wildcard as the job name.
+		{http.MethodDelete, "/team-a/sub/x", "team-a/sub/x", jobVariantJob},
+		{http.MethodDelete, "x/yaml", "x/yaml", jobVariantJob},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.wild, func(t *testing.T) {
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("*", tc.wild)
+			req := httptest.NewRequest(tc.method, "/api/v1/jobs/"+tc.wild, nil)
+			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+			name, variant := parseJobWildcard(req)
+			assert.Equal(t, tc.name, name)
+			assert.Equal(t, tc.variant, variant)
+		})
+	}
 }
 
 // TestAPI_GetJob_SlashInName verifies that a hierarchical job name (containing

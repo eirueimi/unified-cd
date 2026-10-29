@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/go-chi/chi/v5"
 )
@@ -32,12 +33,20 @@ func (s *Server) handleApplyJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.guardManagedResource(r.Context(), "Job", job.Metadata.QualifiedName()); err != nil {
+	// The qualified name is computed once: authorization, the managed-resource
+	// guard and the store all act on exactly this string.
+	name := job.Metadata.QualifiedName()
+	// Deliberately no hide: the caller supplied the name, so a refusal tells it
+	// what it is missing whether or not it could read the job (spec 5.3).
+	if !s.requireJob(w, r, authz.JobConfigure, name, nil) {
+		return
+	}
+	if err := s.guardManagedResource(r.Context(), "Job", name); err != nil {
 		writeGuardError(w, err)
 		return
 	}
 
-	stored, err := s.storeJob(r.Context(), job)
+	stored, err := s.storeJob(r.Context(), job, name)
 	if err != nil {
 		var badReq errBadRequest
 		if errors.As(err, &badReq) {
@@ -50,15 +59,15 @@ func (s *Server) handleApplyJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stored)
 }
 
-// storeJob marshals the parsed Job's spec and upserts it under its qualified
-// name. Both failures here are infrastructure/server errors, not client errors.
+// storeJob marshals the parsed Job's spec and upserts it under name, the
+// qualified name the caller computed (and authorized). Both failures here are infrastructure/server errors, not client errors.
 //
 // Direct apply is the only path that reaches here (see handleApplyJob); the
 // AppSource reconciler upserts jobs itself using directory names straight from
 // a trusted git tree and never calls storeJob. So path-segment validation
 // belongs here, not in dsl.Job.Validate — that would also reject legitimate
 // AppSource subdirectory names that don't happen to be DNS-1123 subdomains.
-func (s *Server) storeJob(ctx context.Context, job *dsl.Job) (*api.Job, error) {
+func (s *Server) storeJob(ctx context.Context, job *dsl.Job, name string) (*api.Job, error) {
 	if err := validatePathAnnotation(job.Metadata.Annotations["path"]); err != nil {
 		return nil, errBadRequest{err}
 	}
@@ -66,7 +75,7 @@ func (s *Server) storeJob(ctx context.Context, job *dsl.Job) (*api.Job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal spec: %w", err)
 	}
-	return s.store.UpsertJob(ctx, job.Metadata.QualifiedName(), job.APIVersion, specJSON)
+	return s.store.UpsertJob(ctx, name, job.APIVersion, specJSON)
 }
 
 // validatePathAnnotation validates each non-empty segment of the "path"
@@ -107,7 +116,13 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, jobs)
+	visible := jobs[:0:0]
+	for _, j := range jobs {
+		if s.canReadJob(r, j.Name) {
+			visible = append(visible, j)
+		}
+	}
+	writeJSON(w, http.StatusOK, visible)
 }
 
 func (s *Server) listJobsDecorated(ctx context.Context) ([]api.Job, error) {
@@ -125,19 +140,33 @@ func (s *Server) listJobsDecorated(ctx context.Context) ([]api.Job, error) {
 	return jobs, nil
 }
 
-// extractJobName returns the catch-all wildcard as the job name.
-func extractJobName(wild string) string {
-	return strings.TrimPrefix(wild, "/")
-}
+// jobVariant says which representation of a job a /jobs/* request addresses.
+type jobVariant uint8
 
-// extractJobNameAndYAML strips an optional trailing "/yaml" segment, reporting
-// whether it was present.
-func extractJobNameAndYAML(wild string) (name string, yaml bool) {
-	wild = strings.TrimPrefix(wild, "/")
-	if strings.HasSuffix(wild, "/yaml") {
-		return strings.TrimSuffix(wild, "/yaml"), true
+const (
+	jobVariantJob jobVariant = iota
+	jobVariantYAML
+	jobVariantSchedulability
+)
+
+// parseJobWildcard derives the job name and representation from the catch-all
+// wildcard of a /jobs/* request. It is the single derivation shared by the
+// authorization middleware and the job handlers, so what is authorized is
+// what is served. For GET a trailing "/schedulability" is read first, then a
+// trailing "/yaml"; every other method addresses the job named by the whole
+// wildcard.
+func parseJobWildcard(r *http.Request) (name string, variant jobVariant) {
+	wild := strings.TrimPrefix(chi.URLParam(r, "*"), "/")
+	if r.Method != http.MethodGet {
+		return wild, jobVariantJob
 	}
-	return wild, false
+	if strings.HasSuffix(wild, "/schedulability") {
+		return strings.TrimSuffix(wild, "/schedulability"), jobVariantSchedulability
+	}
+	if strings.HasSuffix(wild, "/yaml") {
+		return strings.TrimSuffix(wild, "/yaml"), jobVariantYAML
+	}
+	return wild, jobVariantJob
 }
 
 // NOTE: a job whose leaf is literally "yaml" or "schedulability" (qualified
@@ -148,17 +177,15 @@ func extractJobNameAndYAML(wild string) (name string, yaml bool) {
 // handleGetJobOrYAML dispatches GET /jobs/* to the job, its YAML, or its
 // schedulability evaluation.
 func (s *Server) handleGetJobOrYAML(w http.ResponseWriter, r *http.Request) {
-	wild := strings.TrimPrefix(chi.URLParam(r, "*"), "/")
-	if strings.HasSuffix(wild, "/schedulability") {
-		s.serveJobSchedulability(w, r, strings.TrimSuffix(wild, "/schedulability"))
-		return
-	}
-	name, yaml := extractJobNameAndYAML(wild)
-	if yaml {
+	name, variant := parseJobWildcard(r)
+	switch variant {
+	case jobVariantSchedulability:
+		s.serveJobSchedulability(w, r, name)
+	case jobVariantYAML:
 		s.serveJobYAML(w, r, name)
-		return
+	default:
+		s.serveJob(w, r, name)
 	}
-	s.serveJob(w, r, name)
 }
 
 // serveJob returns the Job with the given name.
@@ -218,7 +245,7 @@ func (s *Server) serveJobSchedulability(w http.ResponseWriter, r *http.Request, 
 
 // handleDeleteJob deletes the Job with the given name. Associated Run history is also cascade-deleted.
 func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
-	name := extractJobName(chi.URLParam(r, "*"))
+	name, _ := parseJobWildcard(r)
 	if err := s.guardManagedResource(r.Context(), "Job", name); err != nil {
 		writeGuardError(w, err)
 		return

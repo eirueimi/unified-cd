@@ -14,7 +14,7 @@ This is the fact that makes the rest legible.
 |---|---|---|
 | Type | `Principal` (`auth.go`) | `AgentPrincipal` (`agent_auth.go`) |
 | Credentials | PAT (`exc_`), OIDC, browser session | enrolled access token (`uca_`) |
-| Carries | Name, Kind, **Role** | an agent identity — no role |
+| Carries | Name, Kind, legacy **Role**, effective **Grants** | an agent identity — no role, no grants |
 | In context under | `principalCtxKey` | its own key |
 
 They are deliberately separate. An agent is not a low-privileged user; it is a
@@ -22,20 +22,36 @@ different kind of caller with a different question to answer ("which agent is
 this, and is it allowed to act for *that* run?"), so giving it a role would be
 answering the wrong question.
 
-`Principal.Kind` is `"pat" | "oidc" | "session"`, and `Principal.Role` is
-`"admin" | "developer" | "viewer"`.
+`Principal.Kind` is `"pat" | "oidc" | "session"`. `Principal.Role` is the
+*legacy global role* (`"admin" | "developer" | "viewer"`, or `""` for a user
+admitted only by `oidc.permissions` folder grants). What a human may actually
+do is `Principal.Grants`, an `authz.Grants` built at authentication time: the
+global role's bundle united with every matching `oidc.permissions` entry, and
+for an owner PAT intersected with its ceiling.
 
-### The role hierarchy is a rank, not a set
+### Permissions, not ranks
 
-`roleRanks` in `rbac.go` is `viewer: 1, developer: 2, admin: 3`, and
-`requireMinRole` compares ranks. An unknown or empty role ranks **0**, so it
-fails every check — which is the right default and worth preserving if you
-touch `roleRank`.
+The decision logic lives in `internal/authz`, which has no dependency on the
+controller:
 
-`resolveRole` maps OIDC claims to a role in a fixed order: `userMap` by email,
-then `userMap` by sub, then the highest-ranked match in `roleMap`, then the
-default. A denial returns `("", false)` rather than a role that happens to rank
-zero, so a deny is explicit rather than emergent.
+- `catalogue.go` — the 25 permissions, which nine are folder-scopable, and the
+  role bundles (`Bundle`).
+- `grants.go` — `Grants`: `Can`, `Decide` (allowed plus the `grantedBy` string),
+  `Explain`, `HeldAnywhere`, `Restrict` (the PAT ceiling) and `View` (the
+  `/auth/me` JSON). The rule is global ∪ every proper ancestor folder.
+- `policy.go` — the compiled `oidc.permissions` block and the startup
+  validation strings.
+- `describe.go` — the admin policy view behind `authz show`.
+
+`roleRanks` in `rbac.go` (`viewer: 1, developer: 2, admin: 3`) now serves only
+legacy role resolution and the PAT ceiling checks: an unknown or empty role
+ranks **0** and is denied. `resolveRole` maps OIDC claims to a role in a fixed
+order: `userMap` by email, then `userMap` by sub, then the highest-ranked match
+in `roleMap`, then the default. A denial returns `("", false)` rather than a
+role that happens to rank zero, so a deny is explicit rather than emergent.
+`identityGrants` (`rbac.go`) is the one place that unions that role with the
+matching `oidc.permissions` entries; login, `ServerAuth`, PAT owners and
+`authz explain` all call it, so they cannot disagree.
 
 ## Which middleware guards what
 
@@ -46,12 +62,29 @@ Four middlewares matter, and picking the wrong one is the mistake to avoid.
 | `ServerAuth` | humans and API clients only | ordinary API routes |
 | `agentAuth` | `uca_` agent credentials only | agent-only routes |
 | `agentOrServerAuth` | either | routes both an agent and a human may call |
-| `viewerOrAgent` | an agent, else requires the viewer role | pair with `agentOrServerAuth` on **read** routes |
+| `authorize` | looks the route up in `routeTable` and checks the human's grants | **every** human or agent-or-human route, after authentication and `auditLogMiddleware` |
 
-`agentOrServerAuth` and `viewerOrAgent` are used together, not separately:
-the first establishes *some* principal, the second decides whether a human one
-is sufficiently privileged. Using `agentOrServerAuth` alone on a route means
-any authenticated human, at any role, gets in.
+`authorize` (`authz_decide.go`) is driven by `routeTable`
+(`authz_routes.go`): each row is `{method, pattern, permission, scope}`, where
+the scope says how the job a request acts on is found (`scopeGlobal`,
+`scopeJobPath`, `scopeJobRunID`, `scopeJobQuery`, `scopeJobBody`,
+`scopeScheduleBody`, `scopeSchedulePath`, `scopeFiltered`) or that the route is
+`scopePublic`, `scopeSelf` or `scopeAgent`. A row may carry an `AltPerm`
+(`GET` / `DELETE /api/v1/tokens`: `token.create` for your own tokens **or**
+`token.manage`) and `AgentBypass: true` for agent-or-human routes, where an
+agent principal skips the check and only the human branch is decided.
+`agentOrServerAuth` establishes *some* principal; on its own it would let any
+authenticated human in, so such a route must also be in `routeTable` with an
+`AgentBypass` row, and `authorize` must be in its chain. A route that is not
+in the table is refused with `403 forbidden: unclassified route`, and
+`TestEveryRegisteredRouteIsClassified` fails.
+
+For per-job routes `authorize` returns `404` when the caller cannot read the
+job (indistinguishable from a missing one), `403 forbidden: missing permission
+"<p>" on job "<j>"` when it can read but not act, and records the decision for
+the audit log. Handlers that learn the job name only after parsing the body
+(`handleApplyJob`, `handleTriggerRun`, `handleApplySchedule`) call `requireJob`
+themselves; list handlers filter rows with `canReadJob`.
 
 ## Agent routes are declared in a table
 
@@ -125,21 +158,25 @@ not belong on `agentAuth`.
 `UNIFIED_TOKEN` is synced at startup as a PAT under the fixed name
 `env:UNIFIED_TOKEN` (`BootstrapPATName`), so changing the value updates the
 hash rather than accumulating rows. The name is **not** what grants break-glass:
-`ServerAuth` compares the presented token's hash with `HashToken(Config.Token)`
-(`Server.isBootstrapHash`, constant-time), and `handleCreateToken` rejects the
+`patPrincipal` compares the presented token's hash with `HashToken(Config.Token)`
+(`Server.isBreakGlass`, constant-time) and requires that the PAT has no owner, and `handleCreateToken` rejects the
 reserved `env:` prefix. At startup `SyncBootstrapPAT` deletes, in one
 transaction, any other row with the reserved name and upserts the real one.
 
 ## Adding an endpoint
 
 1. **Who calls it?** Human only → `ServerAuth`. Agent only → the matrix with
-   `agentAuth`. Both → the matrix with `agentOrServerAuth`, plus
-   `viewerOrAgent` if it is a read.
+   `agentAuth`. Both → the matrix with `agentOrServerAuth` and an `AgentBypass`
+   row in `routeTable`.
 2. **Does the path contain `{agentId}`?** Then `bindPath: true`, always.
-3. **What is the minimum role?** `requireMinRole` — and remember an unknown
-   role ranks 0 and is denied.
+3. **Which permission, and on what scope?** Add the route to `routeTable` in
+   `internal/controller/authz_routes.go` with a permission from the catalogue
+   and a scope (a new permission goes into `internal/authz/catalogue.go` and
+   the bundles first). If a handler learns the job from the body, call
+   `requireJob` in it; if it returns rows, filter them with `canReadJob`.
 4. **Does it mutate?** Then it belongs under a group with
-   `auditLogMiddleware`.
+   `auditLogMiddleware` and, to be recorded when allowed, in
+   `auditActionTable` (denials are recorded regardless).
 5. **Would an agent running a malicious job be able to abuse it?** If so it
    should not be reachable with `agentAuth` at all.
 
@@ -149,7 +186,11 @@ transaction, any other row with the reserved name and upserts the real one.
 |---|---|
 | How is a human authenticated? | `internal/controller/auth.go` |
 | How is OIDC handled? | `internal/controller/auth_oidc.go` |
-| How do roles resolve and rank? | `internal/controller/rbac.go` |
+| How do roles resolve, rank and union with `oidc.permissions`? | `internal/controller/rbac.go` |
+| What is the permission catalogue, a role bundle, a folder match? | `internal/authz` |
+| Which permission does each route need? | `routeTable` in `internal/controller/authz_routes.go` |
+| Where is the check and the 404/403 split? | `authorize`, `requireJob` in `internal/controller/authz_decide.go` |
+| How does the Web UI evaluate grants? | `web/src/lib/authz.js` (see [Frontend Development](frontend-development.md#permissions-in-the-ui)) |
 | How is an agent authenticated? | `internal/controller/agent_auth.go` |
 | Which agent routes exist, with what auth? | `agentRouteIdentityMatrix` in `server.go` |
 | How does Kubernetes enrollment verify a token? | `agent_enrollment_kubernetes.go` |

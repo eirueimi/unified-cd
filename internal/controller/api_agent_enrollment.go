@@ -534,7 +534,7 @@ func (s *Server) auditAgentCredential(r *http.Request, action, resource string, 
 	if r != nil {
 		path = r.URL.Path
 	}
-	if err := s.store.InsertAuditLog(ctx, "agent", http.MethodPost, path, action, resource, status); err != nil {
+	if err := s.store.InsertAuditLog(ctx, store.AuditEntry{Actor: "agent", Method: http.MethodPost, Path: path, Action: action, Resource: resource, Status: status}); err != nil {
 		slog.Warn("agent credential audit failed", "action", action, "error", err)
 	}
 }

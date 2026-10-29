@@ -14,7 +14,7 @@ An open-source CI/CD tool (Jenkins alternative) written in Go.
 
 **GitHub:** https://github.com/eirueimi/unified-cd
 
-**Key features:** YAML-defined jobs · DAG step execution · Multi-platform agents (Linux, macOS, Windows, Kubernetes) · Ephemeral workspaces with agent-owned named volumes for data that must survive between runs · Secrets management · Webhook and cron triggers · High availability · Web UI · OIDC SSO
+**Key features:** YAML-defined jobs · DAG step execution · Multi-platform agents (Linux, macOS, Windows, Kubernetes) · Ephemeral workspaces with agent-owned named volumes for data that must survive between runs · Secrets management · Webhook and cron triggers · High availability · Web UI · OIDC SSO with fine-grained, per-folder permissions
 
 ---
 
@@ -169,6 +169,7 @@ The full documentation is published at **https://eirueimi.github.io/unified-cd/*
 
 ### Feature Guides
 - **[Authentication Guide](https://eirueimi.github.io/unified-cd/operator-manual/authentication/)** — static tokens, PATs, OIDC SSO (Dex), CLI login
+- **[Authorization Guide](https://eirueimi.github.io/unified-cd/operator-manual/authorization/)** — roles, the 25-permission catalogue, per-folder grants for separating teams, `authz show` / `explain`
 - **[Secrets Management Guide](https://eirueimi.github.io/unified-cd/user-guide/secrets/)** — create, reference, and encrypt secrets; log masking
 - **[Agent Labels and Routing](https://eirueimi.github.io/unified-cd/operator-manual/agents/)** — agentSelector, capability-based routing, hostname labels, Windows agents
 - **[Kubernetes Integration Guide](https://eirueimi.github.io/unified-cd/operator-manual/kubernetes-integration/)** — k8s-agent setup, podTemplate patterns, RBAC

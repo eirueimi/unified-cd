@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/secrets"
@@ -119,6 +120,9 @@ type OIDCConfig struct {
 	RoleMap     map[string]string
 	UserMap     map[string]string
 	DefaultRole string
+
+	// Policy is the compiled oidc.permissions block; nil means none.
+	Policy *authz.Policy
 }
 
 // Server represents the master HTTP server.
@@ -148,6 +152,11 @@ type Server struct {
 	oidcVerifyOnce   sync.Once
 	oidcProviderV    *oidc.Provider
 	oidcProviderVErr error
+
+	// verifyIDTokenHook, when non-nil, replaces the go-oidc id_token
+	// verification in the bearer branch, the login callback and silent
+	// refresh. It returns the verified claims. Tests only.
+	verifyIDTokenHook func(ctx context.Context, raw, audience string) (map[string]any, error)
 
 	// logNotify fans out live "this run's logs changed" wake-ups to SSE
 	// viewers in-process (see log_notify.go); logNotifyOnce starts the ONE
@@ -341,19 +350,18 @@ const (
 )
 
 type agentIdentityRoute struct {
-	method       string
-	path         string
-	auth         agentRouteAuthMode
-	bindPath     bool
-	requiredRole string
-	handler      func(*Server, http.ResponseWriter, *http.Request)
+	method   string
+	path     string
+	auth     agentRouteAuthMode
+	bindPath bool
+	handler  func(*Server, http.ResponseWriter, *http.Request)
 }
 
 // agentRouteIdentityMatrix is both the registration source and the
 // impersonation-test matrix.
 var agentRouteIdentityMatrix = []agentIdentityRoute{
-	{method: http.MethodGet, path: "/api/v1/agents/{agentId}", auth: agentRouteOrServerAuth, bindPath: true, requiredRole: "viewer", handler: (*Server).handleGetAgent},
-	{method: http.MethodGet, path: "/api/v1/agents/{agentId}/runs", auth: agentRouteOrServerAuth, bindPath: true, requiredRole: "viewer", handler: (*Server).handleListRunsByAgent},
+	{method: http.MethodGet, path: "/api/v1/agents/{agentId}", auth: agentRouteOrServerAuth, bindPath: true, handler: (*Server).handleGetAgent},
+	{method: http.MethodGet, path: "/api/v1/agents/{agentId}/runs", auth: agentRouteOrServerAuth, bindPath: true, handler: (*Server).handleListRunsByAgent},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/heartbeat", bindPath: true, handler: (*Server).handleAgentHeartbeat},
 	{method: http.MethodDelete, path: "/api/v1/agents/{agentId}", bindPath: true, handler: (*Server).handleAgentDeregister},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/claim", bindPath: true, handler: (*Server).handleAgentClaim},
@@ -384,8 +392,8 @@ func (s *Server) registerAgentIdentityRoutes() {
 		if route.bindPath {
 			r = r.With(s.requireAgentPathIdentity)
 		}
-		if route.requiredRole != "" {
-			r = r.With(requireMinRole(route.requiredRole))
+		if route.auth == agentRouteOrServerAuth {
+			r = r.With(auditLogMiddleware(s.store), s.authorize)
 		}
 		r.Method(route.method, route.path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			route.handler(s, w, req)
@@ -445,120 +453,117 @@ func (s *Server) routes() {
 	})
 
 	// The SSE endpoint is registered individually outside the /api/v1 route block.
-	s.r.With(ServerAuth(s.store, s), requireMinRole("viewer")).
+	s.r.With(ServerAuth(s.store, s), auditLogMiddleware(s.store), s.authorize).
 		Get("/api/v1/runs/{id}/events", s.handleRunEvents)
 
 	// Run + outputs reads are also reachable by an enrolled agent (the call:
 	// step polls the child run it created), so they use agentOrServerAuth like
-	// the artifact routes rather than the human-only /api/v1 group. viewerOrAgent
-	// keeps the human viewer floor while letting agent principals through.
+	// the artifact routes rather than the human-only /api/v1 group. authorize
+	// applies the job.read check to humans and lets agent principals through.
 	//
-	// /runs/active is registered here too (auth unchanged: ServerAuth + viewer,
+	// /runs/active is registered here too (auth unchanged: ServerAuth,
 	// no agent access) purely so it stays a sibling of /runs/{id} in the SAME
 	// chi tree. chi prefers a static match ("active") over a param match
 	// ({id}) only when both live in the same routing tree; the /api/v1 group
 	// below is mounted as its own sub-router, so once /runs/{id} is registered
 	// directly on the top-level tree it would otherwise swallow "active" as an
 	// id before the request ever reaches the mounted group.
-	s.r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/api/v1/runs/active", s.handleListActiveRuns)
-	s.r.With(s.agentOrServerAuth, s.viewerOrAgent).Get("/api/v1/runs/{id}", s.handleGetRun)
-	s.r.With(s.agentOrServerAuth, s.viewerOrAgent).Get("/api/v1/runs/{id}/outputs", s.handleGetRunOutputs)
+	s.r.With(ServerAuth(s.store, s), auditLogMiddleware(s.store), s.authorize).Get("/api/v1/runs/active", s.handleListActiveRuns)
+	s.r.With(s.agentOrServerAuth, auditLogMiddleware(s.store), s.authorize).Get("/api/v1/runs/{id}", s.handleGetRun)
+	s.r.With(s.agentOrServerAuth, auditLogMiddleware(s.store), s.authorize).Get("/api/v1/runs/{id}/outputs", s.handleGetRunOutputs)
 
 	s.r.Route("/api/v1", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
 		r.Use(auditLogMiddleware(s.store))
 
-		dev := requireMinRole("developer")
-		view := requireMinRole("viewer")
-		admin := requireMinRole("admin")
+		r.With(s.authorize).Get("/audit", s.handleListAuditLogs)
+		r.With(s.authorize).Get("/authz/policy", s.handleAuthzPolicy)
+		r.With(s.authorize).Post("/authz/explain", s.handleAuthzExplain)
 
-		r.With(admin).Get("/audit", s.handleListAuditLogs)
+		r.With(s.authorize).Post("/jobs", s.handleApplyJob)
+		r.With(s.authorize).Get("/jobs", s.handleListJobs)
+		r.With(s.authorize).Get("/jobs/*", s.handleGetJobOrYAML)
+		r.With(s.authorize).Delete("/jobs/*", s.handleDeleteJob)
 
-		r.With(dev).Post("/jobs", s.handleApplyJob)
-		r.With(view).Get("/jobs", s.handleListJobs)
-		r.With(view).Get("/jobs/*", s.handleGetJobOrYAML)
-		r.With(dev).Delete("/jobs/*", s.handleDeleteJob)
-
-		r.With(dev).Post("/runs", s.handleTriggerRun)
-		r.With(dev).Post("/runs/{id}/replay", s.handleReplayRun)
-		r.With(view).Get("/runs", s.handleListRunsByJob)
-		r.With(view).Get("/runs/{id}/yaml", s.handleGetRunYAML)
-		r.With(dev).Post("/runs/{id}/cancel", s.handleCancelRun)
-		r.With(dev).Delete("/runs/{id}", s.handleDeleteRun)
-		r.With(view).Get("/runs/{id}/logs", s.handleTailLogs)
-		r.With(view).Get("/runs/{id}/steps", s.handleGetRunSteps)
-		r.With(view).Get("/runs/{id}/logs/archive", s.handleLogsArchive)
-		r.With(view).Get("/runs/{id}/logs/stats", s.handleLogStats)
-		r.With(view).Get("/runs/{id}/logs/range", s.handleLogRange)
-		r.With(view).Get("/runs/{id}/logs/search", s.handleLogSearch)
-		r.With(view).Get("/runs/{runID}/approvals", s.handleListRunApprovals)
-		r.With(dev).Post("/runs/{runID}/approvals/{stepIndex}", s.handleDecideApproval)
+		r.With(s.authorize).Post("/runs", s.handleTriggerRun)
+		r.With(s.authorize).Post("/runs/{id}/replay", s.handleReplayRun)
+		r.With(s.authorize).Get("/runs", s.handleListRunsByJob)
+		r.With(s.authorize).Get("/runs/{id}/yaml", s.handleGetRunYAML)
+		r.With(s.authorize).Post("/runs/{id}/cancel", s.handleCancelRun)
+		r.With(s.authorize).Delete("/runs/{id}", s.handleDeleteRun)
+		r.With(s.authorize).Get("/runs/{id}/logs", s.handleTailLogs)
+		r.With(s.authorize).Get("/runs/{id}/steps", s.handleGetRunSteps)
+		r.With(s.authorize).Get("/runs/{id}/logs/archive", s.handleLogsArchive)
+		r.With(s.authorize).Get("/runs/{id}/logs/stats", s.handleLogStats)
+		r.With(s.authorize).Get("/runs/{id}/logs/range", s.handleLogRange)
+		r.With(s.authorize).Get("/runs/{id}/logs/search", s.handleLogSearch)
+		r.With(s.authorize).Get("/runs/{runID}/approvals", s.handleListRunApprovals)
+		r.With(s.authorize).Post("/runs/{runID}/approvals/{stepIndex}", s.handleDecideApproval)
 
 		r.Route("/secrets", func(r chi.Router) {
-			r.With(admin).Post("/", s.handleSetSecret)
-			r.With(dev).Get("/", s.handleListSecrets) // names only
-			r.With(admin).Delete("/{name}", s.handleDeleteSecret)
+			r.With(s.authorize).Post("/", s.handleSetSecret)
+			r.With(s.authorize).Get("/", s.handleListSecrets) // names only
+			r.With(s.authorize).Delete("/{name}", s.handleDeleteSecret)
 		})
 		r.Route("/gitcredentials", func(r chi.Router) {
-			r.Use(admin)
-			r.Post("/", s.handleUpsertGitCredential)
-			r.Get("/", s.handleListGitCredentials)
-			r.Delete("/{name}", s.handleDeleteGitCredential)
+			r.With(s.authorize).Post("/", s.handleUpsertGitCredential)
+			r.With(s.authorize).Get("/", s.handleListGitCredentials)
+			r.With(s.authorize).Delete("/{name}", s.handleDeleteGitCredential)
 		})
-		r.With(dev).Post("/tokens", s.handleCreateToken)
-		r.With(dev).Get("/tokens", s.handleListTokens)
-		r.With(dev).Delete("/tokens/{id}", s.handleDeleteToken)
+		r.With(s.authorize).Post("/tokens", s.handleCreateToken)
+		r.With(s.authorize).Get("/tokens", s.handleListTokens)
+		r.With(s.authorize).Delete("/tokens/{id}", s.handleDeleteToken)
 
-		r.With(admin).Post("/agent-enrollments", s.handleCreateAgentEnrollment)
-		r.With(view).Get("/agent-enrollments", s.handleListAgentEnrollments)
-		r.With(admin).Delete("/agent-enrollments/{id}", s.handleRevokeAgentEnrollment)
-		r.With(admin).Post("/agent-enrollment-policies", s.handleCreateAgentEnrollmentPolicy)
-		r.With(view).Get("/agent-enrollment-policies", s.handleListAgentEnrollmentPolicies)
-		r.With(view).Get("/agent-enrollment-policies/{name}", s.handleGetAgentEnrollmentPolicy)
-		r.With(admin).Put("/agent-enrollment-policies/{name}", s.handleUpdateAgentEnrollmentPolicy)
-		r.With(admin).Delete("/agent-enrollment-policies/{name}", s.handleDeleteAgentEnrollmentPolicy)
-		r.With(view).Get("/agent-identities/{agentId}", s.handleGetAgentIdentity)
-		r.With(admin).Post("/agent-identities/{agentId}/enable", s.handleEnableAgentIdentity)
-		r.With(admin).Post("/agent-identities/{agentId}/disable", s.handleDisableAgentIdentity)
-		r.With(admin).Post("/agent-identities/{agentId}/credentials/revoke", s.handleRevokeAgentCredentials)
+		r.With(s.authorize).Post("/agent-enrollments", s.handleCreateAgentEnrollment)
+		r.With(s.authorize).Get("/agent-enrollments", s.handleListAgentEnrollments)
+		r.With(s.authorize).Delete("/agent-enrollments/{id}", s.handleRevokeAgentEnrollment)
+		r.With(s.authorize).Post("/agent-enrollment-policies", s.handleCreateAgentEnrollmentPolicy)
+		r.With(s.authorize).Get("/agent-enrollment-policies", s.handleListAgentEnrollmentPolicies)
+		r.With(s.authorize).Get("/agent-enrollment-policies/{name}", s.handleGetAgentEnrollmentPolicy)
+		r.With(s.authorize).Put("/agent-enrollment-policies/{name}", s.handleUpdateAgentEnrollmentPolicy)
+		r.With(s.authorize).Delete("/agent-enrollment-policies/{name}", s.handleDeleteAgentEnrollmentPolicy)
+		r.With(s.authorize).Get("/agent-identities/{agentId}", s.handleGetAgentIdentity)
+		r.With(s.authorize).Post("/agent-identities/{agentId}/enable", s.handleEnableAgentIdentity)
+		r.With(s.authorize).Post("/agent-identities/{agentId}/disable", s.handleDisableAgentIdentity)
+		r.With(s.authorize).Post("/agent-identities/{agentId}/credentials/revoke", s.handleRevokeAgentCredentials)
 	})
 
 	// WebhookReceiver management (auth required)
 	s.r.Route("/api/v1/webhooks", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
 		r.Use(auditLogMiddleware(s.store))
-		r.With(requireMinRole("admin")).Post("/", s.handleApplyWebhook)
-		r.With(requireMinRole("viewer")).Get("/", s.handleListWebhooks)
-		r.With(requireMinRole("admin")).Delete("/{name}", s.handleDeleteWebhook)
+		r.With(s.authorize).Post("/", s.handleApplyWebhook)
+		r.With(s.authorize).Get("/", s.handleListWebhooks)
+		r.With(s.authorize).Delete("/{name}", s.handleDeleteWebhook)
 	})
 
 	// Vars management (auth required)
 	s.r.Route("/api/v1/vars", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
 		r.Use(auditLogMiddleware(s.store))
-		r.With(requireMinRole("admin")).Post("/", s.handleApplyVars)
-		r.With(requireMinRole("viewer")).Get("/", s.handleListVars)
-		r.With(requireMinRole("admin")).Delete("/{name}", s.handleDeleteVars)
+		r.With(s.authorize).Post("/", s.handleApplyVars)
+		r.With(s.authorize).Get("/", s.handleListVars)
+		r.With(s.authorize).Delete("/{name}", s.handleDeleteVars)
 	})
 
 	// Schedule management (auth required)
 	s.r.Route("/api/v1/schedules", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
 		r.Use(auditLogMiddleware(s.store))
-		r.With(requireMinRole("developer")).Post("/", s.handleApplySchedule)
-		r.With(requireMinRole("viewer")).Get("/", s.handleListSchedules)
-		r.With(requireMinRole("developer")).Delete("/{name}", s.handleDeleteSchedule)
+		r.With(s.authorize).Post("/", s.handleApplySchedule)
+		r.With(s.authorize).Get("/", s.handleListSchedules)
+		r.With(s.authorize).Delete("/{name}", s.handleDeleteSchedule)
 	})
 
 	// AppSource management (auth required)
 	s.r.Route("/api/v1/appsources", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
 		r.Use(auditLogMiddleware(s.store))
-		r.With(requireMinRole("admin")).Post("/", s.handleApplyAppSource)
-		r.With(requireMinRole("viewer")).Get("/", s.handleListAppSources)
-		r.With(requireMinRole("viewer")).Get("/{name}", s.handleGetAppSource)
-		r.With(requireMinRole("admin")).Delete("/{name}", s.handleDeleteAppSource)
-		r.With(requireMinRole("admin")).Post("/{name}/sync", s.handleSyncAppSource)
+		r.With(s.authorize).Post("/", s.handleApplyAppSource)
+		r.With(s.authorize).Get("/", s.handleListAppSources)
+		r.With(s.authorize).Get("/{name}", s.handleGetAppSource)
+		r.With(s.authorize).Delete("/{name}", s.handleDeleteAppSource)
+		r.With(s.authorize).Post("/{name}/sync", s.handleSyncAppSource)
 	})
 
 	// Webhook payload ingress (no per-route auth; authenticated via signature verification)
@@ -603,20 +608,20 @@ func (s *Server) routes() {
 	s.r.Get("/api/v1/auth/oidc-login", s.handleOIDCLogin)
 	s.r.Get("/api/v1/auth/oidc-callback", s.handleOIDCCallback)
 	s.r.Post("/api/v1/auth/logout", s.handleLogout)
-	s.r.Get("/api/v1/auth/me", s.handleMe)
+	s.r.With(ServerAuth(s.store, s)).Get("/api/v1/auth/me", s.handleMe)
 
 	s.r.Route("/api/v1/agents", func(r chi.Router) {
 		// Bootstrap and refresh are intentionally outside ServerAuth: their opaque
 		// agent credentials are authenticated by the handlers themselves.
 		r.Post("/enroll", s.handleAgentEnroll)
 		r.Post("/token/refresh", s.handleAgentRefresh)
-		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/", s.handleListAgents)
+		r.With(ServerAuth(s.store, s), auditLogMiddleware(s.store), s.authorize).Get("/", s.handleListAgents)
 		r.With(s.agentAuth).Post("/register", s.handleAgentRegister)
 	})
 
 	s.r.Route("/api/v1/runs/{runID}/artifacts", func(r chi.Router) {
-		r.With(s.agentOrServerAuth).Get("/{name}", s.handleArtifactDownload)
-		r.With(s.agentOrServerAuth).Get("/", s.handleArtifactList)
+		r.With(s.agentOrServerAuth, auditLogMiddleware(s.store), s.authorize).Get("/{name}", s.handleArtifactDownload)
+		r.With(s.agentOrServerAuth, auditLogMiddleware(s.store), s.authorize).Get("/", s.handleArtifactList)
 	})
 
 	// store-credentials is deliberately OUTSIDE ServerAuth/agentAuth/the

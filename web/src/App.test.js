@@ -189,3 +189,42 @@ describe('App — deep-link restoration after SSO (#33)', () => {
     unmount();
   });
 });
+
+describe('App — permission-aware navigation', () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    global.fetch = vi.fn(() => Promise.resolve({ ok: true, json: async () => ([]) }));
+    window.location.hash = '#/';
+  });
+
+  afterEach(() => {
+    authReady.set(false);
+    currentUser.set(null);
+    global.fetch = originalFetch;
+    window.location.hash = '';
+  });
+
+  it('hides global-only navigation the caller lacks', async () => {
+    currentUser.set({ email: 'a@example.com', permissions: { global: ['job.read'], folders: {} } });
+    authReady.set(true);
+    const { unmount } = render(App);
+    await waitFor(() => expect(screen.getByText('Jobs')).toBeInTheDocument());
+    for (const name of ['Secrets', 'Webhooks', 'GitCredentials', 'AppSources', 'Agents', 'Tokens']) {
+      expect(screen.queryByText(name)).not.toBeInTheDocument();
+    }
+    expect(screen.getByText('Schedules')).toBeInTheDocument();
+    unmount();
+  });
+
+  it('shows all navigation while grants are unknown', async () => {
+    currentUser.set({ email: 'a@example.com' });
+    authReady.set(true);
+    const { unmount } = render(App);
+    await waitFor(() => expect(screen.getByText('Jobs')).toBeInTheDocument());
+    for (const name of ['Agents', 'Schedules', 'Webhooks', 'GitCredentials', 'AppSources', 'Secrets', 'Tokens']) {
+      expect(screen.getByText(name)).toBeInTheDocument();
+    }
+    unmount();
+  });
+});

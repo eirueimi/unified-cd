@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,9 +21,9 @@ type auditRecorderStore struct {
 	resources []string
 }
 
-func (f *auditRecorderStore) InsertAuditLog(ctx context.Context, actor, method, path, action, resource string, status int) error {
-	f.actions = append(f.actions, action)
-	f.resources = append(f.resources, resource)
+func (f *auditRecorderStore) InsertAuditLog(ctx context.Context, e store.AuditEntry) error {
+	f.actions = append(f.actions, e.Action)
+	f.resources = append(f.resources, e.Resource)
 	return nil
 }
 

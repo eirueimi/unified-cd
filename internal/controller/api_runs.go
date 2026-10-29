@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/store"
@@ -27,6 +28,12 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.JobName == "" {
 		http.Error(w, "jobName is required", http.StatusBadRequest)
+		return
+	}
+	hide := func(w http.ResponseWriter) {
+		http.Error(w, "job not found: "+req.JobName, http.StatusNotFound)
+	}
+	if !s.requireJob(w, r, authz.RunTrigger, req.JobName, hide) {
 		return
 	}
 	triggeredBy := "api"
@@ -292,10 +299,19 @@ func (s *Server) handleListActiveRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if runs == nil {
-		runs = []api.Run{}
+	writeJSON(w, http.StatusOK, s.filterRuns(r, runs))
+}
+
+// filterRuns drops the runs of jobs the request's principal cannot read; agent
+// principals see every run. The result is never nil.
+func (s *Server) filterRuns(r *http.Request, runs []api.Run) []api.Run {
+	out := make([]api.Run, 0, len(runs))
+	for _, run := range runs {
+		if s.canReadJob(r, run.JobName) {
+			out = append(out, run)
+		}
 	}
-	writeJSON(w, http.StatusOK, runs)
+	return out
 }
 
 // handleGetRunSteps returns the list of steps for the specified Run.
@@ -454,7 +470,7 @@ func (s *Server) handleLogsArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if arch == nil {
-		http.Error(w, "log archive not available yet", http.StatusNotFound)
+		http.Error(w, msgLogArchiveUnavailable, http.StatusNotFound)
 		return
 	}
 	if s.objStore == nil {

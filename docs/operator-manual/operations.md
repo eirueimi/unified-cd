@@ -44,7 +44,7 @@ Artifacts, cache entries, and log archives live in the configured bucket. Use yo
 
 **Streaming uploads.** Artifact and cache uploads are streamed end-to-end (tar+zstd is produced and sent incrementally) rather than buffered whole in RAM, so the agent's peak memory during an upload is bounded — a compression window plus one object-store multipart part — instead of scaling with the archive size; large artifacts and caches no longer risk OOMing the agent. The agent→controller artifact PUT uses chunked transfer-encoding (no `Content-Length`), so a length-sensitive proxy sitting in front of the controller must be configured to allow chunked request bodies. Trade-off: because the upload body is streamed and not rewindable, a mid-upload network failure fails that upload outright rather than being transparently retried internally — the step's normal retry/`continueOnError` semantics still apply on top of that.
 
-**Run retention.** By default unified-cd keeps every run forever: `runs` rows, log rows, archived logs, and artifacts all accumulate. Note that log archival only *copies* logs to the object store — database log rows are never trimmed by it. Set `--run-retention-days` (env `UNIFIED_RUN_RETENTION_DAYS`) to enable an hourly, leader-elected sweep that deletes terminal runs older than N days, including their archived logs and artifacts. Audit logs have their own independent setting (`--audit-retention-days`).
+**Run retention.** By default unified-cd keeps every run forever: `runs` rows, log rows, archived logs, and artifacts all accumulate. Note that log archival only *copies* logs to the object store — database log rows are never trimmed by it. Set `--run-retention-days` (env `UNIFIED_RUN_RETENTION_DAYS`) to enable an hourly, leader-elected sweep that deletes terminal runs older than N days, including their archived logs and artifacts. Audit logs have their own independent setting (`--audit-retention-days`); keep it enabled, because denied reads are audited synchronously and can grow the table at request rate (see [Audit: Denied reads](audit.md#denied-reads)).
 
 **Tiered log storage.** Even before run retention fires, `--log-trim-days` (env `UNIFIED_LOG_TRIM_DAYS`) can reclaim the largest table: N days after a run's logs are archived to the object store, an hourly leader-elected sweep deletes the run's `logs` rows and marks the archive record. All log reads for such runs are then served from the archive — the WebUI viewer, CLI, and SSE work unchanged, with a small first-view latency (one object fetch; up to 128 MiB of raw archive bytes are cached in memory — the decoded, in-memory representation can be larger). The sweeper verifies the archive object exists before trimming and never trims unarchived runs. Runs whose logs exceed the 1,000,000-line archive cap, or that received log lines after archival, are never trimmed either — the sweeper detects incomplete archive coverage and skips them. Runs archived before this feature was deployed (records without coverage data) are automatically re-archived once and then trimmed on a later sweep. Typical setup: `--log-trim-days` a few days, `--run-retention-days` much larger.
 
@@ -233,6 +233,26 @@ to disk. An ordinary workspace is emptied between runs; a volume is not. Review 
 leave there, and use `cleanWorkspace` or a `finally:` step to remove it.
 
 ---
+
+## Authorization startup warnings
+
+Matrix authorization (see [Authorization](authorization.md)) adds operator
+responsibilities that show up as controller startup log lines. Treat them as
+actions, not noise:
+
+| Log line | What to do |
+|---|---|
+| `UNIFIED_TOKEN is set while SSO is configured: the env:UNIFIED_TOKEN token is always admin and bypasses oidc.permissions; unset it once SSO works and keep it only as a break-glass credential` | The break-glass token is still enabled next to SSO. Once SSO works, unset `UNIFIED_TOKEN`, or keep it stored securely and unused; rotate it periodically. |
+| `role-only personal access tokens with a role above viewer bypass folder grants until revoked` (attribute `count`) | Folder grants are configured but pre-existing role-only PATs still carry a global role. **Re-issue role-only team PATs** as owned tokens (ideally with `--permission` ceilings) and revoke the old ones after enabling folder grants. |
+| `oidc.roleMap["..."]: unknown role "..." is ignored (valid: admin, developer, viewer)` | A `roleMap` typo; fix it (an error once `oidc.permissions` is set). |
+| `removed personal access tokens named "env:UNIFIED_TOKEN" that do not match the configured UNIFIED_TOKEN ...` | A stale or user-created token with the reserved name was deleted; review who created it. |
+
+Policy changes need a controller restart (the config is read at startup);
+`unified-cli authz show` prints what the running controller resolved. Group
+changes at the IdP reach sessions at the next login or silent refresh and
+reach PATs at their owner's next browser login. Every refused request is
+recorded in the [audit log](audit.md#denied-reads) with the permission that was
+missing.
 
 ## Monitoring Points
 

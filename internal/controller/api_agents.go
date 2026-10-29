@@ -40,10 +40,7 @@ func (s *Server) handleListRunsByAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if runs == nil {
-		runs = []api.Run{}
-	}
-	writeJSON(w, http.StatusOK, runs)
+	writeJSON(w, http.StatusOK, s.filterRuns(r, runs))
 }
 
 func (s *Server) handleAgentDeregister(w http.ResponseWriter, r *http.Request) {

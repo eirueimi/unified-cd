@@ -2,12 +2,15 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 )
 
 // handleApplySchedule accepts a Schedule YAML and creates or updates the cron schedule.
@@ -20,6 +23,32 @@ func (s *Server) handleApplySchedule(w http.ResponseWriter, r *http.Request) {
 	sc, err := dsl.ParseSchedule(strings.NewReader(req.YAML))
 	if err != nil {
 		http.Error(w, "invalid yaml: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	hide := func(w http.ResponseWriter) {
+		http.Error(w, "job not found: "+sc.Spec.Job, http.StatusBadRequest)
+	}
+	if !s.requireJob(w, r, authz.ScheduleConfigure, sc.Spec.Job, hide) {
+		return
+	}
+	// Re-targeting an existing schedule also needs the permission on the job it
+	// currently points at, or it could be pulled out of a folder.
+	old, err := s.store.GetSchedule(r.Context(), sc.Metadata.Name)
+	switch {
+	case err == nil:
+		if old.JobName != sc.Spec.Job {
+			if !s.requireJob(w, r, authz.ScheduleConfigure, old.JobName, nil) {
+				return
+			}
+			// The old-target check overwrote the decision slot; decide the new
+			// target again (it already passed) so the audit scope names it.
+			if !s.requireJob(w, r, authz.ScheduleConfigure, sc.Spec.Job, hide) {
+				return
+			}
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+	default:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if err := s.guardManagedResource(r.Context(), "Schedule", sc.Metadata.Name); err != nil {
@@ -54,6 +83,9 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]api.ScheduleMeta, 0, len(list))
 	for _, sc := range list {
+		if !s.canReadJob(r, sc.JobName) {
+			continue
+		}
 		result = append(result, api.ScheduleMeta{
 			Name:        sc.Name,
 			Cron:        sc.Cron,

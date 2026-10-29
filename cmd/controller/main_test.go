@@ -187,3 +187,10 @@ func TestGitResolveDeadlineDefault(t *testing.T) {
 	t.Setenv("UNIFIED_GIT_RESOLVE_DEADLINE", "0")
 	assert.Equal(t, time.Hour, gitResolveDeadlineDefault(), "0 must NOT disable the deadline — it falls back to default")
 }
+
+func TestBootstrapTokenWarning(t *testing.T) {
+	const want = "UNIFIED_TOKEN is set while SSO is configured: the env:UNIFIED_TOKEN token is always admin and bypasses oidc.permissions; unset it once SSO works and keep it only as a break-glass credential"
+	assert.Equal(t, want, bootstrapTokenWarning("https://idp.example.com", "t"))
+	assert.Empty(t, bootstrapTokenWarning("", "t"))
+	assert.Empty(t, bootstrapTokenWarning("https://idp.example.com", ""))
+}

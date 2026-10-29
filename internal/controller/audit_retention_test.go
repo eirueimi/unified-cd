@@ -69,7 +69,7 @@ func TestAuditRetention_Integration(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, pg.InsertAuditLog(ctx, "alice", "POST", "/api/v1/jobs", "job.apply", "j", 200))
+	require.NoError(t, pg.InsertAuditLog(ctx, store.AuditEntry{Actor: "alice", Method: "POST", Path: "/api/v1/jobs", Action: "job.apply", Resource: "j", Status: 200}))
 
 	// A row inserted just now must survive a 90-day retention run.
 	runAuditRetentionOnce(ctx, pg, 90)

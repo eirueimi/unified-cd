@@ -89,6 +89,24 @@ Notes:
   re-applied directly, so a broken Git state stays repairable.
 - The guard fails closed: if the controller cannot check the management state
   (DB error), the write is rejected.
+- The permission check runs **before** the guard. A caller without `job.configure`
+  (or `job.delete`) on the job's folder gets a `403`/`404` and never sees the
+  managing AppSource's name or repository URL; a caller with the permission
+  gets the `409`.
+
+### Folder grants do not apply to synced jobs
+
+Per-folder permissions (`oidc.permissions.folders`, see
+[Authorization](../../operator-manual/authorization.md)) govern what people do
+through unified-cd's own API and Web UI. They do **not** police what an
+AppSource writes: the reconciler upserts synced jobs as the system, into
+whatever folders the repository layout produces (a job's folder is the
+directory of its file relative to `spec.path`, and those directory names are
+not validated), and no folder grant is consulted. Anyone who can push to the
+AppSource's repository can therefore place jobs in **any** folder. The Git
+host governs who may write which directory: use branch protection,
+CODEOWNERS and review rules there. Once synced, the jobs are visible and
+actionable through the API only to callers whose folder grants cover them.
 
 ### Migrating manually-applied resources to Git
 

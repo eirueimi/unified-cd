@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { browserSSOEnabled, currentUser, serverURL, authReady, initAuth, jobPath } from './api.js';
+import { browserSSOEnabled, currentUser, serverURL, authReady, initAuth, jobPath, apiFetch, apiFetchText, ApiError, grants, refreshMe } from './api.js';
 
 beforeEach(() => {
   browserSSOEnabled.set(false);
@@ -149,5 +149,57 @@ describe('jobPath', () => {
     expect(jobPath('team-a/build')).toBe('team-a/build');
     expect(jobPath('hello')).toBe('hello');
     expect(jobPath('a b/c')).toBe('a%20b/c');
+  });
+});
+
+describe('ApiError and 403 refresh', () => {
+  const resp = (status, body = '') => ({ ok: status < 400, status, text: async () => body, json: async () => JSON.parse(body || 'null') });
+  const meCalls = () => global.fetch.mock.calls.filter((c) => String(c[0]).endsWith('/api/v1/auth/me'));
+
+  it('apiFetch throws ApiError with status on 404', async () => {
+    global.fetch = vi.fn().mockResolvedValue(resp(404, 'not found'));
+    const e = await apiFetch('/api/v1/jobs/x').catch((err) => err);
+    expect(e).toBeInstanceOf(ApiError);
+    expect(e.status).toBe(404);
+    expect(e.message).toBe('not found');
+    expect(meCalls()).toHaveLength(0);
+  });
+
+  it('apiFetchText throws ApiError with status', async () => {
+    global.fetch = vi.fn().mockResolvedValue(resp(500, 'boom'));
+    const e = await apiFetchText('/x').catch((err) => err);
+    expect(e).toBeInstanceOf(ApiError);
+    expect(e.status).toBe(500);
+  });
+
+  it('apiFetch: a 403 refetches /auth/me once and updates grants', async () => {
+    const me = { name: 'x', permissions: { global: ['job.read'], folders: {} } };
+    global.fetch = vi.fn(async (u) => (String(u).endsWith('/auth/me') ? resp(200, JSON.stringify(me)) : resp(403, 'forbidden')));
+    const e = await apiFetch('/api/v1/x', { method: 'POST' }).catch((err) => err);
+    expect(e).toBeInstanceOf(ApiError);
+    expect(e.status).toBe(403);
+    expect(meCalls()).toHaveLength(1);
+    expect(get(grants)).toEqual(me.permissions);
+  });
+
+  it('apiFetch: concurrent 403s trigger a single /auth/me refetch', async () => {
+    global.fetch = vi.fn(async (u) => (String(u).endsWith('/auth/me') ? resp(200, '{"permissions":null}') : resp(403, 'forbidden')));
+    const rs = await Promise.allSettled([apiFetch('/a'), apiFetch('/b'), apiFetch('/c')]);
+    expect(rs.every((r) => r.status === 'rejected' && r.reason.status === 403)).toBe(true);
+    expect(meCalls()).toHaveLength(1);
+  });
+
+  it('apiFetch: a failing /auth/me refetch does not loop', async () => {
+    global.fetch = vi.fn(async (u) => resp(403, String(u).endsWith('/auth/me') ? 'me forbidden' : 'forbidden'));
+    const e = await apiFetch('/a').catch((err) => err);
+    expect(e).toBeInstanceOf(ApiError);
+    expect(e.message).toBe('forbidden');
+    expect(meCalls()).toHaveLength(1);
+  });
+
+  it('refreshMe: concurrent callers share one request', async () => {
+    global.fetch = vi.fn(async () => resp(200, '{"permissions":{"global":[],"folders":{}}}'));
+    await Promise.all([refreshMe(), refreshMe()]);
+    expect(meCalls()).toHaveLength(1);
   });
 });

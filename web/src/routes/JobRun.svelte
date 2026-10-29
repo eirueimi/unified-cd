@@ -2,7 +2,8 @@
   import { onMount } from "svelte";
   import { push } from "svelte-spa-router";
   import AuthSetup from "../components/AuthSetup.svelte";
-  import { apiFetch, jobPath } from "../lib/api.js";
+  import { apiFetch, jobPath, grants } from "../lib/api.js";
+  import { allows, requiresText } from "../lib/authz.js";
 
   export let params;
   $: jobName = decodeURIComponent(params.name);
@@ -36,7 +37,9 @@
     }
   }
 
+  $: mayTrigger = allows($grants, "run.trigger", jobName);
   $: canRun =
+    mayTrigger &&
     !submitting &&
     inputs.every(
       (inp) =>
@@ -141,6 +144,7 @@
       <button
         class="btn"
         disabled={!canRun}
+        title={mayTrigger ? "" : requiresText("run.trigger", jobName)}
         on:click={triggerRun}
         style="margin-top:0.5rem;padding:0.5rem 1.5rem"
       >

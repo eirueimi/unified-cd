@@ -42,3 +42,23 @@ agentAuth:
 #   issuerInternal: ""        # override for in-cluster IdP access
 #   clientId: your-client-id
 #   clientSecret: your-client-secret
+#   # Optional, additive: grants on top of the roleMap/userMap/defaultRole role.
+#   # Values are a role name, a permission name, or a list mixing both.
+#   # Config file only (no env var); requires oidc.issuer.
+#   permissions:
+#     global:
+#       groups:
+#         "my-org:engineering": [agent.read, appsource.read, webhook.read, vars.read, token.create]
+#         "my-org:auditors":    [viewer, audit.read]
+#     folders:
+#       team-a:
+#         groups:
+#           "my-org:team-a": developer
+#       team-a/prod:
+#         groups:
+#           "my-org:sre": [job.read, run.approve]
+#       team-b:
+#         groups:
+#           "my-org:team-b": developer
+#         users:
+#           contractor@example.com: [job.read, run.trigger]

@@ -75,6 +75,17 @@ covers it.
 
 **Controller and Database**
 
+- [`token name "env:..." is reserved` / startup warning about impersonating tokens](controller-and-database.md#token-name-env-is-reserved-startup-warning-about-impersonating-tokens)
+- [Controller refuses to start with an `oidc.permissions` error](controller-and-database.md#controller-refuses-to-start-with-an-oidcpermissions-error)
+- [Startup warning: unknown role in `roleMap` is ignored](controller-and-database.md#startup-warning-unknown-role-in-rolemap-is-ignored)
+- [Startup warning: `UNIFIED_TOKEN is set while SSO is configured`](controller-and-database.md#startup-warning-unified_token-is-set-while-sso-is-configured)
+- [Startup warning: role-only personal access tokens bypass folder grants](controller-and-database.md#startup-warning-role-only-personal-access-tokens-bypass-folder-grants)
+- [Startup warning: `oidc.permissions is set but oidc.clientId is not`](controller-and-database.md#startup-warning-oidcpermissions-is-set-but-oidcclientid-is-not)
+- [`403 forbidden: missing permission "..."`](controller-and-database.md#403-forbidden-missing-permission)
+- [A job or run returns 404 although the caller expects to read it](controller-and-database.md#a-job-or-run-returns-404-although-the-caller-expects-to-read-it)
+- [`403 forbidden: no permissions` / `token owner has no permissions`](controller-and-database.md#403-forbidden-no-permissions-token-owner-has-no-permissions)
+- [`403 forbidden: no role` / `forbidden: no role assigned`](controller-and-database.md#403-forbidden-no-role-forbidden-no-role-assigned)
+- [Token creation is refused: `cannot create a token`](controller-and-database.md#token-creation-is-refused-cannot-create-a-token)
 - [Controller logs `dropping log line for sealed run`](controller-and-database.md#controller-logs-dropping-log-line-for-sealed-run)
 - [A run's log shows `[N log line(s) dropped: controller unreachable]`](controller-and-database.md#a-runs-log-shows-n-log-lines-dropped-controller-unreachable)
 - [Controller `/readyz` returns `503 db unavailable`](controller-and-database.md#controller-readyz-returns-503-db-unavailable)
