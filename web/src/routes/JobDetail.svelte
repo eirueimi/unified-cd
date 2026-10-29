@@ -1,7 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import AuthSetup from "../components/AuthSetup.svelte";
-  import { apiFetch, grants, ApiError } from "../lib/api.js";
+  import { apiFetch, grants, ApiError, jobPath } from "../lib/api.js";
   import { allows, requiresText } from "../lib/authz.js";
   import { statusBadge, fmtRelative } from "../lib/utils.js";
 
@@ -46,7 +46,7 @@
   async function loadSched() {
     try {
       sched = await apiFetch(
-        "/api/v1/jobs/" + encodeURIComponent(jobName) + "/schedulability",
+        "/api/v1/jobs/" + jobPath(jobName) + "/schedulability",
       );
     } catch (_) {
       sched = null;
@@ -54,7 +54,7 @@
   }
   async function loadJob() {
     try {
-      job = await apiFetch("/api/v1/jobs/" + encodeURIComponent(jobName));
+      job = await apiFetch("/api/v1/jobs/" + jobPath(jobName));
     } catch (e) {
       job = null; // description just won't show; runs list is primary
       if (e instanceof ApiError && e.status === 404) notFound = true;

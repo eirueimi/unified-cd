@@ -130,6 +130,8 @@ current config, intersected with the PAT's optional ceiling*:
 - **Group changes at the IdP** reach a PAT when its owner next logs in through the browser: every
   browser login refreshes the group snapshot on all PATs of that `sub`, even when the login itself is refused.
   Silent session refresh does not refresh PAT owners.
+- **If OIDC is removed from the config**, every owner PAT fails closed with
+  `forbidden: token owner has no permissions`. Role-only PATs and the break-glass `UNIFIED_TOKEN` keep working.
 - **Role-only PATs** have no owner: every PAT created before this feature, and any PAT created with
   the break-glass token or another role-only PAT. They are evaluated as before, as the global bundle
   of their stored role, and they bypass folder grants until revoked; re-issue them when you introduce folders.

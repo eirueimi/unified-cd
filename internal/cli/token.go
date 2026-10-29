@@ -61,6 +61,15 @@ func newTokenCreateCmd(resolve func() (Config, error), httpClient *http.Client) 
 			if err := json.Unmarshal(b, &result); err != nil {
 				return err
 			}
+			if len(permissions) > 0 && !samePermissionSet(permissions, result.Permissions) {
+				// An older controller ignores "permissions" and mints a token
+				// with the creator's full role. Revoke it; never print the secret.
+				const refusal = "the server does not support --permission (it ignored the requested permissions)"
+				if err := revokeToken(cmd.Context(), httpClient, cfg, result.ID); err != nil {
+					return fmt.Errorf("%s; the token (ID %s) could not be revoked: %v; revoke it manually (unified-cd token delete %s) and upgrade the controller", refusal, result.ID, err, result.ID)
+				}
+				return fmt.Errorf("%s; the token was revoked; upgrade the controller", refusal)
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Token created (shown only once):\n\n  %s\n\nName: %s  ID: %s  Role: %s\n", result.Token, result.Name, result.ID, result.Role)
 			if len(result.Permissions) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "Permissions: %s\n", strings.Join(result.Permissions, ", "))
@@ -147,4 +156,48 @@ func newTokenDeleteCmd(resolve func() (Config, error), httpClient *http.Client) 
 			return nil
 		},
 	}
+}
+
+// samePermissionSet reports whether a and b hold the same permissions,
+// ignoring order and duplicates.
+func samePermissionSet(a, b []string) bool {
+	set := func(l []string) map[string]bool {
+		m := make(map[string]bool, len(l))
+		for _, v := range l {
+			m[v] = true
+		}
+		return m
+	}
+	sa, sb := set(a), set(b)
+	if len(sa) != len(sb) {
+		return false
+	}
+	for k := range sa {
+		if !sb[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// revokeToken deletes the PAT with the given ID.
+func revokeToken(ctx context.Context, httpClient *http.Client, cfg Config, id string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, cfg.Server+"/api/v1/tokens/"+id, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server error: %s", strings.TrimSpace(string(b)))
+	}
+	return nil
 }

@@ -36,8 +36,15 @@ func (s *Server) handleApplySchedule(w http.ResponseWriter, r *http.Request) {
 	old, err := s.store.GetSchedule(r.Context(), sc.Metadata.Name)
 	switch {
 	case err == nil:
-		if old.JobName != sc.Spec.Job && !s.requireJob(w, r, authz.ScheduleConfigure, old.JobName, nil) {
-			return
+		if old.JobName != sc.Spec.Job {
+			if !s.requireJob(w, r, authz.ScheduleConfigure, old.JobName, nil) {
+				return
+			}
+			// The old-target check overwrote the decision slot; decide the new
+			// target again (it already passed) so the audit scope names it.
+			if !s.requireJob(w, r, authz.ScheduleConfigure, sc.Spec.Job, hide) {
+				return
+			}
 		}
 	case errors.Is(err, pgx.ErrNoRows):
 	default:

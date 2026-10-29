@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -231,7 +232,10 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	p, _ := principalFromContext(r.Context())
 	if canManageTokens(p) {
-		if err := s.store.DeletePAT(r.Context(), id); err != nil {
+		if err := s.store.DeletePAT(r.Context(), id); errors.Is(err, store.ErrPATNotFound) {
+			http.Error(w, "token not found", http.StatusNotFound)
+			return
+		} else if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

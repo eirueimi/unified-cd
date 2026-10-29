@@ -88,6 +88,10 @@ write the row's `action` is the permission that was checked (for example `job.re
 is the scope. Denied calls to `GET /api/v1/authz/policy` and `POST /api/v1/authz/explain` are
 recorded this way (`authz.read`); allowed calls are not.
 
+Denied reads are written synchronously, so an authenticated caller who holds no permissions can
+grow `audit_logs` at request rate. Size the database for that and keep
+[retention](#retention) (`--audit-retention-days`) enabled; with `0` the rows are kept forever.
+
 **Secrets are special-cased:** for `secret.set`, only the secret's `name` is ever read out of the
 request body — the `value` field is never inspected, logged, or stored anywhere in the audit
 trail. `secret.delete` uses the URL path parameter, so no body is involved at all.

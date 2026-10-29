@@ -41,7 +41,10 @@ agents are a different kind of principal and are not affected; job code is not c
    roles-claim scope the server advertises.
 4. **Upgrade order:** controller first, then the CLIs, then (once folder grants are configured)
    re-issue team PATs. A new CLI against an old controller still works: the old controller sends no
-   scopes, so the CLI falls back to `openid email profile`.
+   scopes, so the CLI falls back to `openid email profile`. The one exception is
+   `token create --permission`: an old controller ignores the field and would mint a full-role
+   token, so the CLI refuses it, revokes the token at once and exits non-zero with
+   `the server does not support --permission (it ignored the requested permissions); the token was revoked; upgrade the controller`.
 5. Nothing else needs doing. Run the upgrade; read the startup log for the warning in row 10.
 
 ## Separating teams

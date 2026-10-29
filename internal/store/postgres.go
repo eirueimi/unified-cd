@@ -2622,9 +2622,24 @@ func (p *Postgres) ListPATsByOwner(ctx context.Context, ownerSub string) ([]PAT,
 }
 
 // DeletePAT deletes a PAT by ID.
+//
+// An id that is not a valid UUID (SQLSTATE 22P02) yields ErrPATNotFound.
 func (p *Postgres) DeletePAT(ctx context.Context, id string) error {
 	_, err := p.pool.Exec(ctx, `DELETE FROM pats WHERE id = $1`, id)
+	if isInvalidTextRepresentation(err) {
+		return ErrPATNotFound
+	}
 	return err
+}
+
+// ErrPATNotFound reports a PAT id that cannot match any row (not a UUID).
+var ErrPATNotFound = errors.New("token not found")
+
+// isInvalidTextRepresentation reports a Postgres invalid_text_representation
+// error (SQLSTATE 22P02), e.g. a malformed UUID.
+func isInvalidTextRepresentation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "22P02"
 }
 
 // DeleteOwnedPAT deletes a PAT by ID only if it is owned by ownerSub. It
@@ -2632,6 +2647,9 @@ func (p *Postgres) DeletePAT(ctx context.Context, id string) error {
 // match, whatever ownerSub is.
 func (p *Postgres) DeleteOwnedPAT(ctx context.Context, id, ownerSub string) (bool, error) {
 	tag, err := p.pool.Exec(ctx, `DELETE FROM pats WHERE id = $1 AND owner_sub = $2`, id, ownerSub)
+	if isInvalidTextRepresentation(err) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}

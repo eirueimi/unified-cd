@@ -85,3 +85,48 @@ func TestTokenListAndDeleteMethodAndPath(t *testing.T) {
 	assert.Equal(t, "/api/v1/tokens/abc", tr.records[1].path)
 	assert.Equal(t, "Bearer tok", tr.records[1].authorization)
 }
+
+// An old controller ignores "permissions" and mints a full-role token. The CLI
+// must revoke it and never print the secret.
+func TestTokenCreatePermissionIgnoredByServerRevokes(t *testing.T) {
+	tr := &captureTransport{responseFor: func(path string) (int, []byte) {
+		if path == "/api/v1/tokens/42" {
+			return http.StatusNoContent, nil
+		}
+		b, _ := json.Marshal(api.CreatePATResponse{ID: "42", Name: "ci", Token: "exc_secret", Role: "developer"})
+		return http.StatusOK, b
+	}}
+	cmd, out := newTestTokenCmd(tr)
+	cmd.SetArgs([]string{"create", "ci", "--permission", "job.read"})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Equal(t, "the server does not support --permission (it ignored the requested permissions); the token was revoked; upgrade the controller", err.Error())
+	require.Len(t, tr.records, 2)
+	assert.Equal(t, http.MethodDelete, tr.records[1].method)
+	assert.Equal(t, "/api/v1/tokens/42", tr.records[1].path)
+	assert.Equal(t, "Bearer tok", tr.records[1].authorization)
+	assert.NotContains(t, out.String(), "exc_secret")
+	assert.NotContains(t, err.Error(), "exc_secret")
+}
+
+func TestTokenCreatePermissionIgnoredRevokeFails(t *testing.T) {
+	tr := &captureTransport{responseFor: func(path string) (int, []byte) {
+		if path == "/api/v1/tokens/42" {
+			return http.StatusInternalServerError, []byte("boom")
+		}
+		b, _ := json.Marshal(api.CreatePATResponse{ID: "42", Name: "ci", Token: "exc_secret", Role: "developer"})
+		return http.StatusOK, b
+	}}
+	cmd, out := newTestTokenCmd(tr)
+	cmd.SetArgs([]string{"create", "ci", "--permission", "job.read"})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not support --permission")
+	assert.Contains(t, err.Error(), "could not be revoked")
+	assert.Contains(t, err.Error(), "42")
+	assert.Contains(t, err.Error(), "revoke it manually")
+	assert.NotContains(t, out.String(), "exc_secret")
+	assert.NotContains(t, err.Error(), "exc_secret")
+}

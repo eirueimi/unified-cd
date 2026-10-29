@@ -306,3 +306,20 @@ var filterTests = map[string]func(*testing.T){
 	"GET /api/v1/agents/{agentId}/runs": TestFilter_AgentRuns,
 	"GET /api/v1/schedules":             TestFilter_Schedules,
 }
+
+func TestSchedule_RetargetAuditScopeIsNewTarget(t *testing.T) {
+	s, st := bodyServer(t)
+	bodySeedJob(t, st, "team-a/x")
+	bodySeedJob(t, st, "team-b/x")
+	_, err := st.UpsertSchedule(context.Background(), "sch", "0 3 * * *", "team-b/x", nil)
+	require.NoError(t, err)
+
+	rec := bodyPost(t, s, "/api/v1/schedules", bearer("ab@example.com", "g-a", "g-b"),
+		api.ApplyScheduleRequest{YAML: bodyScheduleYAML("sch", "team-a/x")})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	logs, err := st.ListAuditLogs(context.Background(), 10, 0)
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	assert.Equal(t, "team-a/x", logs[0].Scope, "the audit scope must name the new target")
+}

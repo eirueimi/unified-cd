@@ -242,3 +242,21 @@ describe('JobDetail — permission-aware controls', () => {
     expect(await findByText('Job not found')).toBeTruthy();
   });
 });
+
+describe('JobDetail — foldered job API paths', () => {
+  it('keeps the slash literal in the job and schedulability URLs', async () => {
+    const urls = [];
+    global.fetch = vi.fn((url) => {
+      const u = String(url);
+      urls.push(u);
+      if (u.includes('/runs')) return jsonResponse([]);
+      return jsonResponse({});
+    });
+    render(JobDetail, { props: { params: { name: 'team-a%2Fdeploy' } } });
+    await vi.waitFor(() => {
+      expect(urls).toContain('http://localhost:8080/api/v1/jobs/team-a/deploy');
+      expect(urls).toContain('http://localhost:8080/api/v1/jobs/team-a/deploy/schedulability');
+    });
+    expect(urls.some((u) => u.includes('%2F') && u.includes('/api/v1/jobs/'))).toBe(false);
+  });
+});

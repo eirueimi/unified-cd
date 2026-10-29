@@ -338,3 +338,13 @@ func TestWarnRoleOnlyPATs(t *testing.T) {
 	require.NoError(t, WarnRoleOnlyPATs(ctx, pg2, nil, log))
 	assert.Empty(t, buf.String())
 }
+
+// A token id that is not a UUID is a missing token, not a server error.
+func TestTokens_MalformedIDIsNotFound(t *testing.T) {
+	s, _ := newAuthzTestServer(t, tokenLegacy, tokenFolderPolicy)
+	for _, tok := range []string{bearer("adm@example.com", "g-admin"), bearer("dev@example.com", "g-dev")} {
+		rec := doAs(t, s, http.MethodDelete, "/api/v1/tokens/not-a-uuid", tok, nil)
+		assert.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+		assert.Equal(t, "token not found\n", rec.Body.String())
+	}
+}
