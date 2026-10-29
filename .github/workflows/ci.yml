@@ -91,8 +91,15 @@ jobs:
         with:
           cluster_name: ci
       - name: Load test pod image into kind
+        # A pulled ubuntu:22.04 is a multi-platform index whose other
+        # platforms' blobs are not stored locally, so `kind load` (which
+        # imports `docker save` output into containerd) fails with "content
+        # digest ...: not found". Rebuilding it under the same tag yields a
+        # single-platform image that imports cleanly, like ucd-shim-test below.
         run: |
+          set -euo pipefail
           docker pull ubuntu:22.04
+          echo 'FROM ubuntu:22.04' | docker build -t ubuntu:22.04 -
           kind load docker-image ubuntu:22.04 --name ci
       - name: Build and load a real shim image into kind
         # The k8s job's tests build real Pods, and BuildPod (internal/k8sagent/podbuilder.go)
