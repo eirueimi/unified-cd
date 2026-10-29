@@ -3261,6 +3261,64 @@ func (p *Postgres) ListAppSources(ctx context.Context) ([]AppSource, error) {
 	return out, rows.Err()
 }
 
+// SanitizeAppSourceCredentials removes credentials embedded in the repoURL of
+// already-persisted AppSources (see dsl.SanitizeRepoURL) and scrubs URL
+// userinfo from their last_error. It returns the names (never the secrets) of
+// the AppSources whose repoURL was rewritten, so the caller can tell operators
+// to move the credential into a GitCredential. A rewritten AppSource has
+// last_commit reset so it re-syncs on the next poll. Idempotent.
+func (p *Postgres) SanitizeAppSourceCredentials(ctx context.Context) ([]string, error) {
+	list, err := p.ListAppSources(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var rewritten []string
+	for _, a := range list {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(a.Spec, &raw); err != nil {
+			continue
+		}
+		specChanged := false
+		for k, v := range raw {
+			if !strings.EqualFold(k, "repoURL") {
+				continue
+			}
+			var u string
+			if json.Unmarshal(v, &u) != nil {
+				continue
+			}
+			clean, changed := dsl.SanitizeRepoURL(u)
+			if !changed {
+				continue
+			}
+			b, _ := json.Marshal(clean)
+			raw[k] = b
+			specChanged = true
+		}
+		cleanErr := dsl.RedactURLCredentials(a.LastError)
+		if !specChanged && cleanErr == a.LastError {
+			continue
+		}
+		newSpec := a.Spec
+		if specChanged {
+			if newSpec, err = json.Marshal(raw); err != nil {
+				return rewritten, fmt.Errorf("sanitize AppSource %s: %w", a.Name, err)
+			}
+		}
+		if _, err := p.pool.Exec(ctx,
+			`UPDATE app_sources SET spec = $2,
+			   last_commit = CASE WHEN $4 THEN '' ELSE last_commit END,
+			   last_error = $3
+			 WHERE name = $1`, a.Name, newSpec, cleanErr, specChanged); err != nil {
+			return rewritten, fmt.Errorf("sanitize AppSource %s: %w", a.Name, err)
+		}
+		if specChanged {
+			rewritten = append(rewritten, a.Name)
+		}
+	}
+	return rewritten, nil
+}
+
 // DeleteAppSource deletes an AppSource by name.
 func (p *Postgres) DeleteAppSource(ctx context.Context, name string) error {
 	_, err := p.pool.Exec(ctx, `DELETE FROM app_sources WHERE name = $1`, name)

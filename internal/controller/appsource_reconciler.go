@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -21,29 +20,8 @@ import (
 // appSourceReconcilerLockKey is the advisory lock key used by the AppSource Reconciler.
 const appSourceReconcilerLockKey = int64(0x61707073)
 
-// urlUserinfoRe matches the userinfo portion of a URL embedded in a larger string:
-// scheme://[user[:pass]@]host. We only replace the credential (userinfo) part so the
-// rest of the message (scheme, host, path, surrounding text) is preserved for
-// debugging. The host is required to be non-"@" so we don't over-match on stray "@".
-var urlUserinfoRe = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)([^/@\s]+)@`)
-
-// redactURLCredentials strips userinfo (user and optional password) from any URL
-// substrings in s, replacing it with "***" (or "***:***" when a password is present).
-// This prevents credentials embedded in spec.repoURL (e.g.
-// https://user:token@host/repo) from leaking into persisted last_error strings.
-func redactURLCredentials(s string) string {
-	return urlUserinfoRe.ReplaceAllStringFunc(s, func(match string) string {
-		sub := urlUserinfoRe.FindStringSubmatch(match)
-		if sub == nil {
-			return match
-		}
-		scheme, userinfo := sub[1], sub[2]
-		if strings.Contains(userinfo, ":") {
-			return scheme + "***:***@"
-		}
-		return scheme + "***@"
-	})
-}
+// redactURLCredentials strips userinfo from URL substrings in s (see dsl.RedactURLCredentials).
+func redactURLCredentials(s string) string { return dsl.RedactURLCredentials(s) }
 
 // AppSourceFetcher is the interface that abstracts Git operations used by the Reconciler.
 type AppSourceFetcher interface {

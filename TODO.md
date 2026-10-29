@@ -12,13 +12,6 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** `internal/k8sagent/config.go` `defaultSidecarImage()` derives the default from the agent's stamped version (`:vX.Y.Z` for a release, `:latest` otherwise) and it is consumed by the rendered `install.yaml` bundle (built from `manifests/install` and published as a release asset); `internal/k8sagent/config_test.go` `TestDefaultImagesCarryNoDigest` and `TestDefaultImagesResolveThroughVersionedImage` check only its shape, never that the tag is anonymously pullable.
 - **Done when:** A credential-isolated Docker pull of the image derived from `defaultSidecarImage` exits zero within 120 seconds, and a temporary Kubernetes namespace with a ServiceAccount that has no image pull secrets starts that exact image with pull policy `Always` and reaches `Ready` within 120 seconds with no pull waiting reason and an image ID matching the digest the registry reports for that tag; every external Docker and Kubernetes setup, pull, wait, inspection, and namespace-deletion subprocess is bounded, safe-target checks guard cleanup, any cleanup failure fails the experiment and is combined with rather than hidden by any primary failure, and all three documents state the verified version-derived default.
 
-### 33c. Prevent AppSource repository credentials from reaching API and UI output
-
-- **Status:** Partial
-- **Impact:** Credentials embedded in an AppSource repository URL can be stored and returned by the API, then displayed in the Web UI or other exported output.
-- **Evidence:** `internal/controller/appsource_reconciler.go` redacts credentials in reconciliation errors, but `internal/dsl/gitref.go` `ValidateGitRepoURL` accepts URL userinfo, `internal/controller/api_appsources.go` returns `spec.repoURL`, and `web/src/routes/AppSourceList.svelte` renders the returned URL.
-- **Done when:** New AppSource apply rejects or removes URL userinfo, list, get, UI, and export output never expose credentials, already-persisted credential-bearing URLs are migrated or safely redacted, `GitCredential` authentication still works, and regression coverage exercises every input and output path.
-
 ## High
 
 ### 9c. Eliminate Windows cancellation escape paths for child processes

@@ -5,6 +5,11 @@
   import { allows } from '../lib/authz.js';
   import { fmtRelative } from '../lib/utils.js';
 
+  // The API never returns credentials, but strip any userinfo defensively so a
+  // credential-bearing URL (or error text) can never be rendered.
+  const safeUrl = (u) => (u || '').replace(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/@\s]*@/, '$1');
+  const safeText = (t) => (t || '').replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/@\s]+@/g, '$1***@');
+
   let sources = [], loading = true, error = '';
   let syncing = {};
   // Sync is a global-only permission: hidden, not disabled, without it.
@@ -61,12 +66,12 @@
       {#each sources as s (s.name)}
         <tr>
           <td>{s.name}</td>
-          <td><a href={s.repoURL} target="_blank" rel="noreferrer">{s.repoURL.replace(/^https?:\/\//, '')}</a></td>
+          <td><a href={safeUrl(s.repoURL)} target="_blank" rel="noreferrer">{safeUrl(s.repoURL).replace(/^https?:\/\//, '')}</a></td>
           <td><code>{s.targetRevision}</code></td>
           <td class="meta">{s.path || '/'}</td>
           <td>
             {#if s.syncStatus === 'Failed'}
-              <span class="badge badge-failed" title={s.lastError}>Failed</span>
+              <span class="badge badge-failed" title={safeText(s.lastError)}>Failed</span>
             {:else if s.syncStatus === 'Syncing' || syncing[s.name]}
               <span class="badge badge-running">Syncing…</span>
             {:else if s.syncStatus === 'Synced'}
