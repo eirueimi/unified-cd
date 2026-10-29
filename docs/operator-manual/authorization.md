@@ -31,7 +31,7 @@ Secret *values* are never returned by the API (names only). Artifact download re
 
 Each caller gets a role:
 
-- **PAT**: stored per-token (`role` column). Created via the API, clamped to ≤ the creator's role. The bootstrap `UNIFIED_TOKEN` PAT is always **admin** (break-glass).
+- **PAT**: stored per-token (`role` column). Created via the API, clamped to ≤ the creator's role. The bootstrap `UNIFIED_TOKEN` PAT is always **admin** (break-glass); it is identified by its token hash, not its name (see [Break-glass](#break-glass)).
 - **OIDC (SSO login / id_token)**: resolved from token claims via configuration (below).
 - **Agent principal**: separate from human roles. Every agent authenticates
   with a short-lived per-agent access credential (`uca_...`) obtained via
@@ -187,7 +187,11 @@ oidc:
 
 ## Break-glass
 
-The static `UNIFIED_TOKEN` PAT is always **admin**. Treat it as emergency-only: store it securely, do not use it for daily work, rotate it periodically. It is the way back in if the IdP is unavailable or misconfigured.
+The static `UNIFIED_TOKEN` PAT is always **admin**. The controller recognizes it by comparing the presented token's hash with the hash of the token it was started with (constant-time) — **not** by the PAT's name. A PAT that merely has the name `env:UNIFIED_TOKEN` is an ordinary PAT with its own stored role. With no `UNIFIED_TOKEN` configured there is no break-glass at all.
+
+The `env:` name prefix is reserved: `token create` (and `POST /api/v1/tokens`) rejects any name equal to `env:UNIFIED_TOKEN` or starting with `env:` with `400 token name "..." is reserved`. At startup the controller also deletes any pre-existing PAT named `env:UNIFIED_TOKEN` whose hash is not the configured token's, and logs a warning with the count, ids and roles.
+
+Treat it as emergency-only: store it securely, do not use it for daily work, rotate it periodically. It is the way back in if the IdP is unavailable or misconfigured.
 
 ## Migration / backward compatibility
 

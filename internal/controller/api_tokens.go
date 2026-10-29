@@ -4,7 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -32,6 +34,11 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Name == "" {
 		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == BootstrapPATName || strings.HasPrefix(req.Name, "env:") {
+		http.Error(w, fmt.Sprintf("token name %q is reserved", req.Name), http.StatusBadRequest)
 		return
 	}
 

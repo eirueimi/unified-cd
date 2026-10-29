@@ -124,7 +124,11 @@ not belong on `agentAuth`.
 
 `UNIFIED_TOKEN` is synced at startup as a PAT under the fixed name
 `env:UNIFIED_TOKEN` (`BootstrapPATName`), so changing the value updates the
-hash rather than accumulating rows.
+hash rather than accumulating rows. The name is **not** what grants break-glass:
+`ServerAuth` compares the presented token's hash with `HashToken(Config.Token)`
+(`Server.isBootstrapHash`, constant-time), and `handleCreateToken` rejects the
+reserved `env:` prefix. At startup `SyncBootstrapPAT` deletes, in one
+transaction, any other row with the reserved name and upserts the real one.
 
 ## Adding an endpoint
 
