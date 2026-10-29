@@ -102,6 +102,36 @@ type PAT struct {
 	CreatedAt  time.Time
 	ExpiresAt  *time.Time
 	LastUsedAt *time.Time
+	// Owner is nil for a role-only PAT (owner_sub IS NULL).
+	Owner *PATOwner
+	// Permissions is the PAT's permission ceiling list; nil means NULL (the
+	// role column is the ceiling).
+	Permissions []string
+}
+
+// PATOwner is the OIDC identity a PAT was minted by, with the email and
+// claim values observed at creation (refreshed on later logins).
+type PATOwner struct {
+	Sub    string
+	Email  string
+	Claims []string
+}
+
+// NewOwnedPAT is the input of CreateOwnedPAT. Role may be empty when
+// Permissions is set. A nil Owner.Claims is stored as the empty array.
+type NewOwnedPAT struct {
+	Name, TokenHash, Role string
+	Owner                 PATOwner
+	Permissions           []string
+	ExpiresAt             *time.Time
+}
+
+// AuditEntry is one audit_logs row. Permission, Scope and GrantedBy describe
+// the authorization decision and are stored as NULL when empty.
+type AuditEntry struct {
+	Actor, Method, Path, Action, Resource string
+	Status                                int
+	Permission, Scope, GrantedBy          string
 }
 
 // WebhookReceiver holds the configuration of a webhook receiver.
@@ -216,6 +246,8 @@ type Store interface {
 	// landed yet).
 	ListReconcilableRunIDsByAgent(ctx context.Context, agentID string, grace time.Duration) ([]string, error)
 	GetRun(ctx context.Context, id string) (*api.Run, error)
+	// RunJobName returns the job a run belongs to without requiring the job row; a malformed run ID is found=false, not an error.
+	RunJobName(ctx context.Context, runID string) (job string, found bool, err error)
 	GetRunSpec(ctx context.Context, id string) ([]byte, error)
 	ListRunsByJob(ctx context.Context, jobName string, limit int) ([]api.Run, error)
 	ListActiveRuns(ctx context.Context) ([]api.Run, error)
@@ -472,6 +504,16 @@ type Store interface {
 	GetPATByHash(ctx context.Context, tokenHash string) (*PAT, error)
 	ListPATs(ctx context.Context) ([]PAT, error)
 	DeletePAT(ctx context.Context, id string) error
+	// CreateOwnedPAT creates a PAT bound to the OIDC identity that minted it.
+	CreateOwnedPAT(ctx context.Context, in NewOwnedPAT) (*PAT, error)
+	// ListPATsByOwner returns the PATs owned by ownerSub, oldest first.
+	ListPATsByOwner(ctx context.Context, ownerSub string) ([]PAT, error)
+	// DeleteOwnedPAT deletes a PAT only if ownerSub owns it; reports whether a row was deleted.
+	DeleteOwnedPAT(ctx context.Context, id, ownerSub string) (bool, error)
+	// UpdatePATOwnerSnapshot refreshes email and claims on every PAT of ownerSub and returns the row count.
+	UpdatePATOwnerSnapshot(ctx context.Context, ownerSub, email string, claims []string) (int64, error)
+	// CountRoleOnlyPATsAboveViewer counts role-only PATs whose role is not viewer, excluding the row named excludeName.
+	CountRoleOnlyPATsAboveViewer(ctx context.Context, excludeName string) (int, error)
 	TouchPAT(ctx context.Context, id string) error
 	// UpsertBootstrapPAT creates or updates the hash of the single PAT row identified by name.
 	// Used to sync UNIFIED_TOKEN as a PAT on each startup (replaces the hash when the value changes, never creates duplicate rows).
@@ -509,9 +551,10 @@ type Store interface {
 	DeleteExpiredOIDCStates(ctx context.Context) error
 
 	// Sessions
-	CreateSession(ctx context.Context, tokenHash, sub, email, role string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error)
+	CreateSession(ctx context.Context, tokenHash, sub, email, role string, claims []string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error)
 	GetSessionByHash(ctx context.Context, tokenHash string) (*Session, error)
 	UpdateSessionExpiry(ctx context.Context, id string, refreshDEK, refreshCT []byte, expiresAt time.Time) error
+	UpdateSessionClaims(ctx context.Context, id string, claims []string) error
 	DeleteSession(ctx context.Context, id string) error
 	TouchSession(ctx context.Context, id string) error
 
@@ -568,7 +611,7 @@ type Store interface {
 
 	// Audit
 	// InsertAuditLog records a single state-changing API operation.
-	InsertAuditLog(ctx context.Context, actor, method, path, action, resource string, status int) error
+	InsertAuditLog(ctx context.Context, e AuditEntry) error
 	// ListAuditLogs returns audit log entries newest-first, with limit/offset pagination.
 	ListAuditLogs(ctx context.Context, limit, offset int) ([]api.AuditLog, error)
 	// DeleteAuditLogsOlderThan deletes audit log rows with occurred_at before the given time.
@@ -593,11 +636,13 @@ type OIDCState struct {
 
 // Session holds a browser session.
 type Session struct {
-	ID              string
-	TokenHash       string
-	Sub             string
-	Email           string
-	Role            string
+	ID        string
+	TokenHash string
+	Sub       string
+	Email     string
+	Role      string
+	// Claims is the OIDC claim snapshot taken at login; nil means NULL (a pre-upgrade, role-only session).
+	Claims          []string
 	RefreshTokenDEK []byte // envelope-encrypted OIDC refresh token
 	RefreshTokenCT  []byte
 	ExpiresAt       time.Time

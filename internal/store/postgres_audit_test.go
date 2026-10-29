@@ -13,8 +13,8 @@ func TestPostgres_Audit_InsertAndList(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, pg.InsertAuditLog(ctx, "alice", "POST", "/api/v1/secrets", "secret.set", "db-password", 204))
-	require.NoError(t, pg.InsertAuditLog(ctx, "bob", "DELETE", "/api/v1/jobs/foo", "job.delete", "foo", 204))
+	require.NoError(t, pg.InsertAuditLog(ctx, AuditEntry{Actor: "alice", Method: "POST", Path: "/api/v1/secrets", Action: "secret.set", Resource: "db-password", Status: 204}))
+	require.NoError(t, pg.InsertAuditLog(ctx, AuditEntry{Actor: "bob", Method: "DELETE", Path: "/api/v1/jobs/foo", Action: "job.delete", Resource: "foo", Status: 204}))
 
 	list, err := pg.ListAuditLogs(ctx, 100, 0)
 	require.NoError(t, err)
@@ -36,7 +36,7 @@ func TestPostgres_Audit_ListPagination(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 5; i++ {
-		require.NoError(t, pg.InsertAuditLog(ctx, "alice", "POST", "/api/v1/jobs", "job.apply", "j", 200))
+		require.NoError(t, pg.InsertAuditLog(ctx, AuditEntry{Actor: "alice", Method: "POST", Path: "/api/v1/jobs", Action: "job.apply", Resource: "j", Status: 200}))
 	}
 
 	list, err := pg.ListAuditLogs(ctx, 2, 0)
@@ -54,7 +54,7 @@ func TestPostgres_Audit_DeleteOlderThan(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, pg.InsertAuditLog(ctx, "alice", "POST", "/api/v1/jobs", "job.apply", "j", 200))
+	require.NoError(t, pg.InsertAuditLog(ctx, AuditEntry{Actor: "alice", Method: "POST", Path: "/api/v1/jobs", Action: "job.apply", Resource: "j", Status: 200}))
 
 	// Nothing is older than now-1h yet.
 	n, err := pg.DeleteAuditLogsOlderThan(ctx, time.Now().Add(-time.Hour))

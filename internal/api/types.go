@@ -384,17 +384,19 @@ type AgentFetchSecretsResponse struct {
 
 // CreatePATRequest is the request for creating a PAT.
 type CreatePATRequest struct {
-	Name      string `json:"name"`
-	ExpiresIn string `json:"expiresIn,omitempty"`
-	Role      string `json:"role,omitempty"`
+	Name        string   `json:"name"`
+	ExpiresIn   string   `json:"expiresIn,omitempty"`
+	Role        string   `json:"role,omitempty"`
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 // CreatePATResponse is the PAT creation response (the token is shown only once).
 type CreatePATResponse struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Role  string `json:"role"`
-	Token string `json:"token"` // returned only at creation time
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Role        string   `json:"role"`
+	Token       string   `json:"token"` // returned only at creation time
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 // PATMeta is the metadata for a PAT (does not include the token hash).
@@ -405,6 +407,9 @@ type PATMeta struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+	// Owner is the owner's email, else its sub; empty for a role-only token.
+	Owner       string   `json:"owner,omitempty"`
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 // ---- webhook ----
@@ -616,6 +621,9 @@ type AuditLog struct {
 	Action     string    `json:"action"`
 	Resource   string    `json:"resource,omitempty"`
 	Status     int       `json:"status"`
+	Permission string    `json:"permission,omitempty"`
+	Scope      string    `json:"scope,omitempty"`
+	GrantedBy  string    `json:"grantedBy,omitempty"`
 }
 
 // ---- appsource ----

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -174,7 +175,7 @@ func classifyAudit(method, pattern string) (action string, ok bool) {
 // silently audited (or silently missed). It must run inside ServerAuth so
 // principalFromContext is populated.
 func auditLogMiddleware(st interface {
-	InsertAuditLog(ctx context.Context, actor, method, path, action, resource string, status int) error
+	InsertAuditLog(ctx context.Context, e store.AuditEntry) error
 }) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -228,7 +229,7 @@ func auditLogMiddleware(st interface {
 			// can rely on the audit row already being present. This mirrors
 			// TouchPAT/TouchSession, which fire-and-forget only for non-critical
 			// bookkeeping; the audit trail is treated as part of the request.
-			if err := st.InsertAuditLog(r.Context(), actor, r.Method, r.URL.Path, action, resource, rec.Status()); err != nil {
+			if err := st.InsertAuditLog(r.Context(), store.AuditEntry{Actor: actor, Method: r.Method, Path: r.URL.Path, Action: action, Resource: resource, Status: rec.Status()}); err != nil {
 				slog.Warn("audit log insert failed", "error", err, "action", action)
 			}
 		})

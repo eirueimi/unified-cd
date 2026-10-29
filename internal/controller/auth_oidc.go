@@ -270,7 +270,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createSessionWithRefreshToken(ctx context.Context, tokenHash, sub, email, role, refreshToken string, expiresAt time.Time) (*store.Session, error) {
 	// Empty slices, not nil: pgx encodes a nil []byte as SQL NULL, and both
 	// refresh-token columns are NOT NULL. `''::bytea` is a valid non-null value.
-	sess, err := s.store.CreateSession(ctx, tokenHash, sub, email, role, []byte{}, []byte{}, expiresAt)
+	sess, err := s.store.CreateSession(ctx, tokenHash, sub, email, role, nil, []byte{}, []byte{}, expiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}

@@ -8,14 +8,15 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestAPI_ListAuditLogs_AdminOnly(t *testing.T) {
 	s, pg := newTestServer(t)
-	require.NoError(t, pg.InsertAuditLog(context.Background(), "alice", "POST", "/api/v1/jobs", "job.apply", "j1", 200))
-	require.NoError(t, pg.InsertAuditLog(context.Background(), "bob", "DELETE", "/api/v1/jobs/j1", "job.delete", "j1", 204))
+	require.NoError(t, pg.InsertAuditLog(context.Background(), store.AuditEntry{Actor: "alice", Method: "POST", Path: "/api/v1/jobs", Action: "job.apply", Resource: "j1", Status: 200}))
+	require.NoError(t, pg.InsertAuditLog(context.Background(), store.AuditEntry{Actor: "bob", Method: "DELETE", Path: "/api/v1/jobs/j1", Action: "job.delete", Resource: "j1", Status: 204}))
 
 	// admin (bootstrap token) -> 200 with entries, newest first.
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/audit", nil)
@@ -46,7 +47,7 @@ func TestAPI_ListAuditLogs_ForbiddenForNonAdmin(t *testing.T) {
 func TestAPI_ListAuditLogs_Pagination(t *testing.T) {
 	s, pg := newTestServer(t)
 	for i := 0; i < 5; i++ {
-		require.NoError(t, pg.InsertAuditLog(context.Background(), "alice", "POST", "/api/v1/jobs", "job.apply", "j", 200))
+		require.NoError(t, pg.InsertAuditLog(context.Background(), store.AuditEntry{Actor: "alice", Method: "POST", Path: "/api/v1/jobs", Action: "job.apply", Resource: "j", Status: 200}))
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/audit?limit=2&offset=1", nil)
@@ -63,7 +64,7 @@ func TestAPI_ListAuditLogs_Pagination(t *testing.T) {
 func TestAPI_ListAuditLogs_DefaultLimit(t *testing.T) {
 	s, pg := newTestServer(t)
 	for i := 0; i < 3; i++ {
-		require.NoError(t, pg.InsertAuditLog(context.Background(), "alice", "POST", "/api/v1/jobs", "job.apply", "j", 200))
+		require.NoError(t, pg.InsertAuditLog(context.Background(), store.AuditEntry{Actor: "alice", Method: "POST", Path: "/api/v1/jobs", Action: "job.apply", Resource: "j", Status: 200}))
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/audit", nil)
