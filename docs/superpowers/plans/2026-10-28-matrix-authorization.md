@@ -36,7 +36,7 @@
 - Commit template (every commit step uses it; do not add `-s`, the message must end with exactly these two lines):
 
 ```bash
-git -c user.name=eirueimi -c user.email="128969149+eirueimi@users.noreply.github.com" commit -F - <<'EOF'
+git -c user.name="<name given in the dispatch>" -c user.email="<email given in the dispatch>" commit -F - <<'EOF'
 <subject line given in the step>
 
 <one short paragraph: what and why>
