@@ -127,8 +127,8 @@ not belong on `agentAuth`.
 hash rather than accumulating rows. The name is **not** what grants break-glass:
 `ServerAuth` compares the presented token's hash with `HashToken(Config.Token)`
 (`Server.isBootstrapHash`, constant-time), and `handleCreateToken` rejects the
-reserved `env:` prefix. At startup `PurgeImpersonatedBootstrapPATs` deletes any
-other row with the reserved name before `UpsertBootstrapPAT` runs.
+reserved `env:` prefix. At startup `SyncBootstrapPAT` deletes, in one
+transaction, any other row with the reserved name and upserts the real one.
 
 ## Adding an endpoint
 

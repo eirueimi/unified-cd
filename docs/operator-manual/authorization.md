@@ -189,7 +189,7 @@ oidc:
 
 The static `UNIFIED_TOKEN` PAT is always **admin**. The controller recognizes it by comparing the presented token's hash with the hash of the token it was started with (constant-time) — **not** by the PAT's name. A PAT that merely has the name `env:UNIFIED_TOKEN` is an ordinary PAT with its own stored role. With no `UNIFIED_TOKEN` configured there is no break-glass at all.
 
-The `env:` name prefix is reserved: `token create` (and `POST /api/v1/tokens`) rejects any name equal to `env:UNIFIED_TOKEN` or starting with `env:` with `400 token name "..." is reserved`. At startup the controller also deletes any pre-existing PAT named `env:UNIFIED_TOKEN` whose hash is not the configured token's, and logs a warning with the count.
+The `env:` name prefix is reserved: `token create` (and `POST /api/v1/tokens`) rejects any name equal to `env:UNIFIED_TOKEN` or starting with `env:` with `400 token name "..." is reserved`. At startup the controller also deletes any pre-existing PAT named `env:UNIFIED_TOKEN` whose hash is not the configured token's, and logs a warning with the count, ids and roles.
 
 Treat it as emergency-only: store it securely, do not use it for daily work, rotate it periodically. It is the way back in if the IdP is unavailable or misconfigured.
 

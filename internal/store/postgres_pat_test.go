@@ -91,7 +91,7 @@ func TestPostgres_PATListAndDelete(t *testing.T) {
 	assert.Len(t, list2, 1)
 }
 
-func TestPostgres_PurgeImpersonatedBootstrapPATs(t *testing.T) {
+func TestPostgres_SyncBootstrapPAT(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 	const name = "env:UNIFIED_TOKEN"
@@ -104,11 +104,11 @@ func TestPostgres_PurgeImpersonatedBootstrapPATs(t *testing.T) {
 	_, err = pg.CreatePAT(ctx, "other", tokenHash("other"), "developer", nil)
 	require.NoError(t, err)
 
-	n, err := pg.PurgeImpersonatedBootstrapPATs(ctx, name, real)
+	removed, err := pg.SyncBootstrapPAT(ctx, name, real)
 	require.NoError(t, err)
-	assert.EqualValues(t, 2, n)
-	_, err = pg.UpsertBootstrapPAT(ctx, name, real)
-	require.NoError(t, err)
+	require.Len(t, removed, 2)
+	assert.ElementsMatch(t, []string{"developer", "admin"}, []string{removed[0].Role, removed[1].Role})
+	assert.NotEmpty(t, removed[0].ID)
 
 	pats, err := pg.ListPATs(ctx)
 	require.NoError(t, err)
@@ -130,7 +130,7 @@ func TestPostgres_PurgeImpersonatedBootstrapPATs(t *testing.T) {
 	require.Error(t, err)
 
 	// Idempotent: nothing left to purge, the real row survives.
-	n, err = pg.PurgeImpersonatedBootstrapPATs(ctx, name, real)
+	removed, err = pg.SyncBootstrapPAT(ctx, name, real)
 	require.NoError(t, err)
-	assert.EqualValues(t, 0, n)
+	assert.Empty(t, removed)
 }

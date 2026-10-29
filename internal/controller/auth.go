@@ -74,8 +74,9 @@ func (s *Server) isBootstrapHash(hash string) bool {
 
 // ServerAuth returns an authentication middleware that tries three methods in order:
 // PAT, OIDC id_token, and session Cookie. UNIFIED_TOKEN (the static token) is synced to
-// the DB as a PAT at startup, so no dedicated comparison branch is needed here
-// (it is not special-cased so that deleting it from the UI revokes it immediately).
+// the DB as a PAT at startup and authenticates through the normal PAT lookup (so deleting
+// it from the UI revokes it immediately). Break-glass admin is granted only when the PAT's
+// hash equals the hash of the configured token (isBootstrapHash), never by PAT name.
 func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
