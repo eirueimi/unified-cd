@@ -42,7 +42,8 @@ func TestValidateFailures(t *testing.T) {
 		{
 			name: "agent server not https",
 			set:  []string{"agent.server=http://cd.example.com"},
-			want: "agent.server must be an https:// URL",
+			// Rejected by the values schema pattern before the template check runs.
+			want: "agent.server: Does not match pattern '^$|^https://'",
 		},
 		{
 			name: "ingress with trial credentials",

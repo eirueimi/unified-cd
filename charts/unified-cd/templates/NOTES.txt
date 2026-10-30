@@ -1,0 +1,47 @@
+{{- if include "unified-cd.trialSecret" . }}
+*****************************************************************
+  TRIAL ONLY - do not expose this installation
+*****************************************************************
+unified-cd was installed with the bundled PostgreSQL and Garage and fixed
+development credentials. Use it to try the product, not to run real work.
+
+Reach the controller from your machine:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/unified-cd-controller 8080:{{ .Values.controller.service.port }}
+
+Then open http://localhost:8080 and sign in with the admin token:
+
+  dev-token-change-me
+
+To move to production, set bundledStores.enabled=false, create your own
+Secret and pass controller.existingSecret (see the chart README), put HTTPS in
+front of the controller, and give the controller a KEK Secret
+({{ .Values.controller.kek.secretName }}).
+{{- else if .Values.controller.enabled }}
+unified-cd controller installed in namespace {{ .Release.Namespace }}.
+{{ if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  {{ if $.Values.ingress.tls }}https{{ else }}http{{ end }}://{{ .host }}/
+{{- end }}
+{{- else }}
+No Ingress is configured. Reach the controller with:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/unified-cd-controller 8080:{{ .Values.controller.service.port }}
+
+and open http://localhost:8080. Put HTTPS in front before exposing it
+(set ingress.enabled=true or use your own TLS terminator).
+{{- end }}
+
+The controller expects these Secrets in namespace {{ .Release.Namespace }}:
+  {{ include "unified-cd.controllerSecretName" . }}  keys UNIFIED_DB_DSN, UNIFIED_TOKEN, UNIFIED_S3_ENDPOINT,
+    UNIFIED_S3_BUCKET, UNIFIED_S3_KEY, UNIFIED_S3_SECRET
+{{- if include "unified-cd.kekGenerate" . }}
+  {{ .Values.controller.kek.secretName }}  key kek (generated once by the kek-init Job)
+{{- else }}
+  {{ .Values.controller.kek.secretName }}  key kek
+    (create it with: unified-cli keygen --out ./kek &&
+     kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.controller.kek.secretName }} --from-file=kek=./kek)
+{{- end }}
+{{- else }}
+unified-cd Kubernetes agent installed in namespace {{ .Release.Namespace }}, connecting to {{ .Values.agent.server }}.
+{{- end }}

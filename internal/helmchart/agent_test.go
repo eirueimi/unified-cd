@@ -105,7 +105,8 @@ func TestAgentOnlyRequiresHTTPS(t *testing.T) {
 
 	_, stderr, err := RenderErr("unified-cd", "agent.server=http://cd.example.com")
 	require.Error(t, err)
-	assert.Contains(t, stderr, "agent.server must be an https:// URL")
+	// The values schema (pattern ^$|^https://) rejects this before the template check runs.
+	assert.Contains(t, stderr, "agent.server: Does not match pattern '^$|^https://'")
 }
 
 func TestJobNamespaceMovesTogether(t *testing.T) {

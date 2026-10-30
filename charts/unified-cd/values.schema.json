@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "unified-cd chart values",
+  "type": "object",
+  "properties": {
+    "controller": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {"type": "string"},
+            "tag": {"type": "string"},
+            "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+          }
+        },
+        "replicas": {"type": "integer", "minimum": 0},
+        "existingSecret": {"type": "string"},
+        "kek": {
+          "type": "object",
+          "properties": {
+            "secretName": {"type": "string", "minLength": 1},
+            "generate": {"type": ["boolean", "null"]},
+            "job": {
+              "type": "object",
+              "properties": {
+                "helmHook": {"type": "boolean"},
+                "image": {"type": "string"}
+              }
+            }
+          }
+        },
+        "config": {"type": "object"},
+        "service": {
+          "type": "object",
+          "properties": {
+            "type": {"type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"]},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+          }
+        },
+        "resources": {"type": "object"},
+        "nodeSelector": {"type": "object"},
+        "tolerations": {"type": "array"},
+        "affinity": {"type": "object"},
+        "podAnnotations": {"type": "object"}
+      }
+    },
+    "agent": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {"type": "string"},
+            "tag": {"type": "string"},
+            "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+          }
+        },
+        "replicas": {"type": "integer", "minimum": 0},
+        "server": {"type": "string", "pattern": "^$|^https://"},
+        "config": {"type": "object"},
+        "resources": {"type": "object"},
+        "nodeSelector": {"type": "object"},
+        "tolerations": {"type": "array"},
+        "affinity": {"type": "object"},
+        "podAnnotations": {"type": "object"}
+      }
+    },
+    "jobNamespace": {
+      "type": "object",
+      "properties": {
+        "create": {"type": "boolean"},
+        "name": {"type": "string", "minLength": 1},
+        "podSecurity": {
+          "type": "object",
+          "properties": {
+            "enforce": {"type": "string", "enum": ["privileged", "baseline", "restricted"]},
+            "audit": {"type": "string", "enum": ["privileged", "baseline", "restricted"]}
+          }
+        }
+      }
+    },
+    "bundledStores": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "postgres": {
+          "type": "object",
+          "properties": {
+            "image": {"type": "string"},
+            "storage": {"type": "string"},
+            "storageClassName": {"type": "string"}
+          }
+        },
+        "garage": {
+          "type": "object",
+          "properties": {
+            "image": {"type": "string"},
+            "storage": {"type": "string"},
+            "storageClassName": {"type": "string"}
+          }
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "className": {"type": "string"},
+        "annotations": {"type": "object"},
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["host"],
+            "properties": {
+              "host": {"type": "string"},
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {"type": "string"},
+                    "pathType": {"type": "string", "enum": ["Exact", "Prefix", "ImplementationSpecific"]}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "secretName": {"type": "string"},
+              "hosts": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    }
+  }
+}
