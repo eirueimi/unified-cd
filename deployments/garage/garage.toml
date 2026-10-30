@@ -1,4 +1,4 @@
-# Keep in sync with manifests/base/garage/garage.toml (duplicated because kustomize's LoadRestrictionsRootOnly forbids referencing a file outside the kustomization directory tree).
+# Keep in sync with the garage.toml in charts/unified-cd/templates/stores/garage.yaml (internal/helmchart tests compare the two).
 metadata_dir = "/data/meta"
 data_dir = "/data/data"
 db_engine = "sqlite"

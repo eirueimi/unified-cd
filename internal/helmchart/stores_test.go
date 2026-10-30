@@ -11,26 +11,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func baseManifestPath(rel ...string) string {
-	return filepath.Join(append([]string{ChartDir(), "..", "..", "manifests", "base"}, rel...)...)
-}
-
-// baseObject loads one manifest from manifests/base and normalises it for
-// comparison with the chart: the namespace is dropped, because the chart uses
-// the release namespace.
-func baseObject(t *testing.T, rel string) map[string]any {
-	t.Helper()
-	raw, err := os.ReadFile(baseManifestPath(rel))
-	require.NoError(t, err)
-	var m map[string]any
-	require.NoError(t, yaml.Unmarshal(raw, &m))
-	delete(dig(t, m, "metadata").(map[string]any), "namespace")
-	return m
-}
-
-// chartObject returns the rendered object normalised the same way, with the
-// standard labels and the checksum annotation removed so that only the content
-// the base manifests define is compared.
+// chartObject returns the rendered object without its namespace, standard
+// labels and checksum annotation, so that only the store content itself is
+// compared.
 func chartObject(t *testing.T, objs []Object, kind, name string) map[string]any {
 	t.Helper()
 	o := Find(objs, kind, name)
@@ -111,30 +94,195 @@ func TestTrialFollowsNamespace(t *testing.T) {
 	}
 }
 
-func TestStoresMatchBase(t *testing.T) {
+var storeObjects = []struct {
+	kind, name, want string
+}{
+	{"Deployment", "postgres", `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_USER
+              value: unified
+            - name: POSTGRES_PASSWORD
+              value: unified
+            - name: POSTGRES_DB
+              value: unified
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "unified"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "unified"]
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+`},
+	{"Service", "postgres", `
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+`},
+	{"PersistentVolumeClaim", "postgres-data", `
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+`},
+	{"Deployment", "garage", `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage
+  labels:
+    app: garage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: garage
+  template:
+    metadata:
+      labels:
+        app: garage
+    spec:
+      containers:
+        - name: garage
+          image: dxflrs/garage:v2.3.0
+          command: ["/garage", "server", "--single-node", "--default-bucket"]
+          env:
+            - name: GARAGE_RPC_SECRET
+              value: "0000000000000000000000000000000000000000000000000000000000000000"
+            - name: GARAGE_DEFAULT_ACCESS_KEY
+              value: garageadmin
+            - name: GARAGE_DEFAULT_SECRET_KEY
+              value: garageadmin12345
+            - name: GARAGE_DEFAULT_BUCKET
+              value: unified-cd-logs
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          ports:
+            - containerPort: 3900
+              name: api
+            - containerPort: 3901
+              name: rpc
+            - containerPort: 3903
+              name: admin
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/garage.toml
+              subPath: garage.toml
+          readinessProbe:
+            exec:
+              command: ["/garage", "status"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["/garage", "status"]
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: garage-data
+        - name: config
+          configMap:
+            name: garage-config
+`},
+	{"Service", "garage", `
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage
+spec:
+  selector:
+    app: garage
+  ports:
+    - name: api
+      port: 3900
+      targetPort: 3900
+`},
+	{"PersistentVolumeClaim", "garage-data", `
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: garage-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+`},
+}
+
+func TestStoresRenderExpectedObjects(t *testing.T) {
 	objs := Render(t, "unified-cd")
 	// chartObject normalises the rendered objects in place, so read the
 	// checksum first.
 	assert.NotEmpty(t, podChecksum(t, objs, "garage"))
-	for _, c := range []struct{ kind, name, base string }{
-		{"Deployment", "postgres", "postgres/deployment.yaml"},
-		{"Service", "postgres", "postgres/service.yaml"},
-		{"PersistentVolumeClaim", "postgres-data", "postgres/pvc.yaml"},
-		{"Deployment", "garage", "garage/deployment.yaml"},
-		{"Service", "garage", "garage/service.yaml"},
-		{"PersistentVolumeClaim", "garage-data", "garage/pvc.yaml"},
-	} {
+	for _, c := range storeObjects {
 		t.Run(c.kind+"/"+c.name, func(t *testing.T) {
-			assert.Equal(t, baseObject(t, c.base), chartObject(t, objs, c.kind, c.name))
+			var want map[string]any
+			require.NoError(t, yaml.Unmarshal([]byte(c.want), &want))
+			assert.Equal(t, want, chartObject(t, objs, c.kind, c.name))
 		})
 	}
 
-	// The garage ConfigMap has a fixed name here (Kustomize hashes it) and
-	// carries the same configuration as the base garage.toml.
+	// The garage ConfigMap carries the same configuration as the Compose
+	// stack's garage.toml, and the Deployment mounts it under that fixed name.
 	cm := map[string]any(Find(objs, "ConfigMap", "garage-config"))
 	require.NotNil(t, cm)
 	got, _ := dig(t, cm, "data", "garage.toml").(string)
-	raw, err := os.ReadFile(baseManifestPath("garage", "garage.toml"))
+	raw, err := os.ReadFile(filepath.Join(ChartDir(), "..", "..", "deployments", "garage", "garage.toml"))
 	require.NoError(t, err)
 	assert.Equal(t, stripComments(string(raw)), stripComments(got))
 	assert.Equal(t, "garage-config", dig(t, chartObject(t, objs, "Deployment", "garage"),

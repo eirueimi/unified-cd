@@ -1,0 +1,9 @@
+# Values for the agent-only.yaml release bundle (k8s-agent against an external controller).
+# Rendered by scripts/build-manifests.sh; not meant for `helm install`.
+controller:
+  enabled: false
+bundledStores:
+  enabled: false
+agent:
+  # Deliberately invalid: operators replace it with their controller's HTTPS endpoint.
+  server: https://controller.example.invalid

@@ -673,7 +673,7 @@ type AppSourceMeta struct {
 // KubernetesEnrollmentAudience lives), because — unlike enrollment, whose
 // audience only ever appears on the controller side of a TokenReview, with
 // the agent's own token volume declared in static YAML
-// (manifests/base/k8s-agent/deployment.yaml) — this audience is minted at
+// (charts/unified-cd/templates/agent/deployment.yaml) — this audience is minted at
 // runtime by Go code on BOTH sides: internal/k8sagent's podbuilder.go writes
 // it into a projected volume it constructs per job Pod, and
 // internal/controller verifies it in a TokenReview. Both packages already

@@ -1,0 +1,11 @@
+# Values for the core-install.yaml release bundle (controller + k8s-agent, no bundled stores).
+# Rendered by scripts/build-manifests.sh; not meant for `helm install`.
+bundledStores:
+  enabled: false
+controller:
+  kek:
+    job:
+      helmHook: false
+agent:
+  # Deliberately invalid: operators replace it with their HTTPS endpoint.
+  server: https://controller.example.invalid

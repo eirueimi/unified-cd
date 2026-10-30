@@ -49,8 +49,11 @@ func (o Object) metaString(key string) string {
 	return s
 }
 
-func args(namespace string, set []string) []string {
+func args(namespace, valuesFile string, set []string) []string {
 	a := []string{"template", "unified-cd", ChartDir(), "--namespace", namespace}
+	if valuesFile != "" {
+		a = append(a, "-f", valuesFile)
+	}
 	for _, s := range set {
 		a = append(a, "--set", s)
 	}
@@ -61,8 +64,12 @@ func args(namespace string, set []string) []string {
 // for tests that expect a render failure; err is non-nil when helm exits
 // non-zero.
 func RenderErr(namespace string, set ...string) (stdout string, stderr string, err error) {
+	return renderErr(namespace, "", set)
+}
+
+func renderErr(namespace, valuesFile string, set []string) (stdout string, stderr string, err error) {
 	var out, errb bytes.Buffer
-	cmd := exec.Command("helm", args(namespace, set)...)
+	cmd := exec.Command("helm", args(namespace, valuesFile, set)...)
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
 	err = cmd.Run()
@@ -73,10 +80,18 @@ func RenderErr(namespace string, set ...string) (stdout string, stderr string, e
 // skipped when helm is not installed and fails when helm exits non-zero.
 func Render(t testing.TB, namespace string, set ...string) []Object {
 	t.Helper()
+	return RenderFile(t, namespace, "", set...)
+}
+
+// RenderFile is Render with a values file passed as `-f valuesFile` (an empty
+// valuesFile renders the chart defaults). Any set values are applied on top of
+// the file.
+func RenderFile(t testing.TB, namespace, valuesFile string, set ...string) []Object {
+	t.Helper()
 	if !Available() {
 		t.Skip("helm not on PATH")
 	}
-	stdout, stderr, err := RenderErr(namespace, set...)
+	stdout, stderr, err := renderErr(namespace, valuesFile, set)
 	if err != nil {
 		t.Fatalf("helm template failed: %v\n%s", err, stderr)
 	}

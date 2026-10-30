@@ -34,7 +34,7 @@ poolIdleTimeout: ""
 #     # storageClassName: gp3  # omit to use the cluster default
 #
 # The agent's Role needs get, list, create and update on persistentvolumeclaims (see
-# manifests/base/k8s-agent/rbac.yaml). A freshly provisioned PVC is usually root-owned: a job
+# charts/unified-cd/templates/agent/rbac.yaml). A freshly provisioned PVC is usually root-owned: a job
 # whose image runs as a non-root user needs securityContext.fsGroup in its podTemplate.
 
 # minFreeDisk: stop claiming runs that mount a named volume (see volumes below) while that volume has
@@ -97,7 +97,7 @@ podTemplates:
           # command omitted → agent injects ["/.ucd/ucd-sh", "pause"] automatically
           # workspace volumeMount is injected by the agent — no need to specify it
         # NOTE: the shipped `ci` namespace enforces Pod Security `baseline`
-        # (manifests/base/namespace/namespace.yaml), which REFUSES `privileged: true`, even in an
+        # (charts/unified-cd/templates/job-namespace.yaml), which REFUSES `privileged: true`, even in an
         # operator template like this one. To use this Docker-in-Docker container, run this agent
         # in a separate namespace labelled pod-security.kubernetes.io/enforce=privileged (or
         # relabel `ci`). jobPodPolicy does not apply here: templates are not filtered.
