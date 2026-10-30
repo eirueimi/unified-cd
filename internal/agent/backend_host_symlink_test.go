@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -142,4 +143,66 @@ func TestHostBackend_CacheSaveRestore_SymlinksSkippedWithRunLogWarning(t *testin
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	assert.Contains(t, srv.logs, artifact.SkippedLinksWarning(3))
+}
+
+// A symlink already in the destination that leads outside it is never written
+// through by a cache restore or an artifact download.
+func TestHostBackend_Extraction_NeverWritesThroughAnOutsideSymlink(t *testing.T) {
+	ctx := context.Background()
+	a, _ := newSymlinkAgent(t)
+	ws := t.TempDir()
+	src := filepath.Join(ws, "src")
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "link"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "link", "x"), []byte("pwned"), 0o644))
+	b := newHostBackend(a, "r1", "job", ws, nil)
+	require.NoError(t, b.CacheSave(ctx, ScopeHandle{}, "k", src, 1))
+	require.NoError(t, b.UploadArtifact(ctx, ScopeHandle{}, "r1", "art", src))
+
+	for name, restore := range map[string]func(dest string) error{
+		"cache": func(dest string) error {
+			_, err := b.CacheRestore(ctx, ScopeHandle{}, "k", nil, dest)
+			return err
+		},
+		"artifact": func(dest string) error { return b.DownloadArtifact(ctx, ScopeHandle{}, "r1", "art", dest) },
+	} {
+		outside := t.TempDir()
+		dest := filepath.Join(ws, "dest-"+name)
+		require.NoError(t, os.MkdirAll(dest, 0o755))
+		if err := os.Symlink(outside, filepath.Join(dest, "link")); err != nil {
+			t.Skipf("cannot create symlinks here: %v", err)
+		}
+		assert.Error(t, restore(dest), name)
+		entries, err := os.ReadDir(outside)
+		require.NoError(t, err)
+		assert.Empty(t, entries, name+": nothing may be written outside the destination")
+	}
+}
+
+// What a restore creates, and only that, is handed to chownAgentWrite: the new
+// files, not the skipped links and not what was already there.
+func TestHostBackend_CacheRestore_ChownsTheFilesItCreated(t *testing.T) {
+	ctx := context.Background()
+	f := &podFakeRT{}
+	b, workDir := podBackend(t, downloadAgent(t), f, permPT(map[string]any{"runAsUser": 1000}, nil))
+
+	src := filepath.Join(workDir, "src")
+	require.NoError(t, os.MkdirAll(src, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "dep"), []byte("d"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "old"), []byte("n"), 0o644))
+	if err := os.Symlink("dep", filepath.Join(src, "alias")); err != nil {
+		t.Skipf("cannot create symlinks here: %v", err)
+	}
+	require.NoError(t, b.CacheSave(ctx, ScopeHandle{}, "k", src, 1))
+
+	dest := filepath.Join(workDir, "deps")
+	require.NoError(t, os.MkdirAll(dest, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dest, "old"), []byte("mine"), 0o644))
+	hit, err := b.CacheRestore(ctx, ScopeHandle{}, "k", nil, dest)
+	require.NoError(t, err)
+	require.True(t, hit)
+
+	got := strings.Join(chownExecs(f), "\n")
+	assert.Contains(t, got, "/workspace/deps/dep")
+	assert.NotContains(t, got, "/workspace/deps/alias")
+	assert.NotContains(t, got, "/workspace/deps/old")
 }

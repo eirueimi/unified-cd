@@ -144,3 +144,23 @@ func TestExtractTarZstdDir_ExcludeSkipsMountPoint(t *testing.T) {
 	_, err = os.Lstat(filepath.Join(dest, "vol"))
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
+
+func TestExtractTarZstdDir_NeverWritesThroughALinkLeavingTheDestination(t *testing.T) {
+	src := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "link"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "link", "x"), []byte("pwned"), 0o644))
+	var archive bytes.Buffer
+	require.NoError(t, WriteTarZstdExcluding(&archive, src, nil))
+
+	for _, refuse := range []bool{true, false} {
+		outside := t.TempDir()
+		dest := t.TempDir()
+		symlinkOrSkip(t, outside, filepath.Join(dest, "link"))
+
+		_, err := ExtractTarZstdDir(bytes.NewReader(archive.Bytes()), dest, nil, refuse, nil)
+		require.Error(t, err)
+		entries, rerr := os.ReadDir(outside)
+		require.NoError(t, rerr)
+		require.Empty(t, entries, "nothing may be written outside the destination")
+	}
+}
