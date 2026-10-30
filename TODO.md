@@ -58,13 +58,6 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** `internal/agent/orchestrator.go` `executeDownloadArtifact` reports `step.DisplayName()` and `step.StageIndex`, but `internal/agent/agent_test.go` `TestAgent_UploadArtifact_RelativePath` verifies those fields only for uploads.
 - **Done when:** An exact `executeDownloadArtifact` test captures its Running and terminal reports and proves both use the configured download display name and configured stage index.
 
-### 10. Verify that pre-cancellation logs remain visible in the Web UI
-
-- **Status:** Needs verification
-- **Impact:** Users investigating a cancelled run may lose the historical log lines needed to understand why it was cancelled or what completed first.
-- **Evidence:** `web/src/routes/RunDetail.svelte` opens one event stream and `internal/controller/sse.go` `handleRunEvents` replays stored logs before terminal status, but `web/src/routes/RunDetail.test.js` uses a Running run with an empty stream and `internal/controller/api_runs_test.go` `TestAPI_RunEvents_SSE_ReceivesExistingLogs` does not exercise Web rendering.
-- **Done when:** A component or browser test loads a pre-cancelled run whose event stream backfills known historical lines and then closes with terminal status, and proves those exact lines remain rendered after closure with only one event connection.
-
 ### 35b. Exercise AppSource migration 003 through first synchronization
 
 - **Status:** Partial
