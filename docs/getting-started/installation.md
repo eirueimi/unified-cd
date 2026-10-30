@@ -133,8 +133,12 @@ create certificates; for cert-manager, add its annotation through
 `ingress.annotations` (for example
 `cert-manager.io/cluster-issuer: letsencrypt`). If another load balancer or
 service mesh gateway terminates TLS instead, leave `ingress.enabled=false` and
-set `agent.server` to its URL. Never carry the trial's in-cluster HTTP agent
-setting (`allowInsecureHTTP: true`) into production.
+set `agent.server` to its URL. Leaving `agent.server` empty makes the chart set
+`allowInsecureHTTP: true` and point the agent at the controller over plain
+in-cluster HTTP. That happens whenever the controller is installed, not only in
+trial mode, so a production install with `bundledStores.enabled=false` and no
+`agent.server` gets the insecure setting too (the install NOTES print a
+warning). Always set `agent.server` in production.
 
 Put non-secret controller and agent settings in `controller.config` and
 `agent.config`; they are deep-merged over the chart's defaults, and changing
@@ -156,9 +160,55 @@ Without them the controller uses only the static `UNIFIED_TOKEN`; with them
 
 Set the redirect URI at your IdP to `https://<your-domain>/api/v1/auth/oidc-callback`.
 With an external IdP, add only the public-facing keys. For an in-cluster Dex,
-run Dex as its own Deployment in the release namespace, set the issuer to
-`https://<your-domain>/dex`, and add `UNIFIED_OIDC_ISSUER_INTERNAL`. The Dex
-static clients are the same two described in
+run Dex as its own Deployment in the release namespace and point the
+controller at it. The controller reverse-proxies `/dex/*` to Dex, so the browser
+never needs to reach Dex directly. Set these keys in the
+`unified-cd-controller` Secret alongside the others:
+
+```bash
+UNIFIED_OIDC_ISSUER='https://<your-domain>/dex'
+UNIFIED_OIDC_ISSUER_INTERNAL='http://dex.unified-cd.svc.cluster.local:5556/dex'
+UNIFIED_OIDC_CLIENT_ID='unified-cd'
+UNIFIED_OIDC_CLIENT_SECRET='your-client-secret'
+UNIFIED_OIDC_DEVICE_CLIENT_ID='unified-cd-cli'
+```
+
+A minimal Dex `ConfigMap` for this setup:
+
+```yaml
+issuer: https://<your-domain>/dex
+
+storage:
+  type: memory   # use a persistent backend (postgres, etcd) for production
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  skipApprovalScreen: true
+
+staticClients:
+  - id: unified-cd
+    secret: your-client-secret
+    name: unified-cd
+    redirectURIs:
+      - https://<your-domain>/api/v1/auth/oidc-callback
+
+  - id: unified-cd-cli
+    public: true
+    name: unified-cd CLI
+    redirectURIs:
+      - /device/callback
+
+connectors:
+  # connect to your upstream IdP here, or use enablePasswordDB for testing
+```
+
+> **Persistent storage.** `storage: type: memory` loses Dex's sessions and
+> refresh tokens whenever its Pod restarts, which signs everyone out. Use a
+> persistent backend (PostgreSQL or Kubernetes CRDs) in production.
+
+The static clients are the same two described in
 [Authentication](../operator-manual/authentication.md#sso-setup-oidc-dex);
 `docker-compose.sso.yml` and `dex-config.sso.yaml` in the repository root are a
 working local example.
@@ -176,6 +226,12 @@ controller Deployment, for example with a Helm post-renderer. See the
 [Secrets Management Guide](../user-guide/secrets.md#using-vault-or-openbao-transit)
 for the Transit key and policy, and the
 [High Availability Guide](../operator-manual/high-availability.md#vault-openbao-when-unified_kms_uri-is-used).
+
+Static-token auth (`UNIFIED_VAULT_AUTH=token` with `UNIFIED_VAULT_TOKEN_FILE`)
+also works on Kubernetes, but it gives up the credential-free advantage of the
+`kubernetes` method, where the controller's projected ServiceAccount token is the
+credential Vault verifies and no token Secret is mounted. Prefer it only when
+Vault policy requires a specific token per deployment.
 
 ### Agent only
 
@@ -217,7 +273,7 @@ kubectl apply -f https://github.com/eirueimi/unified-cd/releases/latest/download
 | `agent-only.yaml` | k8s-agent only | A controller running elsewhere with the matching enrollment policy. Download it and replace `https://controller.example.invalid` with its HTTPS endpoint. |
 
 The bundles run the KEK Job as a plain Job (`kubectl apply` has no hooks);
-re-applying never replaces an existing KEK. For production, prefer
+re-applying never replaces an existing KEK. Re-applying a newer `install.yaml` over a v0.11.0 install works in place and keeps the KEK; afterwards delete the orphaned `garage-config-<hash>` ConfigMap (see the [migration guide](../operator-manual/migrations/2026-10-30-helm-chart.md)). For production, prefer
 `helm install`: the bundles are fixed renderings, so changing anything means
 editing the downloaded file. Coming from the old Kustomize overlays? See
 [Migrating from the Kustomize overlays to Helm](../operator-manual/migrations/2026-10-30-helm-chart.md).

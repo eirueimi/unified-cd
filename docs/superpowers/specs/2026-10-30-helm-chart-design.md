@@ -76,6 +76,14 @@ because the controller config, the enrollment policy and the agent config refer
 to each other by these names; consequently one release per namespace (documented,
 and enforced only by name collision).
 
+> **Correction (2026-10-30, final review).** "One release per namespace" was
+> wrong. The `unified-cd-controller-kubernetes-enrollment` ClusterRole and
+> ClusterRoleBinding have fixed cluster-scoped names, and the default job
+> namespace `ci` is cluster-wide, so the real constraint is one controller
+> release per cluster. A second release (for example agent-only) must set a
+> different `jobNamespace.name`; a second controller is blocked by the
+> cluster-scoped RBAC names.
+
 ### 5.2 Components and values (shape; exact keys are the builder's call)
 
 - `controller.enabled` (default true), `agent.enabled` (default true),

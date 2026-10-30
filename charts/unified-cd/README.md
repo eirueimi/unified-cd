@@ -111,10 +111,18 @@ first; see `docs/operator-manual/kubernetes-integration.md`.
 
 ## Behavior to know
 
-- **One release per namespace.** Resource names are fixed
+- **One controller release per cluster.** Resource names are fixed
   (`unified-cd-controller`, `unified-cd-k8s-agent`, `postgres`, `garage`, ...),
-  not prefixed with the release name, so two releases in the same namespace
-  collide.
+  not prefixed with the release name, and the ClusterRole and ClusterRoleBinding
+  `unified-cd-controller-kubernetes-enrollment` are cluster-scoped, so a second
+  controller release collides with the first even in another namespace. The
+  default job namespace `ci` is cluster-wide as well: a second release (for
+  example an agent-only one) needs a different `jobNamespace.name`.
+- **A failed KEK hook leaves its objects behind.** If the `unified-cd-kek-init`
+  hook fails, its Job, ServiceAccount, Role and RoleBinding stay in the namespace
+  (the `before-hook-creation` policy only replaces them on the next install or
+  upgrade) and `helm uninstall` does not remove them. Delete them with
+  `kubectl -n <ns> delete job,serviceaccount,role,rolebinding unified-cd-kek-init`.
 - **Configuration merges.** `controller.config` and `agent.config` are
   deep-merged over the chart-computed defaults. Maps merge key by key and your
   value always wins, including `false`, `0` and `""`. A list you supply
@@ -174,7 +182,7 @@ first; see `docs/operator-manual/kubernetes-integration.md`.
 | `agent.image.tag` | `""` | Image tag; empty uses the chart `appVersion`. |
 | `agent.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `agent.replicas` | `2` | Agent replicas. |
-| `agent.server` | `""` | Controller URL. Empty uses the in-cluster Service over HTTP (requires `controller.enabled`); otherwise it must start with `https://`. |
+| `agent.server` | `""` | Controller URL. Empty uses the in-cluster Service over plain HTTP with `allowInsecureHTTP: true` whenever the controller is installed (not only in trial mode; NOTES warns when `bundledStores.enabled=false`); otherwise it must start with `https://`. |
 | `agent.config` | `{}` | Deep-merged over the computed agent config (see above). |
 | `agent.resources` | requests 50m / 128Mi, memory limit 256Mi | Agent container resources. |
 | `agent.nodeSelector` | `{}` | Agent Pod node selector. |
@@ -212,5 +220,7 @@ The chart fails to render, naming the value to change, when:
 - `bundledStores.enabled` is `true` with `controller.enabled=false`;
 - `agent.server` is empty with `controller.enabled=false`;
 - `agent.server` is set and is not an `https://` URL;
+- `ingress.enabled` is `true` with `controller.enabled=false` (the Ingress routes
+  to the controller Service; the message names `controller.enabled`);
 - `ingress.enabled` is `true` while the trial Secret would be rendered;
 - `ingress.enabled` is `true` with an empty `ingress.hosts`.
