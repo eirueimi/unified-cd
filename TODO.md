@@ -30,13 +30,6 @@ Last audited: 2026-07-26 against `1e46459`.
 
 ## Medium
 
-### 35b. Exercise AppSource migration 003 through first synchronization
-
-- **Status:** Partial
-- **Impact:** Upgrade regressions in bare-name backfill, first-sync qualification, history preservation, idempotency, or prune safety can pass despite current reconciler coverage.
-- **Evidence:** `internal/controller/appsource_reconciler_test.go` seeds post-migration bare-name state directly instead of running `internal/store/migrations/003_appsource_managed_resources.up.sql` through the production migration runner; store tests cover `RenameJob` separately.
-- **Done when:** An integration test creates a genuine pre-003 schema and state, runs migration 003 through the production migration runner, verifies the deliberate bare-name backfill, performs the first sync, and proves qualification, history preservation, repeat-sync idempotency, and prune safety end to end.
-
 ### 37. Ship a Helm chart for installing unified-cd
 
 - **Status:** Open
