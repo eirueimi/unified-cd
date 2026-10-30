@@ -14,7 +14,7 @@ web/node_modules/
 web/dist/
 internal/controller/web/
 .superpowers
-unified-cd
+/unified-cd
 # W4-0 enrollment spike: generated kubeconfig for the compose controllers.
 # Carries a live ServiceAccount bearer token — must never be committed.
 # Regenerate with test/edgecase/k8s/make-spike-kubeconfig.sh.

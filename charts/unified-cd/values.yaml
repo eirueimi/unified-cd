@@ -1,0 +1,142 @@
+# Default values for the unified-cd chart.
+#
+# The defaults install a self-contained TRIAL: controller, Kubernetes agent,
+# bundled PostgreSQL and Garage, with fixed development credentials. For
+# production set bundledStores.enabled=false, supply your own Secret through
+# controller.existingSecret and give the agent an https:// agent.server.
+
+controller:
+  # Install the controller Deployment, Service and RBAC.
+  enabled: true
+  image:
+    # First-party controller image.
+    repository: ghcr.io/eirueimi/unified-cd-controller
+    # Image tag. Empty uses the chart appVersion.
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Number of controller replicas (the controller is stateless; leader
+  # election uses PostgreSQL advisory locks).
+  replicas: 1
+  # Name of the Secret holding the controller environment (database URL,
+  # token, object store settings). Empty with bundledStores.enabled makes the
+  # chart render the trial Secret "unified-cd-controller" with development
+  # credentials. Otherwise this name (default "unified-cd-controller") is
+  # referenced, not created: you must create it yourself.
+  existingSecret: ""
+  kek:
+    # Name of the Secret that holds the key-encryption key. It is only ever
+    # created by the kek-init Job (create-only), never rendered by Helm.
+    secretName: unified-cd-controller-kek
+    # Whether to run the Job that generates the KEK Secret. null follows
+    # bundledStores.enabled; true or false overrides it.
+    generate: null
+    job:
+      # Run the KEK Job as a Helm pre-install hook.
+      helmHook: true
+      # Image providing kubectl for the KEK Job.
+      image: alpine/k8s:1.31.2
+  # Deep-merged over the chart-computed controller config (agentAuth defaults:
+  # an in-cluster Kubernetes enrollment policy for the release namespace, plus
+  # store credential policies for the job namespace when bundledStores.enabled).
+  config: {}
+  service:
+    # Service type for the controller (HTTP only; terminate TLS at an Ingress).
+    type: ClusterIP
+    # Service port.
+    port: 80
+  # Controller container resources.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  # Pod scheduling constraints.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Extra annotations on the controller Pods.
+  podAnnotations: {}
+
+agent:
+  # Install the Kubernetes agent Deployment and its RBAC.
+  enabled: true
+  image:
+    # First-party Kubernetes agent image.
+    repository: ghcr.io/eirueimi/unified-cd-k8s-agent
+    # Image tag. Empty uses the chart appVersion.
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Number of agent replicas.
+  replicas: 2
+  # Controller URL the agent connects to. Empty uses the in-cluster controller
+  # (http://unified-cd-controller.<namespace>.svc.cluster.local with
+  # allowInsecureHTTP: true) and requires controller.enabled. Otherwise it must
+  # start with https://.
+  server: ""
+  # Deep-merged over the chart-computed agent config (enrollment policy,
+  # labels, job namespace, maxConcurrent, podImage; sidecarS3SecretMode:
+  # broker when bundledStores.enabled).
+  config: {}
+  # Agent container resources.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+  # Pod scheduling constraints.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Extra annotations on the agent Pods.
+  podAnnotations: {}
+
+jobNamespace:
+  # Create the namespace in which the agent runs job Pods. The release
+  # namespace itself is never created by the chart.
+  create: true
+  # Name of the job namespace; the agent job Role and RoleBinding live here.
+  name: ci
+  # Pod Security Admission levels labelled on the job namespace.
+  podSecurity:
+    enforce: baseline
+    audit: restricted
+
+bundledStores:
+  # Install the trial PostgreSQL and Garage, and the trial Secret. Requires
+  # controller.enabled. Not for production.
+  enabled: true
+  postgres:
+    # Pinned third-party image.
+    image: postgres:16-alpine
+    # Size of the PostgreSQL PersistentVolumeClaim.
+    storage: 5Gi
+    # StorageClass for the claim. Empty uses the cluster default.
+    storageClassName: ""
+  garage:
+    # Pinned third-party image.
+    image: dxflrs/garage:v2.3.0
+    # Size of the Garage data PersistentVolumeClaim.
+    storage: 10Gi
+    # StorageClass for the claim. Empty uses the cluster default.
+    storageClassName: ""
+
+ingress:
+  # Expose the controller through an Ingress. Refused while the bundled trial
+  # credentials are in use.
+  enabled: false
+  # ingressClassName; empty uses the cluster default class.
+  className: ""
+  # Annotations on the Ingress.
+  annotations: {}
+  # Hosts and paths, e.g.
+  #   - host: cd.example.com
+  #     paths:
+  #       - path: /
+  #         pathType: Prefix
+  hosts: []
+  # TLS entries, e.g.
+  #   - secretName: cd-example-com-tls
+  #     hosts: [cd.example.com]
+  tls: []

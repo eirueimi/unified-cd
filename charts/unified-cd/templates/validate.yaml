@@ -1,0 +1,2 @@
+{{- /* Renders nothing; runs the render-time value checks. */ -}}
+{{- include "unified-cd.validate" . -}}
