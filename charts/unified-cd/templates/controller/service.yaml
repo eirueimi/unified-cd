@@ -1,0 +1,16 @@
+{{- if .Values.controller.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: unified-cd-controller
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.controller.service.type }}
+  selector:
+    app: unified-cd-controller
+  ports:
+    - port: {{ .Values.controller.service.port }}
+      targetPort: 8080
+{{- end }}

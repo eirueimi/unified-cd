@@ -1,0 +1,36 @@
+{{- if and .Values.controller.enabled .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: unified-cd-controller
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths | default (list (dict "path" "/" "pathType" "Prefix")) }}
+          - path: {{ .path | default "/" }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: unified-cd-controller
+                port:
+                  number: {{ $.Values.controller.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

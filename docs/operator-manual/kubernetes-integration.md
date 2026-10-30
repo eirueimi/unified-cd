@@ -225,7 +225,7 @@ Job-side policy opt-ins go in the same file, in a `jobPodPolicy:` block (see [Jo
 
 ### 2. Starting the agent
 
-Before starting a Pod agent, configure the controller with a Kubernetes cluster verifier and an enabled policy that binds the exact agent ServiceAccount and namespace. The default manifests declare `in-cluster` and `unified-cd-k8s-agents`; its policy accepts only ServiceAccount `unified-cd-k8s-agent` in namespace `unified-cd`, `kind:kubernetes`, and `pod`/`container` capabilities. The controller must run with the TokenReview and bounded Pod-read RBAC in `manifests/base/controller/rbac.yaml`.
+Before starting a Pod agent, configure the controller with a Kubernetes cluster verifier and an enabled policy that binds the exact agent ServiceAccount and namespace. The Helm chart and the release bundles declare `in-cluster` and `unified-cd-k8s-agents`; its policy accepts only ServiceAccount `unified-cd-k8s-agent` in the release namespace (`unified-cd` in the bundles), `kind:kubernetes`, and `pod`/`container` capabilities. The controller must run with the TokenReview and bounded Pod-read RBAC in [`charts/unified-cd/templates/controller/rbac.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/controller/rbac.yaml). To replace the policy list, set `controller.config.agentAuth.kubernetesEnrollmentPolicies` in the chart values; a list you supply replaces the computed one entirely.
 
 The agent Pod mounts a projected ServiceAccount token with audience `unified-cd-agent-enrollment`. It exchanges that token for a short-lived access token in memory; it never stores a refresh token or receives a shared controller token.
 
@@ -243,7 +243,7 @@ go build -o bin/unified-cd-k8s-agent ./cmd/k8s-agent
 UNIFIED_K8S_CONFIG=k8s-agent-config.yaml ./bin/unified-cd-k8s-agent
 ```
 
-The install bundles (`install.yaml`, `core-install.yaml`, `agent-only.yaml` — built from the `manifests/*` kustomize overlays and published as release assets) default the `unified-cd-k8s-agent` Deployment to `replicas: 2`, running active-active; see [Agent Redundancy](high-availability.md#agent-redundancy) in the HA guide for why this is safe.
+The Helm chart and the install bundles (`install.yaml`, `core-install.yaml`, `agent-only.yaml` — rendered from the chart and published as release assets) default the `unified-cd-k8s-agent` Deployment to `replicas: 2` (`agent.replicas`), running active-active; see [Agent Redundancy](high-availability.md#agent-redundancy) in the HA guide for why this is safe.
 
 ---
 
@@ -1020,8 +1020,8 @@ after `uses:` templates are resolved, and on the k8s-agent when the run is claim
 exec is attempted. See [Reserved container name](#reserved-container-name) and the [migration
 note](migrations/2026-10-26-k8s-job-pod-field-policy.md#reserved-step-targets).
 
-**The shipped namespace enforces Pod Security `baseline`.** `manifests/base/namespace/namespace.yaml`
-labels the `ci` namespace `pod-security.kubernetes.io/enforce: baseline` and
+**The shipped namespace enforces Pod Security `baseline`.** [`charts/unified-cd/templates/job-namespace.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/job-namespace.yaml)
+labels the `ci` namespace (`jobNamespace.name`; the levels are `jobNamespace.podSecurity.enforce` and `.audit`) `pod-security.kubernetes.io/enforce: baseline` and
 `pod-security.kubernetes.io/audit: restricted`. This is a second, independent layer: the agent
 policy is the unified-cd-side floor, and admission is the cluster-side ceiling. There is no
 `warn: restricted` label, because every agent-built Pod (shim init container, sidecar) violates
@@ -1277,9 +1277,12 @@ namespace(s) and ServiceAccount(s) — a separate list from
 `kubernetesEnrollmentPolicies`, because the two authorize different
 identities: the agent's own (e.g. `unified-cd`/`unified-cd-k8s-agent`) versus
 the job Pod's (e.g. `ci`/whatever ServiceAccount runs your jobs, `default`
-if none is set). See `manifests/install/controller-config-patch.yaml` for a
-worked example — the bundled `install.yaml` evaluation manifests use this
-mode by default (`core-install.yaml` still defaults to `env`).
+if none is set). With the Helm chart, `bundledStores.enabled=true` configures this by default (the
+agent gets `sidecarS3SecretMode: broker`, and the controller gets a policy for the job
+namespace and the `default` ServiceAccount), as does the bundled `install.yaml`;
+with `bundledStores.enabled=false` and in `core-install.yaml` the mode stays `env`.
+To opt in, set `agent.config.sidecarS3SecretMode: broker` and add
+`controller.config.agentAuth.kubernetesStoreCredentialPolicies` to your values.
 
 See `docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md`
 §5.6 for the full design and the reasoning behind passthrough-only for now.
@@ -1294,7 +1297,7 @@ This is comparable to how most CI systems hand artifact/cache sidecars static bu
 
 ## RBAC example
 
-Minimum permissions required for k8s-agent to operate. `manifests/base/k8s-agent/rbac.yaml` ships
+Minimum permissions required for k8s-agent to operate. [`charts/unified-cd/templates/agent/rbac.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/agent/rbac.yaml) ships
 a Role that is a superset of this one (it keeps a `delete` verb on PVCs from before named volumes, which the agent does not use, and adds `update` and `patch` on Pods, which `podTemplate.reuse`
 needs to mark a finished Pod idle; without them reuse silently never happens).
 

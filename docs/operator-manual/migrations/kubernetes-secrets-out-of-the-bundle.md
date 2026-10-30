@@ -47,7 +47,7 @@ outside the cluster, and losing both leaves every secret the controller has
 stored permanently unreadable. Once it's backed up and the Secret above is
 created, delete the local `./kek` file.
 
-See [Kubernetes Install Manifests: Creating the controller Secrets](https://github.com/eirueimi/unified-cd/blob/main/manifests/README.md#creating-the-controller-secrets)
+See [Installation: Production](../../getting-started/installation.md#production)
 for why the KEK uses `--from-file` instead of `--from-literal`, and for the
 Vault/OpenBao and SSO variants of this command.
 

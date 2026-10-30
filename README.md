@@ -23,6 +23,16 @@ revocable credentials.
 
 ## Installation
 
+On Kubernetes, install the whole stack (controller, agent, and a trial
+PostgreSQL and Garage) with Helm:
+
+```bash
+helm install unified-cd oci://ghcr.io/eirueimi/charts/unified-cd \
+  --version <x.y.z> -n unified-cd --create-namespace
+```
+
+Or with Docker images:
+
 ```bash
 # Controller
 docker pull ghcr.io/eirueimi/unified-cd-controller:latest
@@ -31,7 +41,7 @@ docker pull ghcr.io/eirueimi/unified-cd-controller:latest
 docker pull ghcr.io/eirueimi/unified-cd-k8s-agent:latest
 ```
 
-See the [Installation guide](https://eirueimi.github.io/unified-cd/getting-started/installation/) for Kubernetes manifests, pre-built binaries, and building from source.
+See the [Installation guide](https://eirueimi.github.io/unified-cd/getting-started/installation/) for production Kubernetes installs (Helm values, external stores, Ingress), pre-built binaries, and building from source.
 
 ---
 
@@ -183,7 +193,7 @@ The full documentation is published at **https://eirueimi.github.io/unified-cd/*
 - **[ID-Scoped Agent Credential Migration](https://eirueimi.github.io/unified-cd/operator-manual/migrations/agent-id-scoped-credentials/)** — move legacy shared agent credentials safely
 
 ### Infrastructure
-- **[Kubernetes Manifests](https://github.com/eirueimi/unified-cd/blob/main/manifests/README.md)** — install manifests for production and evaluation
+- **[Helm chart](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/README.md)** — install on Kubernetes with `helm install`; values reference
 - **[VS Code Extension](https://github.com/eirueimi/unified-cd/blob/main/editors/vscode/README.md)** — YAML completion and validation for unified-cd files
 
 ---
@@ -232,7 +242,7 @@ make test-short     # unit tests only
 make dev-go         # hot-reload controller with air
 make dev-ui         # Vite dev server for frontend
 make ui-build       # build Svelte frontend assets (served by controller at runtime)
-make manifests      # regenerate Kubernetes install manifests
+make manifests      # render the Kubernetes install bundles from the Helm chart (needs helm)
 make vscode-package # build VS Code extension .vsix
 ```
 

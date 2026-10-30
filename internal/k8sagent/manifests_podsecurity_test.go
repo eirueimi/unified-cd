@@ -1,32 +1,19 @@
 package k8sagent
 
 import (
-	"os"
-	"path/filepath"
-	"runtime"
-	"strings"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/helmchart"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestShippedNamespacePodSecurityLabelsOnCI(t *testing.T) {
-	_, thisFile, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-	path := filepath.Join(filepath.Dir(thisFile), "..", "..", "manifests", "base", "namespace", "namespace.yaml")
-	raw, err := os.ReadFile(path)
-	require.NoError(t, err)
-	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
-
-	var ci string
-	for _, doc := range strings.Split(text, "\n---\n") {
-		if strings.Contains(doc, "name: ci") {
-			ci = doc
-			break
-		}
-	}
-	require.NotEmpty(t, ci, "namespace.yaml must contain the ci Namespace document")
-	require.Contains(t, ci, "pod-security.kubernetes.io/enforce: baseline")
-	require.Contains(t, ci, "pod-security.kubernetes.io/audit: restricted")
-	require.NotContains(t, ci, "pod-security.kubernetes.io/warn")
+	objs := helmchart.RenderFile(t, "unified-cd", bundleValues("install"))
+	ci := helmchart.Find(objs, "Namespace", "ci")
+	require.NotNil(t, ci, "the install bundle must render the ci Namespace")
+	labels, _ := objectField(t, ci, "metadata", "labels").(map[string]any)
+	assert.Equal(t, "baseline", labels["pod-security.kubernetes.io/enforce"])
+	assert.Equal(t, "restricted", labels["pod-security.kubernetes.io/audit"])
+	assert.NotContains(t, labels, "pod-security.kubernetes.io/warn")
 }

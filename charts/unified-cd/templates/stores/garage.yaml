@@ -1,0 +1,125 @@
+{{- if and .Values.controller.enabled .Values.bundledStores.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-config
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+data:
+  garage.toml: |
+    {{- include "unified-cd.garageToml" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    app: garage
+    {{- include "unified-cd.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  {{- /* Recreate: the data volume is ReadWriteOnce, and a rolling update would start a second Pod against the same volume (two writers or a Multi-Attach deadlock). */}}
+  strategy:
+    type: Recreate
+  {{- /* The app selector label is kept unchanged: a Deployment selector is immutable. */}}
+  selector:
+    matchLabels:
+      app: garage
+  template:
+    metadata:
+      {{- /* Only the app label: version-bearing standard labels here would restart the store on every chart bump. */}}
+      labels:
+        app: garage
+      annotations:
+        {{- /* A changed config restarts the Pod on helm upgrade. */}}
+        checksum/config: {{ include "unified-cd.garageToml" . | sha256sum | quote }}
+    spec:
+      containers:
+        - name: garage
+          image: {{ .Values.bundledStores.garage.image }}
+          command: ["/garage", "server", "--single-node", "--default-bucket"]
+          env:
+            - name: GARAGE_RPC_SECRET
+              value: "0000000000000000000000000000000000000000000000000000000000000000"
+            - name: GARAGE_DEFAULT_ACCESS_KEY
+              value: garageadmin
+            - name: GARAGE_DEFAULT_SECRET_KEY
+              value: garageadmin12345
+            - name: GARAGE_DEFAULT_BUCKET
+              value: unified-cd-logs
+          {{- /*
+          No CPU limit: a CPU limit throttles the container even when the
+          node is idle, whereas a memory limit is what actually contains a
+          runaway process. These values are a conservative floor for a
+          normal unified-cd workload, not a capacity estimate: raise them
+          if you see throttling or OOMKills under your load.
+          */}}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          ports:
+            - containerPort: 3900
+              name: api
+            - containerPort: 3901
+              name: rpc
+            - containerPort: 3903
+              name: admin
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/garage.toml
+              subPath: garage.toml
+          readinessProbe:
+            exec:
+              command: ["/garage", "status"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["/garage", "status"]
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: garage-data
+        - name: config
+          configMap:
+            name: garage-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: garage
+  ports:
+    - name: api
+      port: 3900
+      targetPort: 3900
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: garage-data
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.bundledStores.garage.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.bundledStores.garage.storage }}
+{{- end }}

@@ -118,7 +118,7 @@ oidc:
         groups:
           "my-org:team-a": developer
 
-# Kubernetes workload enrollment for the default controller and k8s-agent manifests.
+# Kubernetes workload enrollment for the default controller and k8s-agent (the Helm chart sets this up; override it with controller.config).
 # An omitted kubeconfig uses the controller Pod's ServiceAccount identity.
 agentAuth:
   kubernetesClusters:
@@ -482,6 +482,8 @@ unified-cd-k8s-agent [FLAGS]
 All agent settings live in the config file (`--config` / `UNIFIED_K8S_CONFIG`). The agent authenticates via the projected ServiceAccount token mounted by the Pod (workload enrollment); it does not need a Secret file.
 
 Kubernetes workload enrollment requires an `https://` controller URL. The controller process itself does not terminate TLS, so production deployments must provide this URL through an Ingress, load balancer, or service-mesh TLS gateway. Plain HTTP is accepted only for loopback local development, or when the configuration explicitly sets `allowInsecureHTTP: true`; the latter is reserved for intentional development-only deployments such as the bundled `install.yaml`.
+
+On Kubernetes the Helm chart renders the controller and k8s-agent config files from the `controller.config` and `agent.config` values, deep-merged over its defaults. The chart's [values reference](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/README.md#values) lists every key.
 
 ### K8s Agent Config File
 

@@ -343,8 +343,8 @@ for the policy and setup unified-cd itself requires.
 
 ### k8s-agent replicas
 
-The k8s agent runs active-active: the install manifests default to
-`replicas: 2`. This is safe without leader election because run claiming is
+The k8s agent runs active-active: the Helm chart and the install bundles default to
+`replicas: 2` (`agent.replicas`). This is safe without leader election because run claiming is
 atomic (`FOR UPDATE SKIP LOCKED`), each pod registers under its own agent ID
 (derived by the controller from the pod's verified enrollment identity —
 cluster, namespace, and Pod UID — during workload enrollment), scope pods use

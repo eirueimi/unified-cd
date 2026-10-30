@@ -96,7 +96,7 @@ const sidecarBrokerTokenFile = "token"
 // sidecarBrokerTokenExpirationSeconds bounds how long the kubelet-projected
 // token is valid for. The kubelet keeps the mounted file refreshed well
 // before expiry for as long as the Pod runs (the same mechanism that makes
-// the enrollment token in manifests/base/k8s-agent/deployment.yaml usable
+// the enrollment token in charts/unified-cd/templates/agent/deployment.yaml usable
 // for an agent's whole lifetime, not just its first hour), so this is not a
 // ceiling on how long a job can run — it only bounds how long a single
 // projected credential would remain valid if copied out of the Pod. 3600s
@@ -198,7 +198,7 @@ func buildArtifactSidecarContainer(sidecar SidecarSpec) (corev1.Container, *core
 						{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 							Path: sidecarBrokerTokenFile,
 							// A DIFFERENT audience from the agent's own
-							// enrollment token (manifests/base/k8s-agent/deployment.yaml
+							// enrollment token (charts/unified-cd/templates/agent/deployment.yaml
 							// uses KubernetesEnrollmentAudience) is the whole
 							// safety property this mode depends on: if a job
 							// Pod's token were accepted for enrollment, any
@@ -236,7 +236,7 @@ func buildArtifactSidecarContainer(sidecar SidecarSpec) (corev1.Container, *core
 			ReadOnly:  true,
 		})
 		// 0400 and the deliberate absence of envFrom both mirror the
-		// controller's own KEK mount (manifests/base/controller/deployment.yaml),
+		// controller's own KEK mount (charts/unified-cd/templates/controller/deployment.yaml),
 		// the established pattern in this project for a rotatable credential:
 		// a single named key, projected read-only at a fixed subPath.
 		//

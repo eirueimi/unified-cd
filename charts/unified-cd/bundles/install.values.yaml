@@ -1,0 +1,7 @@
+# Values for the install.yaml release bundle (trial install with bundled stores).
+# Rendered by scripts/build-manifests.sh; not meant for `helm install`.
+controller:
+  kek:
+    job:
+      # `kubectl apply` has no hooks, so the KEK Job is a plain Job in the bundle.
+      helmHook: false

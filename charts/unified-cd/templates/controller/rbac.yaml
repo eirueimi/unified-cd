@@ -1,0 +1,55 @@
+{{- if .Values.controller.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: unified-cd-controller-kubernetes-enrollment
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: unified-cd-controller-kubernetes-enrollment
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: unified-cd-controller
+    namespace: {{ include "unified-cd.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: unified-cd-controller-kubernetes-enrollment
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: unified-cd-controller-kubernetes-enrollment
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: unified-cd-controller-kubernetes-enrollment
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: unified-cd-controller
+    namespace: {{ include "unified-cd.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: unified-cd-controller-kubernetes-enrollment
+{{- end }}

@@ -6,9 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -16,8 +14,10 @@ import (
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/helmchart"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func kubernetesTokenSource(t *testing.T, serverURL, tokenFile string, now func() time.Time) *KubernetesCredentialSource {
@@ -269,90 +269,153 @@ func TestKubernetesCredentialSourceDoesNotPersistRefreshCredentials(t *testing.T
 	assert.Equal(t, "projected-token", entries[0].Name())
 }
 
+// renderedYAML returns the YAML text of the named rendered object so tests can
+// make the same substring assertions the committed manifests used to get.
+func renderedYAML(t *testing.T, objs []helmchart.Object, kind, name string) string {
+	t.Helper()
+	obj := helmchart.Find(objs, kind, name)
+	require.NotNilf(t, obj, "%s/%s not rendered", kind, name)
+	out, err := yaml.Marshal(map[string]any(obj))
+	require.NoError(t, err)
+	return string(out)
+}
+
+// bundleValues returns the path of a release bundle's values file.
+func bundleValues(bundle string) string {
+	return filepath.Join(helmchart.ChartDir(), "bundles", bundle+".values.yaml")
+}
+
+// objectField walks nested maps/slices of a rendered object by key (string) or
+// index (int).
+func objectField(t *testing.T, obj helmchart.Object, path ...any) any {
+	t.Helper()
+	var v any = map[string]any(obj)
+	for _, p := range path {
+		switch k := p.(type) {
+		case string:
+			m, ok := v.(map[string]any)
+			require.Truef(t, ok, "expected a map at %q, got %T", k, v)
+			v = m[k]
+		case int:
+			s, ok := v.([]any)
+			require.Truef(t, ok, "expected a list at [%d], got %T", k, v)
+			require.Less(t, k, len(s))
+			v = s[k]
+		}
+	}
+	return v
+}
+
 func TestKubernetesCredentialManifestsUseProjectedEnrollmentIdentity(t *testing.T) {
-	_, file, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	objs := helmchart.RenderFile(t, "unified-cd", bundleValues("install"))
 
-	config, err := os.ReadFile(filepath.Join(root, "manifests", "base", "k8s-agent", "config-configmap.yaml"))
-	require.NoError(t, err)
-	assert.Contains(t, string(config), "enrollmentPolicy:")
-	assert.Contains(t, string(config), "serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token")
-	assert.NotContains(t, string(config), "agentId:")
-	assert.NotContains(t, string(config), "token:")
-	assert.NotContains(t, string(config), "server: http://")
+	config := renderedYAML(t, objs, "ConfigMap", "unified-cd-k8s-agent-config")
+	assert.Contains(t, config, "enrollmentPolicy:")
+	assert.Contains(t, config, "serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token")
+	assert.NotContains(t, config, "agentId:")
+	assert.NotContains(t, config, "token:")
+	// The install bundle targets the in-cluster controller over HTTP (explicitly
+	// opted in); the agent-only bundle must carry the external HTTPS endpoint.
+	agentOnly := helmchart.RenderFile(t, "unified-cd", bundleValues("agent-only"))
+	assert.NotContains(t, renderedYAML(t, agentOnly, "ConfigMap", "unified-cd-k8s-agent-config"), "server: http://")
 
-	deployment, err := os.ReadFile(filepath.Join(root, "manifests", "base", "k8s-agent", "deployment.yaml"))
-	require.NoError(t, err)
-	assert.Contains(t, string(deployment), "audience: unified-cd-agent-enrollment")
-	assert.Contains(t, string(deployment), "mountPath: /var/run/secrets/unified-cd-agent")
-	assert.Contains(t, string(deployment), "readOnly: true")
-	assert.NotContains(t, string(deployment), "UNIFIED_K8S_SECRET")
-	assert.NotContains(t, string(deployment), "unified-cd-k8s-agent-secret")
+	deployment := renderedYAML(t, objs, "Deployment", "unified-cd-k8s-agent")
+	assert.Contains(t, deployment, "audience: unified-cd-agent-enrollment")
+	assert.Contains(t, deployment, "mountPath: /var/run/secrets/unified-cd-agent")
+	assert.Contains(t, deployment, "readOnly: true")
+	assert.NotContains(t, deployment, "UNIFIED_K8S_SECRET")
+	assert.NotContains(t, deployment, "unified-cd-k8s-agent-secret")
 
-	_, err = os.Stat(filepath.Join(root, "manifests", "base", "k8s-agent", "config-secret.yaml"))
-	assert.True(t, os.IsNotExist(err), "the default k8s-agent token Secret must not exist")
+	assert.Nil(t, helmchart.Find(objs, "Secret", "unified-cd-k8s-agent-secret"), "the default k8s-agent token Secret must not exist")
 
-	controllerDeployment, err := os.ReadFile(filepath.Join(root, "manifests", "base", "controller", "deployment.yaml"))
-	require.NoError(t, err)
-	assert.Contains(t, string(controllerDeployment), "serviceAccountName: unified-cd-controller")
-	rbac, err := os.ReadFile(filepath.Join(root, "manifests", "base", "controller", "rbac.yaml"))
-	require.NoError(t, err)
-	assert.Contains(t, string(rbac), "resources: [\"tokenreviews\"]")
-	assert.Contains(t, string(rbac), "verbs: [\"create\"]")
-	assert.Contains(t, string(rbac), "resources: [\"pods\"]")
-	assert.Contains(t, string(rbac), "verbs: [\"get\"]")
-	assert.NotContains(t, strings.ToLower(string(rbac)), "cluster-admin")
+	controllerDeployment := renderedYAML(t, objs, "Deployment", "unified-cd-controller")
+	assert.Contains(t, controllerDeployment, "serviceAccountName: unified-cd-controller")
+
+	// The controller's cluster-scoped grant is exactly TokenReview creation.
+	clusterRole := helmchart.Find(objs, "ClusterRole", "unified-cd-controller-kubernetes-enrollment")
+	require.NotNil(t, clusterRole)
+	assert.Equal(t, []any{map[string]any{
+		"apiGroups": []any{"authentication.k8s.io"},
+		"resources": []any{"tokenreviews"},
+		"verbs":     []any{"create"},
+	}}, objectField(t, clusterRole, "rules"))
+
+	// Its namespaced grant is exactly reading Pods, to resolve the Pod UID.
+	role := helmchart.Find(objs, "Role", "unified-cd-controller-kubernetes-enrollment")
+	require.NotNil(t, role)
+	assert.Equal(t, []any{map[string]any{
+		"apiGroups": []any{""},
+		"resources": []any{"pods"},
+		"verbs":     []any{"get"},
+	}}, objectField(t, role, "rules"))
+
+	// Both bindings grant those rules to the controller ServiceAccount in the
+	// release namespace, and nothing broader.
+	for _, b := range []struct{ kind, roleKind string }{
+		{"ClusterRoleBinding", "ClusterRole"},
+		{"RoleBinding", "Role"},
+	} {
+		binding := helmchart.Find(objs, b.kind, "unified-cd-controller-kubernetes-enrollment")
+		require.NotNil(t, binding, b.kind)
+		assert.Equal(t, []any{map[string]any{
+			"kind": "ServiceAccount", "name": "unified-cd-controller", "namespace": "unified-cd",
+		}}, objectField(t, binding, "subjects"), b.kind)
+		assert.Equal(t, b.roleKind, objectField(t, binding, "roleRef", "kind"), b.kind)
+		assert.Equal(t, "unified-cd-controller-kubernetes-enrollment", objectField(t, binding, "roleRef", "name"), b.kind)
+	}
+	for _, o := range objs {
+		assert.NotContains(t, strings.ToLower(renderedYAML(t, objs, o.Kind(), o.Name())), "cluster-admin", "%s/%s", o.Kind(), o.Name())
+	}
 }
 
 func TestKubernetesCredentialEnrollmentPodReadMatchesPolicyNamespace(t *testing.T) {
-	_, file, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	objs := helmchart.RenderFile(t, "unified-cd", bundleValues("install"))
 
-	policy, err := os.ReadFile(filepath.Join(root, "manifests", "base", "controller", "config-configmap.yaml"))
-	require.NoError(t, err)
-	assert.Contains(t, string(policy), "namespaces: [unified-cd]")
+	cm := helmchart.Find(objs, "ConfigMap", "unified-cd-controller-config")
+	require.NotNil(t, cm)
+	var cfg struct {
+		AgentAuth struct {
+			Policies []struct {
+				Name            string   `yaml:"name"`
+				Namespaces      []string `yaml:"namespaces"`
+				ServiceAccounts []string `yaml:"serviceAccounts"`
+			} `yaml:"kubernetesEnrollmentPolicies"`
+		} `yaml:"agentAuth"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(objectField(t, cm, "data", "controller-config.yaml").(string)), &cfg))
+	require.Len(t, cfg.AgentAuth.Policies, 1)
+	assert.Equal(t, "unified-cd-k8s-agents", cfg.AgentAuth.Policies[0].Name)
+	assert.Equal(t, []string{"unified-cd"}, cfg.AgentAuth.Policies[0].Namespaces)
+	assert.Equal(t, []string{"unified-cd-k8s-agent"}, cfg.AgentAuth.Policies[0].ServiceAccounts)
 
-	controllerRBAC, err := os.ReadFile(filepath.Join(root, "manifests", "base", "controller", "rbac.yaml"))
-	require.NoError(t, err)
-	normalizedControllerRBAC := strings.ReplaceAll(string(controllerRBAC), "\r\n", "\n")
-	assert.Contains(t, normalizedControllerRBAC, "kind: Role\nmetadata:\n  name: unified-cd-controller-kubernetes-enrollment\n  namespace: unified-cd")
-	assert.Contains(t, normalizedControllerRBAC, "kind: RoleBinding\nmetadata:\n  name: unified-cd-controller-kubernetes-enrollment\n  namespace: unified-cd")
+	// The Pod read the policy needs is granted in the same namespace the policy
+	// admits agents from.
+	for _, kind := range []string{"Role", "RoleBinding"} {
+		o := helmchart.Find(objs, kind, "unified-cd-controller-kubernetes-enrollment")
+		require.NotNil(t, o, kind)
+		assert.Equal(t, "unified-cd", o.Namespace(), kind)
+	}
 
-	agentRBAC, err := os.ReadFile(filepath.Join(root, "manifests", "base", "k8s-agent", "rbac.yaml"))
-	require.NoError(t, err)
-	assert.Contains(t, strings.ReplaceAll(string(agentRBAC), "\r\n", "\n"), "name: unified-cd-k8s-agent\n  namespace: ci")
+	// The agent's own Role and RoleBinding live in the job namespace.
+	for _, kind := range []string{"Role", "RoleBinding"} {
+		o := helmchart.Find(objs, kind, "unified-cd-k8s-agent")
+		require.NotNil(t, o, kind)
+		assert.Equal(t, "ci", o.Namespace(), kind)
+	}
 }
 
 // TestKubernetesCredentialRenderedProductionManifestsUseHTTPS checks the
-// rendered install bundles, not the committed source: the bundles are no
-// longer committed (they're built from the manifests/*/ kustomize overlays
-// by scripts/build-manifests.sh and published as release assets), so this
-// renders each overlay the same way that script does — kubectl kustomize,
-// with no image tag — and asserts against the output.
+// rendered install bundles: the bundles are not committed, they are rendered
+// from the chart with charts/unified-cd/bundles/*.values.yaml by
+// scripts/build-manifests.sh and published as release assets, so this renders
+// each bundle's values the same way and asserts against the output.
 func TestKubernetesCredentialRenderedProductionManifestsUseHTTPS(t *testing.T) {
-	_, file, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	if _, err := exec.LookPath("kubectl"); err != nil {
-		t.Skip("kubectl not on PATH: skipping the rendered-manifest HTTPS assertion here; it still runs on the Linux CI legs")
+	for _, bundle := range []string{"core-install", "agent-only"} {
+		objs := helmchart.RenderFile(t, "unified-cd", bundleValues(bundle))
+		manifest := renderedYAML(t, objs, "ConfigMap", "unified-cd-k8s-agent-config")
+		assert.NotContains(t, manifest, "server: http://", bundle)
+		assert.Contains(t, manifest, "https://controller.example.invalid", bundle)
 	}
-	for _, overlay := range []string{"core-install", "agent-only"} {
-		manifest := renderKustomizeOverlay(t, root, overlay)
-		assert.NotContains(t, manifest, "server: http://", overlay)
-		assert.Contains(t, manifest, "https://controller.example.invalid", overlay)
-	}
-	install := renderKustomizeOverlay(t, root, "install")
-	assert.Contains(t, install, "allowInsecureHTTP: true")
-}
-
-func renderKustomizeOverlay(t *testing.T, root, overlay string) string {
-	t.Helper()
-	out, err := exec.Command("kubectl", "kustomize", filepath.Join(root, "manifests", overlay)).Output()
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		t.Fatalf("kubectl kustomize manifests/%s: %v\nstderr:\n%s", overlay, err, exitErr.Stderr)
-	}
-	require.NoError(t, err, "kubectl kustomize manifests/%s", overlay)
-	return string(out)
+	install := helmchart.RenderFile(t, "unified-cd", bundleValues("install"))
+	assert.Contains(t, renderedYAML(t, install, "ConfigMap", "unified-cd-k8s-agent-config"), "allowInsecureHTTP: true")
 }

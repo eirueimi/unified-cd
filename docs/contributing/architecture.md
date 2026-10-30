@@ -102,7 +102,7 @@ The top level splits by *what kind of thing it is*, not by feature.
 | `docs/` | This site. `mkdocs build --strict` must pass. |
 | `schemas/` | The **generated** JSON Schema for manifests. Never hand-edited. |
 | `examples/` | Real manifests, validated by tests against that schema. |
-| `manifests/`, `deployments/` | Kubernetes install bundles and observability config. |
+| `charts/`, `manifests/`, `deployments/` | The Helm chart, the release-bundle notes, and observability config. |
 | `test/e2e/` | End-to-end tests that drive real binaries. |
 
 ### `cmd/` — the binaries

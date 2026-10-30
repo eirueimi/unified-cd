@@ -1,0 +1,28 @@
+{{- if .Values.agent.enabled }}
+{{- /*
+agent.config is deep-merged over the computed default: maps merge key by key
+and the user's value always wins (including false and 0); a list supplied by
+the user replaces the computed list entirely.
+*/}}
+{{- $config := include "unified-cd.mergeConfig" (dict "base" (include "unified-cd.agentConfigDefault" . | fromYaml) "over" .Values.agent.config) | fromYaml }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: unified-cd-k8s-agent-config
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+data:
+  k8s-agent-config.yaml: |
+    # podImage overrides the default runner image (the unified-cd-runner image
+    # published with the agent's release) with a plain Go toolchain image, so a job
+    # that declares no podTemplate runs in Go. It is a third-party tag that does
+    # not follow the agent's version. Set agent.config.podImage to change it.
+    # jobPodPolicy (not set by default) decides which Pod fields a job's own
+    # podTemplate may use. With no block, a job that names a ServiceAccount,
+    # hostPath, a Secret, a PVC, privileged: true or nodeName fails at claim time
+    # with "k8s: job pod policy: ...". See
+    # docs/operator-manual/kubernetes-integration.md, "Job Pod field policy", and
+    # examples/config/k8s-agent.yaml for every key; set it through agent.config.
+    {{- toYaml $config | nindent 4 }}
+{{- end }}

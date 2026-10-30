@@ -1,0 +1,76 @@
+{{- if .Values.agent.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unified-cd-k8s-agent
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    app: unified-cd-k8s-agent
+    {{- include "unified-cd.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.agent.replicas }}
+  {{- /* The app selector label is kept unchanged: a Deployment selector is immutable. */}}
+  selector:
+    matchLabels:
+      app: unified-cd-k8s-agent
+  template:
+    metadata:
+      labels:
+        app: unified-cd-k8s-agent
+        {{- include "unified-cd.labels" . | nindent 8 }}
+      annotations:
+        {{- /* A changed config restarts the Pods on helm upgrade. */}}
+        {{- $annotations := merge (deepCopy .Values.agent.podAnnotations) (dict "checksum/config" (include (print $.Template.BasePath "/agent/configmap.yaml") . | sha256sum)) }}
+        {{- toYaml $annotations | nindent 8 }}
+    spec:
+      serviceAccountName: unified-cd-k8s-agent
+      containers:
+        - name: k8s-agent
+          image: {{ include "unified-cd.agentImage" . }}
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          {{- /*
+          No CPU limit by default: a CPU limit throttles the container even
+          when the node is idle, whereas a memory limit is what actually
+          contains a runaway process. These values are a conservative floor
+          for the agent process itself, not a capacity estimate: raise them if
+          you see throttling or OOMKills under your load. They size only this
+          Deployment's own Pods; the per-job Pods this agent launches are
+          separate Pods with their own specs and are not covered here.
+          */}}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          env:
+            - name: UNIFIED_K8S_CONFIG
+              value: /etc/unified-cd/config.yaml
+          volumeMounts:
+            - name: config
+              mountPath: /etc/unified-cd/config.yaml
+              subPath: k8s-agent-config.yaml
+              readOnly: true
+            - name: enrollment-identity
+              mountPath: /var/run/secrets/unified-cd-agent
+              readOnly: true
+      {{- with .Values.agent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: unified-cd-k8s-agent-config
+        - name: enrollment-identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: unified-cd-agent-enrollment
+                  expirationSeconds: 3600
+{{- end }}

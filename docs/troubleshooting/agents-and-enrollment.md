@@ -175,8 +175,8 @@ agent can therefore be illegal here. The last error is RBAC: the agent's Role ne
 `create` and `update` on `persistentvolumeclaims`, and an older Role carried only `create` and
 `delete`.
 
-**Fix:** correct the entry and restart the agent. For the RBAC error, apply the Role in
-`manifests/base/k8s-agent/rbac.yaml` (or add the verbs to your own) **before** rolling the agent
+**Fix:** correct the entry and restart the agent. For the RBAC error, upgrade the Helm release (or apply the release bundle) so the Role in
+[`charts/unified-cd/templates/agent/rbac.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/agent/rbac.yaml) is current (or add the verbs to your own) **before** rolling the agent
 image. Never "fix" a too-long or illegal PVC name by changing `agentName` on an agent whose
 volumes already hold data: a new `agentName` provisions new, empty PVCs and leaves the old ones
 behind. See [Named volumes on
