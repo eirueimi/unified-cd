@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -11,14 +10,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
-	"github.com/klauspost/compress/zstd"
 )
 
 // ErrCacheMiss is returned when no cache entry matches the key or restoreKeys.
@@ -165,13 +161,21 @@ func Restore(ctx context.Context, store objectstore.ObjectStore, jobName, path, 
 // volume's mount point still holds files there, and extracting them would write
 // into the volume.
 func RestoreExcluding(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, restoreKeys []string, exclude []string) (bool, error) {
-	return RestoreWritten(ctx, store, jobName, path, key, restoreKeys, exclude, nil)
+	hit, _, err := RestoreWritten(ctx, store, jobName, path, key, restoreKeys, exclude, nil)
+	return hit, err
 }
 
 // RestoreWritten is RestoreExcluding that records what it extracted in w (nil
-// records nothing), so the caller can re-own exactly that.
-func RestoreWritten(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, restoreKeys []string, exclude []string, w *artifact.Written) (bool, error) {
-	return restore(ctx, store, jobName, key, restoreKeys, func(r io.Reader) error { return extract(r, path, exclude, w) })
+// records nothing), so the caller can re-own exactly that. Symlink and hardlink
+// entries in the archive are skipped, as RestoreIn does; skippedLinks is how
+// many were. It is what the host agent runs.
+func RestoreWritten(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, restoreKeys []string, exclude []string, w *artifact.Written) (hit bool, skippedLinks int, err error) {
+	hit, err = restore(ctx, store, jobName, key, restoreKeys, func(r io.Reader) error {
+		n, err := artifact.ExtractTarZstdDir(r, path, exclude, false, w)
+		skippedLinks = n
+		return err
+	})
+	return hit, skippedLinks, err
 }
 
 // RestoreIn is RestoreExcluding confined to root: path must lie at or below
@@ -312,79 +316,4 @@ func findBestMatch(ctx context.Context, store objectstore.ObjectStore, jobName s
 		}
 	}
 	return bestKey, nil
-}
-
-// isUnder reports whether p is one of paths or lies below one of them.
-func isUnder(p string, paths []string) bool {
-	for _, e := range paths {
-		if p == e || strings.HasPrefix(p, e+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
-}
-
-// extract decompresses a tar+zstd stream into dest.
-// Rejects paths that escape dest (path traversal protection). An entry at or
-// below one of the paths in exclude is skipped.
-func extract(r io.Reader, dest string, exclude []string, w *artifact.Written) error {
-	dec, err := zstd.NewReader(r)
-	if err != nil {
-		return fmt.Errorf("zstd reader: %w", err)
-	}
-	defer dec.Close()
-
-	// Resolve dest to absolute so the traversal guard works for a relative dest
-	// (e.g. ".") against archives with relative entries (tar -C dir .).
-	absDest, err := filepath.Abs(dest)
-	if err != nil {
-		return fmt.Errorf("resolve dest %q: %w", dest, err)
-	}
-	cleanDest := absDest + string(filepath.Separator)
-	var skip []string
-	for _, e := range exclude {
-		abs, err := filepath.Abs(e)
-		if err != nil {
-			return fmt.Errorf("resolve excluded path %q: %w", e, err)
-		}
-		skip = append(skip, abs)
-	}
-	tr := tar.NewReader(dec)
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("tar next: %w", err)
-		}
-		target := filepath.Join(absDest, filepath.FromSlash(hdr.Name))
-		if !strings.HasPrefix(target+string(filepath.Separator), cleanDest) {
-			return fmt.Errorf("invalid path %q in cache archive", hdr.Name)
-		}
-		if isUnder(target, skip) {
-			continue
-		}
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := w.MkdirAll(target, 0o750); err != nil {
-				return err
-			}
-		default:
-			if err := w.MkdirAll(filepath.Dir(target), 0o750); err != nil {
-				return err
-			}
-			f, err := os.Create(target)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
-				return err
-			}
-			f.Close()
-			w.File(target)
-		}
-	}
-	return nil
 }

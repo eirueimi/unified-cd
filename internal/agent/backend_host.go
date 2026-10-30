@@ -222,10 +222,11 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
 		var written artifact.Written
-		hit, err := cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, b.excludeVolumes(ctx, "cache restore", path), &written)
+		hit, skipped, err := cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, b.excludeVolumes(ctx, "cache restore", path), &written)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			return false, err
 		}
+		b.warnSkippedLinks(ctx, skipped)
 		if hit {
 			if err := b.chownAgentWrite(ctx, &written); err != nil {
 				return false, err
@@ -238,10 +239,11 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 		return false, err
 	}
 	defer os.RemoveAll(hostDir)
-	hit, err := cache.Restore(ctx, b.a.CacheStore, b.jobName, hostDir, key, restoreKeys)
+	hit, skipped, err := cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, hostDir, key, restoreKeys, nil, nil)
 	if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 		return false, err
 	}
+	b.warnSkippedLinks(ctx, skipped)
 	if !hit {
 		return false, nil
 	}
@@ -249,6 +251,18 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 		return false, err
 	}
 	return true, nil
+}
+
+// warnSkippedLinks tells the run log that a cache restore skipped link
+// entries, on the same stream and with the same text as the k8s sidecar's.
+func (b *hostBackend) warnSkippedLinks(ctx context.Context, n int) {
+	if n <= 0 {
+		return
+	}
+	p := NewLogPusher(b.a.Client, b.a.ID, b.runID, dsl.ArtifactLogIndex, "stderr")
+	p.SetMasker(b.masker)
+	fmt.Fprintln(p, artifact.SkippedLinksWarning(n))
+	p.Flush(ctx)
 }
 
 // CacheSave archives path (host workspace path, or scope-container path when

@@ -142,6 +142,7 @@ nav:
           - "Matrix Authorization": operator-manual/migrations/2026-10-28-matrix-authorization.md
           - "AppSource URL Credentials": operator-manual/migrations/2026-10-29-appsource-url-credentials.md
           - "Kustomize Overlays Replaced by a Helm Chart": operator-manual/migrations/2026-10-30-helm-chart.md
+          - "Host Agent Symlinks in Artifacts and Cache": operator-manual/migrations/2026-10-30-host-agent-symlinks.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md

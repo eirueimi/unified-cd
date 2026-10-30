@@ -1,17 +1,14 @@
 package artifact
 
 import (
-	"archive/tar"
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/objectstore"
-	"github.com/klauspost/compress/zstd"
 )
 
 // WriteTarZstd archives path (a directory OR a single file) and streams it to w
@@ -26,71 +23,28 @@ func WriteTarZstd(w io.Writer, path string) error {
 // the entry itself and, for a directory, everything below it. Paths are
 // compared after filepath.Clean, in the same form as path (both absolute, or
 // both relative to the same directory). An exclusion that does not exist under
-// path is simply never met.
+// path is simply never met. A symlink in the tree is archived as a symlink
+// entry and never followed, so a dangling link or a link to a directory is
+// fine; this is the same archive the Kubernetes sidecar writes.
 func WriteTarZstdExcluding(w io.Writer, path string, exclude []string) error {
-	skip := make(map[string]bool, len(exclude))
-	for _, e := range exclude {
-		skip[filepath.Clean(e)] = true
-	}
-	// When path is a single file, name entries relative to its parent so the
-	// entry is the base name rather than "." (which would extract onto the dest
-	// directory itself).
-	relBase := path
-	if info, err := os.Stat(path); err == nil && !info.IsDir() {
-		relBase = filepath.Dir(path)
-	}
-
-	enc, err := zstd.NewWriter(w)
+	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return fmt.Errorf("zstd writer: %w", err)
+		return fmt.Errorf("resolve %q: %w", path, err)
 	}
-	tw := tar.NewWriter(enc)
-	if err := filepath.WalkDir(path, func(p string, d fs.DirEntry, werr error) error {
-		if werr != nil {
-			return werr
-		}
-		if skip[filepath.Clean(p)] {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		info, err := d.Info()
+	absExclude := make([]string, 0, len(exclude))
+	for _, e := range exclude {
+		abs, err := filepath.Abs(e)
 		if err != nil {
-			return err
+			return fmt.Errorf("resolve excluded path %q: %w", e, err)
 		}
-		rel, err := filepath.Rel(relBase, p)
-		if err != nil {
-			return err
-		}
-		hdr, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return err
-		}
-		hdr.Name = filepath.ToSlash(rel)
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		if !d.IsDir() {
-			f, err := os.Open(p)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			_, err = io.Copy(tw, f)
-			return err
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("tar walk %q: %w", path, err)
+		absExclude = append(absExclude, abs)
 	}
-	if err := tw.Close(); err != nil {
-		return fmt.Errorf("tar close: %w", err)
+	// The archived path is its own root, so the walk can never leave it.
+	root := absPath
+	if info, err := os.Stat(absPath); err == nil && !info.IsDir() {
+		root = filepath.Dir(absPath)
 	}
-	if err := enc.Close(); err != nil {
-		return fmt.Errorf("zstd close: %w", err)
-	}
-	return nil
+	return WriteTarZstdIn(w, root, absPath, absExclude)
 }
 
 // StreamTarZstd returns an io.ReadCloser that yields the tar+zstd archive of
