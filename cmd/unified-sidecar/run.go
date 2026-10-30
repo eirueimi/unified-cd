@@ -181,7 +181,7 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		} else if hit {
 			fmt.Fprintf(stderr, "cache hit: %s\n", *key)
 			if skippedLinks > 0 {
-				fmt.Fprintf(stderr, "cache restore warning: skipped %d symlink/hardlink entries; links are not restored on the Kubernetes agent, so the cache may be incomplete (tools such as .venv or node_modules/.bin may need re-creating)\n", skippedLinks)
+				fmt.Fprintln(stderr, artifact.SkippedLinksWarning(skippedLinks))
 			}
 			fmt.Fprintln(stdout, "UCD_CACHE_RESULT=hit")
 		} else {

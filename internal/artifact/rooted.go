@@ -214,6 +214,68 @@ func ExtractTarZstdIn(r io.Reader, root, dest string, exclude []string, refuseLi
 // since the first link is then an error), so a caller can tell the user the
 // extracted tree is incomplete.
 func ExtractTarZstdInCounting(r io.Reader, root, dest string, exclude []string, refuseLinks bool) (skippedLinks int, err error) {
+	return ExtractTarZstdInWritten(r, root, dest, exclude, refuseLinks, nil)
+}
+
+// SkippedLinksWarning is the run-log warning for a cache restore that skipped
+// n symlink/hardlink entries. The Kubernetes sidecar and the host agent both
+// print it, so a cache behaves the same on either.
+func SkippedLinksWarning(n int) string {
+	return fmt.Sprintf("cache restore warning: skipped %d symlink/hardlink entries; links are not restored by the agents, so the cache may be incomplete (tools such as .venv or node_modules/.bin may need re-creating)", n)
+}
+
+// ExtractTarZstdDir is the host agent's counterpart of the sidecar's confined
+// extraction: it extracts into dest (created if missing, recorded in w when it
+// is new) with dest itself as the root, so nothing is written through a
+// symlink that leads out of dest. Symlink and hardlink entries are refused
+// (refuseLinks) or skipped and counted, exactly as ExtractTarZstdInCounting.
+func ExtractTarZstdDir(r io.Reader, dest string, exclude []string, refuseLinks bool, w *Written) (skippedLinks int, err error) {
+	absDest, err := filepath.Abs(dest)
+	if err != nil {
+		return 0, fmt.Errorf("resolve dest %q: %w", dest, err)
+	}
+	if err := w.MkdirAll(absDest, 0o750); err != nil {
+		return 0, err
+	}
+	absExclude := make([]string, 0, len(exclude))
+	for _, e := range exclude {
+		abs, err := filepath.Abs(e)
+		if err != nil {
+			return 0, fmt.Errorf("resolve excluded path %q: %w", e, err)
+		}
+		absExclude = append(absExclude, abs)
+	}
+	return ExtractTarZstdInWritten(r, absDest, absDest, absExclude, refuseLinks, w)
+}
+
+// mkdirAllIn is rt.MkdirAll(rel) that records in w the top-most directory it
+// had to create (see Written.MkdirAll).
+func mkdirAllIn(rt *os.Root, absRoot, rel string, perm os.FileMode, w *Written) error {
+	var top string
+	if w != nil {
+		for d := filepath.Clean(rel); d != "."; d = filepath.Dir(d) {
+			_, err := rt.Lstat(d)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			top = d
+		}
+	}
+	if err := rt.MkdirAll(rel, perm); err != nil {
+		return err
+	}
+	if top != "" {
+		w.newDirs = append(w.newDirs, filepath.Join(absRoot, top))
+	}
+	return nil
+}
+
+// ExtractTarZstdInWritten is ExtractTarZstdInCounting that also records in w
+// (nil records nothing) what it created, as ExtractTarZstdWritten does.
+func ExtractTarZstdInWritten(r io.Reader, root, dest string, exclude []string, refuseLinks bool, w *Written) (skippedLinks int, err error) {
 	rt, absRoot, err := openRoot(root)
 	if err != nil {
 		return 0, err
@@ -250,7 +312,7 @@ func ExtractTarZstdInCounting(r io.Reader, root, dest string, exclude []string, 
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := rt.MkdirAll(rel, 0o750); err != nil {
+			if err := mkdirAllIn(rt, absRoot, rel, 0o750, w); err != nil {
 				return skippedLinks, err
 			}
 		case tar.TypeSymlink, tar.TypeLink:
@@ -259,9 +321,11 @@ func ExtractTarZstdInCounting(r io.Reader, root, dest string, exclude []string, 
 			}
 			skippedLinks++
 		default:
-			if err := rt.MkdirAll(filepath.Dir(rel), 0o750); err != nil {
+			if err := mkdirAllIn(rt, absRoot, filepath.Dir(rel), 0o750, w); err != nil {
 				return skippedLinks, err
 			}
+			_, statErr := rt.Lstat(rel)
+			created := errors.Is(statErr, fs.ErrNotExist)
 			f, err := rt.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o666)
 			if err != nil {
 				return skippedLinks, err
@@ -271,6 +335,9 @@ func ExtractTarZstdInCounting(r io.Reader, root, dest string, exclude []string, 
 				return skippedLinks, err
 			}
 			f.Close()
+			if created {
+				w.File(filepath.Join(absRoot, rel))
+			}
 		}
 	}
 	return skippedLinks, nil

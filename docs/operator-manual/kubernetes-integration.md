@@ -1010,7 +1010,7 @@ artifact and cache invocation) as a confined root and resolves every path beneat
 instead of archiving the credential, and a download or cache restore into a path below a symlink
 that points outside the workspace fails instead of writing there. A symlink inside the workspace
 that stays inside it keeps working as a path component. A symlink found while archiving a directory
-is stored as a link entry and its target is not read. The sidecar and the agent must be upgraded
+is stored as a link entry and its target is not read (the host agent does the same). The sidecar and the agent must be upgraded
 together, because the agent now passes `--root`.
 
 **No step can target the sidecar.** Independently of the Pod policy, and on every agent type, a
