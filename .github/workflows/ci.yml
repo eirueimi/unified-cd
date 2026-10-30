@@ -19,6 +19,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Set up Helm
+        # internal/helmchart's tests render the chart with the helm binary and
+        # skip when it is missing, so install it everywhere they run.
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
       - name: Run unit tests
         shell: bash
         run: |
@@ -33,6 +39,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Set up Helm
+        # internal/helmchart's tests render the chart with the helm binary and
+        # skip when it is missing, so install it everywhere they run.
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
       - name: Run integration tests
         shell: bash
         run: |
@@ -266,3 +278,132 @@ jobs:
           # The securityContext golden must not have skipped anything but its three
           # documented host-only cases, and must have run the other 9 (the =9 below).
           bash .github/scripts/check-test-json.sh k8s-test.json 'SecCtx' '^TestSecCtxParity_K8s/secctx-volume-' 'TestSecCtxParity_K8s/=9'
+
+  # The Helm chart (charts/unified-cd) is the single source of the install
+  # bundles, so CI proves three things: it lints, every bundle it renders is
+  # accepted by a real API server, and a default (trial) install on kind comes
+  # up, enrolls its Kubernetes agent, survives `helm upgrade` with its KEK
+  # untouched, and leaves the KEK and the job namespace behind on uninstall.
+  helm:
+    name: Helm chart (lint + kind install)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NS: unified-cd
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+      - name: Lint the chart
+        run: |
+          set -euo pipefail
+          helm lint --strict charts/unified-cd
+          for f in charts/unified-cd/bundles/*.values.yaml; do
+            helm lint --strict charts/unified-cd -f "$f"
+          done
+      - name: Render the install bundles
+        run: scripts/build-manifests.sh dist/m
+      - name: Start kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: helm-ci
+      - name: Build and load the first-party images into kind
+        # VERSION=ci only labels the binaries; the images are tagged :ci and
+        # the chart is pointed at them below. kind-loaded images are not on
+        # any registry, and the chart's pull policy (IfNotPresent) is
+        # satisfied by them without a pull.
+        run: |
+          set -euo pipefail
+          docker build --build-arg VERSION=ci -f docker/controller.Dockerfile -t unified-cd-controller:ci .
+          docker build --build-arg VERSION=ci -f docker/k8s-agent.Dockerfile -t unified-cd-k8s-agent:ci .
+          kind load docker-image unified-cd-controller:ci unified-cd-k8s-agent:ci --name helm-ci
+      - name: Load third-party images into kind
+        # The trial install pulls three Docker Hub images inside kind. Pull
+        # them here instead and rebuild each under the same tag: a pulled
+        # multi-platform index has other platforms' blobs missing locally, so
+        # `kind load` would fail with "content digest ...: not found" (see the
+        # k8s job). Doing it on the runner also sidesteps in-cluster pull
+        # rate limits.
+        run: |
+          set -euo pipefail
+          for img in postgres:16-alpine dxflrs/garage:v2.3.0 alpine/k8s:1.31.2; do
+            docker pull "$img"
+            echo "FROM $img" | docker build -t "$img" -
+            kind load docker-image "$img" --name helm-ci
+          done
+      - name: Install the chart (trial defaults)
+        run: |
+          set -euo pipefail
+          helm install unified-cd charts/unified-cd -n "$NS" --create-namespace \
+            --set controller.image.repository=unified-cd-controller,controller.image.tag=ci \
+            --set agent.image.repository=unified-cd-k8s-agent,agent.image.tag=ci \
+            --wait --timeout 10m
+      - name: Server-side dry-run of every rendered bundle
+        # Run after the install so the unified-cd namespace exists: a server
+        # dry-run of namespaced objects needs it, and the bundle's own
+        # Namespace object is not created by a dry-run.
+        run: |
+          set -euo pipefail
+          for f in dist/m/*.yaml; do
+            echo "== $f"
+            kubectl apply --dry-run=server -f "$f"
+          done
+      - name: Assert the install works
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The KEK Job is a pre-install hook deleted on success
+          # (hook-delete-policy hook-succeeded), so wait for the Secret it
+          # creates, not for the Job.
+          for i in $(seq 1 90); do
+            kubectl -n "$NS" get secret unified-cd-controller-kek >/dev/null 2>&1 && break
+            [ "$i" -eq 90 ] && { echo "KEK secret never appeared"; exit 1; }
+            sleep 2
+          done
+          kubectl -n "$NS" wait --for=condition=Available deployment/unified-cd-controller --timeout=5m
+
+          kubectl -n "$NS" port-forward svc/unified-cd-controller 18080:80 >pf.log 2>&1 &
+          echo $! > pf.pid
+          # GET /api/v1/agents returns a bare JSON array of agents, each with a
+          # "labels" string array; the Kubernetes agent carries kind:kubernetes.
+          enrolled=""
+          for i in $(seq 1 100); do
+            if curl -fsS -H 'Authorization: Bearer dev-token-change-me' \
+                 http://127.0.0.1:18080/api/v1/agents 2>/dev/null \
+               | jq -e 'any(.[]; (.labels // []) | any(. == "kind:kubernetes"))' >/dev/null 2>&1; then
+              enrolled=1; break
+            fi
+            sleep 3
+          done
+          [ -n "$enrolled" ] || { echo "no agent with label kind:kubernetes enrolled"; exit 1; }
+
+          kek_before=$(kubectl -n "$NS" get secret unified-cd-controller-kek -o jsonpath='{.data.kek}')
+          [ -n "$kek_before" ]
+
+          # An upgrade must neither fail nor regenerate the KEK.
+          helm upgrade unified-cd charts/unified-cd -n "$NS" --reuse-values \
+            --set agent.config.maxConcurrent=3 --wait --timeout 10m
+          kek_after=$(kubectl -n "$NS" get secret unified-cd-controller-kek -o jsonpath='{.data.kek}')
+          [ "$kek_before" = "$kek_after" ] || { echo "KEK changed across helm upgrade"; exit 1; }
+
+          # Uninstall keeps the KEK (it is not a Helm-managed object, so losing
+          # it would orphan every encrypted credential) and the job namespace.
+          kill "$(cat pf.pid)" 2>/dev/null || true
+          helm uninstall unified-cd -n "$NS" --wait
+          kek_final=$(kubectl -n "$NS" get secret unified-cd-controller-kek -o jsonpath='{.data.kek}')
+          [ "$kek_before" = "$kek_final" ] || { echo "KEK missing or changed after uninstall"; exit 1; }
+          kubectl get namespace ci
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl get all -A || true
+          kubectl -n "$NS" describe pods || true
+          kubectl -n "$NS" logs deployment/unified-cd-controller --tail=200 || true
+          kubectl -n "$NS" logs deployment/unified-cd-k8s-agent --tail=200 || true
+          cat pf.log || true
