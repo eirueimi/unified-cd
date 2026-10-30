@@ -1063,10 +1063,23 @@ func (p *Postgres) DeleteRun(ctx context.Context, id string) error {
 	return err
 }
 
+// ErrRunFinalized is returned by UpsertStepReport when the parent run is already
+// terminal; the report is dropped without mutating any step row.
+var ErrRunFinalized = errors.New("run already finalized")
+
+// UpsertStepReport records a step's status. The terminal-run guard is part of the
+// write statement itself: the INSERT only produces a row when the parent run is
+// non-terminal, and the run row is share-locked (FOR SHARE) for the duration, so a
+// concurrent finalization (FinishRun's CAS UPDATE) either commits first -- and the
+// guard sees it -- or waits until this write commits. Returns ErrRunFinalized when
+// the run is terminal and ErrRunNotFound when it does not exist.
 func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) error {
 	const q = `
 		INSERT INTO step_reports(run_id, step_index, variant, stage_index, step_name, status, exit_code, started_at, ended_at, child_run_id, call_job_name)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULLIF($10,'')::uuid, NULLIF($11,''))
+		SELECT r.id, $2, $3, $4, $5, $6, $7, $8, $9, NULLIF($10,'')::uuid, NULLIF($11,'')
+		  FROM runs r
+		 WHERE r.id = $1 AND r.status NOT IN ('Succeeded', 'Failed', 'Cancelled')
+		   FOR SHARE OF r
 		ON CONFLICT (run_id, step_index, variant) DO UPDATE
 		  SET stage_index   = EXCLUDED.stage_index,
 		      step_name     = EXCLUDED.step_name,
@@ -1077,8 +1090,18 @@ func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex
 		      child_run_id  = COALESCE(EXCLUDED.child_run_id, step_reports.child_run_id),
 		      call_job_name = COALESCE(EXCLUDED.call_job_name, step_reports.call_job_name);
 	`
-	_, err := p.pool.Exec(ctx, q, runID, stepIndex, variant, stageIndex, stepName, status, exitCode, startedAt, endedAt, childRunID, callJobName)
-	return err
+	tag, err := p.pool.Exec(ctx, q, runID, stepIndex, variant, stageIndex, stepName, status, exitCode, startedAt, endedAt, childRunID, callJobName)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// The guard matched no run: it is either missing or already terminal.
+		if _, gerr := p.GetRun(ctx, runID); gerr != nil {
+			return gerr
+		}
+		return ErrRunFinalized
+	}
+	return nil
 }
 
 // MarkRunStepsInterrupted terminalizes a reaped run's Running step reports: a
