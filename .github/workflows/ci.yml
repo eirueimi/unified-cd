@@ -347,7 +347,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL --retry 3 --connect-timeout 10 --max-time 60             -o v0.11.0-install.yaml             https://github.com/eirueimi/unified-cd/releases/download/v0.11.0/install.yaml
+          curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
+            -o v0.11.0-install.yaml \
+            https://github.com/eirueimi/unified-cd/releases/download/v0.11.0/install.yaml
           kubectl apply -f v0.11.0-install.yaml
           kek_old=""
           for i in $(seq 1 90); do

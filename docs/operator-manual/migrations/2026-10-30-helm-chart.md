@@ -19,7 +19,8 @@ new bundle creates a plain `garage-config` and the hashed one is orphaned. After
 the Garage Pod has restarted on the new ConfigMap, delete it:
 
 ```bash
-kubectl -n unified-cd get configmap -o name | grep '^configmap/garage-config-'   | xargs -r kubectl -n unified-cd delete
+kubectl -n unified-cd get configmap -o name | grep '^configmap/garage-config-' \
+  | xargs -r kubectl -n unified-cd delete
 ```
 
 ## What changed
@@ -166,7 +167,8 @@ matches the images you run, and read the rendered diff first with
    chart's `garage-config` (only for installs that had the bundled Garage):
 
    ```bash
-   kubectl -n unified-cd get configmap -o name | grep '^configmap/garage-config-'      | xargs -r kubectl -n unified-cd delete
+   kubectl -n unified-cd get configmap -o name | grep '^configmap/garage-config-' \
+     | xargs -r kubectl -n unified-cd delete
    ```
 
 If `helm install` reports `exists and cannot be imported into the current

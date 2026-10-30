@@ -27,7 +27,8 @@ On Kubernetes, install the whole stack (controller, agent, and a trial
 PostgreSQL and Garage) with Helm:
 
 ```bash
-helm install unified-cd oci://ghcr.io/eirueimi/charts/unified-cd   --version <x.y.z> -n unified-cd --create-namespace
+helm install unified-cd oci://ghcr.io/eirueimi/charts/unified-cd \
+  --version <x.y.z> -n unified-cd --create-namespace
 ```
 
 Or with Docker images:
