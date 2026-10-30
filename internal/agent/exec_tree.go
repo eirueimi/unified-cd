@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os/exec"
 )
@@ -16,7 +17,8 @@ import (
 // Windows cmd.Wait() blocks until every process still holding the
 // inherited stdout/stderr pipe exits, so the step hangs until the
 // grandchild finishes on its own. Using a process group (Unix) or a Job
-// Object with KILL_ON_JOB_CLOSE (Windows) via setupProcAttrs/assignJob lets
+// Object with KILL_ON_JOB_CLOSE (Windows, child created suspended and
+// resumed only after assignment) via setupProcAttrs/assignJob lets
 // killTree take down the entire tree, so Wait returns promptly and no
 // process is left behind.
 //
@@ -24,6 +26,10 @@ import (
 // cancelled, the process tree is killed and Wait's error (a "signal: killed"
 // or similar) is returned, mirroring the previous exec.CommandContext
 // behavior for callers that only check err != nil / *exec.ExitError.
+// assignJobFn is the assignment hook used by runTreeKilled; a variable so
+// tests can inject an assignment failure.
+var assignJobFn = assignJob
+
 func runTreeKilled(ctx context.Context, cmd *exec.Cmd) error {
 	setupProcAttrs(cmd)
 
@@ -31,19 +37,19 @@ func runTreeKilled(ctx context.Context, cmd *exec.Cmd) error {
 		return err
 	}
 
-	// Best-effort: if job/group assignment fails, we still run the command
-	// (with only the direct child killable on cancel) rather than aborting
-	// a step that would otherwise succeed. This is logged (rather than
-	// silently swallowed) because it means killTree/cleanupTree will fall
-	// back to single-process kill for this step, which can leave
-	// grandchildren behind on cancel. Note there is an inherent fork-window
-	// race here: assignJob runs after Start, so a child process spawned by
-	// cmd in between could, in principle, escape the job/group before
-	// assignment completes. Closing that window would require assigning the
-	// job before Start (e.g. via a suspended-create + resume dance on
-	// Windows), which is out of scope for this fix.
-	if err := assignJob(cmd); err != nil {
-		slog.Warn("assignJob failed; falling back to single-process kill on cancel", "error", err)
+	// A step must never run outside its kill scope. On Windows the child was
+	// started suspended (setupProcAttrs), so it has executed nothing yet;
+	// assignJob puts it in a Job Object and only then resumes it, which leaves
+	// no window for a descendant to escape. If assignment fails we do NOT fall
+	// back to a single-process kill (that could leave grandchildren running
+	// after cancellation): the child is killed and the step fails to start.
+	if err := assignJobFn(cmd); err != nil {
+		killTree(cmd)
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		cleanupTree(cmd)
+		slog.Error("assigning step process to its kill scope failed; step not run", "error", err)
+		return fmt.Errorf("step not started: could not confine process to a Job Object: %w", err)
 	}
 
 	// cleanupTree releases the platform-specific per-step resource (the
