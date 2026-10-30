@@ -9,8 +9,6 @@ No active items.
 
 ## High
 
-No active items.
-
 ### 45. Host agent claim-pod lifecycle parity with the Kubernetes agent
 
 - **Status:** Needs design (brainstorm and spec first)
