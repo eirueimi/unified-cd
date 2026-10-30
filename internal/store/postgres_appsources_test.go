@@ -203,3 +203,36 @@ func TestPostgres_FindManagingAppSource(t *testing.T) {
 		t.Fatalf("unknown: got %+v, err %v; want nil, nil", got, err)
 	}
 }
+
+func TestSanitizeAppSourceCredentials(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.UpsertAppSource(ctx, "leaky", []byte(`{"repoURL":"https://user:s3cr3tpw@github.com/org/repo","targetRevision":"main","path":"jobs/"}`))
+	require.NoError(t, err)
+	_, err = pg.UpsertAppSource(ctx, "clean", []byte(`{"repoURL":"git@github.com:org/repo.git","targetRevision":"main","path":"jobs/"}`))
+	require.NoError(t, err)
+	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "leaky", "abc", time.Now(), nil))
+	require.NoError(t, pg.SetAppSourceSyncStatus(ctx, "leaky", "Failed", "fetch https://user:s3cr3tpw@github.com/org/repo: denied"))
+	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "clean", "def", time.Now(), nil))
+
+	names, err := pg.SanitizeAppSourceCredentials(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"leaky"}, names)
+
+	leaky, err := pg.GetAppSource(ctx, "leaky")
+	require.NoError(t, err)
+	assert.NotContains(t, string(leaky.Spec), "s3cr3t")
+	assert.Contains(t, string(leaky.Spec), "https://github.com/org/repo")
+	assert.NotContains(t, leaky.LastError, "s3cr3t")
+	assert.Equal(t, "", leaky.LastCommit, "rewritten AppSource must re-sync")
+
+	clean, err := pg.GetAppSource(ctx, "clean")
+	require.NoError(t, err)
+	assert.Equal(t, "def", clean.LastCommit, "untouched AppSource keeps its sync state")
+
+	// Idempotent.
+	names, err = pg.SanitizeAppSourceCredentials(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, names)
+}

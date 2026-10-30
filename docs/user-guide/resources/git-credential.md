@@ -29,7 +29,7 @@ spec:
 
 ### Credential matching
 
-When resolving a `git://` URI or AppSource `repoURL`, the controller looks up a GitCredential whose `spec.host` matches the URI's hostname. This allows job definitions to reference private templates without embedding credentials.
+When resolving a `git://` URI or AppSource `repoURL`, the controller looks up a GitCredential whose `spec.host` matches the URI's hostname. This allows job definitions to reference private templates without embedding credentials. An AppSource `repoURL` that embeds credentials (`https://user:pass@host/...`) is rejected; a GitCredential is the only way to authenticate an AppSource.
 
 ### Examples
 

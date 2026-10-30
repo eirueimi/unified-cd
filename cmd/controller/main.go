@@ -274,6 +274,16 @@ func main() {
 		slog.Error("migrate", "error", err)
 		os.Exit(1)
 	}
+	// Scrub credentials that older versions let users embed in an AppSource
+	// repoURL. The URL is rewritten without userinfo, so those AppSources need
+	// a GitCredential for their host to keep authenticating.
+	if names, err := pg.SanitizeAppSourceCredentials(ctx); err != nil {
+		slog.Error("sanitize AppSource repoURL credentials", "error", err)
+		os.Exit(1)
+	} else if len(names) > 0 {
+		slog.Warn("removed credentials embedded in AppSource repoURL; create a GitCredential for each repository host so these AppSources can authenticate again",
+			"appSources", names)
+	}
 	if err := bootstrapKubernetesEnrollmentPolicies(ctx, pg, eff.AgentAuth); err != nil {
 		slog.Error("bootstrap kubernetes enrollment policies", "error", err)
 		os.Exit(1)
