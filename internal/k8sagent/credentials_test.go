@@ -16,8 +16,10 @@ import (
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/helmchart"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func kubernetesTokenSource(t *testing.T, serverURL, tokenFile string, now func() time.Time) *KubernetesCredentialSource {
@@ -269,40 +271,49 @@ func TestKubernetesCredentialSourceDoesNotPersistRefreshCredentials(t *testing.T
 	assert.Equal(t, "projected-token", entries[0].Name())
 }
 
+// renderedYAML returns the YAML text of the named rendered object so tests can
+// make the same substring assertions the committed manifests used to get.
+func renderedYAML(t *testing.T, objs []helmchart.Object, kind, name string) string {
+	t.Helper()
+	obj := helmchart.Find(objs, kind, name)
+	require.NotNilf(t, obj, "%s/%s not rendered", kind, name)
+	out, err := yaml.Marshal(map[string]any(obj))
+	require.NoError(t, err)
+	return string(out)
+}
+
 func TestKubernetesCredentialManifestsUseProjectedEnrollmentIdentity(t *testing.T) {
-	_, file, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	objs := helmchart.Render(t, "unified-cd")
 
-	config, err := os.ReadFile(filepath.Join(root, "manifests", "base", "k8s-agent", "config-configmap.yaml"))
-	require.NoError(t, err)
-	assert.Contains(t, string(config), "enrollmentPolicy:")
-	assert.Contains(t, string(config), "serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token")
-	assert.NotContains(t, string(config), "agentId:")
-	assert.NotContains(t, string(config), "token:")
-	assert.NotContains(t, string(config), "server: http://")
+	config := renderedYAML(t, objs, "ConfigMap", "unified-cd-k8s-agent-config")
+	assert.Contains(t, config, "enrollmentPolicy:")
+	assert.Contains(t, config, "serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token")
+	assert.NotContains(t, config, "agentId:")
+	assert.NotContains(t, config, "token:")
+	// The default render targets the in-cluster controller over HTTP (explicitly
+	// opted in); the agent-only render must carry the external HTTPS endpoint.
+	agentOnly := helmchart.Render(t, "unified-cd",
+		"controller.enabled=false", "bundledStores.enabled=false", "agent.server=https://cd.example.com")
+	assert.NotContains(t, renderedYAML(t, agentOnly, "ConfigMap", "unified-cd-k8s-agent-config"), "server: http://")
 
-	deployment, err := os.ReadFile(filepath.Join(root, "manifests", "base", "k8s-agent", "deployment.yaml"))
-	require.NoError(t, err)
-	assert.Contains(t, string(deployment), "audience: unified-cd-agent-enrollment")
-	assert.Contains(t, string(deployment), "mountPath: /var/run/secrets/unified-cd-agent")
-	assert.Contains(t, string(deployment), "readOnly: true")
-	assert.NotContains(t, string(deployment), "UNIFIED_K8S_SECRET")
-	assert.NotContains(t, string(deployment), "unified-cd-k8s-agent-secret")
+	deployment := renderedYAML(t, objs, "Deployment", "unified-cd-k8s-agent")
+	assert.Contains(t, deployment, "audience: unified-cd-agent-enrollment")
+	assert.Contains(t, deployment, "mountPath: /var/run/secrets/unified-cd-agent")
+	assert.Contains(t, deployment, "readOnly: true")
+	assert.NotContains(t, deployment, "UNIFIED_K8S_SECRET")
+	assert.NotContains(t, deployment, "unified-cd-k8s-agent-secret")
 
-	_, err = os.Stat(filepath.Join(root, "manifests", "base", "k8s-agent", "config-secret.yaml"))
-	assert.True(t, os.IsNotExist(err), "the default k8s-agent token Secret must not exist")
+	assert.Nil(t, helmchart.Find(objs, "Secret", "unified-cd-k8s-agent-secret"), "the default k8s-agent token Secret must not exist")
 
-	controllerDeployment, err := os.ReadFile(filepath.Join(root, "manifests", "base", "controller", "deployment.yaml"))
-	require.NoError(t, err)
-	assert.Contains(t, string(controllerDeployment), "serviceAccountName: unified-cd-controller")
-	rbac, err := os.ReadFile(filepath.Join(root, "manifests", "base", "controller", "rbac.yaml"))
-	require.NoError(t, err)
-	assert.Contains(t, string(rbac), "resources: [\"tokenreviews\"]")
-	assert.Contains(t, string(rbac), "verbs: [\"create\"]")
-	assert.Contains(t, string(rbac), "resources: [\"pods\"]")
-	assert.Contains(t, string(rbac), "verbs: [\"get\"]")
-	assert.NotContains(t, strings.ToLower(string(rbac)), "cluster-admin")
+	controllerDeployment := renderedYAML(t, objs, "Deployment", "unified-cd-controller")
+	assert.Contains(t, controllerDeployment, "serviceAccountName: unified-cd-controller")
+	rbac := renderedYAML(t, objs, "ClusterRole", "unified-cd-controller-kubernetes-enrollment") +
+		renderedYAML(t, objs, "Role", "unified-cd-controller-kubernetes-enrollment")
+	assert.Contains(t, rbac, "tokenreviews")
+	assert.Contains(t, rbac, "- create")
+	assert.Contains(t, rbac, "- pods")
+	assert.Contains(t, rbac, "- get")
+	assert.NotContains(t, strings.ToLower(rbac), "cluster-admin")
 }
 
 func TestKubernetesCredentialEnrollmentPodReadMatchesPolicyNamespace(t *testing.T) {

@@ -18,10 +18,10 @@ spec:
       labels:
         app: unified-cd-controller
         {{- include "unified-cd.labels" . | nindent 8 }}
-      {{- with .Values.controller.podAnnotations }}
       annotations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- /* A changed config restarts the Pods on helm upgrade. */}}
+        {{- $annotations := merge (deepCopy .Values.controller.podAnnotations) (dict "checksum/config" (include (print $.Template.BasePath "/controller/configmap.yaml") . | sha256sum)) }}
+        {{- toYaml $annotations | nindent 8 }}
     spec:
       serviceAccountName: unified-cd-controller
       terminationGracePeriodSeconds: 30

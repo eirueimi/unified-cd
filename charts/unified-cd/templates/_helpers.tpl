@@ -103,3 +103,48 @@ combination fails the render with a message naming the value to change.
 {{- fail "ingress.enabled with the bundled trial credentials would expose dev-token-change-me: set controller.existingSecret to a Secret you created, or disable ingress" -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Recursive config merge: include with (dict "base" <map> "over" <map>). Maps
+merge key by key, a list or scalar in "over" replaces the one in "base", and
+the user's value always wins, including false, 0 and "" (Sprig mergeOverwrite
+skips those zero values when the key already exists). Returns YAML; decode it
+with fromYaml.
+*/}}
+{{- define "unified-cd.mergeConfig" -}}
+{{- $out := deepCopy .base -}}
+{{- range $k, $v := .over -}}
+{{- if and (kindIs "map" $v) (hasKey $out $k) (kindIs "map" (get $out $k)) -}}
+{{- $_ := set $out $k (include "unified-cd.mergeConfig" (dict "base" (get $out $k) "over" $v) | fromYaml) -}}
+{{- else -}}
+{{- $_ := set $out $k $v -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml $out -}}
+{{- end -}}
+
+{{/*
+Chart-computed Kubernetes agent config, rendered as YAML. agent.config is
+merged over it by the agent ConfigMap template. With agent.server empty the
+agent talks to the in-cluster controller Service over plain HTTP (the
+allowInsecureHTTP opt-in); an explicit agent.server is always https:// and
+carries no allowInsecureHTTP.
+*/}}
+{{- define "unified-cd.agentConfigDefault" -}}
+{{- if .Values.agent.server }}
+server: {{ .Values.agent.server | quote }}
+{{- else }}
+server: {{ printf "http://unified-cd-controller.%s.svc.cluster.local" (include "unified-cd.namespace" .) | quote }}
+allowInsecureHTTP: true
+{{- end }}
+enrollmentPolicy: unified-cd-k8s-agents
+serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token
+labels:
+  - kind:kubernetes
+namespace: {{ .Values.jobNamespace.name | quote }}
+maxConcurrent: 5
+podImage: golang:1.24-alpine
+{{- if .Values.bundledStores.enabled }}
+sidecarS3SecretMode: broker
+{{- end }}
+{{- end -}}

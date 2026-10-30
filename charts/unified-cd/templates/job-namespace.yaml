@@ -1,0 +1,19 @@
+{{- if .Values.jobNamespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.jobNamespace.name }}
+  labels:
+    # Job Pods. The k8s agent's jobPodPolicy is the unified-cd-side check; this is the
+    # cluster-side one. baseline rejects privileged, hostPath, host namespaces and
+    # Unconfined profiles even in operator templates: an agent template that needs them
+    # (Docker-in-Docker, rootless BuildKit) needs a namespace labelled privileged.
+    # restricted is audited only: agent-built Pods do not meet it, and a warn label
+    # would print a warning on every Pod the agent creates.
+    pod-security.kubernetes.io/enforce: {{ .Values.jobNamespace.podSecurity.enforce }}
+    pod-security.kubernetes.io/audit: {{ .Values.jobNamespace.podSecurity.audit }}
+    {{- include "unified-cd.labels" . | nindent 4 }}
+  annotations:
+    # Keep the namespace (and the job Pods and volumes in it) when the release is uninstalled.
+    helm.sh/resource-policy: keep
+{{- end }}
