@@ -40,6 +40,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return code
 
+	case "env":
+		// ucd-sh env NAME=VALUE... -- <command> [args]...: sets the variables
+		// and runs the command, like env(1), without needing an env binary in
+		// the image. Used by the Kubernetes agent to apply step env.
+		return shim.RunEnv(args[1:], os.Environ(), stdin, stdout, stderr)
+
 	case "pause":
 		if len(args) != 1 {
 			usage(stderr)
@@ -111,7 +117,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: ucd-sh -c <script> | ucd-sh pause | ucd-sh statfs <path> | ucd-sh fsgroup [--policy=Always|OnRootMismatch] [--exclude=<path>]... <gid> <dir>... | ucd-sh chown-as <uid>:<gid> <path>... | ucd-sh secctx-probe <dir> | ucd-sh --install <path>")
+	fmt.Fprintln(w, "usage: ucd-sh -c <script> | ucd-sh env [NAME=VALUE]... -- <command> [args]... | ucd-sh pause | ucd-sh statfs <path> | ucd-sh fsgroup [--policy=Always|OnRootMismatch] [--exclude=<path>]... <gid> <dir>... | ucd-sh chown-as <uid>:<gid> <path>... | ucd-sh secctx-probe <dir> | ucd-sh --install <path>")
 }
 
 // runFsGroup parses `fsgroup [--policy=Always|OnRootMismatch] [--exclude=<path>]... <gid> <dir>...`.

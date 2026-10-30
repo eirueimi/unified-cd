@@ -33,7 +33,7 @@ func NewExecutor(client kubernetes.Interface, restCfg *rest.Config, namespace st
 // injected into the pod at /.ucd by podbuilder.go's injectUcdShim); a non-nil
 // value is used verbatim, e.g. ["bash","-lc"]. env is a list of "KEY=VALUE"
 // pairs applied to the exec'd process; when non-empty the command is wrapped
-// as `env K=V... <shell...> script` so values reach the script without any
+// as `/.ucd/ucd-sh env K=V... -- <shell...> script` so values reach the script without any
 // shell-quoting/string-concatenation (Kubernetes exec has no native env
 // option — see buildEnvShellCommand).
 // Returns (exitCode, nil) when the command exits (including non-zero exit codes).
@@ -119,9 +119,17 @@ func buildShellCommand(shell []string, script string) []string {
 }
 
 // buildEnvShellCommand converts an interpreter argv, a script string, and a
-// list of "KEY=VALUE" pairs into an argv that applies the env via the `env`
-// binary before invoking the shell, e.g.
-// ["env", "FOO=bar", "/.ucd/ucd-sh", "-c", script]. Using `env` (rather than
+// list of "KEY=VALUE" pairs into an argv that applies the env through the
+// ucd-sh shim's env mode before invoking the shell, e.g.
+// ["/.ucd/ucd-sh", "env", "FOO=bar", "--", "/.ucd/ucd-sh", "-c", script].
+// The shim is mounted at /.ucd in every job-pod container, so unlike the
+// coreutils `env` binary this works in scratch/distroless images (host-agent
+// parity: docker exec -e needs nothing in the image either). The shim and the
+// agent are released in lockstep (the default shimImage is the agent's own
+// versioned image); a shimImage override that points at an older release has
+// no env mode and fails every env-carrying step with the shim's usage error
+// (exit 2), see docs/operator-manual/kubernetes-integration.md. Passing env as
+// argv elements (rather than
 // string-concatenating `export FOO=bar;` onto the script) avoids
 // shell-quoting pitfalls entirely: values are passed as discrete argv
 // elements, never re-parsed by a shell (see TODO #30's known quoting-bug
@@ -130,9 +138,10 @@ func buildEnvShellCommand(shell []string, script string, env []string) []string 
 	if len(env) == 0 {
 		return buildShellCommand(shell, script)
 	}
-	cmd := make([]string, 0, len(env)+len(shell)+2)
-	cmd = append(cmd, "env")
+	cmd := make([]string, 0, len(env)+len(shell)+4)
+	cmd = append(cmd, ucdShimPath, "env")
 	cmd = append(cmd, env...)
+	cmd = append(cmd, "--")
 	cmd = append(cmd, buildShellCommand(shell, script)...)
 	return cmd
 }
