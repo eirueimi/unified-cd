@@ -183,6 +183,39 @@ func NewTestPostgres(t *testing.T) *Postgres {
 	return pg
 }
 
+// NewEmptyTestDatabase creates a brand-new, completely unmigrated database on
+// the shared test container and returns its DSN. Upgrade tests use it with
+// (*Postgres).MigrateTo to build genuine old-schema state. The database is
+// dropped on cleanup (callers must close their own connections first, or rely
+// on DROP ... WITH (FORCE)).
+func NewEmptyTestDatabase(t *testing.T) string {
+	t.Helper()
+
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	sharedPGOnce.Do(startSharedPostgres)
+	if sharedPGErr != nil {
+		t.Fatalf("shared postgres: %v", sharedPGErr)
+	}
+
+	dbName := fmt.Sprintf("test_%d", testDBSeq.Add(1))
+	createDBMu.Lock()
+	_, err := sharedPG.admin.ExecContext(context.Background(), "CREATE DATABASE "+dbName+" TEMPLATE template0")
+	createDBMu.Unlock()
+	if err != nil {
+		t.Fatalf("create empty test db %s: %v", dbName, err)
+	}
+	t.Cleanup(func() {
+		createDBMu.Lock()
+		_, _ = sharedPG.admin.ExecContext(context.Background(),
+			fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
+		createDBMu.Unlock()
+	})
+	return pgDSN(sharedPG.host, dbName)
+}
+
 // BackdateRunCreatedAt sets a run's created_at to age before now. Test-only
 // helper (Postgres.pool is unexported, so packages other than store — e.g.
 // the git-resolver deadline tests in internal/controller — need this to
