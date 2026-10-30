@@ -21,13 +21,6 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** `internal/controller/api_agent.go` `handleAgentClaim` calls `internal/store/postgres.go` `UpsertAgentOnClaim`, but `internal/controller/agent_auth.go` authenticates first through `GetAgentCredentialForAuth`; `internal/controller/api_agent_test.go` `TestAgentAPI_Claim_UpsertsUnregisteredAgent` covers only a missing inventory row, and `docs/operator-manual/operations.md` states conflicting full-loss recovery expectations.
 - **Done when:** The supported full-database-loss workflow has one explicit runtime and documentation contract, and an integration test starting from absent inventory and credential records proves either bounded automatic recovery or the documented re-enrollment requirement before the agent reappears and can claim work.
 
-### 33e. Verify that the published quickstart controller image passes its health check
-
-- **Status:** Needs verification
-- **Impact:** If the published default controller image lacks the `wget` used by the quickstart health check, the controller remains unhealthy and dependent quickstart services do not start.
-- **Evidence:** `deployments/docker/docker-compose.yaml` defines the controller image and `wget` health check, while `docker/controller.Dockerfile` uses an Alpine runtime that supplies BusyBox `wget`; source inspection cannot establish the contents of the published default image.
-- **Done when:** A credential-isolated pull of the image derived from the Compose controller image expression completes within 120 seconds, then a uniquely named Compose project starts PostgreSQL, Garage, and the controller without building and reports the controller `healthy` within 120 seconds; every Docker subprocess is bounded, prior version environment state is restored, project containers, volumes, and orphans plus the isolated Docker configuration are always cleaned up, and any failure is corrected and the experiment repeated.
-
 ## Medium
 
 ### 37. Ship a Helm chart for installing unified-cd
