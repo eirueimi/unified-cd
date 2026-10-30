@@ -14,13 +14,6 @@ Last audited: 2026-07-26 against `1e46459`.
 
 ## High
 
-### 9c. Eliminate Windows cancellation escape paths for child processes
-
-- **Status:** Partial
-- **Impact:** A process that spawns before Job Object assignment, or runs after assignment failure, can outlive a cancelled step and continue consuming resources or performing work.
-- **Evidence:** `internal/agent/exec_windows.go` `assignJob` enables `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and `internal/agent/runner_test.go` `TestRunStep_CancelKillsGrandchild` covers the normal path; `internal/agent/exec_tree.go` `runTreeKilled` assigns only after `cmd.Start` and retains a single-process fallback when assignment fails.
-- **Done when:** Cancelling a Windows step leaves no descendant process alive even when the child spawns immediately or Job Object assignment fails, the step reports `Cancelled`, and Windows regression tests deterministically cover both escape paths.
-
 ### 12. Define and align full database-loss agent recovery behavior
 
 - **Status:** Partial

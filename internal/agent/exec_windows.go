@@ -3,18 +3,43 @@
 package agent
 
 import (
+	"fmt"
 	"os/exec"
+	"syscall"
 	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// setupProcAttrs configures cmd on Windows. Job-object assignment happens
-// after Start (see assignJob), so no SysProcAttr changes are required here;
-// this exists to keep the call site symmetric with Unix.
+// setupProcAttrs configures cmd on Windows to start with its main thread
+// suspended (CREATE_SUSPENDED). The process therefore executes no user code,
+// and cannot spawn a child, until assignJob has placed it in a Job Object and
+// resumed it. This closes the window in which a fast-forking child could
+// escape the job between Start and assignment.
 func setupProcAttrs(cmd *exec.Cmd) {
-	// No pre-Start configuration needed.
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+}
+
+var (
+	modntdll         = windows.NewLazySystemDLL("ntdll.dll")
+	procNtResumeProc = modntdll.NewProc("NtResumeProcess")
+)
+
+// resumeProcess resumes every suspended thread of the process behind h
+// (which needs PROCESS_SUSPEND_RESUME access).
+func resumeProcess(h windows.Handle) error {
+	if err := procNtResumeProc.Find(); err != nil {
+		return err
+	}
+	status, _, _ := procNtResumeProc.Call(uintptr(h))
+	if status != 0 {
+		return fmt.Errorf("NtResumeProcess failed: NTSTATUS 0x%x", status)
+	}
+	return nil
 }
 
 // jobMu guards jobHandles, which maps a running *exec.Cmd to the Job Object
@@ -30,7 +55,10 @@ var (
 // running — there is no process-group equivalent. A job object configured
 // with KILL_ON_JOB_CLOSE guarantees that closing the job handle terminates
 // every process assigned to it, including grandchildren, giving us a
-// process-tree kill. Must be called after cmd.Start() succeeds.
+// process-tree kill. Must be called after cmd.Start() succeeds on a cmd
+// prepared by setupProcAttrs: the process is still suspended, and assignJob
+// resumes it only after the assignment succeeded. On error the caller must
+// kill the process (runTreeKilled does); a process left suspended never ran.
 func assignJob(cmd *exec.Cmd) error {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
@@ -52,7 +80,7 @@ func assignJob(cmd *exec.Cmd) error {
 		return err
 	}
 
-	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_SET_QUOTA, false, uint32(cmd.Process.Pid))
+	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_SET_QUOTA|windows.PROCESS_SUSPEND_RESUME, false, uint32(cmd.Process.Pid))
 	if err != nil {
 		windows.CloseHandle(job) //nolint:errcheck
 		return err
@@ -67,14 +95,20 @@ func assignJob(cmd *exec.Cmd) error {
 	jobMu.Lock()
 	jobHandles[cmd] = job
 	jobMu.Unlock()
+
+	if err := resumeProcess(h); err != nil {
+		// The job now holds the process; closing it terminates it.
+		cleanupTree(cmd)
+		return err
+	}
 	return nil
 }
 
 // killTree terminates the Job Object associated with cmd (if any), which
 // kills cmd's process and every descendant assigned to the same job —
-// including grandchildren such as sleep.exe spawned by `bash -c`. Falls back
-// to killing just the direct process if no job was ever assigned (e.g.
-// assignJob failed after Start, which should be rare).
+// including grandchildren such as sleep.exe spawned by `bash -c`. If no job
+// was assigned, the process never left its suspended start (runTreeKilled
+// aborts the step when assignment fails), so killing it alone is complete.
 func killTree(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
