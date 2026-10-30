@@ -38,6 +38,8 @@ controller:
   # Deep-merged over the chart-computed controller config (agentAuth defaults:
   # an in-cluster Kubernetes enrollment policy for the release namespace, plus
   # store credential policies for the job namespace when bundledStores.enabled).
+  # Maps are merged key by key, but a list you supply (for example
+  # agentAuth.kubernetesEnrollmentPolicies) replaces the computed list entirely.
   config: {}
   service:
     # Service type for the controller (HTTP only; terminate TLS at an Ingress).
@@ -77,6 +79,8 @@ agent:
   # Deep-merged over the chart-computed agent config (enrollment policy,
   # labels, job namespace, maxConcurrent, podImage; sidecarS3SecretMode:
   # broker when bundledStores.enabled).
+  # Maps are merged key by key, but a list you supply (for example labels)
+  # replaces the computed list entirely.
   config: {}
   # Agent container resources.
   resources:
