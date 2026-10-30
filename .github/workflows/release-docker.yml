@@ -276,11 +276,11 @@ jobs:
   # waits for verify: the chart's appVersion names the images this release
   # just published, so it must not be pullable before they are confirmed good.
   #
-  # The first-ever push creates a private GHCR package. A package owner must
-  # make it public once (Package settings -> Change visibility) so that
-  # `helm install oci://ghcr.io/eirueimi/charts/unified-cd` works anonymously.
-  # After the first release, repeat the anonymous pull check TODO 13 did for
-  # the sidecar image (`helm show chart` without logging in).
+  # The package is public: an anonymous `helm pull` of 0.12.0 (the first
+  # chart release) was verified on 2026-10-30. If the package is ever
+  # recreated, make it public again (Package settings -> Change visibility)
+  # so that `helm install oci://ghcr.io/eirueimi/charts/unified-cd` works
+  # without logging in.
   chart:
     name: Publish Helm chart
     needs: [verify]
