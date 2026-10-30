@@ -25,7 +25,7 @@ kubectl apply -f https://github.com/eirueimi/unified-cd/releases/latest/download
 The bundles run the secret-encryption-key (KEK) Job as a plain Job, because
 `kubectl apply` has no hooks. A Helm install runs it as a `pre-install` hook
 instead. Both create the `unified-cd-controller-kek` Secret once and never
-replace it.
+replace it, so re-applying a bundle never rotates the KEK.
 
 For production, prefer `helm install` over the bundles. The chart README covers
 external stores, `controller.existingSecret`, the KEK Secret, ingress, and the

@@ -70,6 +70,8 @@ func TestTrialSecretValues(t *testing.T) {
 	prov, _ := dig(t, map[string]any(sec), "metadata", "annotations", "unified-cd.io/kek-provenance").(string)
 	assert.Contains(t, prov, "generated once, at install")
 	assert.Contains(t, prov, "A Postgres dump alone is not")
+	assert.Contains(t, prov, "re-applying install.yaml or running `helm upgrade`")
+	assert.NotContains(t, prov, "kek-job.yaml")
 
 	garage := chartObject(t, objs, "Deployment", "garage")
 	env := dig(t, garage, "spec", "template", "spec", "containers", 0, "env").([]any)
