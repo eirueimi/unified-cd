@@ -45,6 +45,11 @@ func TestValidateFailures(t *testing.T) {
 			want: "agent.server must be an https:// URL",
 		},
 		{
+			name: "ingress without controller",
+			set:  []string{"controller.enabled=false", "bundledStores.enabled=false", "agent.server=https://cd.example.com", "ingress.enabled=true"},
+			want: "ingress.enabled requires controller.enabled",
+		},
+		{
 			name: "ingress with trial credentials",
 			set:  []string{"ingress.enabled=true"},
 			want: "ingress.enabled with the bundled trial credentials would expose dev-token-change-me: set controller.existingSecret to a Secret you created, or disable ingress",

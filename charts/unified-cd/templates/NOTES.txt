@@ -32,6 +32,14 @@ and open http://localhost:8080. Put HTTPS in front before exposing it
 (set ingress.enabled=true or use your own TLS terminator).
 {{- end }}
 
+{{- if and .Values.agent.enabled (not .Values.agent.server) (not .Values.bundledStores.enabled) }}
+
+WARNING: agent.server is empty, so the bundled Kubernetes agent connects to
+the controller over plain in-cluster HTTP (allowInsecureHTTP: true). The agent
+credentials cross the cluster network unencrypted. For production set
+agent.server to the controller's public https:// URL.
+{{- end }}
+
 The controller expects these Secrets in namespace {{ .Release.Namespace }}:
   {{ include "unified-cd.controllerSecretName" . }}  keys UNIFIED_DB_DSN, UNIFIED_TOKEN, UNIFIED_S3_ENDPOINT,
     UNIFIED_S3_BUCKET, UNIFIED_S3_KEY, UNIFIED_S3_SECRET

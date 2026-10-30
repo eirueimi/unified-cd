@@ -125,6 +125,15 @@ func TestNotesTrialWarning(t *testing.T) {
 	assert.NotContains(t, prod, "dev-token-change-me")
 	assert.Contains(t, prod, "port-forward")
 
+	// Plain in-cluster agent HTTP outside trial mode warns; an https agent.server does not.
+	assert.Contains(t, prod, "WARNING: agent.server is empty")
+	assert.Contains(t, prod, "allowInsecureHTTP")
+	https := install(t, "x", "bundledStores.enabled=false", "controller.existingSecret=prod", "agent.server=https://cd.example.com")
+	assert.NotContains(t, https, "WARNING: agent.server is empty")
+	noAgent := install(t, "x", "bundledStores.enabled=false", "controller.existingSecret=prod", "agent.enabled=false")
+	assert.NotContains(t, noAgent, "WARNING: agent.server is empty")
+	assert.NotContains(t, out, "WARNING: agent.server is empty")
+
 	withIngress := install(t, "x", prodIngressSet...)
 	assert.Contains(t, withIngress, "https://cd.example.com/")
 }

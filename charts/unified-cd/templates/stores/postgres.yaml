@@ -9,15 +9,18 @@ metadata:
     {{- include "unified-cd.labels" . | nindent 4 }}
 spec:
   replicas: 1
+  {{- /* Recreate: the data volume is ReadWriteOnce, and a rolling update would start a second Pod against the same volume (two writers or a Multi-Attach deadlock). */}}
+  strategy:
+    type: Recreate
   {{- /* The app selector label is kept unchanged: a Deployment selector is immutable. */}}
   selector:
     matchLabels:
       app: postgres
   template:
     metadata:
+      {{- /* Only the app label: version-bearing standard labels here would restart the store on every chart bump. */}}
       labels:
         app: postgres
-        {{- include "unified-cd.labels" . | nindent 8 }}
     spec:
       containers:
         - name: postgres

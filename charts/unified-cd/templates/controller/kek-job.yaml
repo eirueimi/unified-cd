@@ -57,7 +57,12 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "get"]
+    verbs: ["create"]
+  {{- /* get cannot be combined with create under resourceNames, so it is its own rule. */}}
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $secret | quote }}]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -98,9 +103,14 @@ spec:
   backoffLimit: 3
   template:
     metadata:
+      {{- /*
+      Exactly this one label, never the standard labels: a Job's pod template
+      is immutable, and the standard labels carry the chart and app versions.
+      With versions in the template, re-applying a newer bundle (or any kubectl
+      apply of a newer release) over an existing Job would be rejected.
+      */}}
       labels:
         app: unified-cd-kek-init
-        {{- include "unified-cd.labels" . | nindent 8 }}
     spec:
       serviceAccountName: unified-cd-kek-init
       restartPolicy: OnFailure

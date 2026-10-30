@@ -108,6 +108,8 @@ metadata:
     app: postgres
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: postgres
@@ -183,6 +185,8 @@ metadata:
     app: garage
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: garage
@@ -347,9 +351,13 @@ func TestKEKJobHook(t *testing.T) {
 	// The hook Job runs under the ServiceAccount the Role is bound to, all in
 	// the release namespace, so `kubectl create secret` there is authorised.
 	role := map[string]any(Find(objs, "Role", "unified-cd-kek-init"))
-	assert.Equal(t, []any{map[string]any{
-		"apiGroups": []any{""}, "resources": []any{"secrets"}, "verbs": []any{"create", "get"},
-	}}, role["rules"])
+	// create cannot be restricted by resourceNames; get is limited to the one
+	// Secret the script checks after an AlreadyExists failure.
+	assert.Equal(t, []any{
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"}, "verbs": []any{"create"}},
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"},
+			"resourceNames": []any{"unified-cd-controller-kek"}, "verbs": []any{"get"}},
+	}, role["rules"])
 	rb := map[string]any(Find(objs, "RoleBinding", "unified-cd-kek-init"))
 	assert.Equal(t, map[string]any{"kind": "ServiceAccount", "name": "unified-cd-kek-init", "namespace": "cd-system"},
 		dig(t, rb, "subjects", 0))
@@ -365,6 +373,8 @@ func TestKEKJobHook(t *testing.T) {
 	assert.NotContains(t, script, "apply")
 
 	objs = Render(t, "cd-system", "controller.kek.secretName=my-kek")
+	role = map[string]any(Find(objs, "Role", "unified-cd-kek-init"))
+	assert.Equal(t, []any{"my-kek"}, dig(t, role, "rules", 1, "resourceNames"))
 	job = map[string]any(Find(objs, "Job", "unified-cd-kek-init"))
 	script = dig(t, job, "spec", "template", "spec", "containers", 0, "command", 2).(string)
 	assert.Contains(t, script, "create secret generic my-kek")
@@ -391,4 +401,31 @@ func TestKEKGenerateOverride(t *testing.T) {
 	objs = Render(t, "unified-cd", "controller.enabled=false", "bundledStores.enabled=false",
 		"controller.kek.generate=true", "agent.server=https://cd.example.com")
 	assert.Nil(t, Find(objs, "Job", "unified-cd-kek-init"))
+}
+
+// The Job's pod template is immutable, so it must not carry anything that
+// changes between releases (the standard labels hold the chart/app versions).
+func TestKEKJobPodTemplateLabelsAreStable(t *testing.T) {
+	for _, set := range [][]string{nil, {"controller.kek.job.helmHook=false"}} {
+		objs := Render(t, "unified-cd", set...)
+		job := map[string]any(Find(objs, "Job", "unified-cd-kek-init"))
+		require.NotNil(t, job)
+		assert.Equal(t, map[string]any{"app": "unified-cd-kek-init"},
+			dig(t, job, "spec", "template", "metadata", "labels"), "set=%v", set)
+		// The Job's own metadata keeps the standard labels.
+		assert.Contains(t, dig(t, job, "metadata", "labels"), "helm.sh/chart")
+	}
+}
+
+// Both stores hold a ReadWriteOnce volume: a rolling update would run two Pods
+// on it, and version-bearing pod labels would restart them on every chart bump.
+func TestStoresRecreateAndStablePodLabels(t *testing.T) {
+	objs := Render(t, "unified-cd")
+	for _, n := range []string{"postgres", "garage"} {
+		dep := map[string]any(Find(objs, "Deployment", n))
+		require.NotNil(t, dep, n)
+		assert.Equal(t, map[string]any{"type": "Recreate"}, dig(t, dep, "spec", "strategy"), n)
+		assert.Equal(t, map[string]any{"app": n}, dig(t, dep, "spec", "template", "metadata", "labels"), n)
+	}
+	assert.NotEmpty(t, podChecksum(t, objs, "garage"))
 }

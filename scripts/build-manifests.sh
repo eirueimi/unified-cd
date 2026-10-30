@@ -9,6 +9,13 @@
 # which is what a local build wants. Third-party images (postgres, garage) are
 # pinned in the chart's values and are never rewritten here.
 #
+# With an image tag the chart is also rendered from a temporary copy whose
+# Chart.yaml says `version: <tag without v>` and `appVersion: <tag>`, so the
+# bundle's helm.sh/chart and app.kubernetes.io/version labels name the release
+# instead of the checked-in 0.0.0-dev / latest. This is safe for in-place
+# `kubectl apply` upgrades only because no immutable field (a Job pod template
+# or a Deployment selector) carries those labels.
+#
 # Each bundle is the `unified-cd` Namespace followed by
 # `helm template unified-cd charts/unified-cd --namespace unified-cd` with the
 # matching values file from charts/unified-cd/bundles/.
@@ -31,6 +38,12 @@ command -v helm >/dev/null || {
 set_args=()
 if [ -n "$image_tag" ]; then
   set_args=(--set "controller.image.tag=$image_tag,agent.image.tag=$image_tag")
+  tmp_chart=$(mktemp -d)
+  trap 'rm -rf "$tmp_chart"' EXIT
+  cp -R "$chart_dir" "$tmp_chart/unified-cd"
+  chart_dir="$tmp_chart/unified-cd"
+  sed -i.bak -e "s/^version:.*/version: ${image_tag#v}/" -e "s/^appVersion:.*/appVersion: \"$image_tag\"/" "$chart_dir/Chart.yaml"
+  rm -f "$chart_dir/Chart.yaml.bak"
 fi
 
 for bundle in "${bundles[@]}"; do

@@ -99,6 +99,9 @@ combination fails the render with a message naming the value to change.
 {{- if and .Values.agent.server (not (hasPrefix "https://" .Values.agent.server)) -}}
 {{- fail "agent.server must be an https:// URL" -}}
 {{- end -}}
+{{- if and .Values.ingress.enabled (not .Values.controller.enabled) -}}
+{{- fail "ingress.enabled requires controller.enabled: the Ingress routes to the controller Service" -}}
+{{- end -}}
 {{- if and .Values.ingress.enabled (include "unified-cd.trialSecret" .) -}}
 {{- fail "ingress.enabled with the bundled trial credentials would expose dev-token-change-me: set controller.existingSecret to a Secret you created, or disable ingress" -}}
 {{- end -}}

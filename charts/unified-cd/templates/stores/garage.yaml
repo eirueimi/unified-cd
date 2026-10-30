@@ -20,15 +20,18 @@ metadata:
     {{- include "unified-cd.labels" . | nindent 4 }}
 spec:
   replicas: 1
+  {{- /* Recreate: the data volume is ReadWriteOnce, and a rolling update would start a second Pod against the same volume (two writers or a Multi-Attach deadlock). */}}
+  strategy:
+    type: Recreate
   {{- /* The app selector label is kept unchanged: a Deployment selector is immutable. */}}
   selector:
     matchLabels:
       app: garage
   template:
     metadata:
+      {{- /* Only the app label: version-bearing standard labels here would restart the store on every chart bump. */}}
       labels:
         app: garage
-        {{- include "unified-cd.labels" . | nindent 8 }}
       annotations:
         {{- /* A changed config restarts the Pod on helm upgrade. */}}
         checksum/config: {{ include "unified-cd.garageToml" . | sha256sum | quote }}
