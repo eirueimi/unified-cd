@@ -337,6 +337,38 @@ jobs:
             echo "FROM $img" | docker build -t "$img" -
             kind load docker-image "$img" --name helm-ci
           done
+      - name: Upgrade a v0.11.0 kubectl install with the rendered bundle
+        # Existing kubectl users re-apply the new install.yaml over their
+        # v0.11.0 install. A Job's pod template is immutable, so this fails
+        # if the rendered KEK Job's template differs from the one v0.11.0
+        # created. It runs before the Helm install and then removes every
+        # object it created (including the cluster-scoped ones and the job
+        # namespace), because Helm refuses to adopt objects it does not own.
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --connect-timeout 10 --max-time 60             -o v0.11.0-install.yaml             https://github.com/eirueimi/unified-cd/releases/download/v0.11.0/install.yaml
+          kubectl apply -f v0.11.0-install.yaml
+          kek_old=""
+          for i in $(seq 1 90); do
+            kek_old=$(kubectl -n "$NS" get secret unified-cd-controller-kek -o jsonpath='{.data.kek}' 2>/dev/null || true)
+            [ -n "$kek_old" ] && break
+            sleep 2
+          done
+          [ -n "$kek_old" ] || { echo "v0.11.0 KEK secret never appeared"; exit 1; }
+          kubectl apply -f dist/m/install.yaml
+          kek_new=$(kubectl -n "$NS" get secret unified-cd-controller-kek -o jsonpath='{.data.kek}')
+          [ "$kek_old" = "$kek_new" ] || { echo "KEK changed when re-applying the new bundle"; exit 1; }
+          # Clean up. The Garage ConfigMap was name-hashed in v0.11.0, so the
+          # new bundle leaves that one behind; deleting with the old file
+          # removes it (the migration guide documents the manual command).
+          kubectl delete -f dist/m/install.yaml --ignore-not-found --wait --timeout=3m
+          kubectl delete -f v0.11.0-install.yaml --ignore-not-found --wait --timeout=3m
+          for i in $(seq 1 60); do
+            kubectl get namespace "$NS" >/dev/null 2>&1 || break
+            [ "$i" -eq 60 ] && { echo "namespace $NS was not deleted"; exit 1; }
+            sleep 3
+          done
       - name: Install the chart (trial defaults)
         run: |
           set -euo pipefail
@@ -411,6 +443,7 @@ jobs:
         run: |
           kubectl get all -A || true
           kubectl -n "$NS" describe pods || true
+          kubectl -n "$NS" describe job unified-cd-kek-init || true
           kubectl -n "$NS" logs deployment/unified-cd-controller --tail=200 || true
           kubectl -n "$NS" logs deployment/unified-cd-k8s-agent --tail=200 || true
           cat pf.log || true

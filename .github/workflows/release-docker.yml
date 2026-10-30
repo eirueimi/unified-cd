@@ -223,6 +223,10 @@ jobs:
             echo "::error title=Tag injection failed::dist/manifests/core-install.yaml does not reference ghcr.io/eirueimi/unified-cd-controller:$TAG"
             exit 1
           }
+          grep -q "app.kubernetes.io/version: \"$TAG\"" dist/manifests/install.yaml || {
+            echo "::error title=Version label missing::dist/manifests/install.yaml does not carry app.kubernetes.io/version: $TAG"
+            exit 1
+          }
       # Wait for goreleaser to create the Release before trying to attach to
       # it. `release.yml` (goreleaser) and this workflow both fire
       # independently on the same `v*` tag push - nothing here ever waits for
@@ -293,7 +297,10 @@ jobs:
           version: v3.16.4
 
       - name: Log in to GHCR
-        run: helm registry login ghcr.io -u ${{ github.actor }} --password-stdin <<< "${{ secrets.GITHUB_TOKEN }}"
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: helm registry login ghcr.io -u "$ACTOR" --password-stdin <<< "$TOKEN"
 
       - name: Package the chart pinned to ${{ github.ref_name }}
         env:
