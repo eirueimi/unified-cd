@@ -1,0 +1,93 @@
+{{- if and .Values.controller.enabled .Values.bundledStores.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    app: postgres
+    {{- include "unified-cd.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  {{- /* The app selector label is kept unchanged: a Deployment selector is immutable. */}}
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        {{- include "unified-cd.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.bundledStores.postgres.image }}
+          env:
+            - name: POSTGRES_USER
+              value: unified
+            - name: POSTGRES_PASSWORD
+              value: unified
+            - name: POSTGRES_DB
+              value: unified
+          {{- /*
+          No CPU limit: a CPU limit throttles the container even when the
+          node is idle, whereas a memory limit is what actually contains a
+          runaway process. These values are a conservative floor for a
+          normal unified-cd workload, not a capacity estimate: raise them
+          if you see throttling or OOMKills under your load.
+          */}}
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "unified"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "unified"]
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.bundledStores.postgres.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.bundledStores.postgres.storage }}
+{{- end }}

@@ -148,3 +148,43 @@ podImage: golang:1.24-alpine
 sidecarS3SecretMode: broker
 {{- end }}
 {{- end -}}
+
+{{/*
+Renders "true" when the KEK Job runs and renders nothing otherwise: only with
+the controller enabled, and controller.kek.generate when set, else
+bundledStores.enabled. Use as:
+  {{ if include "unified-cd.kekGenerate" . }}
+*/}}
+{{- define "unified-cd.kekGenerate" -}}
+{{- if .Values.controller.enabled -}}
+{{- $gen := .Values.controller.kek.generate -}}
+{{- if kindIs "invalid" $gen -}}
+{{- $gen = .Values.bundledStores.enabled -}}
+{{- end -}}
+{{- if $gen -}}
+true
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Garage server configuration (garage.toml). A helper so the Deployment can
+checksum it without including its own template file.
+*/}}
+{{- define "unified-cd.garageToml" -}}
+# Keep in sync with deployments/garage/garage.toml.
+metadata_dir = "/data/meta"
+data_dir = "/data/data"
+db_engine = "sqlite"
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+
+[admin]
+api_bind_addr = "[::]:3903"
+{{- end -}}

@@ -1,0 +1,133 @@
+{{- if include "unified-cd.kekGenerate" . }}
+{{- /*
+Generates the KEK Secret at install time so the install has a persistent,
+file-backed encryption key instead of UNIFIED_DEV_MODE's ephemeral in-memory
+one. No placeholder Secret is rendered for it (see trial-secret.yaml, which
+carries the sibling controller Secret but not this one): this Job creates the
+real key directly instead.
+
+Idempotency is the whole point: re-running `helm upgrade` must NOT rotate this
+key, or every secret already encrypted with it becomes unreadable. `kubectl
+create secret` is used (never `apply` or `--dry-run=client | kubectl apply`,
+both of which would overwrite the Secret's data on every run). A `create`
+against an existing Secret fails with AlreadyExists; the script below treats
+that failure as success and leaves the existing key untouched.
+
+RBAC is scoped to exactly what the script needs: create a Secret, and get it to
+confirm an AlreadyExists failure really means "the key already exists" rather
+than some other error. Namespace-scoped Role only (in the release namespace,
+where the Secret is created), no ClusterRole.
+
+With controller.kek.job.helmHook the four objects are Helm hooks. The RBAC
+objects carry a lower hook weight than the Job so they exist before it runs.
+*/}}
+{{- $hook := .Values.controller.kek.job.helmHook }}
+{{- $ns := include "unified-cd.namespace" . }}
+{{- $secret := .Values.controller.kek.secretName }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: unified-cd-kek-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+  {{- if $hook }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: unified-cd-kek-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+  {{- if $hook }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+  {{- end }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: unified-cd-kek-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+  {{- if $hook }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+  {{- end }}
+subjects:
+  - kind: ServiceAccount
+    name: unified-cd-kek-init
+    namespace: {{ $ns }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: unified-cd-kek-init
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: unified-cd-kek-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+  {{- if $hook }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+  {{- end }}
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: unified-cd-kek-init
+        {{- include "unified-cd.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: unified-cd-kek-init
+      restartPolicy: OnFailure
+      containers:
+        - name: kek-init
+          {{- /*
+          Pinned tag (not :latest); has kubectl plus a shell and the
+          coreutils this script needs (sh, head, od, tr). No openssl in
+          this image, hence the /dev/urandom fallback below rather than
+          `openssl rand -hex 32`: verified in the actual image.
+          */}}
+          image: {{ .Values.controller.kek.job.image }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              key="$(head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+              if kubectl -n {{ $ns }} create secret generic {{ $secret }} \
+                  --from-literal=kek="$key"; then
+                echo "{{ $secret }} created"
+                exit 0
+              fi
+              # create failed. The only acceptable reason is that the
+              # Secret already exists from a previous install — in which
+              # case it must be left alone. Anything else is a real error.
+              if kubectl -n {{ $ns }} get secret {{ $secret }} >/dev/null 2>&1; then
+                echo "{{ $secret }} already exists; leaving it untouched"
+                exit 0
+              fi
+              echo "failed to create {{ $secret }} and it does not already exist" >&2
+              exit 1
+{{- end }}
