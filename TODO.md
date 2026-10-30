@@ -37,13 +37,6 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** `internal/controller/appsource_reconciler_test.go` seeds post-migration bare-name state directly instead of running `internal/store/migrations/003_appsource_managed_resources.up.sql` through the production migration runner; store tests cover `RenameJob` separately.
 - **Done when:** An integration test creates a genuine pre-003 schema and state, runs migration 003 through the production migration runner, verifies the deliberate bare-name backfill, performs the first sync, and proves qualification, history preservation, repeat-sync idempotency, and prune safety end to end.
 
-### 35d. Complete human and cross-agent artifact-download router coverage
-
-- **Status:** Partial
-- **Impact:** Owner-agent downloads already traverse the real router, but successful human-viewer access and cross-run access by a distinct enrolled agent remain unproven, so principal or router regressions can still violate the documented download contract.
-- **Evidence:** `internal/controller/api_artifacts_test.go` `TestArtifact_UploadDownload_RoundTrip` sends an owner enrolled-agent download through `s.Router().ServeHTTP`, requires HTTP 200, and compares the exact artifact bytes; `TestArtifactDownload_RejectsNoAuth` sends an unauthenticated request through `s.r.ServeHTTP` and requires HTTP 401.
-- **Done when:** Router-level tests seed exact artifact bytes and prove byte-for-byte successful downloads for a human viewer and a distinct non-owner enrolled agent under the documented cross-run contract.
-
 ### 37. Ship a Helm chart for installing unified-cd
 
 - **Status:** Open
