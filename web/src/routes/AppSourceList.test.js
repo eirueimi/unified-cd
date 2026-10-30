@@ -34,3 +34,32 @@ describe('AppSourceList — Sync is global-only', () => {
     expect(await findByText(/Sync/)).toBeTruthy();
   });
 });
+
+describe('AppSourceList — never renders repository credentials', () => {
+  const origFetch = global.fetch;
+  beforeEach(() => {
+    token.set('');
+    serverURL.set('http://localhost:8080');
+    global.fetch = vi.fn(() => jsonResponse([{
+      name: 'leaky',
+      repoURL: 'https://user:s3cr3tpw@example.com/r.git',
+      targetRevision: 'main',
+      path: '',
+      syncStatus: 'Failed',
+      lastError: 'fetch https://user:s3cr3tpw@example.com/r.git: denied',
+    }]));
+  });
+  afterEach(() => {
+    currentUser.set(null);
+    global.fetch = origFetch;
+  });
+
+  it('strips userinfo from the link, its text, and the error tooltip', async () => {
+    const { findByText, container } = render(AppSourceList);
+    await findByText('leaky');
+    expect(container.innerHTML).not.toContain('s3cr3t');
+    const a = container.querySelector('a[target="_blank"]');
+    expect(a.getAttribute('href')).toBe('https://example.com/r.git');
+    expect(a.textContent).toBe('example.com/r.git');
+  });
+});

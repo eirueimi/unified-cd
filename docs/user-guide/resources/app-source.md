@@ -55,6 +55,19 @@ reach a git-exec site.
   a dash-leading host (e.g. `git@-x:...`) is rejected so it can't smuggle an
   ssh option such as `-oProxyCommand=...`.
 
+  **No embedded credentials.** `spec.repoURL` must not carry a secret. Any
+  userinfo on an `http://` or `https://` URL (`https://user:pass@host/...`,
+  `https://token@host/...`) and any password on an `ssh://` URL
+  (`ssh://git:pass@host/...`) is rejected with a `400`:
+  `repo URL must not embed credentials (userinfo is only allowed as a bare user name on ssh:// and scp-like URLs); store the token or key in a GitCredential for the host instead`.
+  A bare user name without a password stays valid for SSH
+  (`ssh://git@host/org/repo.git`, `git@host:org/repo.git`). Put the token or key
+  in a [GitCredential](git-credential.md) for the host instead. As defense in
+  depth, the API, CLI (`get`, `list`, `export`) and Web UI also strip userinfo
+  from every `repoURL` and URL-bearing error they show, and on startup the
+  controller rewrites any previously stored credential-bearing URL (see the
+  [migration guide](../../operator-manual/migrations/2026-10-29-appsource-url-credentials.md)).
+
 - **`spec.targetRevision`** must match the ref charset `[A-Za-z0-9._/+-]`
   and start with an alphanumeric character. This allows branch names, tag
   names, and full commit SHAs, but rejects relative-ref syntax (`HEAD~1`,

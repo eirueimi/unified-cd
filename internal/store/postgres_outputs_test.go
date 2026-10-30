@@ -43,11 +43,39 @@ func TestStepOutputs_VariantKeyed(t *testing.T) {
 
 	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "linux/amd64", "version", "1.2"))
 	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "linux/arm64", "version", "1.3"))
-	// no clobber: both variant rows are stored, though GetStepOutputs (unkeyed by
-	// variant, signature unchanged) will only surface one value per key.
-	outputs, err := pg.GetStepOutputs(ctx, run.ID, 0)
+	// A different step index must not leak into the inspection below.
+	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 1, "linux/amd64", "version", "other"))
+
+	// GetStepOutputs is variant-unaware, so inspect the rows directly: both
+	// variant rows must exist with their own values (no clobbering).
+	rows, err := pg.pool.Query(ctx,
+		`SELECT variant, key, value FROM step_outputs WHERE run_id = $1 AND step_index = 0 ORDER BY variant, key`,
+		run.ID)
 	require.NoError(t, err)
-	assert.Contains(t, []string{"1.2", "1.3"}, outputs["version"])
+	defer rows.Close()
+	got := map[string]string{}
+	n := 0
+	for rows.Next() {
+		var variant, key, value string
+		require.NoError(t, rows.Scan(&variant, &key, &value))
+		assert.Equal(t, "version", key)
+		got[variant] = value
+		n++
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, 2, n, "exactly one row per variant")
+	assert.Equal(t, map[string]string{"linux/amd64": "1.2", "linux/arm64": "1.3"}, got)
+
+	// Re-setting a variant overwrites only that variant's row.
+	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "linux/amd64", "version", "1.4"))
+	var cnt int
+	require.NoError(t, pg.pool.QueryRow(ctx,
+		`SELECT count(*) FROM step_outputs WHERE run_id = $1 AND step_index = 0`, run.ID).Scan(&cnt))
+	assert.Equal(t, 2, cnt)
+	var v string
+	require.NoError(t, pg.pool.QueryRow(ctx,
+		`SELECT value FROM step_outputs WHERE run_id = $1 AND step_index = 0 AND variant = 'linux/arm64'`, run.ID).Scan(&v))
+	assert.Equal(t, "1.3", v)
 }
 
 func TestPostgres_GetStepOutputs_Empty(t *testing.T) {

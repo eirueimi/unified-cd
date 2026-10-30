@@ -140,6 +140,7 @@ nav:
           - "Host Agents Honour securityContext": operator-manual/migrations/2026-10-23-host-security-context.md
           - "Kubernetes Job Pod Field Policy": operator-manual/migrations/2026-10-26-k8s-job-pod-field-policy.md
           - "Matrix Authorization": operator-manual/migrations/2026-10-28-matrix-authorization.md
+          - "AppSource URL Credentials": operator-manual/migrations/2026-10-29-appsource-url-credentials.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md
