@@ -1198,7 +1198,7 @@ func TestCredentialManager_Fallback401MissingDefaultCredentialReturnsOriginalErr
 	})
 
 	_, err := m.Token(t.Context())
-	require.EqualError(t, err, "credential request returned http 401")
+	require.ErrorContains(t, err, "credential request returned http 401")
 	assert.Equal(t, []string{"/api/v1/agents/enroll"}, paths)
 }
 
@@ -1222,4 +1222,16 @@ func TestCredentialManager_ExplicitCredentialFileAllowsPathSensitiveReturnedID(t
 	credential, readErr := readCredentialFile(path)
 	require.NoError(t, readErr)
 	assert.Equal(t, "agent/other", credential.AgentID)
+}
+
+// A 401 on the credential exchange means the controller no longer recognises
+// this credential (revoked, or lost with the controller database). The error
+// must tell the operator what to do instead of just echoing the status code.
+func TestCredentialRequestError_UnauthorizedTellsOperatorToReenroll(t *testing.T) {
+	err := &credentialRequestError{status: http.StatusUnauthorized}
+	assert.Contains(t, err.Error(), "http 401")
+	assert.Contains(t, err.Error(), "re-enroll")
+
+	other := &credentialRequestError{status: http.StatusServiceUnavailable}
+	assert.Equal(t, "credential request returned http 503", other.Error())
 }

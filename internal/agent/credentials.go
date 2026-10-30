@@ -41,6 +41,11 @@ type credentialRequestError struct {
 }
 
 func (e *credentialRequestError) Error() string {
+	if e.status == http.StatusUnauthorized {
+		return "credential request returned http 401: the controller rejected this credential " +
+			"(revoked, expired, or lost with the controller database); " +
+			"issue a new enrollment (unified-cli agent enrollment create) and re-enroll this agent"
+	}
 	if e.status != 0 {
 		return fmt.Sprintf("credential request returned http %d", e.status)
 	}

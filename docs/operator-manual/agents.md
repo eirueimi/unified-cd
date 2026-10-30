@@ -93,6 +93,10 @@ authority. Capabilities are never assigned by the policy: each agent
 auto-detects and self-reports its own capabilities — see [Capabilities and
 routing](#capabilities-and-routing).
 
+After a full controller database loss, host agents must be re-enrolled with a new
+one-time token while Kubernetes agents recover on their own; see [Agent recovery
+contract](operations.md#agent-recovery-contract).
+
 ## Running the agent as a service
 
 There is no built-in "install as a service" command — enroll the agent
