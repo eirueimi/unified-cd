@@ -91,18 +91,20 @@ func parse(manifest string) ([]Object, error) {
 	dec := yaml.NewDecoder(bytes.NewBufferString(manifest))
 	var objs []Object
 	for {
-		var o Object
-		err := dec.Decode(&o)
+		// Decode into a plain map: yaml.v3 would otherwise decode nested maps as
+		// Object too, which breaks type assertions on map[string]any.
+		var m map[string]any
+		err := dec.Decode(&m)
 		if errors.Is(err, io.EOF) {
 			return objs, nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		if len(o) == 0 {
+		if len(m) == 0 {
 			continue
 		}
-		objs = append(objs, o)
+		objs = append(objs, Object(m))
 	}
 }
 

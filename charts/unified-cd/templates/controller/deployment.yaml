@@ -1,0 +1,92 @@
+{{- if .Values.controller.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unified-cd-controller
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    app: unified-cd-controller
+    {{- include "unified-cd.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  {{- /* The app selector label is kept unchanged: a Deployment selector is immutable. */}}
+  selector:
+    matchLabels:
+      app: unified-cd-controller
+  template:
+    metadata:
+      labels:
+        app: unified-cd-controller
+        {{- include "unified-cd.labels" . | nindent 8 }}
+      {{- with .Values.controller.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: unified-cd-controller
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: controller
+          image: {{ include "unified-cd.controllerImage" . }}
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          args: ["-f", "/etc/unified-cd/controller-config.yaml"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: UNIFIED_CONTROLLER_KEY_FILE
+              value: /etc/unified-cd/kek
+          envFrom:
+            - secretRef:
+                name: {{ include "unified-cd.controllerSecretName" . }}
+          {{- /*
+          No CPU limit by default: a CPU limit throttles the container even
+          when the node is idle, whereas a memory limit is what actually
+          contains a runaway process. The defaults are a conservative floor
+          for a normal controller workload, not a capacity estimate: raise
+          them if you see throttling or OOMKills under your load.
+          */}}
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            periodSeconds: 10
+          volumeMounts:
+            - name: controller-config
+              mountPath: /etc/unified-cd/controller-config.yaml
+              subPath: controller-config.yaml
+              readOnly: true
+            - name: controller-kek
+              mountPath: /etc/unified-cd/kek
+              subPath: kek
+              readOnly: true
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: controller-config
+          configMap:
+            name: unified-cd-controller-config
+        - name: controller-kek
+          secret:
+            secretName: {{ .Values.controller.kek.secretName }}
+            items:
+              - key: kek
+                path: kek
+            defaultMode: 256
+{{- end }}

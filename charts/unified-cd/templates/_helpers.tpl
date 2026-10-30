@@ -42,6 +42,47 @@ true
 {{- end -}}
 
 {{/*
+Name of the Secret the controller reads its environment from: the user's
+controller.existingSecret, or the default "unified-cd-controller" (the trial
+Secret when the chart renders it).
+*/}}
+{{- define "unified-cd.controllerSecretName" -}}
+{{- default "unified-cd-controller" .Values.controller.existingSecret -}}
+{{- end -}}
+
+{{/*
+Chart-computed controller config, rendered as YAML. controller.config is
+deep-merged over it by the ConfigMap template.
+*/}}
+{{- define "unified-cd.controllerConfigDefault" -}}
+agentAuth:
+  kubernetesClusters:
+    - name: in-cluster
+  kubernetesEnrollmentPolicies:
+    - name: unified-cd-k8s-agents
+      cluster: in-cluster
+      namespaces: [{{ include "unified-cd.namespace" . | quote }}]
+      serviceAccounts: [unified-cd-k8s-agent]
+      allowedLabels: ["kind:kubernetes"]
+      requiredLabels: ["kind:kubernetes"]
+      accessTokenTTL: 1h
+      enabled: true
+{{- if .Values.bundledStores.enabled }}
+  {{- /*
+  Lets the agent's job Pods obtain object-store credentials for the artifact
+  sidecar (the agent runs with sidecarS3SecretMode: broker when the bundled
+  stores are enabled). Job Pods run under the job namespace's default
+  ServiceAccount; name a dedicated one through controller.config when you use
+  a custom ServiceAccount.
+  */}}
+  kubernetesStoreCredentialPolicies:
+    - cluster: in-cluster
+      namespaces: [{{ .Values.jobNamespace.name | quote }}]
+      serviceAccounts: [default]
+{{- end }}
+{{- end -}}
+
+{{/*
 Render-time value checks. Included from every top-level template so an invalid
 combination fails the render with a message naming the value to change.
 */}}

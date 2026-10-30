@@ -1,0 +1,18 @@
+{{- if .Values.controller.enabled }}
+{{- /*
+controller.config is deep-merged over the computed default: maps merge key by
+key, but a list (for example kubernetesEnrollmentPolicies) supplied by the user
+replaces the computed list entirely.
+*/}}
+{{- $config := mergeOverwrite (include "unified-cd.controllerConfigDefault" . | fromYaml) (deepCopy .Values.controller.config) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: unified-cd-controller-config
+  namespace: {{ include "unified-cd.namespace" . }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+data:
+  controller-config.yaml: |
+    {{- toYaml $config | nindent 4 }}
+{{- end }}

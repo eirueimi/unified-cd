@@ -3,14 +3,13 @@ package config_test
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/config"
+	"github.com/eirueimi/unified-cd/internal/helmchart"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
 // ── DefaultAgentCredentialFile ──────────────────────────────────────────────
@@ -115,16 +114,9 @@ func TestControllerEffectiveResolvesKubernetesEnrollmentBootstrapPolicy(t *testi
 }
 
 func TestDefaultControllerManifestConfiguresKubernetesEnrollment(t *testing.T) {
-	_, testFile, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-	root := filepath.Clean(filepath.Join(filepath.Dir(testFile), "..", ".."))
-	data, err := os.ReadFile(filepath.Join(root, "manifests", "base", "controller", "config-configmap.yaml"))
-	require.NoError(t, err)
-	var manifest struct {
-		Data map[string]string `yaml:"data"`
-	}
-	require.NoError(t, yaml.Unmarshal(data, &manifest))
-	configPath := writeFile(t, manifest.Data["controller-config.yaml"])
+	cm := helmchart.Find(helmchart.Render(t, "unified-cd"), "ConfigMap", "unified-cd-controller-config")
+	require.NotNil(t, cm)
+	configPath := writeFile(t, cm["data"].(map[string]any)["controller-config.yaml"].(string))
 	eff, err := config.ControllerEffective(configPath)
 	require.NoError(t, err)
 	require.Len(t, eff.AgentAuth.KubernetesClusters, 1)
