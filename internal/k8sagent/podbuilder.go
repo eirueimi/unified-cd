@@ -338,6 +338,7 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 	}
 
 	podSpec.RestartPolicy = corev1.RestartPolicyNever
+	injectPrimaryJob(podSpec, fallbackImage)
 	injectKeepAlive(podSpec)
 
 	// Guard against user-supplied containers using the reserved sidecar name
@@ -379,6 +380,28 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 		},
 		Spec: *podSpec,
 	}, nil
+}
+
+// injectPrimaryJob appends the default primary "job" container (image =
+// fallbackImage, the agent's podImage) when the resolved PodSpec declares no
+// container of that name, so a podTemplate that lists only sidecars (e.g.
+// just mysql) still has the exec target container:-less steps need. It is the
+// twin of the host agent's claimContainerDefs, which appends the runner image
+// as the primary AFTER the declared containers; the same order here keeps the
+// declared containers' positions (and so the sidecar ordinals derived from
+// dsl.SidecarContainerNames) unchanged. Called before injectKeepAlive,
+// injectWorkspace and injectUcdShim so the injected container gets exactly
+// what a declared "job" container would.
+func injectPrimaryJob(podSpec *corev1.PodSpec, fallbackImage string) {
+	for _, c := range podSpec.Containers {
+		if c.Name == primaryContainerName {
+			return
+		}
+	}
+	if fallbackImage == "" {
+		fallbackImage = defaultPodImage()
+	}
+	podSpec.Containers = append(podSpec.Containers, corev1.Container{Name: primaryContainerName, Image: fallbackImage})
 }
 
 func defaultPodSpec(image string) *corev1.PodSpec {

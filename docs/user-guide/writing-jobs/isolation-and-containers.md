@@ -35,9 +35,14 @@ minimal pause container (`--pause-image`, default `busybox:1.36`) owns the
 network namespace; the primary container (the target of default steps) and
 every `podTemplate` container join it with `--network container:<pause>`
 and share the claim's workspace via a bind mount. If the `podTemplate`
-defines no container, the agent injects its configured default runner image
+defines no container named `job` (as in the `mysql`-only example above), the agent injects its configured default runner image
 (`--runner-image`, default `ghcr.io/eirueimi/unified-cd-runner` at the tag of the agent's own release version, e.g. `:v0.7.0`) as
-the primary. Supported container runtimes are **docker, podman, and
+the primary, after the containers you declared. The Kubernetes agent does the
+same with its `podImage` (default: the runner image of the agent's own release):
+a `podTemplate` (inline `spec`, or a named agent template with or without
+`override`) that declares no `job` container gets one injected with that image,
+the same keep-alive, workspace mount and shim as a declared `job` container.
+Supported container runtimes are **docker, podman, and
 nerdctl** — Apple's `container` CLI is not auto-detected and not supported
 for isolated jobs (no reliable network-namespace-join equivalent), so macOS
 hosts must use docker/podman (typically a Linux VM) to run isolated jobs.

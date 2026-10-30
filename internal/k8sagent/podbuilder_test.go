@@ -734,3 +734,71 @@ func TestBuildPod_ArtifactSidecarHasNoContainerSecurityContext(t *testing.T) {
 		assert.Equal(t, int64(1000), *pod.Spec.SecurityContext.RunAsUser)
 	}
 }
+
+func sidecarOnlySpec() map[string]any {
+	return map[string]any{
+		"containers": []any{
+			map[string]any{"name": "mysql", "image": "mysql:8"},
+		},
+	}
+}
+
+func requireInjectedPrimary(t *testing.T, pod *corev1.Pod) {
+	t.Helper()
+	require.Len(t, pod.Spec.Containers, 2)
+	// Same order as the host: declared containers first, injected primary last.
+	assert.Equal(t, "mysql", pod.Spec.Containers[0].Name)
+	assert.Nil(t, pod.Spec.Containers[0].Command, "the sidecar keeps its image entrypoint")
+	job := pod.Spec.Containers[1]
+	assert.Equal(t, "job", job.Name)
+	assert.Equal(t, "fallback:latest", job.Image)
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, job.Command)
+	var mounts []string
+	for _, m := range job.VolumeMounts {
+		mounts = append(mounts, m.MountPath)
+	}
+	assert.Contains(t, mounts, "/workspace")
+	assert.Contains(t, mounts, "/.ucd")
+}
+
+func TestBuildPod_InlineSidecarOnlyInjectsPrimaryJob(t *testing.T) {
+	jobTmpl := &dsl.PodTemplate{Spec: sidecarOnlySpec()}
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage, nil)
+	require.NoError(t, err)
+	requireInjectedPrimary(t, pod)
+	// The injected container must not shift the sidecar ordinals the
+	// controller computes from the job's podTemplate.
+	assert.Equal(t, []string{"mysql"}, dsl.SidecarContainerNames(jobTmpl))
+}
+
+func TestBuildPod_NamedTemplateWithoutJobInjectsPrimaryJob(t *testing.T) {
+	agentTmpls := map[string]AgentPodTemplate{"db": {Spec: sidecarOnlySpec()}}
+	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "db"}, "fallback:latest", SidecarSpec{}, testShimImage, nil)
+	require.NoError(t, err)
+	requireInjectedPrimary(t, pod)
+}
+
+func TestBuildPod_NamedTemplateWithOverrideWithoutJobInjectsPrimaryJob(t *testing.T) {
+	agentTmpls := map[string]AgentPodTemplate{"db": {Spec: sidecarOnlySpec()}}
+	jobTmpl := &dsl.PodTemplate{Name: "db", Override: &dsl.PodSpecPatch{Containers: []map[string]any{
+		{"name": "mysql", "image": "mysql:8"},
+	}}}
+	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage, nil)
+	require.NoError(t, err)
+	requireInjectedPrimary(t, pod)
+}
+
+func TestBuildPod_DeclaredJobIsNotDuplicated(t *testing.T) {
+	jobTmpl := &dsl.PodTemplate{Spec: map[string]any{
+		"containers": []any{
+			map[string]any{"name": "job", "image": "golang:1.24"},
+			map[string]any{"name": "mysql", "image": "mysql:8"},
+		},
+	}}
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage, nil)
+	require.NoError(t, err)
+	require.Len(t, pod.Spec.Containers, 2)
+	assert.Equal(t, "job", pod.Spec.Containers[0].Name)
+	assert.Equal(t, "golang:1.24", pod.Spec.Containers[0].Image)
+	assert.Equal(t, "mysql", pod.Spec.Containers[1].Name)
+}
