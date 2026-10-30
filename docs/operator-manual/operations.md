@@ -347,6 +347,27 @@ Upgrade order: **controller first, then agents.**
 3. **k8s-agent + sidecar image** — the k8s-agent and its auto-injected `unified-artifact` sidecar communicate over a binary exec protocol and **must be upgraded in lockstep**. The skew is easy to miss when it is partial: the agent passes the repeatable `--exclude` flag to the sidecar (to keep a volume's contents out of an archive of its ancestor, and an artifact or cache entry from being extracted into it) **only** for a job that archives or extracts into an ancestor of a volume, and an older sidecar exits 2 on the unknown flag, so only such a job fails (`flag provided but not defined: -exclude`; see [troubleshooting](../troubleshooting/artifacts-and-storage.md#artifact-upload-fails-or-a-cache-is-never-restored-flag-provided-but-not-defined-exclude)). The agent also passes `--root <workspace mount>` on every artifact and cache invocation, which confines the sidecar to the workspace (see [Kubernetes Integration: the sidecar only reads and writes inside the workspace](kubernetes-integration.md#sidecar-filesystem-confinement)); an older sidecar exits 2 on that flag for every artifact and cache step, and a newer sidecar paired with an older agent exits 2 with `--root is required`. More generally: an old sidecar image paired with a new agent (or vice versa) is incompatible even if the image pulls successfully. The default `sidecarImage` is derived from the agent's own version, so it moves with the agent and needs no action; if you override `sidecarImage`, bump the override to the same release as the agent binary on every upgrade (see [Kubernetes Integration Guide: Sidecar image](kubernetes-integration.md#sidecar-image)).
 4. **Mirrored or air-gapped registries** — the default runner, sidecar and shim images are named after the agent's version (`:vX.Y.Z`), so the new release's tags must be in your mirror **before** its agents start, or their pods land in `ImagePullBackOff`. Nothing in this repository needs rotating for these images; see [Default images and the pause image digest](#default-images-and-the-pause-image-digest) below and the [migration note](migrations/2026-10-22-version-derived-default-images.md).
 
+### Upgrading and uninstalling a Helm install
+
+On Kubernetes installed with the Helm chart, an upgrade is
+`helm upgrade unified-cd oci://ghcr.io/eirueimi/charts/unified-cd --version <x.y.z> -n unified-cd -f values.yaml`
+(with the same values file you installed with). The controller and agent image tags default to
+the chart's `appVersion`, so the chart version selects the image version. The
+same order and lockstep rules as above apply: if you override
+`controller.image.tag` or `agent.image.tag`, move them together.
+
+- **The KEK is not touched.** The `unified-cd-kek-init` hook Job creates the
+  `unified-cd-controller-kek` Secret only if it does not exist, so
+  `helm upgrade` and a reinstall never rotate it.
+- **`helm uninstall` keeps the KEK Secret and the job namespace** (`ci` by
+  default, so running job Pods are not deleted). It removes everything else,
+  including the trial PostgreSQL and Garage PersistentVolumeClaims and their
+  data. Delete the KEK deliberately with
+  `kubectl -n <ns> delete secret unified-cd-controller-kek`, only when no stored
+  secret needs to be read again.
+- **Config edits roll the Pods.** Changing `controller.config` or `agent.config`
+  restarts the Deployments through a `checksum/config` annotation.
+
 ### Checking which version is running
 
 An upgrade is a fleet mid-way between two versions, so every unified-cd

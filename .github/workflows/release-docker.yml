@@ -199,6 +199,11 @@ jobs:
       contents: write   # required to attach assets to the release
     steps:
       - uses: actions/checkout@v4
+      # scripts/build-manifests.sh renders the bundles with `helm template`.
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
       # The bundles name the images this release just published, so they are
       # built from the tag rather than from whatever the overlays carry.
       - name: Build bundles pinned to ${{ github.ref_name }}
@@ -262,3 +267,55 @@ jobs:
             dist/manifests/install.yaml \
             dist/manifests/agent-only.yaml \
             --clobber
+
+  # Publish the Helm chart to GHCR as an OCI artifact. Like the bundles, this
+  # waits for verify: the chart's appVersion names the images this release
+  # just published, so it must not be pullable before they are confirmed good.
+  #
+  # The first-ever push creates a private GHCR package. A package owner must
+  # make it public once (Package settings -> Change visibility) so that
+  # `helm install oci://ghcr.io/eirueimi/charts/unified-cd` works anonymously.
+  # After the first release, repeat the anonymous pull check TODO 13 did for
+  # the sidecar image (`helm show chart` without logging in).
+  chart:
+    name: Publish Helm chart
+    needs: [verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Log in to GHCR
+        run: helm registry login ghcr.io -u ${{ github.actor }} --password-stdin <<< "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Package the chart pinned to ${{ github.ref_name }}
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          helm package charts/unified-cd --version "${TAG#v}" --app-version "$TAG" -d dist/chart
+
+      - name: Push the chart
+        env:
+          TAG: ${{ github.ref_name }}
+        run: helm push "dist/chart/unified-cd-${TAG#v}.tgz" oci://ghcr.io/eirueimi/charts
+
+      # Belt-and-braces: pull the chart metadata back from the registry and
+      # confirm it carries the release tag as appVersion.
+      - name: Assert the pushed chart carries the release tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          helm show chart oci://ghcr.io/eirueimi/charts/unified-cd --version "${TAG#v}" | tee /tmp/chart.yaml
+          grep -qx "appVersion: $TAG" /tmp/chart.yaml || {
+            echo "::error title=Chart appVersion mismatch::pushed chart does not report appVersion: $TAG"
+            exit 1
+          }

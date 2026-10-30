@@ -132,7 +132,7 @@ from an operator template, which the policy never checks) and the API server ref
 
 **Cause**
 
-The shipped `ci` namespace (`manifests/base/namespace/namespace.yaml`) enforces Pod Security
+The shipped `ci` namespace (`jobNamespace.podSecurity` in the Helm chart, rendered from [`job-namespace.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/job-namespace.yaml)) enforces Pod Security
 `baseline` (`pod-security.kubernetes.io/enforce: baseline`). It refuses privileged containers,
 `hostPath`, host namespaces, `Unconfined` seccomp/AppArmor profiles and similar, **whatever the
 agent config says**, and it applies to operator templates too. The `golang` template in

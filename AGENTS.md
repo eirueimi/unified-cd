@@ -77,7 +77,8 @@ internal/
   store/                   # PostgreSQL data layer
 web/                       # Svelte + Vite frontend
 editors/vscode/            # VS Code YAML completion extension
-manifests/                 # Kubernetes install manifests
+charts/unified-cd/          # Helm chart (source of the Kubernetes install bundles)
+manifests/                 # Pointer to the chart and the release bundles
 docs/                      # User-facing documentation
 examples/                  # Example job YAML files
 ```

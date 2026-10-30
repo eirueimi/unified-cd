@@ -141,6 +141,7 @@ nav:
           - "Kubernetes Job Pod Field Policy": operator-manual/migrations/2026-10-26-k8s-job-pod-field-policy.md
           - "Matrix Authorization": operator-manual/migrations/2026-10-28-matrix-authorization.md
           - "AppSource URL Credentials": operator-manual/migrations/2026-10-29-appsource-url-credentials.md
+          - "Kustomize Overlays Replaced by a Helm Chart": operator-manual/migrations/2026-10-30-helm-chart.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md

@@ -462,5 +462,5 @@ The UI lets you:
 | High availability and rolling deploys | [High Availability Guide](../operator-manual/high-availability.md) |
 | Frontend development | [Frontend Development Guide](../contributing/frontend-development.md) |
 | JSON Schema and editor setup | [JSON Schema and Editor Setup](../reference/json-schema.md) |
-| Kubernetes install manifests | [Kubernetes Manifests](https://github.com/eirueimi/unified-cd/blob/main/manifests/README.md) |
+| Kubernetes install (Helm chart, release bundles) | [Installation](installation.md#kubernetes) |
 | Field-level schema reference (auto-generated) | [Field Reference](../reference/field-reference.md) |
