@@ -35,9 +35,14 @@ minimal pause container (`--pause-image`, default `busybox:1.36`) owns the
 network namespace; the primary container (the target of default steps) and
 every `podTemplate` container join it with `--network container:<pause>`
 and share the claim's workspace via a bind mount. If the `podTemplate`
-defines no container, the agent injects its configured default runner image
+defines no container named `job` (as in the `mysql`-only example above), the agent injects its configured default runner image
 (`--runner-image`, default `ghcr.io/eirueimi/unified-cd-runner` at the tag of the agent's own release version, e.g. `:v0.7.0`) as
-the primary. Supported container runtimes are **docker, podman, and
+the primary, after the containers you declared. The Kubernetes agent does the
+same with its `podImage` (default: the runner image of the agent's own release):
+a `podTemplate` (inline `spec`, or a named agent template with or without
+`override`) that declares no `job` container gets one injected with that image,
+the same keep-alive, workspace mount and shim as a declared `job` container.
+Supported container runtimes are **docker, podman, and
 nerdctl** — Apple's `container` CLI is not auto-detected and not supported
 for isolated jobs (no reliable network-namespace-join equivalent), so macOS
 hosts must use docker/podman (typically a Linux VM) to run isolated jobs.
@@ -331,7 +336,7 @@ spec:
         - name: job
           image: golang:1.24-alpine
 
-    reuse: false              # keep the pod alive after the run for the next run (the workspace is still emptied)
+    reuse: false              # k8s only: pool the pod for the next run (only the workspace is emptied; the host agent ignores this)
     cleanWorkspace: false     # wipe a volume mounted at "." before the run (an ordinary workspace is always emptied)
     override:                 # merge additional containers/volumes into base spec
       containers:
@@ -441,7 +446,7 @@ user](../../troubleshooting/steps-and-execution.md#permission-denied-writing-to-
 | `name` | string | Name of a template defined in the k8s-agent config file |
 | `spec` | map | Inline Kubernetes PodSpec (used when `name` is empty). A Kubernetes agent refuses some fields unless its operator allows them (`k8s: job pod policy: ...`); see [Job Pod field policy](../../operator-manual/kubernetes-integration.md#job-pod-field-policy) |
 | `workspace.mountPath` | string | Path inside the pod where the (ephemeral) workspace is mounted. Must be absolute and clean, and not `/` or on, inside or above a system directory such as `/usr`, `/etc`, `/proc`, `/var/run` or `/.ucd`; `apply` rejects it otherwise |
-| `reuse` | bool | Return the pod to a pool after the run and reuse it for subsequent runs. This only saves Pod start-up: the workspace of a reused pod is emptied before every run, and the run fails (the pod is deleted) if that is impossible. Not allowed together with `spec.volumes` |
+| `reuse` | bool | Return the pod to a pool after the run and reuse it for subsequent runs. Kubernetes agent only: the host agent ignores `reuse` and starts a fresh claim pod for every run. The workspace of a reused pod is emptied before every run (the run fails and the pod is deleted if that is impossible), but everything else is kept: sidecar state and data, background processes, `/tmp`, `$HOME` and installed packages. Not allowed together with `spec.volumes` |
 | `cleanWorkspace` | bool | Empty a [volume](volumes.md) mounted at the workspace root (`mountPath: "."`) before the run. Equivalent to `spec.cleanWorkspace`; the two are ORed. An ordinary workspace is always emptied, so this changes nothing without such a volume |
 | `override.containers` | []map | Additional containers to merge into the pod spec. Subject to the same agent-side [field policy](../../operator-manual/kubernetes-integration.md#job-pod-field-policy) as `spec`, including volumes of the agent template that a patch container mounts |
 | `override.volumes` | []map | Additional volumes to merge into the pod spec. Subject to the same agent-side field policy as `spec` (`hostPath`, Secret and PVC volumes are refused unless allowed) |

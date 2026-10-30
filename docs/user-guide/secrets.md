@@ -206,6 +206,9 @@ spec:
 
 Passing secrets as environment variables is the safest approach. Putting secrets in
 command arguments can expose them in process listings.
+The host agent does not put resolved `env:` values on the `docker`/`podman` command line
+(it passes only the variable names and supplies the values through the CLI process
+environment), so they are not visible in the host's process list.
 
 ```yaml
 steps:

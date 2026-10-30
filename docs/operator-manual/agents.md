@@ -361,8 +361,8 @@ match — both must pass. In practice this means:
   `override` patch, `resources.requests`, an unqualified `resources.limits`
   key, a non-literal `env` entry, etc.) is only claimed by a Kubernetes
   agent. `podTemplate.workspace.mountPath` and `reuse` are **not** among
-  them — the standard agent honors the mount path and treats `reuse` as a
-  hint, so neither forces Kubernetes; see [Kubernetes Pod
+  them — the standard agent honors the mount path and ignores `reuse` (it always starts a fresh claim pod per run), so
+  neither forces Kubernetes; see [Kubernetes Pod
   Template](../user-guide/writing-jobs/isolation-and-containers.md#kubernetes-pod-template-podtemplate).
   (The `pvc` block under `workspace` that an earlier release also accepted has been removed;
   persistence is now a [named volume](#named-volumes).)
@@ -627,7 +627,7 @@ itself when the claim finishes. If the agent process exits ungracefully
 mid-claim — killed, OOM, host reboot — that teardown never runs, and the
 pause container plus every podTemplate sidecar for that claim are left
 running on the host. Unlike the Kubernetes agent, where an orphaned pod is
-eventually reaped by the cluster's own pod garbage collection, **the host
+reaped by the agent's own pod garbage collector (`runPodGC`, see [High availability](high-availability.md)), **the host
 agent has no automatic container GC**: nothing on the host notices or
 cleans up an orphaned claim pod on its own. Operators running the host
 agent should treat this as routine hygiene — periodically prune

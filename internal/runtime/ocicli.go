@@ -53,9 +53,7 @@ func (r *ociCLI) runArgs(spec RunSpec) []string {
 	if spec.MemLimit != "" {
 		args = append(args, "--memory", spec.MemLimit)
 	}
-	for _, e := range spec.Env {
-		args = append(args, "-e", e)
-	}
+	args = append(args, envFlags(spec.Env)...)
 	args = append(args, spec.Image)
 	shell := spec.Shell
 	if len(shell) == 0 {
@@ -71,7 +69,13 @@ func (r *ociCLI) Pull(ctx context.Context, image string) error {
 }
 
 func (r *ociCLI) Run(ctx context.Context, spec RunSpec, stdout, stderr io.Writer) (int, error) {
-	cmd := execCommand(ctx, r.bin, r.runArgs(spec)...)
+	prep, cleanup, perr := prepareCLIEnv(spec.Env)
+	defer cleanup()
+	if perr != nil {
+		return -1, perr
+	}
+	cmd := execCommand(ctx, r.bin, prep.withEnvFile(r.runArgs(spec))...)
+	cmd.Env = prep.childEnv
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err := cmd.Run()
@@ -123,9 +127,7 @@ func (r *ociCLI) createArgs(spec CreateSpec) ([]string, error) {
 	if spec.NetworkContainer != "" {
 		args = append(args, "--network", "container:"+spec.NetworkContainer)
 	}
-	for _, e := range spec.Env {
-		args = append(args, "-e", e)
-	}
+	args = append(args, envFlags(spec.Env)...)
 	if spec.User != "" {
 		args = append(args, "--user", spec.User)
 	}
@@ -172,7 +174,14 @@ func (r *ociCLI) Create(ctx context.Context, spec CreateSpec) (ContainerHandle, 
 	if err != nil {
 		return ContainerHandle{}, err
 	}
-	out, err := execCommand(ctx, r.bin, args...).Output()
+	prep, cleanup, err := prepareCLIEnv(spec.Env)
+	defer cleanup()
+	if err != nil {
+		return ContainerHandle{}, err
+	}
+	cmd := execCommand(ctx, r.bin, prep.withEnvFile(args)...)
+	cmd.Env = prep.childEnv
+	out, err := cmd.Output()
 	if err != nil {
 		return ContainerHandle{}, fmt.Errorf("%s run -d: %w", r.bin, err)
 	}
@@ -183,19 +192,28 @@ func (r *ociCLI) Create(ctx context.Context, spec CreateSpec) (ContainerHandle, 
 	return ContainerHandle{ID: id}, nil
 }
 
-func (r *ociCLI) Exec(ctx context.Context, h ContainerHandle, spec ExecSpec, stdout, stderr io.Writer) (int, error) {
+// execArgs builds the argv for `exec`. Env values are never included; see
+// ocienv.go.
+func (r *ociCLI) execArgs(h ContainerHandle, spec ExecSpec) []string {
 	args := []string{"exec"}
-	for _, e := range spec.Env {
-		args = append(args, "-e", e)
-	}
+	args = append(args, envFlags(spec.Env)...)
 	shell := spec.Shell
 	if len(shell) == 0 {
 		shell = []string{"sh", "-c"}
 	}
 	args = append(args, h.ID)
 	args = append(args, shell...)
-	args = append(args, spec.Script)
-	cmd := execCommand(ctx, r.bin, args...)
+	return append(args, spec.Script)
+}
+
+func (r *ociCLI) Exec(ctx context.Context, h ContainerHandle, spec ExecSpec, stdout, stderr io.Writer) (int, error) {
+	prep, cleanup, perr := prepareCLIEnv(spec.Env)
+	defer cleanup()
+	if perr != nil {
+		return -1, perr
+	}
+	cmd := execCommand(ctx, r.bin, prep.withEnvFile(r.execArgs(h, spec))...)
+	cmd.Env = prep.childEnv
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err := cmd.Run()

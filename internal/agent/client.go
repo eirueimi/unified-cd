@@ -438,5 +438,7 @@ func (c *Client) DownloadArtifactWritten(ctx context.Context, runID, name, destD
 	if destDir == "" {
 		destDir = "."
 	}
-	return artifact.ExtractTarZstdWritten(resp.Body, destDir, exclude, w)
+	// Link entries are refused, exactly as the k8s sidecar's download does.
+	_, err = artifact.ExtractTarZstdDir(resp.Body, destDir, exclude, true, w)
+	return err
 }

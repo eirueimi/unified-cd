@@ -51,10 +51,9 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   to resolve `valueFrom` against, so a container that needs it is pinned to a
   Kubernetes agent rather than having the value silently dropped. See the [migration
   guide](migrations/podtemplate-subfield-routing.md) if this changes which runs
-  schedule for you. Unlike k8s, the standard agent's claim-pod containers
-  share one network namespace (via the pause container), so — unlike the old MVP
-  single-container form this replaces — sidecars **are** reachable at `localhost` from
-  every claim-pod container, matching k8s.
+  schedule for you. As on k8s, the standard agent's claim-pod containers
+  share one network namespace (via the pause container), so sidecars **are**
+  reachable at `localhost` from every claim-pod container.
 - **`securityContext`** — honoured on both agents for the identity and group fields
   (`runAsUser`, `runAsGroup`, `runAsNonRoot`, `supplementalGroups`, `fsGroup`,
   `fsGroupChangePolicy`, `supplementalGroupsPolicy: Merge`) at pod and container level, and for
@@ -92,8 +91,9 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   when nothing in the template already sets `ephemeral-storage`, and it never overrides yours (see
   [Disk limits and headroom](#disk-limits-and-headroom)).
 - **`native: true`** — host-only. A `native: true` job claimed by the k8s-agent fails the
-  run immediately with a clear error; route native jobs away from k8s-agents (and to host
-  agents) via `agentSelector`.
+  run immediately with a clear error. You do not need `agentSelector` to keep native jobs
+  away from k8s-agents: capability routing never offers a `native: true` job to an agent
+  that does not advertise `native`.
 - **Drain window** — on shutdown (SIGTERM/rollout) the k8s agent stops claiming immediately
   but lets in-flight runs keep going, same as the standard agent's `--drain-timeout`; see
   [Resilience & concurrency](#resilience-concurrency) below. Any run still in flight when the
@@ -352,7 +352,11 @@ With `reuse: true`, the Pod is returned to a pool after the run and reused by th
 run skips scheduling and image pulls. **It does not carry the workspace over**: the agent empties
 the workspace of a reused Pod, dot-files included, before every run. If it cannot, the run fails
 (`k8s: could not clear the reused Pod's workspace: ...`) and the Pod is deleted rather than returned
-to the pool. Earlier releases kept `/workspace` between runs of a reused Pod, and
+to the pool. Everything outside the emptied workspace is **kept**, though: a reused `mysql`
+sidecar keeps its data directory and listeners, processes a previous run backgrounded keep
+running, and `/tmp`, `$HOME`, installed packages and other container-filesystem changes
+survive. Do not rely on a reused Pod being clean. The standard (host) agent ignores `reuse`
+and starts a fresh claim pod for every run. Earlier releases kept `/workspace` between runs of a reused Pod, and
 `podTemplate.cleanWorkspace: false` was how you asked for that; it no longer has any effect on an
 ordinary workspace.
 
@@ -1006,7 +1010,7 @@ artifact and cache invocation) as a confined root and resolves every path beneat
 instead of archiving the credential, and a download or cache restore into a path below a symlink
 that points outside the workspace fails instead of writing there. A symlink inside the workspace
 that stays inside it keeps working as a path component. A symlink found while archiving a directory
-is stored as a link entry and its target is not read. The sidecar and the agent must be upgraded
+is stored as a link entry and its target is not read (the host agent does the same). The sidecar and the agent must be upgraded
 together, because the agent now passes `--root`.
 
 **No step can target the sidecar.** Independently of the Pod policy, and on every agent type, a

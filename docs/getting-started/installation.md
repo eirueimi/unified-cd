@@ -36,8 +36,9 @@ not a current deployment feature.
 ## Kubernetes
 
 Install with the Helm chart. It is published to GitHub Container Registry as an
-OCI artifact at `oci://ghcr.io/eirueimi/charts/unified-cd`, starting with the
-first release after v0.11.0. Helm 3 and Kubernetes 1.25 or newer are required.
+OCI artifact at `oci://ghcr.io/eirueimi/charts/unified-cd`, starting with
+v0.12.0, and pulls anonymously (verified 2026-10-30 for 0.12.0, digest
+`sha256:11c05c50030e70c04c4821afa87e7656eabde2060af8f1179574469d4ea21962`). Helm 3 and Kubernetes 1.25 or newer are required.
 The chart's [README](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/README.md)
 is the full values reference. To install from a checkout of this repository,
 use `charts/unified-cd` in place of the OCI reference in every command below.
@@ -261,7 +262,7 @@ release assets starting with **v0.6.0**.
 ```bash
 # Trial: controller + k8s-agent + PostgreSQL + Garage (development credentials)
 # Pinned to a release
-kubectl apply -f https://github.com/eirueimi/unified-cd/releases/download/v0.11.0/install.yaml
+kubectl apply -f https://github.com/eirueimi/unified-cd/releases/download/v0.12.0/install.yaml
 # Or always the newest release
 kubectl apply -f https://github.com/eirueimi/unified-cd/releases/latest/download/install.yaml
 ```
