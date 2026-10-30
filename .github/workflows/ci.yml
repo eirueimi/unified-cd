@@ -368,15 +368,22 @@ jobs:
           done
           kubectl -n "$NS" wait --for=condition=Available deployment/unified-cd-controller --timeout=5m
 
-          kubectl -n "$NS" port-forward svc/unified-cd-controller 18080:80 >pf.log 2>&1 &
-          echo $! > pf.pid
+          start_pf() {
+            kubectl -n "$NS" port-forward svc/unified-cd-controller 18080:80 >>pf.log 2>&1 &
+            echo $! > pf.pid
+          }
+          start_pf
           # GET /api/v1/agents returns a bare JSON array of agents, each with a
           # "labels" string array; the Kubernetes agent carries kind:kubernetes.
+          # Every call is time-bounded so a half-open port-forward cannot hang
+          # an iteration, and a dead port-forward is restarted.
           enrolled=""
           for i in $(seq 1 100); do
-            if curl -fsS -H 'Authorization: Bearer dev-token-change-me' \
-                 http://127.0.0.1:18080/api/v1/agents 2>/dev/null \
-               | jq -e 'any(.[]; (.labels // []) | any(. == "kind:kubernetes"))' >/dev/null 2>&1; then
+            kill -0 "$(cat pf.pid)" 2>/dev/null || { sleep 1; start_pf; sleep 2; }
+            if curl -fsS --connect-timeout 3 --max-time 5 \
+                 -H 'Authorization: Bearer dev-token-change-me' \
+                 -o agents.json http://127.0.0.1:18080/api/v1/agents 2>/dev/null \
+               && jq -e 'any(.[]; (.labels // []) | any(. == "kind:kubernetes"))' agents.json >/dev/null 2>&1; then
               enrolled=1; break
             fi
             sleep 3
@@ -407,3 +414,6 @@ jobs:
           kubectl -n "$NS" logs deployment/unified-cd-controller --tail=200 || true
           kubectl -n "$NS" logs deployment/unified-cd-k8s-agent --tail=200 || true
           cat pf.log || true
+          echo "== last /api/v1/agents response"; cat agents.json || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -50 || true
+          helm status unified-cd -n "$NS" || true
