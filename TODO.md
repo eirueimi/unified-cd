@@ -65,13 +65,6 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** `internal/controller/appsource_reconciler_test.go` seeds post-migration bare-name state directly instead of running `internal/store/migrations/003_appsource_managed_resources.up.sql` through the production migration runner; store tests cover `RenameJob` separately.
 - **Done when:** An integration test creates a genuine pre-003 schema and state, runs migration 003 through the production migration runner, verifies the deliberate bare-name backfill, performs the first sync, and proves qualification, history preservation, repeat-sync idempotency, and prune safety end to end.
 
-### 35c. Verify exact matrix-variant output aggregation
-
-- **Status:** Partial
-- **Impact:** Variant outputs can collapse or include the wrong combinations while current tests still pass, producing incorrect promoted job outputs.
-- **Evidence:** `test/e2e/matrix_smoke_test.go` `TestMatrixSmoke` substring-checks only one included and one excluded output, while `internal/store/postgres_outputs_test.go` `TestStepOutputs_VariantKeyed` accepts either value returned by variant-unaware `GetStepOutputs`.
-- **Done when:** Coverage JSON-decodes and exactly compares all three expected promoted key/value pairs, rejects extras and the excluded combination, and directly verifies the count and identity of variant-keyed rows through storage inspection or a variant-aware getter.
-
 ### 35d. Complete human and cross-agent artifact-download router coverage
 
 - **Status:** Partial
