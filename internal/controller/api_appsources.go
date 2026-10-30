@@ -100,15 +100,18 @@ func (s *Server) handleSyncAppSource(w http.ResponseWriter, r *http.Request) {
 
 // appSourceToMeta converts a store.AppSource and dsl.AppSourceSpec into an api.AppSourceMeta.
 func appSourceToMeta(a *store.AppSource, spec dsl.AppSourceSpec) api.AppSourceMeta {
+	// Rows persisted before apply-time rejection existed may still carry
+	// credentials in repoURL or in an old last_error; never return them.
+	repoURL, _ := dsl.SanitizeRepoURL(spec.RepoURL)
 	m := api.AppSourceMeta{
 		Name:           a.Name,
-		RepoURL:        spec.RepoURL,
+		RepoURL:        repoURL,
 		TargetRevision: spec.TargetRevision,
 		Path:           spec.Path,
 		LastSyncedAt:   a.LastSyncedAt,
 		LastCommit:     a.LastCommit,
 		SyncStatus:     a.SyncStatus,
-		LastError:      a.LastError,
+		LastError:      redactURLCredentials(a.LastError),
 		UpdatedAt:      a.UpdatedAt,
 	}
 	if spec.SyncPolicy != (dsl.AppSyncPolicy{}) {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/spf13/cobra"
 )
 
@@ -92,7 +93,7 @@ func newAppSourceListCmd(resolve func() (Config, error), httpClient *http.Client
 			}
 			for _, a := range list {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\trepo=%s rev=%s lastCommit=%s\n",
-					a.Name, a.RepoURL, a.TargetRevision, shortSHA(a.LastCommit))
+					a.Name, safeRepoURL(a.RepoURL), a.TargetRevision, shortSHA(a.LastCommit))
 			}
 			return nil
 		},
@@ -130,7 +131,7 @@ func newAppSourceGetCmd(resolve func() (Config, error), httpClient *http.Client)
 			}
 			w := cmd.OutOrStdout()
 			fmt.Fprintf(w, "name:           %s\n", a.Name)
-			fmt.Fprintf(w, "repoURL:        %s\n", a.RepoURL)
+			fmt.Fprintf(w, "repoURL:        %s\n", safeRepoURL(a.RepoURL))
 			fmt.Fprintf(w, "targetRevision: %s\n", a.TargetRevision)
 			fmt.Fprintf(w, "path:           %s\n", a.Path)
 			fmt.Fprintf(w, "lastCommit:     %s\n", a.LastCommit)
@@ -181,4 +182,12 @@ func shortSHA(sha string) string {
 		return sha[:7]
 	}
 	return sha
+}
+
+// safeRepoURL strips credentials from a repo URL returned by the server. The
+// server already sanitizes responses; this keeps CLI output and exported
+// manifests (which get committed to a repository) safe against an older server.
+func safeRepoURL(u string) string {
+	clean, _ := dsl.SanitizeRepoURL(u)
+	return clean
 }

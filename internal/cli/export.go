@@ -222,7 +222,7 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 			skipped++
 			continue
 		}
-		spec := map[string]any{"repoURL": a.RepoURL, "targetRevision": a.TargetRevision, "path": a.Path}
+		spec := map[string]any{"repoURL": safeRepoURL(a.RepoURL), "targetRevision": a.TargetRevision, "path": a.Path}
 		if a.SyncPolicy != nil {
 			sp := map[string]any{}
 			if a.SyncPolicy.Interval != "" {

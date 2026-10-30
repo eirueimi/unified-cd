@@ -443,6 +443,14 @@ Troubleshooting guide for how the Web UI surfaces this and how to fix it.
 On Windows hosts, `step.run` is executed via [Git Bash](https://git-scm.com/download/win)
 (Windows does not have a native POSIX shell).
 
+Each host step runs inside its own Windows Job Object (`KILL_ON_JOB_CLOSE`), so cancelling a
+step kills the whole process tree, including grandchildren the shell spawned. The step's
+process is created suspended, placed in the job, and only then resumed, so it cannot spawn a
+descendant that escapes the job. If the agent cannot place the process in a Job Object, it
+kills the process without running it and the step fails with
+`step not started: could not confine process to a Job Object: ...`; there is no fallback that
+would leave descendants unkillable on cancellation.
+
 ### Git Bash not found
 
 At agent startup, the PATH and known install locations (e.g. `C:\Program Files\Git\bin\bash.exe`)
