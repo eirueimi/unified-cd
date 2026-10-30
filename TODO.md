@@ -30,13 +30,6 @@ Last audited: 2026-07-26 against `1e46459`.
 
 ## Medium
 
-### 8. Verify that artifact downloads preserve configured step metadata
-
-- **Status:** Needs verification
-- **Impact:** Download-artifact progress can be attributed to a fallback step name or wrong stage in run status, making the UI and CLI misleading even if the transfer succeeds.
-- **Evidence:** `internal/agent/orchestrator.go` `executeDownloadArtifact` reports `step.DisplayName()` and `step.StageIndex`, but `internal/agent/agent_test.go` `TestAgent_UploadArtifact_RelativePath` verifies those fields only for uploads.
-- **Done when:** An exact `executeDownloadArtifact` test captures its Running and terminal reports and proves both use the configured download display name and configured stage index.
-
 ### 35b. Exercise AppSource migration 003 through first synchronization
 
 - **Status:** Partial

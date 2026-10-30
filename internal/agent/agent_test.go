@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -873,5 +874,53 @@ func TestAgent_ExecuteRun_PanicIsRecoveredAndFailsRun(t *testing.T) {
 		assert.Equal(t, "Failed", status, "a panic in executeRun's call graph should fail the run")
 	case <-time.After(5 * time.Second):
 		t.Fatal("FinishRun was not called after the panic")
+	}
+}
+
+// TestExecuteDownloadArtifact_ReportsConfiguredStepMetadata verifies that every
+// step report sent by a download-artifact step (the Running report and the
+// terminal one) carries the step's configured display name and stage index,
+// not a fallback name or a zero stage.
+func TestExecuteDownloadArtifact_ReportsConfiguredStepMetadata(t *testing.T) {
+	const agentID = "download-artifact-agent"
+	const runID = "run-download-artifact"
+
+	var mu sync.Mutex
+	var reports []api.StepReportRequest
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
+		var body api.StepReportRequest
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		mu.Lock()
+		reports = append(reports, body)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	step := api.ClaimStep{
+		Index:      3,
+		StageIndex: 2,
+		Name:       "fetch build output",
+		DownloadArtifact: &api.DownloadArtifactStep{
+			Name: "out",
+		},
+	}
+
+	err := executeDownloadArtifact(context.Background(), NewClient(srv.URL, "tok"), agentID, step, runID, probeBackend{}, ScopeHandle{}, dsl.TemplateData{})
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, reports, 2, "expected a Running report followed by a terminal report")
+	assert.Equal(t, "Running", reports[0].Status)
+	assert.Equal(t, "Succeeded", reports[1].Status)
+	for _, r := range reports {
+		assert.Equal(t, "fetch build output", r.StepName, "%s report should carry the configured step name", r.Status)
+		assert.Equal(t, 2, r.StageIndex, "%s report should carry the configured stage index", r.Status)
+		assert.Equal(t, 3, r.StepIndex, "%s report should carry the step index", r.Status)
+		assert.Equal(t, runID, r.RunID)
 	}
 }
