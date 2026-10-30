@@ -198,8 +198,10 @@ first; see `docs/operator-manual/kubernetes-integration.md`.
 | `ingress.hosts` | `[]` | Hosts and paths: `[{host, paths: [{path, pathType}]}]`. |
 | `ingress.tls` | `[]` | TLS entries: `[{secretName, hosts}]`. |
 
-`values.schema.json` validates types, the Pod Security levels and the
-`agent.server` pattern at install time.
+`values.schema.json` validates types and the Pod Security levels at install
+time. Image tags are typed as strings, so a numeric-looking tag such as `1.10`
+needs `--set-string controller.image.tag=1.10` (plain `--set` makes it a number
+and the schema rejects it).
 
 ## Render-time errors
 
@@ -210,4 +212,5 @@ The chart fails to render, naming the value to change, when:
 - `bundledStores.enabled` is `true` with `controller.enabled=false`;
 - `agent.server` is empty with `controller.enabled=false`;
 - `agent.server` is set and is not an `https://` URL;
-- `ingress.enabled` is `true` while the trial Secret would be rendered.
+- `ingress.enabled` is `true` while the trial Secret would be rendered;
+- `ingress.enabled` is `true` with an empty `ingress.hosts`.

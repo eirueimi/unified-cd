@@ -59,7 +59,7 @@
           }
         },
         "replicas": {"type": "integer", "minimum": 0},
-        "server": {"type": "string", "pattern": "^$|^https://"},
+        "server": {"type": "string"},
         "config": {"type": "object"},
         "resources": {"type": "object"},
         "nodeSelector": {"type": "object"},

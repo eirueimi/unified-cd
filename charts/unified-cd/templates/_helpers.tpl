@@ -102,6 +102,9 @@ combination fails the render with a message naming the value to change.
 {{- if and .Values.ingress.enabled (include "unified-cd.trialSecret" .) -}}
 {{- fail "ingress.enabled with the bundled trial credentials would expose dev-token-change-me: set controller.existingSecret to a Secret you created, or disable ingress" -}}
 {{- end -}}
+{{- if and .Values.ingress.enabled (not .Values.ingress.hosts) -}}
+{{- fail "ingress.enabled requires at least one entry in ingress.hosts" -}}
+{{- end -}}
 {{- end -}}
 
 {{/*

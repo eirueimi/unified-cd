@@ -2,11 +2,9 @@ package helmchart
 
 import (
 	"bytes"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"os"
 	"os/exec"
-	"strings"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -65,89 +63,47 @@ func TestIngressWithTrialFails(t *testing.T) {
 	assert.Contains(t, stderr, "ingress.enabled with the bundled trial credentials would expose dev-token-change-me")
 }
 
+func TestIngressWithoutHostsFails(t *testing.T) {
+	if !Available() {
+		t.Skip("helm not on PATH")
+	}
+	_, stderr, err := RenderErr("unified-cd", "bundledStores.enabled=false", "controller.existingSecret=prod", "ingress.enabled=true")
+	require.Error(t, err)
+	assert.Contains(t, stderr, "ingress.hosts")
+}
+
 func TestSchemaRejectsBadTypes(t *testing.T) {
 	if !Available() {
 		t.Skip("helm not on PATH")
 	}
-	for _, set := range []string{
-		"controller.replicas=two",
-		"jobNamespace.podSecurity.enforce=superuser",
-		"agent.server=http://insecure.example.com",
+	for set, fragment := range map[string]string{
+		"controller.replicas=two":                    "replicas",
+		"jobNamespace.podSecurity.enforce=superuser": "enforce",
 	} {
 		_, stderr, err := RenderErr("unified-cd", set)
-		assert.Errorf(t, err, "--set %s should fail", set)
-		assert.NotEmpty(t, stderr)
+		require.Errorf(t, err, "--set %s should fail", set)
+		assert.Containsf(t, stderr, fragment, "--set %s", set)
 	}
 }
 
-type stubResource struct {
-	name, kind string
-	namespaced bool
-}
-
-// stubAPI lists, per group/version ("v1" is the core group), the resource kinds
-// the chart renders, which is all Helm's REST mapper needs to build objects.
-var stubAPI = map[string][]stubResource{
-	"v1": {
-		{"namespaces", "Namespace", false}, {"services", "Service", true},
-		{"serviceaccounts", "ServiceAccount", true}, {"configmaps", "ConfigMap", true},
-		{"secrets", "Secret", true}, {"persistentvolumeclaims", "PersistentVolumeClaim", true},
-	},
-	"apps/v1":                      {{"deployments", "Deployment", true}},
-	"batch/v1":                     {{"jobs", "Job", true}},
-	"networking.k8s.io/v1":         {{"ingresses", "Ingress", true}},
-	"rbac.authorization.k8s.io/v1": {{"roles", "Role", true}, {"rolebindings", "RoleBinding", true}, {"clusterroles", "ClusterRole", false}, {"clusterrolebindings", "ClusterRoleBinding", false}},
-}
-
-// serveDiscovery answers the discovery requests `helm install --dry-run=client`
-// makes, so no cluster is needed to render NOTES.txt.
-func serveDiscovery(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	enc := json.NewEncoder(w)
-	path := strings.Trim(r.URL.Path, "/")
-	switch {
-	case path == "version":
-		_ = enc.Encode(map[string]string{"major": "1", "minor": "31", "gitVersion": "v1.31.0"})
-	case path == "api":
-		_ = enc.Encode(map[string]any{"kind": "APIVersions", "versions": []string{"v1"}})
-	case path == "apis":
-		var groups []map[string]any
-		for gv := range stubAPI {
-			g, v, ok := strings.Cut(gv, "/")
-			if !ok {
-				continue
-			}
-			ver := map[string]string{"groupVersion": gv, "version": v}
-			groups = append(groups, map[string]any{"name": g, "versions": []any{ver}, "preferredVersion": ver})
-		}
-		_ = enc.Encode(map[string]any{"kind": "APIGroupList", "apiVersion": "v1", "groups": groups})
-	default:
-		gv := strings.TrimPrefix(strings.TrimPrefix(path, "apis/"), "api/")
-		res, ok := stubAPI[gv]
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		var list []map[string]any
-		for _, rs := range res {
-			list = append(list, map[string]any{"name": rs.name, "kind": rs.kind, "namespaced": rs.namespaced, "verbs": []string{"get", "list", "create", "delete"}})
-		}
-		_ = enc.Encode(map[string]any{"kind": "APIResourceList", "groupVersion": gv, "resources": list})
-	}
-}
-
-// install runs `helm install --dry-run=client`, which renders NOTES.txt and
-// installs nothing. Helm 3.16 still probes the API server's /version first, so
-// the command is pointed at a local stub API server; no cluster is needed.
+// install renders NOTES.txt, which `helm template` never prints, without a
+// cluster: it copies the chart, turns NOTES.txt into a named template and
+// renders it inside a ConfigMap block scalar (--show-only picks that file).
 func install(t *testing.T, ns string, set ...string) string {
 	t.Helper()
 	if !Available() {
 		t.Skip("helm not on PATH")
 	}
-	api := httptest.NewServer(http.HandlerFunc(serveDiscovery))
-	t.Cleanup(api.Close)
-	t.Setenv("KUBECONFIG", "")
-	a := []string{"install", "--dry-run=client", "unified-cd", ChartDir(), "-n", ns, "--kube-apiserver", api.URL, "--disable-openapi-validation"}
+	dir := filepath.Join(t.TempDir(), "unified-cd")
+	require.NoError(t, os.CopyFS(dir, os.DirFS(ChartDir())))
+	notes, err := os.ReadFile(filepath.Join(dir, "templates", "NOTES.txt"))
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(filepath.Join(dir, "templates", "NOTES.txt")))
+	tpl := "{{- define \"notes-under-test\" -}}\n" + string(notes) + "\n{{- end -}}\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "templates", "_notes.tpl"), []byte(tpl), 0o644))
+	holder := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: notes\ndata:\n  notes: |\n{{ include \"notes-under-test\" . | indent 4 }}\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "templates", "notes-under-test.yaml"), []byte(holder), 0o644))
+	a := []string{"template", "unified-cd", dir, "-n", ns, "--show-only", "templates/notes-under-test.yaml"}
 	for _, s := range set {
 		a = append(a, "--set", s)
 	}
