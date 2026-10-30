@@ -56,7 +56,7 @@ spec:
     spec: <PodSpec map>
     workspace:
       mountPath: <string>         # where the (ephemeral) workspace is mounted; default /workspace
-    reuse: <bool>                 # keep the Pod for the next run (the workspace is still emptied)
+    reuse: <bool>                 # k8s only: pool the Pod for the next run (only the workspace is emptied; the host agent ignores this)
     cleanWorkspace: <bool>        # same as spec.cleanWorkspace; the two are ORed
     override:
       containers: [<map>]

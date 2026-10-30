@@ -331,7 +331,7 @@ spec:
         - name: job
           image: golang:1.24-alpine
 
-    reuse: false              # keep the pod alive after the run for the next run (the workspace is still emptied)
+    reuse: false              # k8s only: pool the pod for the next run (only the workspace is emptied; the host agent ignores this)
     cleanWorkspace: false     # wipe a volume mounted at "." before the run (an ordinary workspace is always emptied)
     override:                 # merge additional containers/volumes into base spec
       containers:
@@ -441,7 +441,7 @@ user](../../troubleshooting/steps-and-execution.md#permission-denied-writing-to-
 | `name` | string | Name of a template defined in the k8s-agent config file |
 | `spec` | map | Inline Kubernetes PodSpec (used when `name` is empty). A Kubernetes agent refuses some fields unless its operator allows them (`k8s: job pod policy: ...`); see [Job Pod field policy](../../operator-manual/kubernetes-integration.md#job-pod-field-policy) |
 | `workspace.mountPath` | string | Path inside the pod where the (ephemeral) workspace is mounted. Must be absolute and clean, and not `/` or on, inside or above a system directory such as `/usr`, `/etc`, `/proc`, `/var/run` or `/.ucd`; `apply` rejects it otherwise |
-| `reuse` | bool | Return the pod to a pool after the run and reuse it for subsequent runs. This only saves Pod start-up: the workspace of a reused pod is emptied before every run, and the run fails (the pod is deleted) if that is impossible. Not allowed together with `spec.volumes` |
+| `reuse` | bool | Return the pod to a pool after the run and reuse it for subsequent runs. Kubernetes agent only: the host agent ignores `reuse` and starts a fresh claim pod for every run. The workspace of a reused pod is emptied before every run (the run fails and the pod is deleted if that is impossible), but everything else is kept: sidecar state and data, background processes, `/tmp`, `$HOME` and installed packages. Not allowed together with `spec.volumes` |
 | `cleanWorkspace` | bool | Empty a [volume](volumes.md) mounted at the workspace root (`mountPath: "."`) before the run. Equivalent to `spec.cleanWorkspace`; the two are ORed. An ordinary workspace is always emptied, so this changes nothing without such a volume |
 | `override.containers` | []map | Additional containers to merge into the pod spec. Subject to the same agent-side [field policy](../../operator-manual/kubernetes-integration.md#job-pod-field-policy) as `spec`, including volumes of the agent template that a patch container mounts |
 | `override.volumes` | []map | Additional volumes to merge into the pod spec. Subject to the same agent-side field policy as `spec` (`hostPath`, Secret and PVC volumes are refused unless allowed) |
