@@ -20,6 +20,9 @@ where the Secret is created), no ClusterRole.
 
 With controller.kek.job.helmHook the four objects are Helm hooks. The RBAC
 objects carry a lower hook weight than the Job so they exist before it runs.
+They are pre-install/pre-upgrade hooks so the KEK Secret exists before the
+controller Pod (which mounts it) starts; a post-install hook would deadlock
+`helm install --wait`.
 */}}
 {{- $hook := .Values.controller.kek.job.helmHook }}
 {{- $ns := include "unified-cd.namespace" . }}
@@ -33,7 +36,7 @@ metadata:
     {{- include "unified-cd.labels" . | nindent 4 }}
   {{- if $hook }}
   annotations:
-    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook: pre-install,pre-upgrade
     helm.sh/hook-weight: "-1"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
   {{- end }}
@@ -47,7 +50,7 @@ metadata:
     {{- include "unified-cd.labels" . | nindent 4 }}
   {{- if $hook }}
   annotations:
-    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook: pre-install,pre-upgrade
     helm.sh/hook-weight: "-1"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
   {{- end }}
@@ -65,7 +68,7 @@ metadata:
     {{- include "unified-cd.labels" . | nindent 4 }}
   {{- if $hook }}
   annotations:
-    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook: pre-install,pre-upgrade
     helm.sh/hook-weight: "-1"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
   {{- end }}
@@ -87,7 +90,7 @@ metadata:
     {{- include "unified-cd.labels" . | nindent 4 }}
   {{- if $hook }}
   annotations:
-    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook: pre-install,pre-upgrade
     helm.sh/hook-weight: "0"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
   {{- end }}

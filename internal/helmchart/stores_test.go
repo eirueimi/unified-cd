@@ -189,7 +189,7 @@ func TestKEKJobHook(t *testing.T) {
 		require.NotNilf(t, o, n.kind)
 		assert.Equal(t, "cd-system", o.Namespace(), n.kind)
 		a := hookAnnotations(o)
-		assert.Equal(t, "post-install,post-upgrade", a["helm.sh/hook"], n.kind)
+		assert.Equal(t, "pre-install,pre-upgrade", a["helm.sh/hook"], n.kind)
 		assert.Equal(t, "before-hook-creation,hook-succeeded", a["helm.sh/hook-delete-policy"], n.kind)
 		assert.Equal(t, n.weight, a["helm.sh/hook-weight"], n.kind)
 	}
