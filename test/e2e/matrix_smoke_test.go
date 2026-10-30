@@ -95,17 +95,18 @@ spec:
 		"expected exactly the 3 non-excluded combinations as variant rows")
 	assert.Equal(t, "build (linux, amd64)", variants["linux/amd64"], "display name carries the combination")
 
-	// Aggregated output: combo key -> value, and each value is the per-variant tag.
-	outs, err := pg.GetStepOutputs(ctx, run.ID, steps[0].Index)
-	require.NoError(t, err)
-	_ = outs // per-variant store rows exist; run-level promotion asserted below.
-
+	// Promoted job output is the JSON-encoded aggregated map (documented
+	// behavior): exactly the three included combinations, each carrying its
+	// own .Matrix values; the excluded darwin/arm64 must be absent.
 	runOuts, err := pg.GetRunOutputs(ctx, run.ID)
 	require.NoError(t, err)
-	// Promoted job output is the JSON-encoded aggregated map (documented behavior).
-	assert.Contains(t, runOuts["tag"], "linux/amd64", "aggregated output promoted as JSON map")
-	assert.Contains(t, runOuts["tag"], "linux-amd64", "each combo captured its own .Matrix values")
-	assert.NotContains(t, runOuts["tag"], "darwin/arm64", "excluded combination absent")
+	var tags map[string]string
+	require.NoError(t, json.Unmarshal([]byte(runOuts["tag"]), &tags), "promoted output must be a JSON object")
+	assert.Equal(t, map[string]string{
+		"linux/amd64":  "linux-amd64",
+		"linux/arm64":  "linux-arm64",
+		"darwin/amd64": "darwin-amd64",
+	}, tags)
 }
 
 func doPost(t *testing.T, url string, body []byte) []byte {

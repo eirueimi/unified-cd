@@ -585,16 +585,13 @@ func TestRedactURLCredentials(t *testing.T) {
 }
 
 // TestReconciler_RedactsCredentialsInLastError proves the redaction is wired into the
-// reconciler error path: a repoURL with embedded credentials that fails to resolve
-// must not leak the secret into the stored last_error.
+// reconciler error path: a fetch error that echoes a credentialed URL (e.g. from a
+// git remote redirect or helper) must not leak the secret into the stored last_error.
 func TestReconciler_RedactsCredentialsInLastError(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	ctx := context.Background()
 
-	// Note: parse-side validation is intentionally left permissive (see #33); the spec
-	// is stored via UpsertAppSource which does not re-validate, so the credentialed URL
-	// reaches the reconciler and its error string.
-	spec := `{"repoURL":"https://alice:s3cr3t@github.com/org/repo","targetRevision":"main","path":"jobs/"}`
+	spec := `{"repoURL":"https://github.com/org/repo","targetRevision":"main","path":"jobs/"}`
 	_, err := pg.UpsertAppSource(ctx, "cred-src", []byte(spec))
 	require.NoError(t, err)
 
@@ -609,4 +606,28 @@ func TestReconciler_RedactsCredentialsInLastError(t *testing.T) {
 	assert.NotContains(t, src.LastError, "s3cr3t", "password must be redacted from last_error")
 	assert.NotContains(t, src.LastError, "alice", "username must be redacted from last_error")
 	assert.Contains(t, src.LastError, "***", "redaction marker should be present")
+}
+
+// TestReconciler_RejectsStoredCredentialedRepoURL covers a row persisted with an
+// embedded credential (stored via UpsertAppSource, which does not re-validate):
+// the reconciler's re-validation refuses it without fetching and without echoing
+// the secret into last_error.
+func TestReconciler_RejectsStoredCredentialedRepoURL(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	ctx := context.Background()
+
+	spec := `{"repoURL":"https://alice:s3cr3t@github.com/org/repo","targetRevision":"main","path":"jobs/"}`
+	_, err := pg.UpsertAppSource(ctx, "cred-src", []byte(spec))
+	require.NoError(t, err)
+
+	fetcher := &mockAppSourceFetcher{}
+	reconcileAppSources(ctx, pg, fetcher, nil)
+	assert.Zero(t, fetcher.resolveCalls, "a credentialed repoURL must not be fetched")
+
+	src, err := pg.GetAppSource(ctx, "cred-src")
+	require.NoError(t, err)
+	assert.Equal(t, "Failed", src.SyncStatus)
+	assert.Contains(t, src.LastError, "must not embed credentials")
+	assert.NotContains(t, src.LastError, "s3cr3t")
+	assert.NotContains(t, src.LastError, "alice")
 }
