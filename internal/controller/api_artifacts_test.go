@@ -12,7 +12,9 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/artifact"
+	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -132,6 +134,70 @@ func TestArtifact_UploadDownload_RoundTrip(t *testing.T) {
 	got, err := io.ReadAll(downloadRec.Body)
 	require.NoError(t, err)
 	assert.True(t, bytes.Equal(payload, got), "downloaded body does not match uploaded payload")
+}
+
+const artifactDownloadPolicy = `
+folders:
+  team-a:
+    groups:
+      "g-a": [job.read]
+  team-b:
+    groups:
+      "g-b": [job.read]
+`
+
+// seedClaimedArtifactRun creates a run of jobName claimed by ownerAgent and
+// seeds the exact artifact bytes directly into the object store under the key
+// the upload handler uses, so the download is the only code path under test.
+func seedClaimedArtifactRun(t *testing.T, st store.Store, obj objectstore.ObjectStore, jobName, ownerAgent, name string, payload []byte) string {
+	t.Helper()
+	ctx := t.Context()
+	_, err := st.UpsertJob(ctx, jobName, "unified-cd/v1", []byte(`{"steps":[]}`))
+	require.NoError(t, err)
+	run, err := st.CreateRun(ctx, jobName, nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+	require.NoError(t, err)
+	_, err = st.TransitionPendingToQueued(ctx, 1)
+	require.NoError(t, err)
+	claimed, err := st.ClaimNextRun(ctx, ownerAgent, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, run.ID, claimed.ID)
+
+	key, err := artifact.ArtifactKey(run.ID, name)
+	require.NoError(t, err)
+	require.NoError(t, obj.Put(ctx, key, bytes.NewReader(payload), int64(len(payload))))
+	return run.ID
+}
+
+// Documented contract (authorization.md): a human needs job.read on the run's
+// job to download its artifacts; an agent may download the artifacts of any run
+// by ID. The payload is binary so any text or encoding mangling is caught.
+func TestArtifactDownload_HumanViewerAndCrossRunAgent_ByteExact(t *testing.T) {
+	s, st := newAuthzTestServer(t, authz.Legacy{DefaultRole: "deny"}, artifactDownloadPolicy)
+	obj := objectstore.NewLocalObjectStore(t.TempDir())
+	s.SetObjectStore(obj)
+
+	payload := []byte{0x00, 0x1f, 0x8b, 0x08, 0xff, 'a', 'r', 't', '\r', '\n', 0xfe, 0x00}
+	runID := seedClaimedArtifactRun(t, st, obj, "team-a/build", "artifact-owner", "bin", payload)
+	path := "/api/v1/runs/" + runID + "/artifacts/bin"
+
+	t.Run("human with job.read on the job", func(t *testing.T) {
+		rec := doAs(t, s, http.MethodGet, path, bearer("viewer@example.com", "g-a"), nil)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		assert.Equal(t, payload, rec.Body.Bytes())
+	})
+
+	t.Run("distinct enrolled agent that does not own the run", func(t *testing.T) {
+		other := issueAgentAccessForTest(t, st, "artifact-other-agent", nil, nil)
+		rec := doAs(t, s, http.MethodGet, path, other, nil)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		assert.Equal(t, payload, rec.Body.Bytes())
+	})
+
+	t.Run("human without job.read on the job gets the hidden-resource 404", func(t *testing.T) {
+		rec := doAs(t, s, http.MethodGet, path, bearer("viewer@example.com", "g-b"), nil)
+		require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+		assert.Equal(t, msgArtifactNotFound+"\n", rec.Body.String())
+	})
 }
 
 func TestArtifactList_ReturnsNames(t *testing.T) {

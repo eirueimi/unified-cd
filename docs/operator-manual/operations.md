@@ -385,7 +385,7 @@ the claim pod's pause (netns-holder) container — come in two kinds.
 | Image | Configured by | Default |
 | --- | --- | --- |
 | Runner | `runnerImage` (host agent), `podImage` (k8s-agent) | `ghcr.io/eirueimi/unified-cd-runner:<agent version>` |
-| Artifact sidecar | `sidecarImage` (k8s-agent) | `ghcr.io/eirueimi/unified-cd-artifact-sidecar:<agent version>` |
+| Artifact sidecar | `sidecarImage` (k8s-agent) | `ghcr.io/eirueimi/unified-cd-artifact-sidecar:<agent version>` (anonymously pullable, verified 2026-10-29 for v0.11.0, digest `sha256:f4743442f9a0769a90c2fbe637b346cdd0c97c3f38799451809af4fb8960e7a8`) |
 | Shim | `shimImage` (k8s-agent) | `ghcr.io/eirueimi/unified-cd-k8s-agent:<agent version>` |
 | Pause | `pauseImage` (host agent) | `busybox:1.36@sha256:<digest>` (fixed digest) |
 

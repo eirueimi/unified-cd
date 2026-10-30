@@ -798,6 +798,16 @@ func (s *Server) handleAgentStepReport(w http.ResponseWriter, r *http.Request) {
 	variant, _ := sanitizeAgentText(req.Variant)
 	callJobName, _ := sanitizeAgentText(req.CallJobName)
 	if err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, stepName, variant, req.Status, exit, startedAt, endedAt, req.ChildRunID, callJobName); err != nil {
+		if errors.Is(err, store.ErrRunFinalized) {
+			// Run was finalized between the pre-check above and the write; the
+			// store refused the report atomically. Same response as the pre-check.
+			writeJSON(w, http.StatusOK, map[string]any{
+				"runId":            req.RunID,
+				"stepIndex":        req.StepIndex,
+				"alreadyFinalized": true,
+			})
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

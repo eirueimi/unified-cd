@@ -1104,6 +1104,9 @@ The sidecar image is configurable via the agent's `sidecarImage` config field:
 # sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:<agent version>   # default
 ```
 
+Anonymously pullable, verified 2026-10-29 for v0.11.0 (`ghcr.io/eirueimi/unified-cd-artifact-sidecar:v0.11.0`, index digest `sha256:f4743442f9a0769a90c2fbe637b346cdd0c97c3f38799451809af4fb8960e7a8`): no registry credentials or `imagePullSecrets` are needed. A release's tag is published by the Release Docker Images workflow, so
+an air-gapped or mirrored registry must carry it too.
+
 The default is a version-derived tag, not a digest. The sidecar is
 auto-injected into every job and scope Pod and holds long-lived, bucket-scoped
 S3 credentials, so a mutable tag would let a registry compromise exfiltrate
