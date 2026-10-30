@@ -20,10 +20,11 @@ var HostSupportedContainerFields = map[string]bool{
 
 // PodTemplateNeedsKubernetes reports whether pt uses any feature the host
 // agent's claim pod cannot honor, so a run carrying it must be pinned to a
-// Kubernetes agent (the controller auto-appends the "kubernetes" label).
+// Kubernetes agent (capability routing: only a Kubernetes agent advertises
+// the capabilities such a pod template requires).
 //
-// The host claim pod honors workspace.mountPath, and reuse is only a
-// performance hint, so neither forces kubernetes. Everything
+// The host claim pod honors workspace.mountPath, and the host
+// ignores reuse (it always starts a fresh claim pod), so neither forces kubernetes. Everything
 // the host silently drops does: a named agent-side template, an override patch,
 // any pod-level spec key beyond "containers" and "securityContext", and any
 // container field outside HostSupportedContainerFields. A securityContext (pod
