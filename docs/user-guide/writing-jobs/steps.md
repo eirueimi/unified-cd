@@ -116,13 +116,12 @@ reserved path **`/.ucd`** (see below) — that interprets the script using
 [`mvdan.cc/sh`](https://github.com/mvdan/sh), a pure-Go POSIX-ish shell
 implementation. It requires **no shell binary in the target image**:
 bash-less/sh-less images with basic coreutils (`alpine`, busybox-based
-images) work as step containers by default. Truly empty images (`scratch`,
-distroless-static) can host the keep-alive and remain exec-able, but on the
-**Kubernetes agent** they cannot run steps that carry environment variables
-— every step does (the agent always injects `UNIFIED_AGENT_OS`), and the
-k8s exec path applies env by prepending the `env` binary, which those
-images lack (the step fails with exit 127). The host agent applies env via
-the container runtime and is unaffected. (See
+images) work as step containers by default. Truly empty images (`scratch`, distroless-static) work too with the
+default shell: the Kubernetes agent applies step environment variables
+(every step carries at least `UNIFIED_AGENT_OS`) through the shim itself
+(`/.ucd/ucd-sh env K=V... -- <command>`), not the image's `env` binary, and the
+host agent applies env via the container runtime. A custom `shell:` such as
+`[bash, -lc]` still needs that interpreter in the image. (See
 [Configuration Reference](../../reference/configuration.md) for the `podImage`/`podTemplate`
 implications.)
 

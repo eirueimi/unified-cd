@@ -675,11 +675,7 @@ the DSL never stated and this doc's own `golang:1.24-alpine`/`alpine`
 examples silently violated. Steps now exec via the injected `ucd-sh` shim by
 default (`/.ucd/ucd-sh -c "<script>"`), which requires **no shell binary in
 the image** — bash-less/sh-less images with coreutils (`alpine`,
-busybox-based) are valid `job`/sidecar images. One remaining requirement on
-this agent: exec-time environment variables are applied by prepending the
-`env` binary, and every step carries at least `UNIFIED_AGENT_OS` — so a
-truly empty image (`scratch`, distroless-static) can host the keep-alive
-but fails env-carrying steps with exit 127. A job that relies on real bash
+busybox-based) are valid `job`/sidecar images. Exec-time environment variables are applied through the same shim (`/.ucd/ucd-sh env K=V... -- <command>`), not the image's `env` binary, so a truly empty image (`scratch`, distroless-static) can run steps with the default shell. A job that relies on real bash
 semantics (login-shell profile sourcing, `wait -n`, `PIPESTATUS`, signal
 traps, ...) opts back in explicitly with `spec.shell: [bash, -lc]` or a
 step-level override — see the [interpreter constraints
@@ -744,7 +740,7 @@ close explicitly:
    *published release*, not the agent you are running, so an agent built from a
    commit ahead of the last release injects an older shim, contrary to the
    lockstep requirement in [operations.md](operations.md). A released agent
-   does not have this problem.
+   does not have this problem. Concretely, the agent applies step environment variables through the shim's `env` mode (`ucd-sh env K=V... -- <command>`); a shim from a release older than that mode rejects it with the usage error (exit 2), failing every step. Keep `shimImage` at the agent's own release.
 
 Both are closed by setting the field to the exact image you deployed, by
 digest:

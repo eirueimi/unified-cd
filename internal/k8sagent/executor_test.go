@@ -38,13 +38,13 @@ func TestBuildEnvShellCommand_NoEnv(t *testing.T) {
 
 func TestBuildEnvShellCommand_WithEnv_ShimDefault(t *testing.T) {
 	cmds := buildEnvShellCommand(nil, "echo $FOO", []string{"FOO=bar", "BAZ=qux"})
-	assert.Equal(t, []string{"env", "FOO=bar", "BAZ=qux", "/.ucd/ucd-sh", "-c", "echo $FOO"}, cmds,
-		"env pairs must be passed as discrete argv elements via the env binary, never string-concatenated into the script")
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "env", "FOO=bar", "BAZ=qux", "--", "/.ucd/ucd-sh", "-c", "echo $FOO"}, cmds,
+		"env pairs must be passed as discrete argv elements through the ucd-sh env mode (no env binary needed in the image), never string-concatenated into the script")
 }
 
 func TestBuildEnvShellCommand_WithEnv_CustomShell(t *testing.T) {
 	cmds := buildEnvShellCommand([]string{"bash", "-lc"}, "echo $FOO", []string{"FOO=bar"})
-	assert.Equal(t, []string{"env", "FOO=bar", "bash", "-lc", "echo $FOO"}, cmds)
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "env", "FOO=bar", "--", "bash", "-lc", "echo $FOO"}, cmds)
 }
 
 func TestUcdDefaultShell_ReturnsFreshSliceEachCall(t *testing.T) {

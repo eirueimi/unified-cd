@@ -276,3 +276,19 @@ func TestUcdSh_Usage_MentionsOwnershipCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestRun_EnvModeUsageErrorExitTwo(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"env", "A=1"}, strings.NewReader(""), &out, &errOut)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, errOut.String())
+	}
+}
+
+func TestRun_EnvModeMissingCommand127(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"env", "A=1", "--", "definitely-not-a-command-xyz"}, strings.NewReader(""), &out, &errOut)
+	if code != 127 {
+		t.Fatalf("exit code = %d, want 127 (stderr: %s)", code, errOut.String())
+	}
+}
