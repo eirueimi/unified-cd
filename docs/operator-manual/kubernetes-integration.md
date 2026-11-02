@@ -355,7 +355,9 @@ the workspace of a reused Pod, dot-files included, before every run. If it canno
 to the pool. Everything outside the emptied workspace is **kept**, though: a reused `mysql`
 sidecar keeps its data directory and listeners, processes a previous run backgrounded keep
 running, and `/tmp`, `$HOME`, installed packages and other container-filesystem changes
-survive. Do not rely on a reused Pod being clean. The standard (host) agent ignores `reuse`
+survive, as do the Pod's other volumes (an `emptyDir` or a generic `ephemeral` volume from
+`podTemplate.spec.volumes`; see [Reusing a slow-to-create volume](../user-guide/writing-jobs/isolation-and-containers.md#reusing-a-slow-to-create-volume-csi-clone)).
+Do not rely on a reused Pod being clean. The standard (host) agent ignores `reuse`
 and starts a fresh claim pod for every run. Earlier releases kept `/workspace` between runs of a reused Pod, and
 `podTemplate.cleanWorkspace: false` was how you asked for that; it no longer has any effect on an
 ordinary workspace.

@@ -475,5 +475,62 @@ steps:
     run: trivy rootfs /workspace/app
 ```
 
+### Reusing a slow-to-create volume (CSI clone)
+
+A pooled pod (`reuse: true`) keeps every pod-level volume between runs; only the contents of the
+workspace mount are emptied. That makes `reuse` a way to pay for a slow volume once per pooled pod
+instead of once per run. The typical case is a generic `ephemeral` volume whose claim template
+clones a CSI `VolumeSnapshot` or an existing PVC through `dataSource`: Kubernetes creates the claim
+(owned by the pod) when the pod is created, and later runs that claim the same pooled pod reuse it.
+The agent passes the claim template through unchanged; the CSI driver must support cloning, and the
+source must be in the job's namespace.
+
+```yaml
+# Job
+spec:
+  podTemplate:
+    reuse: true
+    spec:
+      containers:
+        - name: job
+          image: ubuntu:22.04
+          volumeMounts:
+            - name: seed
+              mountPath: /clone          # outside the workspace
+      volumes:
+        - name: seed
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes: [ReadWriteOnce]
+                storageClassName: my-csi-class
+                resources: {requests: {storage: 50Gi}}
+                dataSource:
+                  apiGroup: snapshot.storage.k8s.io
+                  kind: VolumeSnapshot
+                  name: golden-snapshot
+```
+
+```yaml
+# Kubernetes agent config
+poolIdleTimeout: 30m            # the clone lives this long after the last run
+jobPodPolicy:
+  allowVolumeTypes: [ephemeral] # `ephemeral` volumes are denied by default
+```
+
+Caveats:
+
+- Mount the volume **outside** the workspace path. The workspace is emptied with `rm -rf`, so a
+  volume mounted inside it is emptied too.
+- The contents are not clean between runs: they hold whatever earlier runs wrote, including partial
+  writes of a cancelled run. The job must tolerate a dirty volume (treat it as a read-mostly seed).
+- A new clone is made whenever a new pod is created: a concurrent run of the same job (each pod has
+  its own claim, so claims are not shared), any change to the `podTemplate` (it changes the pool
+  key), and after the pod is evicted or deleted. Idle eviction is controlled by `poolIdleTimeout`
+  (unset = never evicted); idle pods and their claims survive an agent restart.
+- A `ReadWriteOnce` claim pins the pooled pod, and therefore its runs, to one node.
+- `reuse` is rejected together with `spec.volumes` (agent-owned [named volumes](volumes.md)); this
+  pattern uses a pod-level volume from `podTemplate.spec.volumes` instead.
+
 ---
 
