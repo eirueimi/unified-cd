@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,8 +51,45 @@ func validateCeiling(creator Principal, role string, perms []string) (int, strin
 		if !ok {
 			return http.StatusBadRequest, fmt.Sprintf("unknown permission %q", name)
 		}
+		if perm == authz.AgentEnroll {
+			// agent.manage may create enrollment tokens too, so it may mint
+			// enrollment-only PATs.
+			if !creator.Grants.HeldAnywhere(authz.AgentEnroll) && !creator.Grants.HeldAnywhere(authz.AgentManage) {
+				return http.StatusBadRequest, fmt.Sprintf("cannot grant permission %q: you do not hold it", name)
+			}
+			continue
+		}
 		if !creator.Grants.HeldAnywhere(perm) {
 			return http.StatusBadRequest, fmt.Sprintf("cannot grant permission %q: you do not hold it", name)
+		}
+	}
+	return 0, ""
+}
+
+// validateEnrollLabels checks the enrollLabels field of a create request
+// against its permissions and, for a bounded creator, the creator's own bound.
+func validateEnrollLabels(creator Principal, req api.CreatePATRequest) (int, string) {
+	if len(req.EnrollLabels) == 0 {
+		return 0, ""
+	}
+	if !slices.Contains(req.Permissions, string(authz.AgentEnroll)) {
+		return http.StatusBadRequest, "enrollLabels requires the agent.enroll permission"
+	}
+	seen := make(map[string]bool, len(req.EnrollLabels))
+	for _, l := range req.EnrollLabels {
+		if strings.TrimSpace(l) == "" {
+			return http.StatusBadRequest, "enrollLabels must not contain empty entries"
+		}
+		if seen[l] {
+			return http.StatusBadRequest, "enrollLabels must not contain duplicates"
+		}
+		seen[l] = true
+	}
+	if creator.EnrollLabels != nil {
+		for _, l := range req.EnrollLabels {
+			if !slices.Contains(creator.EnrollLabels, l) {
+				return http.StatusBadRequest, "enrollLabels must be a subset of the creating token's enrollLabels"
+			}
 		}
 	}
 	return 0, ""
@@ -94,6 +132,10 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	creator, _ := principalFromContext(r.Context())
+	if status, msg := validateEnrollLabels(creator, req); status != 0 {
+		http.Error(w, msg, status)
+		return
+	}
 	roleOnlyCreator := creator.BreakGlass || (creator.Kind == "pat" && creator.OwnerPATID == "")
 
 	token, err := generatePAT()
@@ -107,19 +149,34 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	if roleOnlyCreator {
 		// Break-glass and role-only PATs have no owner to record: the new PAT is
 		// role-only too, bounded by the creator's role.
-		if req.Permissions != nil {
+		if req.Permissions != nil && !(req.Role == "" && slices.Equal(req.Permissions, []string{string(authz.AgentEnroll)})) {
 			http.Error(w, "cannot grant permissions: this token has no owner; use --role", http.StatusBadRequest)
 			return
 		}
-		role := req.Role
-		if role == "" {
-			role = creator.Role
+		if req.Permissions != nil {
+			// Enrollment-only PAT: the one permission list a role-only creator may grant.
+			if status, msg := validateCeiling(creator, "", req.Permissions); status != 0 {
+				http.Error(w, msg, status)
+				return
+			}
+			labels := req.EnrollLabels
+			if len(labels) == 0 {
+				labels = creator.EnrollLabels
+			}
+			pat, err = s.store.CreateEnrollPAT(r.Context(), store.NewEnrollPAT{
+				Name: req.Name, TokenHash: hash, EnrollLabels: labels, ExpiresAt: expiresAt,
+			})
+		} else {
+			role := req.Role
+			if role == "" {
+				role = creator.Role
+			}
+			if status, msg := validateCeiling(creator, role, nil); status != 0 {
+				http.Error(w, msg, status)
+				return
+			}
+			pat, err = s.store.CreatePAT(r.Context(), req.Name, hash, role, expiresAt)
 		}
-		if status, msg := validateCeiling(creator, role, nil); status != 0 {
-			http.Error(w, msg, status)
-			return
-		}
-		pat, err = s.store.CreatePAT(r.Context(), req.Name, hash, role, expiresAt)
 	} else {
 		if !creator.ClaimsKnown {
 			if creator.Kind == "session" {
@@ -162,8 +219,16 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 				role, perms = "", want.Intersect(*creator.Ceiling).Names()
 			}
 		}
+		var labels []string
+		if slices.Contains(perms, string(authz.AgentEnroll)) {
+			labels = req.EnrollLabels
+			if len(labels) == 0 {
+				// A bounded parent never yields an unbounded child.
+				labels = creator.EnrollLabels
+			}
+		}
 		pat, err = s.store.CreateOwnedPAT(r.Context(), store.NewOwnedPAT{
-			Name: req.Name, TokenHash: hash, Role: role, Permissions: perms, ExpiresAt: expiresAt,
+			Name: req.Name, TokenHash: hash, Role: role, Permissions: perms, EnrollLabels: labels, ExpiresAt: expiresAt,
 			Owner: store.PATOwner{Sub: creator.Sub, Email: creator.Email, Claims: creator.Claims},
 		})
 	}
@@ -173,11 +238,12 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, api.CreatePATResponse{
-		ID:          pat.ID,
-		Name:        pat.Name,
-		Role:        pat.Role,
-		Token:       token,
-		Permissions: pat.Permissions,
+		ID:           pat.ID,
+		Name:         pat.Name,
+		Role:         pat.Role,
+		Token:        token,
+		Permissions:  pat.Permissions,
+		EnrollLabels: pat.EnrollLabels,
 	})
 }
 
@@ -207,13 +273,14 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	result := make([]api.PATMeta, 0, len(pats))
 	for _, pat := range pats {
 		m := api.PATMeta{
-			ID:          pat.ID,
-			Name:        pat.Name,
-			Role:        pat.Role,
-			CreatedAt:   pat.CreatedAt,
-			ExpiresAt:   pat.ExpiresAt,
-			LastUsedAt:  pat.LastUsedAt,
-			Permissions: pat.Permissions,
+			ID:           pat.ID,
+			Name:         pat.Name,
+			Role:         pat.Role,
+			CreatedAt:    pat.CreatedAt,
+			ExpiresAt:    pat.ExpiresAt,
+			LastUsedAt:   pat.LastUsedAt,
+			Permissions:  pat.Permissions,
+			EnrollLabels: pat.EnrollLabels,
 		}
 		if pat.Owner != nil {
 			m.Owner = pat.Owner.Email

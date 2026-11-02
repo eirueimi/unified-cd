@@ -107,6 +107,9 @@ type PAT struct {
 	// Permissions is the PAT's permission ceiling list; nil means NULL (the
 	// role column is the ceiling).
 	Permissions []string
+	// EnrollLabels bounds the labels an enrollment-only PAT (agent.enroll) may
+	// put on the enrollment tokens it creates; nil means no bound.
+	EnrollLabels []string
 }
 
 // PATOwner is the OIDC identity a PAT was minted by, with the email and
@@ -123,7 +126,16 @@ type NewOwnedPAT struct {
 	Name, TokenHash, Role string
 	Owner                 PATOwner
 	Permissions           []string
+	EnrollLabels          []string
 	ExpiresAt             *time.Time
+}
+
+// NewEnrollPAT is the input of CreateEnrollPAT: an ownerless PAT whose only
+// permission is agent.enroll.
+type NewEnrollPAT struct {
+	Name, TokenHash string
+	EnrollLabels    []string
+	ExpiresAt       *time.Time
 }
 
 // AuditEntry is one audit_logs row. Permission, Scope and GrantedBy describe
@@ -506,6 +518,8 @@ type Store interface {
 	DeletePAT(ctx context.Context, id string) error
 	// CreateOwnedPAT creates a PAT bound to the OIDC identity that minted it.
 	CreateOwnedPAT(ctx context.Context, in NewOwnedPAT) (*PAT, error)
+	// CreateEnrollPAT creates an ownerless PAT with role "" and permissions {agent.enroll}.
+	CreateEnrollPAT(ctx context.Context, in NewEnrollPAT) (*PAT, error)
 	// ListPATsByOwner returns the PATs owned by ownerSub, oldest first.
 	ListPATsByOwner(ctx context.Context, ownerSub string) ([]PAT, error)
 	// DeleteOwnedPAT deletes a PAT only if ownerSub owns it; reports whether a row was deleted.

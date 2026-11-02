@@ -40,7 +40,7 @@ There are 26 permissions, written `<resource>.<verb>`. Nine are **folder-scopabl
 | `appsource.write` | Apply, delete or force-sync an AppSource. | | | yes |
 | `agent.read` | List and get agents, an agent's recent runs (rows are additionally filtered by `job.read`), enrollments, enrollment policies and agent identities. | yes | yes | yes |
 | `agent.manage` | Create and revoke enrollments; create, update and delete enrollment policies; enable and disable identities; revoke agent credentials. | | | yes |
-| `agent.enroll` | Create host-agent enrollment tokens, limited to the labels bound to the caller's PAT (see Enrollment-only PATs). | | | yes |
+| `agent.enroll` | Create host-agent enrollment tokens, limited to the labels bound to the caller's PAT (see [Enrollment-only PATs](#enrollment-only-pats)). | | | yes |
 | `token.create` | Create PATs (never above your own permissions); list and delete **your own** PATs. | | yes | yes |
 | `token.manage` | List and delete **every** PAT. | | | yes |
 | `audit.read` | Read the [audit log](audit.md). | | | yes |
@@ -250,6 +250,23 @@ recomputed on every request.
 - Creating a PAT is refused for identities whose groups are unknown (a pre-upgrade session, or an OIDC bearer without the roles claim while the config has group-keyed grants), with the strings listed in [CLI: token create](../reference/cli.md#token-create) and in [Troubleshooting](../troubleshooting/controller-and-database.md#token-creation-is-refused-cannot-create-a-token).
 
 See [Authentication](authentication.md) for sessions, silent refresh and PAT owners.
+
+### Enrollment-only PATs
+
+An enrollment-only PAT is a PAT whose only permission is [`agent.enroll`](#permission-catalogue). It can create host-agent enrollment tokens (`POST /api/v1/agent-enrollments`) and nothing else: it cannot list agents, read jobs or manage anything. It is meant for automation that provisions hosts, such as a VM bootstrap script, so that the credential handed to that automation cannot do more than enroll agents.
+
+```bash
+unified-cli token create provisioner \
+  --permission agent.enroll \
+  --enroll-label kind:linux --enroll-label pool:build
+```
+
+- **Label bound.** `--enroll-label` (repeatable; API field `enrollLabels`) restricts the labels of the enrollment tokens the PAT may create. It is valid only together with `agent.enroll`, entries must be non-empty and unique, and a PAT created without it has no bound. The bound is stored with the PAT, shown by `token list`, and echoed by `token create`. The controller enforces it when an enrollment token is created with such a PAT: the token's labels must stay within the bound.
+- **Who may mint one.** A creator must hold `agent.enroll` or `agent.manage`. A PAT created by a PAT can only narrow: its `enrollLabels` must be a subset of the creating token's (`enrollLabels must be a subset of the creating token's enrollLabels`), and when it asks for none it inherits the parent's bound rather than becoming unbounded.
+- **Creators without an owner.** The break-glass `UNIFIED_TOKEN` and role-only PATs normally cannot grant `--permission` (`cannot grant permissions: this token has no owner; use --role`). The one exception is a permission list that is exactly `["agent.enroll"]` (with no `--role`, and optional `--enroll-label`): they may create an ownerless enrollment-only PAT. Such a PAT holds exactly `agent.enroll` globally, whatever else the creator holds. Any other permission list from these creators keeps the `400`.
+- **Owner-bound PATs.** When an SSO user creates one, the PAT is the usual owner PAT: its permissions are the owner's intersected with the ceiling `[agent.enroll]`. An owner who holds `agent.manage` but not `agent.enroll` is treated as holding `agent.enroll` for this purpose.
+
+The refusals are listed in [CLI: token create](../reference/cli.md#token-create) and in [Troubleshooting](../troubleshooting/controller-and-database.md#token-creation-is-refused-cannot-create-a-token).
 
 ## Separating teams: a recipe
 

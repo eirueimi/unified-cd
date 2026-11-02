@@ -538,13 +538,16 @@ Manage Personal Access Tokens (PATs) for authentication.
 ### token create
 
 ```
-unified-cli token create <name> [--expires-in duration] [--role role] [--permission name]...
+unified-cli token create <name> [--expires-in duration] [--role role] [--permission name]... [--enroll-label label]...
 
   --expires-in  string   Token expiry duration (e.g. "720h", "8760h"). No expiry if omitted.
   --role        string   Role ceiling for the token: admin, developer, or viewer.
                          Must not exceed your own global role; it is refused, never reduced.
   --permission  string   Permission ceiling, e.g. job.read. Repeatable. You must hold each one
                          (globally or on at least one folder). Cannot be combined with --role.
+  --enroll-label string  Label bound for an enrollment-only token. Repeatable. Requires
+                         --permission agent.enroll; the enrollment tokens the PAT creates may carry
+                         only these labels. Entries must be non-empty and unique.
 ```
 
 Generates a new PAT. The token value is shown only once.
@@ -568,7 +571,11 @@ Refusals, printed as `server error: <message>` (the HTTP status in parentheses):
 | `unknown role "x"` / `unknown permission "x"` | 400 | A misspelled `--role` / `--permission` |
 | `role and permissions are mutually exclusive` | 400 | `--role` together with `--permission` |
 | `permissions must not be empty` | 400 | An API request with `"permissions": []` |
-| `cannot grant permissions: this token has no owner; use --role` | 400 | `--permission` used with the break-glass `UNIFIED_TOKEN` or another role-only PAT |
+| `cannot grant permissions: this token has no owner; use --role` | 400 | `--permission` used with the break-glass `UNIFIED_TOKEN` or another role-only PAT, with any list other than exactly `agent.enroll` (that one is allowed) |
+| `enrollLabels requires the agent.enroll permission` | 400 | `--enroll-label` without `--permission agent.enroll` |
+| `enrollLabels must not contain empty entries` | 400 | A blank `--enroll-label` |
+| `enrollLabels must not contain duplicates` | 400 | The same `--enroll-label` twice |
+| `enrollLabels must be a subset of the creating token's enrollLabels` | 400 | The creating PAT is itself bound to enrollment labels and you asked for one outside its bound |
 | `token name "env:x" is reserved` | 400 | A name equal to `env:UNIFIED_TOKEN` or starting with `env:` |
 
 | `cannot create a token: this login predates group-aware tokens; log out and log in again, then retry` | 403 | You are using a browser session created before the upgrade |
@@ -586,6 +593,10 @@ If the server instead returns permissions that were not requested, the token is 
 (`the server returned permissions that were not requested; the token was revoked`). When you create
 a token with a PAT, the server may return fewer permissions than requested (the ones you hold); the
 CLI keeps that token and prints `warning: the token was narrowed to the permissions you hold: <list>` to stderr.
+
+Against a controller that predates `--enroll-label`, the response carries no `enrollLabels`, so the CLI
+revokes the token without printing it and fails with
+`the server does not support --enroll-label; the token was revoked; upgrade the controller`.
 
 ```bash
 unified-cli token create ci-bot
@@ -606,6 +617,12 @@ unified-cli token create viewer-bot --role viewer
 unified-cli token create ci-trigger --permission job.read --permission run.trigger
 # => Name: ci-trigger  ID: 5d0e...  Role:
 # => Permissions: job.read, run.trigger
+
+# An enrollment-only token bound to two labels (see Authorization: Enrollment-only PATs)
+unified-cli token create provisioner --permission agent.enroll --enroll-label kind:linux --enroll-label pool:build
+# => Name: provisioner  ID: 9b1e...  Role:
+# => Permissions: agent.enroll
+# => Enroll labels: kind:linux, pool:build
 ```
 
 Use the printed token as a bearer token in CLI, API calls, or agent configuration.
@@ -618,7 +635,8 @@ unified-cli token list
 
 Lists the tokens you may see (IDs, names, and the ceiling only; values are never retrievable): your own
 tokens with `token.create`, every token with `token.manage` (admin). The ceiling column is the role,
-or the comma-separated permission list for a permission-ceiling token. A role-only (pre-upgrade)
+or the comma-separated permission list for a permission-ceiling token, followed by
+`enroll-labels=<labels>` for a token with an enrollment label bound. A role-only (pre-upgrade)
 token has no owner, so a caller without `token.manage` does not see it.
 
 ```

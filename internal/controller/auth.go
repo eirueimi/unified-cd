@@ -49,6 +49,9 @@ type Principal struct {
 	OwnerPATID string
 	// BreakGlass is true for the env:UNIFIED_TOKEN PAT.
 	BreakGlass bool
+	// EnrollLabels bounds the labels an agent.enroll PAT may put on the
+	// enrollment tokens it creates; nil means no bound.
+	EnrollLabels []string
 }
 
 func withPrincipal(r *http.Request, p Principal) *http.Request {
@@ -209,6 +212,12 @@ func (srv *Server) patPrincipal(pat *store.PAT, presentedHash string) (Principal
 		return Principal{Name: pat.Name, Kind: "pat", Role: "admin", BreakGlass: true,
 			Grants: authz.AllGrants("break-glass")}, true
 	}
+	if pat.Owner == nil && isEnrollPAT(pat) {
+		// Enrollment-only PAT: exactly agent.enroll, globally, and nothing else.
+		var g authz.Grants
+		g.Add("", authz.Set(0).With(authz.AgentEnroll), "pat:"+pat.Name)
+		return Principal{Name: pat.Name, Kind: "pat", Grants: g, EnrollLabels: pat.EnrollLabels}, true
+	}
 	if pat.Owner == nil {
 		// Role-only PAT: the same semantics as before, the refusal just moves up front.
 		if roleRank(pat.Role) == 0 {
@@ -220,6 +229,13 @@ func (srv *Server) patPrincipal(pat *store.PAT, presentedHash string) (Principal
 	// Owner PAT: the owner's grants under the current config, capped by the ceiling.
 	role, grants, _ := srv.identityGrants(pat.Owner.Claims, pat.Owner.Email, pat.Owner.Sub)
 	ceiling := ceilingSet(pat.Role, pat.Permissions)
+	if ceiling != nil && ceiling.Has(authz.AgentEnroll) && grants.Can(authz.AgentManage, "") {
+		// agent.manage covers agent.enroll for the owner, so an enrollment PAT
+		// minted by such an owner keeps working.
+		var extra authz.Grants
+		extra.Add("", authz.Set(0).With(authz.AgentEnroll), "agent.manage (implies agent.enroll)")
+		grants = grants.Union(extra)
+	}
 	if ceiling != nil {
 		grants = grants.Restrict(*ceiling, " & pat-ceiling")
 		if pat.Permissions != nil {
@@ -232,8 +248,14 @@ func (srv *Server) patPrincipal(pat *store.PAT, presentedHash string) (Principal
 		Name: pat.Name, Kind: "pat", Role: role,
 		Sub: pat.Owner.Sub, Email: pat.Owner.Email, Claims: nonNilClaims(pat.Owner.Claims), ClaimsKnown: true,
 		Grants: grants, Ceiling: ceiling, CeilingRole: pat.Role, CeilingPerms: pat.Permissions,
-		OwnerPATID: pat.ID,
+		OwnerPATID: pat.ID, EnrollLabels: pat.EnrollLabels,
 	}, true
+}
+
+// isEnrollPAT reports whether pat is an ownerless enrollment-only PAT: empty
+// role and the single permission agent.enroll.
+func isEnrollPAT(pat *store.PAT) bool {
+	return pat.Role == "" && len(pat.Permissions) == 1 && pat.Permissions[0] == string(authz.AgentEnroll)
 }
 
 // sessionPrincipal builds the principal for a browser session (spec 5.15).
