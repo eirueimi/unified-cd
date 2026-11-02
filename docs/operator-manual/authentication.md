@@ -293,7 +293,7 @@ terminating TLS in front of the controller instead whenever possible.
 
 ### Production / External IdP
 
-For IdPs other than Dex (Auth0, Keycloak, Okta, etc.):
+For IdPs other than Dex (Auth0, Keycloak, Okta, etc.), see [Identity provider setup](identity-providers.md) for per-IdP registration steps, group-claim configuration and example `oidc:` blocks. In short:
 
 - Set `UNIFIED_OIDC_ISSUER` to the IdP's issuer URL (no `/dex` proxy needed, `ISSUER_INTERNAL` can be empty).
 - Create one confidential client for browser SSO and one public client for CLI device flow.
