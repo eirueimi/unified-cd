@@ -216,7 +216,12 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 				} else {
 					want = *ceilingSet("", req.Permissions)
 				}
-				role, perms = "", want.Intersect(*creator.Ceiling).Names()
+				parent := *creator.Ceiling
+				if parent.Has(authz.AgentManage) {
+					// agent.manage implies agent.enroll, as for the owner's own grants.
+					parent = parent.With(authz.AgentEnroll)
+				}
+				role, perms = "", want.Intersect(parent).Names()
 			}
 		}
 		var labels []string

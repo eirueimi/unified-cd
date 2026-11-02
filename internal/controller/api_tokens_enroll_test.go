@@ -184,3 +184,43 @@ func TestPatPrincipal_OwnerPATCopiesEnrollLabels(t *testing.T) {
 	// The owner holds agent.manage, which stands in for agent.enroll.
 	assert.True(t, p.Grants.Can(authz.AgentEnroll, ""))
 }
+
+// A parent PAT whose ceiling holds agent.manage (not agent.enroll) can mint an
+// enrollment child that actually works.
+func TestCreateToken_EnrollChildOfManageCeilingParent(t *testing.T) {
+	s, pg := newAuthzTestServer(t, authz.Legacy{}, enrollAdminPolicy)
+	_, _, parent := postToken(t, s, bearer("m@example.com", "g-mgr"),
+		api.CreatePATRequest{Name: "parent", Permissions: []string{"agent.manage", "token.create"}})
+	require.NotEmpty(t, parent.Token)
+
+	code, body, child := postToken(t, s, parent.Token,
+		api.CreatePATRequest{Name: "child", Permissions: []string{"agent.enroll"}, EnrollLabels: []string{"kind:linux"}})
+	require.Equal(t, http.StatusOK, code, body)
+	assert.Equal(t, []string{"agent.enroll"}, child.Permissions)
+	assert.Equal(t, []string{"kind:linux"}, child.EnrollLabels)
+
+	pat, err := pg.GetPATByHash(t.Context(), HashToken(child.Token))
+	require.NoError(t, err)
+	p, ok := s.patPrincipal(pat, HashToken(child.Token))
+	require.True(t, ok)
+	assert.True(t, p.Grants.Can(authz.AgentEnroll, ""))
+	assert.Equal(t, []string{"kind:linux"}, p.EnrollLabels)
+}
+
+// An owner holding neither agent.manage nor agent.enroll gets no agent.enroll
+// from a PAT, even one whose ceiling lists it.
+func TestPatPrincipal_OwnerWithoutManageOrEnrollGetsNoEnroll(t *testing.T) {
+	s, pg := newAuthzTestServer(t, authz.Legacy{}, enrollAdminPolicy)
+	_, err := pg.CreateOwnedPAT(t.Context(), store.NewOwnedPAT{
+		Name: "weak", TokenHash: HashToken("exc_weak"),
+		Owner:       store.PATOwner{Sub: "n@example.com", Email: "n@example.com", Claims: []string{"g-none"}},
+		Permissions: []string{"agent.enroll", "job.read"},
+	})
+	require.NoError(t, err)
+	pat, err := pg.GetPATByHash(t.Context(), HashToken("exc_weak"))
+	require.NoError(t, err)
+	p, ok := s.patPrincipal(pat, HashToken("exc_weak"))
+	require.True(t, ok)
+	assert.False(t, p.Grants.Can(authz.AgentEnroll, ""))
+	assert.True(t, p.Grants.Can(authz.JobRead, ""))
+}
