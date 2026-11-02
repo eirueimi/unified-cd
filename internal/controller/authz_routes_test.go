@@ -56,8 +56,8 @@ func TestRouteTableShape(t *testing.T) {
 	}
 	// The only rows with an alternative permission (spec section 7.2).
 	altPermRows := map[string]authz.Permission{
-		"GET /api/v1/tokens":         authz.TokenManage,
-		"DELETE /api/v1/tokens/{id}": authz.TokenManage,
+		"GET /api/v1/tokens":             authz.TokenManage,
+		"DELETE /api/v1/tokens/{id}":     authz.TokenManage,
 		"POST /api/v1/agent-enrollments": authz.AgentEnroll,
 	}
 	// The only agent-or-human rows.
