@@ -279,3 +279,15 @@ func TestAgentEnrollmentCommandsHaveNoCapabilityFlag(t *testing.T) {
 	require.NoError(t, cmd.Execute())
 	assert.NotContains(t, out.String(), "--capability")
 }
+
+func TestAgentEnrollmentCreateForbiddenIncludesServerReason(t *testing.T) {
+	tr := &captureTransport{responseFor: func(path string) (int, []byte) {
+		return http.StatusForbidden, []byte("label \"pool:gpu\" is not in this token's enrollment labels\n")
+	}}
+	cmd, _ := newTestAgentLifecycleCmd(t, tr)
+	cmd.SetArgs([]string{"enrollment", "create", "--label", "pool:gpu"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "403")
+	assert.Contains(t, err.Error(), `label "pool:gpu" is not in this token's enrollment labels`)
+}

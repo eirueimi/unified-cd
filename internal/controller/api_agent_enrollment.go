@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/agentauth"
 	"github.com/eirueimi/unified-cd/internal/agentid"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -44,6 +47,22 @@ func (s *Server) handleCreateAgentEnrollment(w http.ResponseWriter, r *http.Requ
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+	caller, _ := principalFromContext(r.Context())
+	if !caller.Grants.Can(authz.AgentManage, "") {
+		// An enroll-only caller (agent.enroll without agent.manage) may not pick
+		// the agent identity and may only request labels inside its PAT's bound.
+		// A nil bound permits no labels. Labels are compared exactly.
+		if req.AgentID != "" {
+			http.Error(w, "agentId cannot be set with agent.enroll; it is generated", http.StatusForbidden)
+			return
+		}
+		for _, label := range req.Labels {
+			if !slices.Contains(caller.EnrollLabels, label) {
+				http.Error(w, fmt.Sprintf("label %q is not in this token's enrollment labels", label), http.StatusForbidden)
+				return
+			}
+		}
 	}
 	req.AgentID = strings.TrimSpace(req.AgentID)
 	if req.AgentID == "" {
@@ -81,6 +100,12 @@ func (s *Server) handleCreateAgentEnrollment(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "create enrollment token: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	resource := created.AgentID
+	if len(req.Labels) > 0 {
+		resource += " labels=" + strings.Join(req.Labels, ",")
+	}
+	setAuditResource(r, resource)
 
 	writeJSON(w, http.StatusCreated, api.CreateAgentEnrollmentResponse{
 		ID: created.ID, AgentID: created.AgentID, Token: issued.Plaintext, ExpiresAt: created.ExpiresAt,

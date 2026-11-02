@@ -148,6 +148,13 @@ func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *htt
 			if err != nil {
 				return err
 			}
+			if resp.StatusCode == http.StatusForbidden {
+				// A 403 body is the controller's policy reason (for example a label
+				// outside the PAT's enrollment labels); it never carries a secret.
+				if reason := strings.TrimSpace(string(responseBody)); reason != "" {
+					return fmt.Errorf("%w: %s", agentLifecycleStatusError(resp), reason)
+				}
+			}
 			if resp.StatusCode != http.StatusCreated {
 				return agentLifecycleStatusError(resp)
 			}

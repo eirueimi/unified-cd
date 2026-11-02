@@ -110,7 +110,6 @@ var auditBodyNameSource = map[string]string{
 	"vars.apply":              "response",
 	"schedule.apply":          "response",
 	"appsource.apply":         "response",
-	"agent.enrollment.create": "response",
 	"agent.policy.create":     "request",
 }
 
@@ -266,6 +265,10 @@ func auditLogMiddleware(st interface {
 				case "response":
 					resource = auditNameFromJSON(rec.buf.Bytes())
 				}
+			}
+
+			if slot.Resource != "" {
+				resource = slot.Resource
 			}
 
 			e := store.AuditEntry{

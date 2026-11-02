@@ -67,6 +67,19 @@ Kubernetes agents recover by themselves once their enrollment policy exists agai
 the identity or replace it. `enrollment unavailable` is retryable only after
 PostgreSQL/controller availability is restored; auth fails closed.
 
+### Enrollment creation is refused with an enrollment-labels or agentId message
+
+**Symptom:** `unified-cli agent enrollment create` fails with `403` and one of:
+
+```
+label "pool:gpu" is not in this token's enrollment labels
+agentId cannot be set with agent.enroll; it is generated
+```
+
+**Cause:** the token in use holds `agent.enroll` without `agent.manage` (an [enrollment-only PAT](../operator-manual/authorization.md#enrollment-only-pats)). Such a token can request only labels listed in its enrollment labels (a PAT created without `--enroll-label` can request none), and it cannot choose the agent ID.
+
+**Fix:** drop `--agent-id`, request only labels from the PAT's bound (`unified-cli token list` shows it), or create the PAT again with the labels you need. A caller with `agent.manage` has neither restriction.
+
 ### Agent startup reports multiple default credential files
 
 **Symptom:** an ID-less agent start without an enrollment token fails with:

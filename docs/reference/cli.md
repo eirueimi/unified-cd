@@ -978,6 +978,8 @@ unified-cli agent enrollment list
 unified-cli agent enrollment revoke <enrollment-id>
 ```
 
+A caller with only `agent.enroll` (an [enrollment-only PAT](../operator-manual/authorization.md#enrollment-only-pats)) cannot pass `--agent-id`, and every `--label` must be one of the PAT's enrollment labels; otherwise the command fails with `403` followed by the controller's reason, for example `label "pool:gpu" is not in this token's enrollment labels`. See [Provisioning many VMs](../operator-manual/agents.md#provisioning-many-vms-an-enrollment-only-pat).
+
 `enrollment create` prints the exact `unified-cd-agent --server ... --id ...
 --enrollment-token-file ...` (or, without `--output-file`, `--enrollment-token
 <value>`) command to run on the target host once the token is in place —

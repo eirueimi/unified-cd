@@ -97,6 +97,21 @@ After a full controller database loss, host agents must be re-enrolled with a ne
 one-time token while Kubernetes agents recover on their own; see [Agent recovery
 contract](operations.md#agent-recovery-contract).
 
+### Provisioning many VMs: an enrollment-only PAT
+
+A script that provisions hosts needs to create enrollment tokens, but it should not hold `agent.manage` (which can also revoke credentials, disable identities and edit enrollment policies). Give it an [enrollment-only PAT](authorization.md#enrollment-only-pats) instead: a PAT whose only permission is `agent.enroll`, bound to the labels its agents may carry.
+
+```bash
+unified-cli token create provisioner   --permission agent.enroll   --enroll-label kind:linux --enroll-label pool:build
+```
+
+With that token, `unified-cli agent enrollment create --label kind:linux --quiet` creates a one-time enrollment token. The controller applies two rules to a caller that holds `agent.enroll` but not `agent.manage`:
+
+- **Labels stay inside the bound.** Every `--label` must exactly match an entry in the PAT's enrollment labels (no trimming, case-sensitive). Otherwise the request is refused with `403 label "<label>" is not in this token's enrollment labels`. A PAT created without `--enroll-label` has no labels to offer, so it can only create enrollment tokens with no `--label`.
+- **The agent ID is generated.** Passing `--agent-id` is refused with `403 agentId cannot be set with agent.enroll; it is generated`. The controller mints a random `agent-XXXXXXXX` ID and returns it in the response.
+
+A caller with `agent.manage` is not affected: it may set any agent ID and any labels. The audit log's `resource` for each `agent.enrollment.create` entry is the agent ID followed by the requested labels, for example `agent-1a2b3c4d labels=kind:linux,pool:build`.
+
 ## Running the agent as a service
 
 There is no built-in "install as a service" command — enroll the agent

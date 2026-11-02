@@ -316,3 +316,97 @@ func TestAgentEnrollDisabledIdentityResponseIsExplicit(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, rec.Code)
 	require.Equal(t, "agent identity disabled\n", rec.Body.String())
 }
+
+// enrollOnlyToken mints an ownerless agent.enroll PAT with the given label
+// bound (nil = unbounded) and returns its plaintext token.
+func enrollOnlyToken(t *testing.T, s *Server, bound []string) string {
+	t.Helper()
+	code, body, resp := postToken(t, s, "secret",
+		api.CreatePATRequest{Name: "prov", Permissions: []string{"agent.enroll"}, EnrollLabels: bound})
+	require.Equal(t, http.StatusOK, code, body)
+	return resp.Token
+}
+
+func TestAgentEnrollmentEnrollOnlyCallerBoundToLabels(t *testing.T) {
+	s, _ := breakGlassServer(t)
+	bounded := enrollOnlyToken(t, s, []string{"kind:linux", "pool:build"})
+
+	rec := enrollmentRequest(t, s, bounded, api.CreateAgentEnrollmentRequest{Labels: []string{"kind:linux"}})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var created api.CreateAgentEnrollmentResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	assert.Regexp(t, `^agent-[0-9a-f]{8}$`, created.AgentID)
+
+	rec = enrollmentRequest(t, s, bounded, api.CreateAgentEnrollmentRequest{Labels: []string{"kind:linux", "pool:gpu"}})
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Equal(t, "label \"pool:gpu\" is not in this token's enrollment labels\n", rec.Body.String())
+
+	// Labels are compared exactly, without trimming.
+	rec = enrollmentRequest(t, s, bounded, api.CreateAgentEnrollmentRequest{Labels: []string{" kind:linux"}})
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+
+	// No labels at all is within any bound.
+	rec = enrollmentRequest(t, s, bounded, api.CreateAgentEnrollmentRequest{})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+}
+
+func TestAgentEnrollmentEnrollOnlyCallerWithoutBound(t *testing.T) {
+	s, _ := breakGlassServer(t)
+	unbounded := enrollOnlyToken(t, s, nil)
+
+	rec := enrollmentRequest(t, s, unbounded, api.CreateAgentEnrollmentRequest{Labels: []string{"kind:linux"}})
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Equal(t, "label \"kind:linux\" is not in this token's enrollment labels\n", rec.Body.String())
+
+	rec = enrollmentRequest(t, s, unbounded, api.CreateAgentEnrollmentRequest{})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+}
+
+func TestAgentEnrollmentEnrollOnlyCallerCannotSetAgentID(t *testing.T) {
+	s, _ := breakGlassServer(t)
+	tok := enrollOnlyToken(t, s, []string{"kind:linux"})
+	for _, id := range []string{"vm-agent-01", "aws:123456789012:i-0abc12345678", "Bad ID"} {
+		rec := enrollmentRequest(t, s, tok, api.CreateAgentEnrollmentRequest{AgentID: id})
+		require.Equal(t, http.StatusForbidden, rec.Code, id+": "+rec.Body.String())
+		assert.Equal(t, "agentId cannot be set with agent.enroll; it is generated\n", rec.Body.String())
+	}
+}
+
+func TestAgentEnrollmentManageCallerUnchanged(t *testing.T) {
+	s, _ := newTestServer(t)
+	rec := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{AgentID: "vm-agent-01", Labels: []string{"anything:goes"}})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+}
+
+func TestAgentEnrollmentRejectsCloudShapedAgentID(t *testing.T) {
+	s, _ := newTestServer(t)
+	rec := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{AgentID: "aws:123456789012:i-0abc12345678"})
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+}
+
+func TestAgentEnrollmentAuditResourceCarriesAgentIDAndLabels(t *testing.T) {
+	s, pg := breakGlassServer(t)
+	tok := enrollOnlyToken(t, s, []string{"kind:linux", "pool:build"})
+	rec := enrollmentRequest(t, s, tok, api.CreateAgentEnrollmentRequest{Labels: []string{"kind:linux", "pool:build"}})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var created api.CreateAgentEnrollmentResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+
+	logs, err := pg.ListAuditLogs(t.Context(), 20, 0)
+	require.NoError(t, err)
+	var found bool
+	for _, l := range logs {
+		if l.Action == "agent.enrollment.create" {
+			found = true
+			assert.Equal(t, created.AgentID+" labels=kind:linux,pool:build", l.Resource)
+		}
+	}
+	require.True(t, found)
+
+	// Without labels the resource is just the agent ID.
+	rec = enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{AgentID: "vm-agent-02"})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	logs, err = pg.ListAuditLogs(t.Context(), 20, 0)
+	require.NoError(t, err)
+	assert.Equal(t, "vm-agent-02", logs[0].Resource)
+}
