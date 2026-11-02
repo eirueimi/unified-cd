@@ -58,6 +58,7 @@ func TestRouteTableShape(t *testing.T) {
 	altPermRows := map[string]authz.Permission{
 		"GET /api/v1/tokens":         authz.TokenManage,
 		"DELETE /api/v1/tokens/{id}": authz.TokenManage,
+		"POST /api/v1/agent-enrollments": authz.AgentEnroll,
 	}
 	// The only agent-or-human rows.
 	agentBypassRows := map[string]bool{
@@ -105,7 +106,11 @@ func TestRouteTableShape(t *testing.T) {
 		alt, wantAlt := altPermRows[key]
 		require.Equalf(t, alt, row.AltPerm, "%s: AltPerm", key)
 		if wantAlt {
-			require.Equalf(t, authz.TokenCreate, row.Perm, "%s: Perm", key)
+			wantPerm := authz.TokenCreate
+			if alt == authz.AgentEnroll {
+				wantPerm = authz.AgentManage
+			}
+			require.Equalf(t, wantPerm, row.Perm, "%s: Perm", key)
 		}
 	}
 	for key := range altPermRows {

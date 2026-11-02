@@ -104,7 +104,7 @@ func TestDescribeLegacyMapsSortedByKey(t *testing.T) {
 	assert.Equal(t, "viewer", d.Legacy.RoleMap[0].Role)
 	assert.Contains(t, d.Legacy.RoleMap[0].Permissions, "job.read")
 	assert.Equal(t, "my-org:platform", d.Legacy.RoleMap[1].Key)
-	assert.Len(t, d.Legacy.RoleMap[1].Permissions, 25)
+	assert.Len(t, d.Legacy.RoleMap[1].Permissions, 26)
 	require.Len(t, d.Legacy.UserMap, 1)
 	assert.Equal(t, "deny", d.Legacy.DefaultRole.Role)
 	assert.False(t, d.Legacy.DefaultRole.Ignored)

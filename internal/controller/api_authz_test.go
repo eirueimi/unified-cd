@@ -114,7 +114,7 @@ func TestAuthzPolicy_ListsResolvedPolicy(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &p))
 	assert.True(t, p.OIDC)
 	assert.Equal(t, "groups", p.RolesClaim)
-	assert.Len(t, p.Bundles["admin"], 25)
+	assert.Len(t, p.Bundles["admin"], 26)
 	require.Len(t, p.Global, 2)
 	require.Len(t, p.Folders, 3)
 	assert.Equal(t, []string{"team-a", "team-a/prod", "team-b"}, []string{p.Folders[0].Folder, p.Folders[1].Folder, p.Folders[2].Folder})
@@ -224,7 +224,7 @@ func TestAuthzExplain_UserMatchedAsEmailAndSub(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	assert.Equal(t, "admin", resp.GlobalRole)
 	assert.True(t, resp.LoginAllowed)
-	assert.Len(t, resp.Permissions, 25)
+	assert.Len(t, resp.Permissions, 26)
 	assert.Equal(t, []string{`role:admin (userMap["oncall-lead@example.com"])`}, grantedBy(resp, "authz.read"))
 
 	resp, _ = explain(t, s, tok, api.AuthzExplainRequest{User: "reader@example.com"})

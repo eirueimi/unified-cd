@@ -26,7 +26,7 @@ The controller exits at startup and logs `config file` with one of these errors 
 
 | Error | Cause |
 |---|---|
-| `oidc.permissions.folders["team-a"].groups["my-org:team-a"]: unknown permission or role "jobs.read"` | A grant names something that is not one of the 25 permissions or `viewer` / `developer` / `admin` (a typo) |
+| `oidc.permissions.folders["team-a"].groups["my-org:team-a"]: unknown permission or role "jobs.read"` | A grant names something that is not one of the 26 permissions or `viewer` / `developer` / `admin` (a typo) |
 | `oidc.permissions.folders["team-a"].groups["my-org:team-a"]: permission "secret.write" is global-only and cannot be granted on a folder` | A global-only permission appears in a folder entry |
 | `oidc.permissions.folders["team-a//x"]: invalid folder: segments must be non-empty and must not be "." or ".."` | An empty, `.` or `..` segment in a folder key |
 | `oidc.permissions.folders["team-*"]: invalid folder: folders are literal job-name prefixes, "*", "?", "[" are not allowed` | A wildcard in a folder key |
@@ -62,7 +62,7 @@ The controller logs `UNIFIED_TOKEN is set while SSO is configured: the env:UNIFI
 
 **Cause and fix**
 
-Both an OIDC issuer and the bootstrap token (`--token`, `UNIFIED_TOKEN`, or `token` in the config file) are set. The bootstrap token holds all 25 permissions and ignores every folder grant. That is its purpose as a break-glass credential, so the controller keeps booting. Once SSO works, either unset `UNIFIED_TOKEN` or keep it stored securely and unused. Without an issuer the token is the only login and nothing is logged.
+Both an OIDC issuer and the bootstrap token (`--token`, `UNIFIED_TOKEN`, or `token` in the config file) are set. The bootstrap token holds all 26 permissions and ignores every folder grant. That is its purpose as a break-glass credential, so the controller keeps booting. Once SSO works, either unset `UNIFIED_TOKEN` or keep it stored securely and unused. Without an issuer the token is the only login and nothing is logged.
 
 ## Startup warning: role-only personal access tokens bypass folder grants
 

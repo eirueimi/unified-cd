@@ -465,6 +465,23 @@ func TestAuthorize_AltPermAdmitsEitherPermission(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
+func TestAuthorize_AgentEnrollOnlyReachesEnrollmentCreate(t *testing.T) {
+	s, st := matrixServer(t)
+	token := ceilingToken(t, st, "enroll-only", []authz.Permission{authz.AgentEnroll})
+
+	rec := doTimed(t, s, matrixRequest{method: http.MethodPost, path: "/api/v1/agent-enrollments", body: []byte(`{}`)}, token)
+	assert.NotEqual(t, http.StatusForbidden, rec.Code, rec.Body.String())
+
+	for _, req := range []matrixRequest{
+		{method: http.MethodDelete, path: "/api/v1/agent-enrollments/x"},
+		{method: http.MethodPost, path: "/api/v1/agent-enrollment-policies", body: []byte(`{}`)},
+	} {
+		rec := doTimed(t, s, req, token)
+		assert.Equal(t, http.StatusForbidden, rec.Code, "%s %s", req.method, req.path)
+		assert.Equal(t, "forbidden: missing permission \"agent.manage\"\n", rec.Body.String())
+	}
+}
+
 func TestAuthorize_SchedulePath(t *testing.T) {
 	s, st := matrixServer(t)
 	seedMatrix(t, st)

@@ -6,9 +6,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCatalogueHas25PermissionsInOrder(t *testing.T) {
+func TestCatalogueHas26PermissionsInOrder(t *testing.T) {
 	all := All()
-	require.Len(t, all, 25)
+	require.Len(t, all, 26)
 	folder := 0
 	for i, p := range all {
 		if FolderScopable(p) {
@@ -18,6 +18,8 @@ func TestCatalogueHas25PermissionsInOrder(t *testing.T) {
 	}
 	require.Equal(t, 9, folder)
 	require.Equal(t, AuthzRead, all[24])
+	require.Equal(t, AgentEnroll, all[25])
+	require.False(t, FolderScopable(AgentEnroll))
 	require.Equal(t, JobRead, all[0])
 }
 
@@ -30,6 +32,9 @@ func TestBundles(t *testing.T) {
 	require.Len(t, d.Names(), 15)
 	require.Equal(t, AllSet(), a)
 	require.False(t, d.Has(AuthzRead))
+	require.False(t, d.Has(AgentEnroll))
+	require.False(t, v.Has(AgentEnroll))
+	require.True(t, a.Has(AgentEnroll))
 	require.False(t, d.Has(TokenManage))
 	require.False(t, d.Has(SecretWrite))
 	_, ok := Bundle("deny")

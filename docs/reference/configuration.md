@@ -163,7 +163,7 @@ oidc:
 
 | Key | Value |
 |---|---|
-| `global.groups.<claim value>` / `global.users.<email or sub>` | A role name (`viewer`, `developer`, `admin`), a permission name, or a list mixing both. Any of the 25 permissions is allowed. |
+| `global.groups.<claim value>` / `global.users.<email or sub>` | A role name (`viewer`, `developer`, `admin`), a permission name, or a list mixing both. Any of the 26 permissions is allowed. |
 | `folders.<folder>.groups.<claim value>` / `folders.<folder>.users.<email or sub>` | The same, but only folder-scopable permissions (`job.read`, `job.configure`, `job.delete`, `run.trigger`, `run.replay`, `run.cancel`, `run.delete`, `run.approve`, `schedule.configure`). A role name contributes only its folder-scopable members. |
 
 Group keys are compared to the values of `oidc.rolesClaim`; user keys to the token's `email` and `sub`. Folder keys are normalised by trimming leading and trailing `/`; `*`, `?`, `[`, whitespace and empty, `.` or `..` segments are rejected. The full semantics, the list of startup error strings and recipes are in [Authorization](../operator-manual/authorization.md#configuring-grants-oidcpermissions); `examples/config/controller.yaml` carries a commented example.
