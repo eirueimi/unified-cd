@@ -213,7 +213,7 @@ oidc:
   defaultRole: viewer                 # role when nothing matches; "" or "deny" => no global role
 ```
 
-Scalars `rolesClaim` and `defaultRole` can also come from `UNIFIED_OIDC_ROLES_CLAIM` / `UNIFIED_OIDC_DEFAULT_ROLE`. **`roleMap`, `userMap` and `permissions` are maps and can only be set in the config file** (there is no env var for them).
+Scalars `rolesClaim` and `defaultRole` can also come from `UNIFIED_OIDC_ROLES_CLAIM` / `UNIFIED_OIDC_DEFAULT_ROLE`. **`roleMap`, `userMap` and `permissions` are maps and can only be set in the config file** (there is no env var for them). The requested OIDC scopes can be overridden with `oidc.scopes` / `UNIFIED_OIDC_SCOPES` (see [Identity providers](identity-providers.md#how-unified-cd-reads-identity-what-every-idp-must-satisfy)).
 
 > `groups` is NOT a standard OIDC claim — whether it exists and what it contains is entirely up to the IdP. `rolesClaim` lets you point at whatever claim your IdP emits (`groups`, `roles`, a namespaced claim, or even `email`).
 

@@ -279,7 +279,7 @@ func (s *Server) handleOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		"deviceClientId":    deviceClientID,
 		"browserSSOEnabled": s.oidcCfg.ClientSecret != "",
 		// The scopes the CLI device flow must request (shared with the web login).
-		"scopes": oidcScopes(s.oidcCfg.RolesClaim),
+		"scopes": oidcScopes(s.oidcCfg.RolesClaim, s.oidcCfg.Scopes),
 	}
 	// Fetch the actual endpoints via discovery (Dex device authorization is at /device/code) and return them.
 	// When IssuerInternal is set, discovery is performed via the internal network.

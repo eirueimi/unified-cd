@@ -443,6 +443,7 @@ func main() {
 			ClientID:       eff.OIDC.ClientID,
 			ClientSecret:   eff.OIDC.ClientSecret,
 			DeviceClientID: eff.OIDC.DeviceClientID,
+			Scopes:         eff.OIDC.Scopes,
 			RolesClaim:     eff.OIDC.RolesClaim,
 			RoleMap:        eff.OIDC.RoleMap,
 			UserMap:        eff.OIDC.UserMap,

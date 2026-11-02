@@ -206,10 +206,32 @@ func TestServer_Root_Redirects_To_UI(t *testing.T) {
 
 func TestOIDCScopes(t *testing.T) {
 	base := []string{"openid", "email", "profile"}
-	assert.Equal(t, append(append([]string{}, base...), "groups"), oidcScopes("groups"))
-	assert.Equal(t, base, oidcScopes(""))
-	assert.Equal(t, base, oidcScopes("https://unified-cd.example.com/roles"))
-	assert.Equal(t, base, oidcScopes("urn:roles"))
+	assert.Equal(t, append(append([]string{}, base...), "groups"), oidcScopes("groups", nil))
+	assert.Equal(t, base, oidcScopes("", nil))
+	assert.Equal(t, base, oidcScopes("https://unified-cd.example.com/roles", nil))
+	assert.Equal(t, base, oidcScopes("urn:roles", nil))
+}
+
+func TestOIDCScopes_Override(t *testing.T) {
+	// Override replaces the default list and suppresses the rolesClaim scope.
+	assert.Equal(t, []string{"openid", "email"}, oidcScopes("groups", []string{"openid", "email"}))
+	// openid is prepended when missing; duplicates dropped, order preserved.
+	assert.Equal(t, []string{"openid", "email", "profile"}, oidcScopes("roles", []string{"email", "profile", "email"}))
+	// Empty override keeps the default behaviour.
+	assert.Equal(t, []string{"openid", "email", "profile", "groups"}, oidcScopes("groups", []string{}))
+}
+
+func TestServer_OIDCConfig_ReturnsScopeOverride(t *testing.T) {
+	s := NewServer(Config{Token: "t"}, nil)
+	s.SetOIDCConfig(&OIDCConfig{Issuer: "https://accounts.example.com", ClientID: "c", RolesClaim: "roles", Scopes: []string{"email", "profile"}})
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc-config", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var result struct {
+		Scopes []string `json:"scopes"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&result))
+	assert.Equal(t, []string{"openid", "email", "profile"}, result.Scopes)
 }
 
 func TestServer_OIDCConfig_ReturnsScopes(t *testing.T) {

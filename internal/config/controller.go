@@ -109,6 +109,10 @@ type ControllerOIDCConfig struct {
 	// Using a separate secret-less public client distinct from the confidential ClientID (for browser SSO)
 	// allows the device flow to work without exposing secrets to the CLI. Falls back to ClientID when not set.
 	DeviceClientID string `yaml:"deviceClientId"`
+	// Scopes, when non-empty, replaces the scopes requested from the IdP by the
+	// browser login and the CLI device flow (openid is prepended if missing and the
+	// automatic rolesClaim scope is not added). Entries must not contain whitespace.
+	Scopes []string `yaml:"scopes"`
 
 	// Role resolution (see docs/operator-manual/authorization.md).
 	RolesClaim  string            `yaml:"rolesClaim"`
@@ -227,6 +231,10 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 			DeviceClientID: os.Getenv("UNIFIED_OIDC_DEVICE_CLIENT_ID"),
 			RolesClaim:     os.Getenv("UNIFIED_OIDC_ROLES_CLAIM"),
 			DefaultRole:    os.Getenv("UNIFIED_OIDC_DEFAULT_ROLE"),
+			Scopes:         splitCSV(os.Getenv("UNIFIED_OIDC_SCOPES")),
+		}
+		if err := validateOIDCScopes(eff.OIDC.Scopes); err != nil {
+			return nil, err
 		}
 	}
 
@@ -301,6 +309,12 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		}
 		if file.OIDC.DeviceClientID != "" {
 			eff.OIDC.DeviceClientID = file.OIDC.DeviceClientID
+		}
+		if len(file.OIDC.Scopes) > 0 {
+			eff.OIDC.Scopes = file.OIDC.Scopes
+		}
+		if err := validateOIDCScopes(eff.OIDC.Scopes); err != nil {
+			return nil, err
 		}
 		if file.OIDC.RolesClaim != "" {
 			eff.OIDC.RolesClaim = file.OIDC.RolesClaim
@@ -384,6 +398,33 @@ func validateControllerAgentAuth(cfg *ControllerAgentAuthConfig) error {
 		}
 		if len(policy.Namespaces) == 0 || len(policy.ServiceAccounts) == 0 {
 			return fmt.Errorf("agentAuth kubernetes store credential policy requires namespaces and serviceAccounts")
+		}
+	}
+	return nil
+}
+
+// splitCSV splits a comma-separated list, trimming spaces and dropping empties.
+// It returns nil when nothing remains.
+func splitCSV(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// validateOIDCScopes rejects a scope entry containing whitespace: scopes are
+// space-delimited on the wire, so such an entry is almost always several scopes
+// written as one string.
+func validateOIDCScopes(scopes []string) error {
+	for _, sc := range scopes {
+		if strings.ContainsAny(sc, " \t\r\n") {
+			return fmt.Errorf("oidc.scopes entry %q contains whitespace; list each scope as a separate entry", sc)
+		}
+		if sc == "" {
+			return fmt.Errorf("oidc.scopes must not contain an empty entry")
 		}
 	}
 	return nil

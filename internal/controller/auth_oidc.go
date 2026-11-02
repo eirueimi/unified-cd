@@ -78,11 +78,24 @@ func generateState() (string, error) {
 }
 
 // oidcScopes returns the scopes both the browser login and the CLI device flow
-// request. When the roles claim is a bare scope-like token (e.g. "groups" for
-// Dex) it is requested as a scope too, so the IdP emits it. Namespaced or
-// `:`-bearing claim names (Auth0/Entra app-roles) are emitted without an extra
-// scope and are skipped.
-func oidcScopes(rolesClaim string) []string {
+// request. When override (oidc.scopes) is non-empty it is used as-is, with
+// openid prepended if missing and duplicates dropped; the rolesClaim scope is
+// then not added. Otherwise, when the roles claim is a bare scope-like token
+// (e.g. "groups" for Dex) it is requested as a scope too, so the IdP emits it.
+// Namespaced or `:`-bearing claim names (Auth0/Entra app-roles) are emitted
+// without an extra scope and are skipped.
+func oidcScopes(rolesClaim string, override []string) []string {
+	if len(override) > 0 {
+		scopes := []string{oidc.ScopeOpenID}
+		seen := map[string]bool{oidc.ScopeOpenID: true}
+		for _, sc := range override {
+			if !seen[sc] {
+				seen[sc] = true
+				scopes = append(scopes, sc)
+			}
+		}
+		return scopes
+	}
 	scopes := []string{oidc.ScopeOpenID, "email", "profile"}
 	if rolesClaim != "" && !strings.ContainsAny(rolesClaim, "/:") {
 		scopes = append(scopes, rolesClaim)
@@ -113,7 +126,7 @@ func (s *Server) oidcProvider(ctx context.Context, host string) (context.Context
 		redirectBase = strings.TrimRight(s.oidcCfg.ExternalURL, "/")
 	}
 	redirectURL := redirectBase + "/api/v1/auth/oidc-callback"
-	scopes := oidcScopes(s.oidcCfg.RolesClaim)
+	scopes := oidcScopes(s.oidcCfg.RolesClaim, s.oidcCfg.Scopes)
 	cfg := &oauth2.Config{
 		ClientID:     s.oidcCfg.ClientID,
 		ClientSecret: s.oidcCfg.ClientSecret,
