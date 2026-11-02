@@ -110,7 +110,7 @@ With that token, `unified-cli agent enrollment create --label kind:linux --quiet
 - **Labels stay inside the bound.** Every `--label` must exactly match an entry in the PAT's enrollment labels (no trimming, case-sensitive). Otherwise the request is refused with `403 label "<label>" is not in this token's enrollment labels`. A PAT created without `--enroll-label` has no labels to offer, so it can only create enrollment tokens with no `--label`.
 - **The agent ID is generated.** Passing `--agent-id` is refused with `403 agentId cannot be set with agent.enroll; it is generated`. The controller mints a random `agent-XXXXXXXX` ID and returns it in the response.
 
-A caller with `agent.manage` is not affected: it may set any agent ID and any labels. The audit log's `resource` for each `agent.enrollment.create` entry is the agent ID followed by the requested labels, for example `agent-1a2b3c4d labels=kind:linux,pool:build`.
+A caller with `agent.manage` is not affected: it may set any agent ID and any labels. The audit log's `resource` for each `agent.enrollment.create` entry is the enrollment token ID, the agent ID and the requested labels, for example `enr-123 agent=agent-1a2b3c4d labels=kind:linux,pool:build`.
 
 ## Running the agent as a service
 

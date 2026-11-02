@@ -51,7 +51,7 @@ Each recorded entry contains:
 | `method` | HTTP method (`POST`/`PUT`/`DELETE`) |
 | `path` | Request path |
 | `action` | Short classification from the table above |
-| `resource` | Best-effort name/id of the target (e.g. job name, secret name, token id). For `agent.enrollment.create` it is the agent ID, followed by ` labels=` and the comma-joined labels when any were requested |
+| `resource` | Best-effort name/id of the target (e.g. job name, secret name, token id). For `agent.enrollment.create` it is `<token id> agent=<agent id>`, followed by ` labels=` and the comma-joined labels when any were requested, so a create can be matched to the `agent.enrollment.revoke` entry for the same token ID |
 | `status` | HTTP response status code the client actually saw |
 | `permission` | The permission the request was checked against (for example `run.trigger`); empty when no decision applied |
 | `scope` | The job name for a folder-scopable decision; empty for a global decision and for a refusal before any job was looked at |

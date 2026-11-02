@@ -398,7 +398,7 @@ func TestAgentEnrollmentAuditResourceCarriesAgentIDAndLabels(t *testing.T) {
 	for _, l := range logs {
 		if l.Action == "agent.enrollment.create" {
 			found = true
-			assert.Equal(t, created.AgentID+" labels=kind:linux,pool:build", l.Resource)
+			assert.Equal(t, created.ID+" agent="+created.AgentID+" labels=kind:linux,pool:build", l.Resource)
 		}
 	}
 	require.True(t, found)
@@ -408,5 +408,7 @@ func TestAgentEnrollmentAuditResourceCarriesAgentIDAndLabels(t *testing.T) {
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 	logs, err = pg.ListAuditLogs(t.Context(), 20, 0)
 	require.NoError(t, err)
-	assert.Equal(t, "vm-agent-02", logs[0].Resource)
+	var second api.CreateAgentEnrollmentResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &second))
+	assert.Equal(t, second.ID+" agent=vm-agent-02", logs[0].Resource)
 }

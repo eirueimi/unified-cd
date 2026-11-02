@@ -90,9 +90,8 @@ func (s *Server) handleCreateAgentEnrollment(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "generate enrollment token: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	creator, _ := principalFromContext(r.Context())
 	created, err := s.store.CreateAgentEnrollmentToken(r.Context(), store.AgentEnrollmentToken{
-		ID: issued.ID, AgentID: req.AgentID, CreatedBy: creator.Name,
+		ID: issued.ID, AgentID: req.AgentID, CreatedBy: caller.Name,
 		AuthorizedLabels: req.Labels,
 		ExpiresAt:        time.Now().Add(ttl),
 	}, issued.Hash)
@@ -101,7 +100,7 @@ func (s *Server) handleCreateAgentEnrollment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	resource := created.AgentID
+	resource := created.ID + " agent=" + created.AgentID
 	if len(req.Labels) > 0 {
 		resource += " labels=" + strings.Join(req.Labels, ",")
 	}
