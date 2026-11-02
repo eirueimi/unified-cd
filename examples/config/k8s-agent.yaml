@@ -7,7 +7,7 @@ labels:
 namespace: ci
 maxConcurrent: 5
 # poolIdleTimeout: how long idle pooled pods are kept before deletion (e.g. "30m", "1h").
-# Omit or set to "" to disable eviction (idle pods live until the agent restarts).
+# Omit or set to "" to disable eviction (idle pods are kept until they are deleted).
 poolIdleTimeout: ""
 # finallyTimeout: ceiling on each of a run's post-DAG cleanup phases — each
 # post:/cache: hook drain, the spec.finally pipeline, and scope/Pod teardown.

@@ -169,7 +169,8 @@ config; and a native job can already run any command as the agent user.
 - **`spec.detached: true`** is rejected at apply time: a detached run's workspace is deleted when
   the run finishes, which contradicts a persistent volume.
 - **`podTemplate.reuse: true`** is rejected at apply time: a pooled Kubernetes Pod keeps the
-  volumes it was created with, but each run may need different ones.
+  volumes it was created with, but each run may need different ones. (A pod-level volume from `podTemplate.spec.volumes` is allowed
+  and is kept; see [Reusing a slow-to-create volume](isolation-and-containers.md#reusing-a-slow-to-create-volume-csi-clone).)
 
 ---
 
