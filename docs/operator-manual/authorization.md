@@ -315,7 +315,7 @@ An agent credential is bound to one immutable `agentId`. The controller
 rejects a differing route/body ID with `agent identity mismatch` (403), and
 preserves the run's immutable `claimed_by` check for writes. An agent cannot
 grant itself scheduling labels or capabilities. Administrators manage
-one-time VM enrollments, Kubernetes enrollment policies, and identity enable,
+one-time VM enrollments, enrollment policies (Kubernetes, AWS, GCP and Azure), and identity enable,
 disable, and credential revocation through the agent lifecycle API/CLI.
 
 **Every write to a run is guarded by the same per-run ownership check,

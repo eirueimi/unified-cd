@@ -206,8 +206,22 @@ func enrollmentPolicyFromRequest(name string, req api.AgentEnrollmentPolicyReque
 	if err != nil {
 		return store.AgentEnrollmentPolicy{}, errors.New("invalid accessTokenTTL")
 	}
-	providerConfig, _ := json.Marshal(map[string]string{"cluster": req.Cluster})
-	constraints, _ := json.Marshal(map[string][]string{"namespaces": req.Namespaces, "serviceAccounts": req.ServiceAccounts})
+	var providerConfig, constraints []byte
+	switch req.Provider {
+	case "aws":
+		providerConfig, _ = json.Marshal(store.AWSPolicyConfig{Audience: req.Audience, STSRegions: req.STSRegions})
+		constraints, _ = json.Marshal(store.AWSSubjectConstraints{AccountIDs: req.AccountIDs, RoleNames: req.RoleNames})
+	case "gcp":
+		providerConfig, _ = json.Marshal(store.GCPPolicyConfig{Audience: req.Audience})
+		constraints, _ = json.Marshal(store.GCPSubjectConstraints{ProjectIDs: req.ProjectIDs, ServiceAccounts: req.ServiceAccounts})
+	case "azure":
+		providerConfig, _ = json.Marshal(store.AzurePolicyConfig{TenantID: req.TenantID, Audience: req.Audience})
+		constraints, _ = json.Marshal(store.AzureSubjectConstraints{SubscriptionIDs: req.SubscriptionIDs, ResourceGroups: req.ResourceGroups, ManagedIdentityObjectIDs: req.ManagedIdentityObjectIDs})
+	default:
+		// kubernetes; an unknown provider is rejected by the store's validation.
+		providerConfig, _ = json.Marshal(map[string]string{"cluster": req.Cluster})
+		constraints, _ = json.Marshal(map[string][]string{"namespaces": req.Namespaces, "serviceAccounts": req.ServiceAccounts})
+	}
 	return store.AgentEnrollmentPolicy{Name: name, Provider: req.Provider, ProviderConfig: providerConfig, SubjectConstraints: constraints, AgentIDTemplate: req.AgentIDTemplate, AllowedLabels: req.AllowedLabels, RequiredLabels: req.RequiredLabels, AccessTokenTTL: ttl, Enabled: req.Enabled}, nil
 }
 
@@ -267,6 +281,22 @@ func (s *Server) handleDeleteAgentEnrollmentPolicy(w http.ResponseWriter, r *htt
 	w.WriteHeader(http.StatusNoContent)
 }
 func enrollmentPolicyResponse(policy store.AgentEnrollmentPolicy) api.AgentEnrollmentPolicyRequest {
+	resp := api.AgentEnrollmentPolicyRequest{Name: policy.Name, Provider: policy.Provider, AgentIDTemplate: policy.AgentIDTemplate, AllowedLabels: policy.AllowedLabels, RequiredLabels: policy.RequiredLabels, AccessTokenTTL: policy.AccessTokenTTL.String(), Enabled: policy.Enabled}
+	switch policy.Provider {
+	case "aws":
+		cfg, c, _ := store.DecodeCloudPolicy[store.AWSPolicyConfig, store.AWSSubjectConstraints](policy)
+		resp.Audience, resp.STSRegions, resp.AccountIDs, resp.RoleNames = cfg.Audience, cfg.STSRegions, c.AccountIDs, c.RoleNames
+		return resp
+	case "gcp":
+		cfg, c, _ := store.DecodeCloudPolicy[store.GCPPolicyConfig, store.GCPSubjectConstraints](policy)
+		resp.Audience, resp.ProjectIDs, resp.ServiceAccounts = cfg.Audience, c.ProjectIDs, c.ServiceAccounts
+		return resp
+	case "azure":
+		cfg, c, _ := store.DecodeCloudPolicy[store.AzurePolicyConfig, store.AzureSubjectConstraints](policy)
+		resp.TenantID, resp.Audience = cfg.TenantID, cfg.Audience
+		resp.SubscriptionIDs, resp.ResourceGroups, resp.ManagedIdentityObjectIDs = c.SubscriptionIDs, c.ResourceGroups, c.ManagedIdentityObjectIDs
+		return resp
+	}
 	var config struct {
 		Cluster string `json:"cluster"`
 	}
@@ -276,7 +306,8 @@ func enrollmentPolicyResponse(policy store.AgentEnrollmentPolicy) api.AgentEnrol
 	}
 	_ = json.Unmarshal(policy.ProviderConfig, &config)
 	_ = json.Unmarshal(policy.SubjectConstraints, &constraints)
-	return api.AgentEnrollmentPolicyRequest{Name: policy.Name, Provider: policy.Provider, Cluster: config.Cluster, Namespaces: constraints.Namespaces, ServiceAccounts: constraints.ServiceAccounts, AgentIDTemplate: policy.AgentIDTemplate, AllowedLabels: policy.AllowedLabels, RequiredLabels: policy.RequiredLabels, AccessTokenTTL: policy.AccessTokenTTL.String(), Enabled: policy.Enabled}
+	resp.Cluster, resp.Namespaces, resp.ServiceAccounts = config.Cluster, constraints.Namespaces, constraints.ServiceAccounts
+	return resp
 }
 
 // handleAgentEnroll exchanges a valid one-time enrollment credential for the

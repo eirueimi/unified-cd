@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,7 +25,7 @@ func newAgentEnrollmentCmd(resolve func() (Config, error), httpClient *http.Clie
 }
 
 func newAgentEnrollmentPolicyCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
-	cmd := &cobra.Command{Use: "enrollment-policy", Short: "Manage Kubernetes agent enrollment policies"}
+	cmd := &cobra.Command{Use: "enrollment-policy", Short: "Manage agent enrollment policies (kubernetes, aws, gcp, azure)"}
 	cmd.AddCommand(newAgentEnrollmentPolicyWriteCmd(resolve, httpClient, "create"))
 	cmd.AddCommand(newAgentEnrollmentPolicyWriteCmd(resolve, httpClient, "update"))
 	cmd.AddCommand(newAgentEnrollmentPolicyGetCmd(resolve, httpClient))
@@ -33,15 +34,38 @@ func newAgentEnrollmentPolicyCmd(resolve func() (Config, error), httpClient *htt
 	return cmd
 }
 func newAgentEnrollmentPolicyWriteCmd(resolve func() (Config, error), client *http.Client, action string) *cobra.Command {
-	var cluster, template, ttl string
+	var provider, cluster, template, ttl, audience, tenantID string
 	var namespaces, serviceAccounts, allowed, required []string
+	var stsRegions, accountIDs, roleNames, projectIDs, subscriptionIDs, resourceGroups, managedIdentityObjectIDs []string
 	var enabled bool
 	cmd := &cobra.Command{Use: action + " <name>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := resolve()
 		if err != nil {
 			return err
 		}
-		body, err := json.Marshal(api.AgentEnrollmentPolicyRequest{Name: args[0], Provider: "kubernetes", Cluster: cluster, Namespaces: namespaces, ServiceAccounts: serviceAccounts, AgentIDTemplate: template, AllowedLabels: allowed, RequiredLabels: required, AccessTokenTTL: ttl, Enabled: enabled})
+		defaultTemplate, ok := policyAgentIDTemplates[provider]
+		if !ok {
+			return fmt.Errorf("unsupported --provider %q (use kubernetes, aws, gcp or azure)", provider)
+		}
+		if provider == "kubernetes" && (cluster == "" || len(namespaces) == 0 || len(serviceAccounts) == 0) {
+			return errors.New("--cluster, --namespace and --service-account are required for the kubernetes provider")
+		}
+		if template == "" {
+			template = defaultTemplate
+		}
+		req := api.AgentEnrollmentPolicyRequest{Name: args[0], Provider: provider, AgentIDTemplate: template, AllowedLabels: allowed, RequiredLabels: required, AccessTokenTTL: ttl, Enabled: enabled}
+		switch provider {
+		case "kubernetes":
+			req.Cluster, req.Namespaces, req.ServiceAccounts = cluster, namespaces, serviceAccounts
+		case "aws":
+			req.Audience, req.STSRegions, req.AccountIDs, req.RoleNames = audience, stsRegions, accountIDs, roleNames
+		case "gcp":
+			req.Audience, req.ProjectIDs, req.ServiceAccounts = audience, projectIDs, serviceAccounts
+		case "azure":
+			req.TenantID, req.Audience = tenantID, audience
+			req.SubscriptionIDs, req.ResourceGroups, req.ManagedIdentityObjectIDs = subscriptionIDs, resourceGroups, managedIdentityObjectIDs
+		}
+		body, err := json.Marshal(req)
 		if err != nil {
 			return err
 		}
@@ -60,19 +84,36 @@ func newAgentEnrollmentPolicyWriteCmd(resolve func() (Config, error), client *ht
 		fmt.Fprintf(cmd.OutOrStdout(), "enrollment policy %q %sd\n", args[0], action)
 		return nil
 	}}
-	cmd.Flags().StringVar(&cluster, "cluster", "", "configured Kubernetes cluster name")
-	cmd.Flags().StringArrayVar(&namespaces, "namespace", nil, "allowed namespace (repeatable)")
-	cmd.Flags().StringArrayVar(&serviceAccounts, "service-account", nil, "allowed service account (repeatable)")
-	cmd.Flags().StringVar(&template, "agent-id-template", "k8s:{cluster}:{namespace}:{podUID}", "canonical agent ID template")
+	cmd.Flags().StringVar(&provider, "provider", "kubernetes", "identity provider: kubernetes, aws, gcp or azure")
+	cmd.Flags().StringVar(&cluster, "cluster", "", "configured Kubernetes cluster name (kubernetes)")
+	cmd.Flags().StringArrayVar(&namespaces, "namespace", nil, "allowed namespace (kubernetes, repeatable)")
+	cmd.Flags().StringArrayVar(&serviceAccounts, "service-account", nil, "allowed Kubernetes ServiceAccount name or GCP service account email (kubernetes and gcp, repeatable)")
+	cmd.Flags().StringVar(&audience, "audience", "", "expected token audience (aws, gcp, azure)")
+	cmd.Flags().StringArrayVar(&stsRegions, "sts-region", nil, "AWS region whose STS endpoint may be used (aws, repeatable)")
+	cmd.Flags().StringArrayVar(&accountIDs, "account-id", nil, "allowed AWS account ID (aws, repeatable)")
+	cmd.Flags().StringArrayVar(&roleNames, "role-name", nil, "allowed AWS IAM role name (aws, repeatable)")
+	cmd.Flags().StringArrayVar(&projectIDs, "project-id", nil, "allowed GCP project ID (gcp, repeatable)")
+	cmd.Flags().StringVar(&tenantID, "tenant-id", "", "Azure tenant ID (azure)")
+	cmd.Flags().StringArrayVar(&subscriptionIDs, "subscription-id", nil, "allowed Azure subscription ID (azure, repeatable)")
+	cmd.Flags().StringArrayVar(&resourceGroups, "resource-group", nil, "allowed Azure resource group (azure, repeatable)")
+	cmd.Flags().StringArrayVar(&managedIdentityObjectIDs, "managed-identity-object-id", nil, "allowed Azure managed identity object ID (azure, repeatable)")
+	cmd.Flags().StringVar(&template, "agent-id-template", "", "canonical agent ID template (default depends on --provider)")
 	cmd.Flags().StringArrayVar(&allowed, "allowed-label", nil, "allowed agent label (repeatable)")
 	cmd.Flags().StringArrayVar(&required, "required-label", nil, "required agent label (repeatable)")
 	cmd.Flags().StringVar(&ttl, "access-token-ttl", "1h", "access token lifetime (5m to 4h)")
 	cmd.Flags().BoolVar(&enabled, "enabled", true, "enable policy")
-	_ = cmd.MarkFlagRequired("cluster")
-	_ = cmd.MarkFlagRequired("namespace")
-	_ = cmd.MarkFlagRequired("service-account")
 	return cmd
 }
+
+// policyAgentIDTemplates maps each provider to the canonical agent ID template
+// the controller enforces for it.
+var policyAgentIDTemplates = map[string]string{
+	"kubernetes": "k8s:{cluster}:{namespace}:{podUID}",
+	"aws":        "aws:{account}:{instanceId}",
+	"gcp":        "gcp:{project}:{instanceId}",
+	"azure":      "azure:{subscription}:{resourceGroup}:{vmName}",
+}
+
 func newAgentEnrollmentPolicyGetCmd(resolve func() (Config, error), client *http.Client) *cobra.Command {
 	return &cobra.Command{Use: "get <name>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := resolve()

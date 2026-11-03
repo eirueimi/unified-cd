@@ -167,8 +167,8 @@ func agentAuthProvider(provider string) string {
 	switch provider {
 	case "uce", "one-time-token":
 		return "one-time-token"
-	case "kubernetes":
-		return "kubernetes"
+	case "kubernetes", "aws", "gcp", "azure":
+		return provider
 	case "uca", "access":
 		return "access"
 	case "ucr", "refresh":

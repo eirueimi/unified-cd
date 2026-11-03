@@ -1016,12 +1016,38 @@ exclusive; the agent exits with an error if both are set.
 
 Manage an identity with `agent identity get|enable|disable|revoke-credentials
 <agent-id>`. Use `agent enrollment-policy create|update|get|list|delete` for
-Kubernetes workload enrollment. Create/update accepts `--cluster`, repeatable
-`--namespace` and `--service-account`, repeatable `--allowed-label` and
-`--required-label`, `--access-token-ttl` (5 minutes to 4 hours), and
-`--enabled`; it never accepts kubeconfig contents. Capabilities are not part
-of the policy: each enrolled pod's agent auto-detects and self-reports its
-own capabilities on registration.
+workload enrollment policies. `--provider` selects the identity provider
+(`kubernetes`, `aws`, `gcp` or `azure`; default `kubernetes`). Create/update
+accepts, for every provider, repeatable `--allowed-label` and
+`--required-label`, `--access-token-ttl` (5 minutes to 4 hours), `--enabled`,
+and `--agent-id-template`. The template is fixed per provider, so the default
+is the only accepted value: `k8s:{cluster}:{namespace}:{podUID}`,
+`aws:{account}:{instanceId}`, `gcp:{project}:{instanceId}` or
+`azure:{subscription}:{resourceGroup}:{vmName}`. The provider-specific flags
+are:
+
+| Provider | Required flags | Optional flags |
+|---|---|---|
+| `kubernetes` | `--cluster`, repeatable `--namespace` and `--service-account` | |
+| `aws` | `--audience`, repeatable `--account-id` and `--role-name` | repeatable `--sts-region` (for example `eu-west-1`) |
+| `gcp` | `--audience`, repeatable `--project-id` and `--service-account` (a service account email) | |
+| `azure` | `--tenant-id`, `--audience`, repeatable `--subscription-id` and `--managed-identity-object-id` | repeatable `--resource-group` |
+
+```bash
+unified-cli agent enrollment-policy create aws-ci --provider aws \
+  --audience unified-cd --account-id 123456789012 --role-name ci-agent \
+  --required-label kind:linux
+```
+
+A flag that belongs to another provider is ignored. The `kubernetes` flags are
+checked by the CLI; for the other providers the controller rejects a policy
+with a missing field (`400 invalid enrollment policy: ...`, for example `aws
+enrollment policy requires audience, accountIds and roleNames`). The
+`--sts-region` values must look like an AWS region name. The same policies are
+available over `/api/v1/agent-enrollment-policies`. A policy never accepts
+kubeconfig contents or cloud credentials. Capabilities are not part of the
+policy: each enrolled agent auto-detects and self-reports its own
+capabilities on registration.
 
 ### agent list
 

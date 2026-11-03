@@ -291,3 +291,58 @@ func TestAgentEnrollmentCreateForbiddenIncludesServerReason(t *testing.T) {
 	assert.Contains(t, err.Error(), "403")
 	assert.Contains(t, err.Error(), `label "pool:gpu" is not in this token's enrollment labels`)
 }
+
+func runPolicyCreate(t *testing.T, args ...string) (api.AgentEnrollmentPolicyRequest, error) {
+	t.Helper()
+	tr := &captureTransport{responseFor: func(path string) (int, []byte) { return http.StatusCreated, nil }}
+	cmd, _ := newTestAgentLifecycleCmd(t, tr)
+	cmd.SetArgs(append([]string{"enrollment-policy", "create", "p"}, args...))
+	err := cmd.Execute()
+	var got api.AgentEnrollmentPolicyRequest
+	if err == nil {
+		require.Len(t, tr.records, 1)
+		require.NoError(t, json.Unmarshal(tr.records[0].body, &got))
+	}
+	return got, err
+}
+
+func TestAgentEnrollmentPolicyCreateCloudProviders(t *testing.T) {
+	got, err := runPolicyCreate(t, "--provider", "aws", "--audience", "x", "--account-id", "123456789012", "--role-name", "ci-agent", "--sts-region", "eu-west-1")
+	require.NoError(t, err)
+	assert.Equal(t, "aws", got.Provider)
+	assert.Equal(t, "x", got.Audience)
+	assert.Equal(t, []string{"123456789012"}, got.AccountIDs)
+	assert.Equal(t, []string{"ci-agent"}, got.RoleNames)
+	assert.Equal(t, []string{"eu-west-1"}, got.STSRegions)
+	assert.Equal(t, "aws:{account}:{instanceId}", got.AgentIDTemplate)
+
+	got, err = runPolicyCreate(t, "--provider", "gcp", "--audience", "x", "--project-id", "my-ci", "--service-account", "ci@my-ci.iam.gserviceaccount.com")
+	require.NoError(t, err)
+	assert.Equal(t, "gcp", got.Provider)
+	assert.Equal(t, []string{"my-ci"}, got.ProjectIDs)
+	assert.Equal(t, []string{"ci@my-ci.iam.gserviceaccount.com"}, got.ServiceAccounts)
+	assert.Equal(t, "gcp:{project}:{instanceId}", got.AgentIDTemplate)
+
+	got, err = runPolicyCreate(t, "--provider", "azure", "--tenant-id", "tenant-1", "--audience", "x", "--subscription-id", "sub-1", "--resource-group", "ci", "--managed-identity-object-id", "oid-1")
+	require.NoError(t, err)
+	assert.Equal(t, "azure", got.Provider)
+	assert.Equal(t, "tenant-1", got.TenantID)
+	assert.Equal(t, []string{"sub-1"}, got.SubscriptionIDs)
+	assert.Equal(t, []string{"ci"}, got.ResourceGroups)
+	assert.Equal(t, []string{"oid-1"}, got.ManagedIdentityObjectIDs)
+	assert.Equal(t, "azure:{subscription}:{resourceGroup}:{vmName}", got.AgentIDTemplate)
+}
+
+func TestAgentEnrollmentPolicyCreateKubernetesDefaultsAndRequirements(t *testing.T) {
+	got, err := runPolicyCreate(t, "--cluster", "prod", "--namespace", "unified-cd", "--service-account", "agent")
+	require.NoError(t, err)
+	assert.Equal(t, "kubernetes", got.Provider)
+	assert.Equal(t, "k8s:{cluster}:{namespace}:{podUID}", got.AgentIDTemplate)
+
+	_, err = runPolicyCreate(t)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--cluster")
+	_, err = runPolicyCreate(t, "--provider", "bogus")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bogus")
+}

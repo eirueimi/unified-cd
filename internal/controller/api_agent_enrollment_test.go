@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -411,4 +412,59 @@ func TestAgentEnrollmentAuditResourceCarriesAgentIDAndLabels(t *testing.T) {
 	var second api.CreateAgentEnrollmentResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &second))
 	assert.Equal(t, second.ID+" agent=vm-agent-02", logs[0].Resource)
+}
+
+func TestAgentEnrollmentPolicyCloudProviders(t *testing.T) {
+	s, _ := newTestServer(t)
+	post := func(body string) (int, string) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-enrollment-policies", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	get := func(name string) api.AgentEnrollmentPolicyRequest {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/agent-enrollment-policies/"+name, nil)
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		var got api.AgentEnrollmentPolicyRequest
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		return got
+	}
+
+	code, body := post(`{"name":"gcp-ci","provider":"gcp","audience":"unified-cd","projectIds":["my-ci"],"serviceAccounts":["ci@my-ci.iam.gserviceaccount.com"],"agentIdTemplate":"gcp:{project}:{instanceId}","allowedLabels":["kind:linux"],"accessTokenTTL":"1h","enabled":true}`)
+	require.Equal(t, http.StatusCreated, code, body)
+	assert.NotContains(t, body, "cluster")
+	assert.NotContains(t, body, "namespaces")
+	gcp := get("gcp-ci")
+	assert.Equal(t, "gcp", gcp.Provider)
+	assert.Equal(t, "unified-cd", gcp.Audience)
+	assert.Equal(t, []string{"my-ci"}, gcp.ProjectIDs)
+	assert.Equal(t, []string{"ci@my-ci.iam.gserviceaccount.com"}, gcp.ServiceAccounts)
+
+	code, body = post(`{"name":"aws-ci","provider":"aws","audience":"unified-cd","stsRegions":["eu-west-1"],"accountIds":["123456789012"],"roleNames":["ci-agent"],"agentIdTemplate":"aws:{account}:{instanceId}","accessTokenTTL":"1h","enabled":true}`)
+	require.Equal(t, http.StatusCreated, code, body)
+	aws := get("aws-ci")
+	assert.Equal(t, []string{"eu-west-1"}, aws.STSRegions)
+	assert.Equal(t, []string{"123456789012"}, aws.AccountIDs)
+	assert.Equal(t, []string{"ci-agent"}, aws.RoleNames)
+
+	code, body = post(`{"name":"azure-ci","provider":"azure","tenantId":"tenant-1","audience":"unified-cd","subscriptionIds":["sub-1"],"resourceGroups":["ci"],"managedIdentityObjectIds":["oid-1"],"agentIdTemplate":"azure:{subscription}:{resourceGroup}:{vmName}","accessTokenTTL":"1h","enabled":true}`)
+	require.Equal(t, http.StatusCreated, code, body)
+	azure := get("azure-ci")
+	assert.Equal(t, "tenant-1", azure.TenantID)
+	assert.Equal(t, []string{"sub-1"}, azure.SubscriptionIDs)
+	assert.Equal(t, []string{"ci"}, azure.ResourceGroups)
+	assert.Equal(t, []string{"oid-1"}, azure.ManagedIdentityObjectIDs)
+
+	code, body = post(`{"name":"bad","provider":"gcp","audience":"unified-cd","agentIdTemplate":"gcp:{project}:{instanceId}","accessTokenTTL":"1h","enabled":true}`)
+	assert.Equal(t, http.StatusBadRequest, code)
+	assert.Contains(t, body, "invalid enrollment policy: gcp enrollment policy requires audience, projectIds and serviceAccounts")
+
+	code, body = post(`{"name":"bad","provider":"x","agentIdTemplate":"t","accessTokenTTL":"1h","enabled":true}`)
+	assert.Equal(t, http.StatusBadRequest, code)
+	assert.Contains(t, body, `invalid enrollment policy: unsupported enrollment provider "x"`)
 }
