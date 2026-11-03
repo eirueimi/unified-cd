@@ -56,6 +56,7 @@ type CloudEnrollmentVerifier interface {
 func defaultCloudEnrollmentVerifiers() map[string]CloudEnrollmentVerifier {
 	return map[string]CloudEnrollmentVerifier{
 		"gcp": NewGCPEnrollmentVerifier(gcpOIDCIssuer, gcpJWKSURL, nil),
+		"aws": NewAWSEnrollmentVerifier(nil, nil),
 	}
 }
 
