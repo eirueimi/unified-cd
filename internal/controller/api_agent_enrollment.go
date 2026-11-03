@@ -323,6 +323,16 @@ func (s *Server) handleAgentEnroll(w http.ResponseWriter, r *http.Request) {
 		s.handleKubernetesAgentEnroll(w, r, req)
 		return
 	}
+	switch req.Provider {
+	case "aws", "gcp", "azure":
+		s.handleCloudAgentEnroll(w, r, req)
+		return
+	case "":
+	default:
+		s.recordAgentAuth("other", "failure", "policy")
+		http.Error(w, "enrollment policy rejected", http.StatusForbidden)
+		return
+	}
 	if !s.allowAgentCredentialRequest(w, r, "one-time-token", "agent.enrollment.exchange") {
 		return
 	}
@@ -415,7 +425,7 @@ func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Requ
 		}
 		return
 	}
-	labels, ok := authorizedKubernetesRequest(req, *policy)
+	labels, ok := authorizedEnrollmentLabels(req, *policy)
 	if !ok {
 		s.recordAgentAuth("kubernetes", "failure", "policy")
 		http.Error(w, "enrollment policy rejected", http.StatusForbidden)
@@ -439,12 +449,12 @@ func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, api.AgentTokenResponse{AgentID: agentIdentity.AgentID, AccessToken: access.Plaintext, AccessExpiresAt: now.Add(policy.AccessTokenTTL), Labels: agentIdentity.AuthorizedLabels, Capabilities: agentIdentity.AuthorizedCapabilities})
 }
 
-// authorizedKubernetesRequest authorizes an enrollment request against the
+// authorizedEnrollmentLabels authorizes an enrollment request against the
 // policy's LABEL boundary (the admin-authorized escalation guard) and returns
 // the effective labels. Requested capabilities are NOT authorized here:
 // capabilities are the agent's own runtime auto-detection, self-reported and
 // validated at register time, not an enrollment-policy boundary.
-func authorizedKubernetesRequest(req api.AgentEnrollRequest, policy store.AgentEnrollmentPolicy) ([]string, bool) {
+func authorizedEnrollmentLabels(req api.AgentEnrollRequest, policy store.AgentEnrollmentPolicy) ([]string, bool) {
 	labels := append([]string(nil), policy.RequiredLabels...)
 	for _, label := range req.Labels {
 		if !contains(policy.AllowedLabels, label) {

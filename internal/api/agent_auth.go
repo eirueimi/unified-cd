@@ -9,6 +9,17 @@ type AgentEnrollRequest struct {
 	Policy       string   `json:"policy,omitempty"`
 	Labels       []string `json:"labels,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	// AWS carries the caller's pre-signed sts:GetCallerIdentity request for
+	// provider "aws". The controller forwards it to STS without credentials.
+	AWS *AWSSignedRequest `json:"aws,omitempty"`
+}
+
+// AWSSignedRequest is a SigV4-signed STS GetCallerIdentity request.
+type AWSSignedRequest struct {
+	Method  string              `json:"method"`
+	URL     string              `json:"url"`
+	Headers map[string][]string `json:"headers"`
+	Body    string              `json:"body"` // base64
 }
 
 type AgentEnrollmentPolicyRequest struct {

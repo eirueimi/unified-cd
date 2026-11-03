@@ -232,7 +232,7 @@ func TestAgentEnrollRejectsRepeatedAndInvalidEnrollment(t *testing.T) {
 func TestAgentEnrollRateLimitCannotBeBypassedWithDistinctPolicies(t *testing.T) {
 	s := NewServer(Config{}, nil)
 	for i := 0; i < enrollmentLimiterCapacity+10; i++ {
-		body, err := json.Marshal(api.AgentEnrollRequest{Provider: "one-time-token", Policy: fmt.Sprintf("untrusted-%d", i)})
+		body, err := json.Marshal(api.AgentEnrollRequest{Policy: fmt.Sprintf("untrusted-%d", i)})
 		require.NoError(t, err)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/enroll", bytes.NewReader(body))
 		req.RemoteAddr = "192.0.2.44:1234"

@@ -49,6 +49,10 @@ type Config struct {
 	InsecureCookies               bool
 	KubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
 
+	// CloudEnrollmentVerifiers overrides the verifier for a cloud provider
+	// (aws, gcp, azure). A provider missing here gets the real verifier.
+	CloudEnrollmentVerifiers map[string]CloudEnrollmentVerifier
+
 	// StoreCredentialClusters lists the Kubernetes clusters (and, per
 	// cluster, which namespaces/ServiceAccounts) trusted to broker
 	// object-store credentials to job Pod sidecars — see
@@ -144,6 +148,7 @@ type Server struct {
 	enrollmentLimiter             *enrollmentLimiter
 	credentialTouches             *credentialTouchLimiter
 	kubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
+	cloudEnrollmentVerifiers      map[string]CloudEnrollmentVerifier
 	storeCredentialClusters       []StoreCredentialCluster
 	storeCredentialS3             *objectstore.S3Config
 
@@ -174,6 +179,10 @@ type Server struct {
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
 	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters, storeCredentialS3: cfg.StoreCredentialS3}
+	s.cloudEnrollmentVerifiers = defaultCloudEnrollmentVerifiers()
+	for provider, verifier := range cfg.CloudEnrollmentVerifiers {
+		s.cloudEnrollmentVerifiers[provider] = verifier
+	}
 	// logNotify itself is cheap to construct (an empty map + a mutex); it is
 	// the listener goroutine that is expensive (a listenPool connection),
 	// and that stays unstarted until subscribeLogNotify's first call — see
