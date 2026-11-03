@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -16,8 +15,9 @@ import (
 )
 
 const (
-	gcpOIDCIssuer = "https://accounts.google.com"
-	gcpJWKSURL    = "https://www.googleapis.com/oauth2/v3/certs"
+	gcpOIDCIssuer  = "https://accounts.google.com"
+	gcpJWKSURL     = "https://www.googleapis.com/oauth2/v3/certs"
+	azureAuthority = "https://login.microsoftonline.com"
 
 	// cloudEnrollmentRequestTimeout bounds each outbound identity lookup
 	// (JWKS fetch, STS call) made on behalf of one enrollment request.
@@ -55,8 +55,9 @@ type CloudEnrollmentVerifier interface {
 // providers whose verification is implemented.
 func defaultCloudEnrollmentVerifiers() map[string]CloudEnrollmentVerifier {
 	return map[string]CloudEnrollmentVerifier{
-		"gcp": NewGCPEnrollmentVerifier(gcpOIDCIssuer, gcpJWKSURL, nil),
-		"aws": NewAWSEnrollmentVerifier(nil, nil),
+		"gcp":   NewGCPEnrollmentVerifier(gcpOIDCIssuer, gcpJWKSURL, nil),
+		"aws":   NewAWSEnrollmentVerifier(nil, nil),
+		"azure": NewAzureEnrollmentVerifier(azureAuthority, nil),
 	}
 }
 
@@ -165,14 +166,9 @@ func (v *gcpEnrollmentVerifier) Verify(ctx context.Context, proof CloudEnrollmen
 	ctx, cancel := context.WithTimeout(ctx, v.timeout)
 	defer cancel()
 	verifier := oidc.NewVerifier(v.issuer, v.keySet, &oidc.Config{ClientID: cfg.Audience})
-	token, err := verifier.Verify(ctx, proof.BearerToken)
+	token, err := verifyOIDCToken(ctx, verifier, proof.BearerToken)
 	if err != nil {
-		// go-oidc wraps a failed JWKS fetch as "fetching keys ..."; any other
-		// failure is a bad token (signature, issuer, audience, expiry, kid).
-		if strings.Contains(err.Error(), "fetching keys") {
-			return CloudEnrollmentIdentity{}, fmt.Errorf("%w: %v", ErrCloudEnrollmentUnavailable, err)
-		}
-		return CloudEnrollmentIdentity{}, fmt.Errorf("%w: %v", ErrCloudEnrollmentRejected, err)
+		return CloudEnrollmentIdentity{}, err
 	}
 	var claims struct {
 		Email         string `json:"email"`

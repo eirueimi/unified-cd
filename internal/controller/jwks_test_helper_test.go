@@ -30,11 +30,13 @@ func newTestIssuer(t *testing.T) *testIssuer {
 	require.NoError(t, err)
 	iss := &testIssuer{t: t, Name: "https://issuer.example.com", KeyID: "test-key-1", key: key}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/certs", func(w http.ResponseWriter, _ *http.Request) {
+	certs := func(w http.ResponseWriter, _ *http.Request) {
 		set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: iss.KeyID, Algorithm: string(jose.RS256), Use: "sig"}}}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(set)
-	})
+	}
+	mux.HandleFunc("/certs", certs)
+	mux.HandleFunc("/{tenant}/discovery/v2.0/keys", certs)
 	iss.Server = httptest.NewServer(mux)
 	t.Cleanup(iss.Server.Close)
 	iss.URL = iss.Server.URL + "/certs"
