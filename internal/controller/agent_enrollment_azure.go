@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -12,9 +14,17 @@ import (
 	"github.com/eirueimi/unified-cd/internal/store"
 )
 
+// azureTenantGUID mirrors the store's policy validation: the tenant ID goes into
+// the JWKS URL path.
+var azureTenantGUID = regexp.MustCompile(`^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$`)
+
 // maxLoggedOIDCErrorBytes bounds go-oidc error text kept in errors (and so in
 // logs): it can embed a slice of the JWKS response body.
 const maxLoggedOIDCErrorBytes = 512
+
+// oidcKeyFetchErrorPrefix is the text go-oidc v3.18 starts a failed JWKS fetch with
+// (verify.go wraps the key set's "fetching keys ..." error).
+const oidcKeyFetchErrorPrefix = "failed to verify signature: fetching keys"
 
 // verifyOIDCToken verifies raw with verifier and classifies the failure: a
 // failed JWKS fetch (go-oidc wraps it as "fetching keys ...") wraps
@@ -28,9 +38,13 @@ func verifyOIDCToken(ctx context.Context, verifier *oidc.IDTokenVerifier, raw st
 	}
 	msg := err.Error()
 	if len(msg) > maxLoggedOIDCErrorBytes {
-		msg = msg[:maxLoggedOIDCErrorBytes] + "...(truncated)"
+		// Cut at a rune boundary; ToValidUTF8 drops a rune split by the cut.
+		msg = strings.ToValidUTF8(msg[:maxLoggedOIDCErrorBytes], "") + "...(truncated)"
 	}
-	if strings.Contains(err.Error(), "fetching keys") {
+	// go-oidc emits exactly this prefix when the key set cannot be fetched. Other
+	// failures can embed attacker-controlled iss/aud text (checked before the
+	// signature), so only a prefix match is trusted.
+	if strings.HasPrefix(err.Error(), oidcKeyFetchErrorPrefix) {
 		return nil, fmt.Errorf("%w: %s", ErrCloudEnrollmentUnavailable, msg)
 	}
 	return nil, fmt.Errorf("%w: %s", ErrCloudEnrollmentRejected, msg)
@@ -42,7 +56,7 @@ type azureEnrollmentVerifier struct {
 	timeout   time.Duration
 
 	mu      sync.Mutex
-	keySets map[string]oidc.KeySet // by tenant ID
+	keySets map[string]oidc.KeySet // by tenant ID; bounded by the number of policy tenants
 }
 
 // NewAzureEnrollmentVerifier verifies Azure managed identity access tokens of
@@ -64,8 +78,9 @@ func (v *azureEnrollmentVerifier) keySet(tenant string) oidc.KeySet {
 	defer v.mu.Unlock()
 	ks, ok := v.keySets[tenant]
 	if !ok {
+		// The JWKS fetch is bounded by the http.Client timeout, not the request context.
 		ctx := oidc.ClientContext(context.Background(), v.client)
-		ks = oidc.NewRemoteKeySet(ctx, v.authority+"/"+tenant+"/discovery/v2.0/keys")
+		ks = oidc.NewRemoteKeySet(ctx, v.authority+"/"+url.PathEscape(tenant)+"/discovery/v2.0/keys")
 		v.keySets[tenant] = ks
 	}
 	return ks
@@ -73,7 +88,7 @@ func (v *azureEnrollmentVerifier) keySet(tenant string) oidc.KeySet {
 
 func (v *azureEnrollmentVerifier) Verify(ctx context.Context, proof CloudEnrollmentProof, policy store.AgentEnrollmentPolicy) (CloudEnrollmentIdentity, error) {
 	cfg, constraints, err := store.DecodeCloudPolicy[store.AzurePolicyConfig, store.AzureSubjectConstraints](policy)
-	if err != nil || cfg.Audience == "" || cfg.TenantID == "" || strings.ContainsAny(cfg.TenantID, "/?#") {
+	if err != nil || cfg.Audience == "" || !azureTenantGUID.MatchString(cfg.TenantID) {
 		return CloudEnrollmentIdentity{}, fmt.Errorf("%w: policy decode", ErrCloudEnrollmentRejected)
 	}
 	ctx, cancel := context.WithTimeout(ctx, v.timeout)

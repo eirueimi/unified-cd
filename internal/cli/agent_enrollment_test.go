@@ -323,10 +323,10 @@ func TestAgentEnrollmentPolicyCreateCloudProviders(t *testing.T) {
 	assert.Equal(t, []string{"ci@my-ci.iam.gserviceaccount.com"}, got.ServiceAccounts)
 	assert.Equal(t, "gcp:{project}:{instanceId}", got.AgentIDTemplate)
 
-	got, err = runPolicyCreate(t, "--provider", "azure", "--tenant-id", "tenant-1", "--audience", "x", "--subscription-id", "sub-1", "--resource-group", "ci", "--managed-identity-object-id", "oid-1")
+	got, err = runPolicyCreate(t, "--provider", "azure", "--tenant-id", "11111111-1111-1111-1111-111111111111", "--audience", "x", "--subscription-id", "sub-1", "--resource-group", "ci", "--managed-identity-object-id", "oid-1")
 	require.NoError(t, err)
 	assert.Equal(t, "azure", got.Provider)
-	assert.Equal(t, "tenant-1", got.TenantID)
+	assert.Equal(t, "11111111-1111-1111-1111-111111111111", got.TenantID)
 	assert.Equal(t, []string{"sub-1"}, got.SubscriptionIDs)
 	assert.Equal(t, []string{"ci"}, got.ResourceGroups)
 	assert.Equal(t, []string{"oid-1"}, got.ManagedIdentityObjectIDs)

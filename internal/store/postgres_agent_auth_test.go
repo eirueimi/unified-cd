@@ -643,6 +643,10 @@ func TestPostgres_CloudEnrollmentPolicyValidation(t *testing.T) {
 		{"aws bad region", cloudPolicy("p", "aws", awsTpl, `{"audience":"a","stsRegions":["evil.example.com"]}`, `{"accountIds":["123456789012"],"roleNames":["r"]}`), `invalid stsRegions entry "evil.example.com"`},
 		{"gcp missing", cloudPolicy("p", "gcp", "gcp:{project}:{instanceId}", `{"audience":"a"}`, `{"projectIds":["p"]}`), "gcp enrollment policy requires audience, projectIds and serviceAccounts"},
 		{"azure missing", cloudPolicy("p", "azure", "azure:{subscription}:{resourceGroup}:{vmName}", `{"audience":"a"}`, `{"subscriptionIds":["s"],"managedIdentityObjectIds":["o"]}`), "azure enrollment policy requires tenantId, audience, subscriptionIds and managedIdentityObjectIds"},
+		{"azure tenant dotdot", azBadTenant(".."), `invalid tenantId ".."`},
+		{"azure tenant escaped slash", azBadTenant("%2f"), `invalid tenantId "%2f"`},
+		{"azure tenant backslash", azBadTenant(`a`), `invalid tenantId "a\b"`},
+		{"azure tenant not guid", azBadTenant("tenant-1"), `invalid tenantId "tenant-1"`},
 		{"unknown provider", cloudPolicy("p", "x", awsTpl, `{}`, `{}`), `unsupported enrollment provider "x"`},
 		{"wrong template", cloudPolicy("p", "gcp", awsTpl, `{"audience":"a"}`, `{"projectIds":["p"],"serviceAccounts":["s"]}`), "unsupported agent ID template"},
 	}
@@ -678,4 +682,9 @@ func TestMigration026AllowsCloudPolicyProviders(t *testing.T) {
 	assert.Equal(t, 1, count, "down migration keeps only kubernetes rows")
 	_, err = pg.pool.Exec(ctx, insert, "again", "aws")
 	require.Error(t, err)
+}
+
+func azBadTenant(tenant string) AgentEnrollmentPolicy {
+	cfg, _ := json.Marshal(map[string]string{"tenantId": tenant, "audience": "a"})
+	return cloudPolicy("p", "azure", "azure:{subscription}:{resourceGroup}:{vmName}", string(cfg), `{"subscriptionIds":["s"],"managedIdentityObjectIds":["o"]}`)
 }

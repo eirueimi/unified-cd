@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/store"
@@ -241,4 +242,36 @@ func TestCloudEnroll_AzureThroughHandler(t *testing.T) {
 
 func TestDefaultCloudEnrollmentVerifiers_IncludesAzure(t *testing.T) {
 	assert.Contains(t, defaultCloudEnrollmentVerifiers(), "azure")
+}
+
+func TestAzureVerifier_RejectsNonGUIDTenant(t *testing.T) {
+	issuer, v := azVerifier(t)
+	for _, tenant := range []string{"..", "%2f", `a\b`, "tenant-1", "a b", "x@y", azTenant + "/", ""} {
+		p := azPolicy(t, nil)
+		p.ProviderConfig, _ = json.Marshal(store.AzurePolicyConfig{TenantID: tenant, Audience: azAudience})
+		_, err := verifyAz(t, v, issuer.Sign(azClaims(issuer.Server.URL, nil)), p)
+		require.ErrorIs(t, err, ErrCloudEnrollmentRejected, tenant)
+	}
+}
+
+// An unsigned-by-policy token whose audience mentions "fetching keys" must be a
+// rejection (403), not an outage (503): go-oidc embeds aud in its error text.
+func TestAzureVerifier_AttackerTextDoesNotLookLikeOutage(t *testing.T) {
+	issuer, v := azVerifier(t)
+	for _, aud := range []string{"fetching keys", "failed to verify signature: fetching keys"} {
+		_, err := verifyAz(t, v, issuer.Sign(azClaims(issuer.Server.URL, map[string]any{"aud": aud})), azPolicy(t, nil))
+		require.ErrorIs(t, err, ErrCloudEnrollmentRejected, aud)
+		require.NotErrorIs(t, err, ErrCloudEnrollmentUnavailable, aud)
+	}
+}
+
+func TestVerifyOIDCToken_TruncationKeepsValidUTF8(t *testing.T) {
+	signer := newTestIssuer(t)
+	// Multi-byte text in aud lands in the (rejected) error text and gets cut.
+	aud := strings.Repeat("é", 600)
+	_, err := NewAzureEnrollmentVerifier(signer.Server.URL, nil).Verify(context.Background(),
+		CloudEnrollmentProof{BearerToken: signer.Sign(azClaims(signer.Server.URL, map[string]any{"aud": aud}))}, azPolicy(t, nil))
+	require.ErrorIs(t, err, ErrCloudEnrollmentRejected)
+	assert.True(t, utf8.ValidString(err.Error()))
+	assert.Contains(t, err.Error(), "(truncated)")
 }

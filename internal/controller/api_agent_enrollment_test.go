@@ -452,10 +452,10 @@ func TestAgentEnrollmentPolicyCloudProviders(t *testing.T) {
 	assert.Equal(t, []string{"123456789012"}, aws.AccountIDs)
 	assert.Equal(t, []string{"ci-agent"}, aws.RoleNames)
 
-	code, body = post(`{"name":"azure-ci","provider":"azure","tenantId":"tenant-1","audience":"unified-cd","subscriptionIds":["sub-1"],"resourceGroups":["ci"],"managedIdentityObjectIds":["oid-1"],"agentIdTemplate":"azure:{subscription}:{resourceGroup}:{vmName}","accessTokenTTL":"1h","enabled":true}`)
+	code, body = post(`{"name":"azure-ci","provider":"azure","tenantId":"11111111-1111-1111-1111-111111111111","audience":"unified-cd","subscriptionIds":["sub-1"],"resourceGroups":["ci"],"managedIdentityObjectIds":["oid-1"],"agentIdTemplate":"azure:{subscription}:{resourceGroup}:{vmName}","accessTokenTTL":"1h","enabled":true}`)
 	require.Equal(t, http.StatusCreated, code, body)
 	azure := get("azure-ci")
-	assert.Equal(t, "tenant-1", azure.TenantID)
+	assert.Equal(t, "11111111-1111-1111-1111-111111111111", azure.TenantID)
 	assert.Equal(t, []string{"sub-1"}, azure.SubscriptionIDs)
 	assert.Equal(t, []string{"ci"}, azure.ResourceGroups)
 	assert.Equal(t, []string{"oid-1"}, azure.ManagedIdentityObjectIDs)

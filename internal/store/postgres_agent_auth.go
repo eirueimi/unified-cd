@@ -38,6 +38,10 @@ const (
 // a policy cannot steer the controller's STS call to an arbitrary host.
 var stsRegionPattern = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]$`)
 
+// azureTenantIDPattern requires an Azure tenant ID to be a GUID: it is placed in
+// the JWKS URL path, so anything else is refused.
+var azureTenantIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$`)
+
 // AWSPolicyConfig is the provider_config of an aws enrollment policy.
 type AWSPolicyConfig struct {
 	Audience   string   `json:"audience"`
@@ -135,6 +139,9 @@ func validateAgentEnrollmentPolicy(policy AgentEnrollmentPolicy) error {
 		cfg, c, err := DecodeCloudPolicy[AzurePolicyConfig, AzureSubjectConstraints](policy)
 		if err != nil || cfg.TenantID == "" || cfg.Audience == "" || len(c.SubscriptionIDs) == 0 || len(c.ManagedIdentityObjectIDs) == 0 {
 			return errors.New("azure enrollment policy requires tenantId, audience, subscriptionIds and managedIdentityObjectIds")
+		}
+		if !azureTenantIDPattern.MatchString(cfg.TenantID) {
+			return fmt.Errorf("invalid tenantId %q", cfg.TenantID)
 		}
 	default:
 		var cfg kubernetesPolicyConfig
