@@ -29,7 +29,10 @@ var (
 	awsSTSRegionalHost = regexp.MustCompile(`^sts\.([a-z]{2}(?:-[a-z]+)+-[0-9])\.amazonaws\.com$`)
 	awsAssumedRoleARN  = regexp.MustCompile(`^arn:(?:aws|aws-us-gov|aws-cn):sts::([0-9]{12}):assumed-role/([^/]+)/([^/]+)$`)
 	awsInstanceSession = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
-	awsSignedHeaders   = regexp.MustCompile(`(?:^|[\s,])SignedHeaders=([^,\s]+)`)
+	awsAuthorization   = regexp.MustCompile(`^AWS4-HMAC-SHA256 Credential=[^,\s]+, ?SignedHeaders=([^,\s]+), ?Signature=[0-9a-f]+$`)
+
+	// awsForwardedHeaders is the allowlist of agent headers sent to STS.
+	awsForwardedHeaders = []string{"Authorization", "Content-Type", "X-Amz-Date", "X-Amz-Security-Token", "X-Amz-Content-Sha256", awsAudienceHeader, "User-Agent"}
 )
 
 type awsEnrollmentVerifier struct {
@@ -132,18 +135,29 @@ func (v *awsEnrollmentVerifier) Verify(ctx context.Context, proof CloudEnrollmen
 	return CloudEnrollmentIdentity{AgentID: "aws:" + account + ":" + session}, nil
 }
 
-// awsAudienceSigned reports whether the SigV4 Authorization header lists the
-// audience header among its signed headers.
+// awsAudienceSigned reports whether the single SigV4 Authorization header has
+// the audience header as an exact element of its SignedHeaders list.
 func awsAudienceSigned(headers map[string][]string) bool {
-	for _, auth := range headerValues(headers, "Authorization") {
-		m := awsSignedHeaders.FindStringSubmatch(auth)
-		if m == nil {
-			continue
+	auth := headerValues(headers, "Authorization")
+	if len(auth) != 1 {
+		return false
+	}
+	m := awsAuthorization.FindStringSubmatch(auth[0])
+	if m == nil {
+		return false
+	}
+	for _, name := range strings.Split(m[1], ";") {
+		if name == strings.ToLower(awsAudienceHeader) {
+			return true
 		}
-		for _, name := range strings.Split(m[1], ";") {
-			if strings.EqualFold(name, awsAudienceHeader) {
-				return true
-			}
+	}
+	return false
+}
+
+func awsForwardable(name string) bool {
+	for _, allowed := range awsForwardedHeaders {
+		if strings.EqualFold(name, allowed) {
+			return true
 		}
 	}
 	return false
@@ -164,10 +178,13 @@ func (v *awsEnrollmentVerifier) callerIdentityARN(ctx context.Context, host stri
 	}
 	req.Host = host
 	for name, values := range headers {
-		if strings.EqualFold(name, "Host") || strings.EqualFold(name, "Content-Length") {
+		if !awsForwardable(name) {
 			continue
 		}
 		for _, value := range values {
+			if strings.ContainsAny(value, "\r\n\x00") {
+				return "", awsRejected("invalid character in header %q", name)
+			}
 			req.Header.Add(name, value)
 		}
 	}
@@ -180,7 +197,7 @@ func (v *awsEnrollmentVerifier) callerIdentityARN(ctx context.Context, host stri
 	if err != nil {
 		return "", fmt.Errorf("%w: sts response: %v", ErrCloudEnrollmentUnavailable, err)
 	}
-	if resp.StatusCode >= 500 {
+	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
 		return "", fmt.Errorf("%w: sts status %d", ErrCloudEnrollmentUnavailable, resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {

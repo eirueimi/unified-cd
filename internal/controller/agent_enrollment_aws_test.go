@@ -154,6 +154,24 @@ func TestAWSVerifier_RejectsWithoutCallingSTS(t *testing.T) {
 		"audience not signed": func(p *api.AWSSignedRequest) {
 			p.Headers["Authorization"] = []string{"AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20261103/us-east-1/sts/aws4_request, SignedHeaders=content-type;host;x-amz-date, Signature=abcd"}
 		},
+		"two authorization values": func(p *api.AWSSignedRequest) {
+			p.Headers["Authorization"] = append(p.Headers["Authorization"], "AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20261103/us-east-1/sts/aws4_request, SignedHeaders=host, Signature=abcd")
+		},
+		"two SignedHeaders params": func(p *api.AWSSignedRequest) {
+			p.Headers["Authorization"] = []string{"AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20261103/us-east-1/sts/aws4_request, SignedHeaders=host;x-unified-cd-audience, SignedHeaders=host, Signature=abcd"}
+		},
+		"audience only a substring": func(p *api.AWSSignedRequest) {
+			p.Headers["Authorization"] = []string{"AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20261103/us-east-1/sts/aws4_request, SignedHeaders=host;x-unified-cd-audience-x, Signature=abcd"}
+		},
+		"free-form authorization": func(p *api.AWSSignedRequest) {
+			p.Headers["Authorization"] = []string{"junk SignedHeaders=x-unified-cd-audience"}
+		},
+		"trailing dot host": func(p *api.AWSSignedRequest) { p.URL = "https://sts.amazonaws.com./" },
+		"uppercase host":    func(p *api.AWSSignedRequest) { p.URL = "https://STS.AMAZONAWS.COM/" },
+		"duplicate audience": func(p *api.AWSSignedRequest) {
+			p.Headers["X-Unified-Cd-Audience"] = []string{awsTestAudience, awsTestAudience}
+		},
+		"newline in header":    func(p *api.AWSSignedRequest) { p.Headers["X-Amz-Date"] = []string{"20261103T000000Z\r\nX-Evil: 1"} },
 		"authorization absent": func(p *api.AWSSignedRequest) { delete(p.Headers, "Authorization") },
 		"host header mismatch": func(p *api.AWSSignedRequest) { p.Headers["Host"] = []string{"evil.example.com"} },
 	}
@@ -181,6 +199,25 @@ func TestAWSVerifier_RejectsWithoutCallingSTS(t *testing.T) {
 	})
 }
 
+func TestAWSVerifier_ForwardsOnlyAllowlistedHeaders(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		fmt.Fprintf(w, "<R><GetCallerIdentityResult><Arn>arn:aws:sts::%s:assumed-role/%s/%s</Arn></GetCallerIdentityResult></R>", awsTestAccount, awsTestRole, awsTestSession)
+	}))
+	defer srv.Close()
+	v := NewAWSEnrollmentVerifier(srv.Client(), func(string) string { return strings.TrimPrefix(srv.URL, "https://") })
+	p := awsTestProof()
+	p.Headers["Cookie"] = []string{"x=1"}
+	p.Headers["X-Evil"] = []string{"1"}
+	_, err := v.Verify(context.Background(), CloudEnrollmentProof{AWS: p}, awsTestPolicy(t, nil))
+	require.NoError(t, err)
+	assert.Empty(t, got.Get("Cookie"))
+	assert.Empty(t, got.Get("X-Evil"))
+	assert.Equal(t, awsTestAudience, got.Get(awsAudienceHeader))
+	assert.NotEmpty(t, got.Get("Authorization"))
+}
+
 func TestAWSVerifier_STSResponses(t *testing.T) {
 	t.Run("403 is rejected", func(t *testing.T) {
 		sts := newFakeSTS(t)
@@ -191,6 +228,12 @@ func TestAWSVerifier_STSResponses(t *testing.T) {
 	t.Run("500 is unavailable", func(t *testing.T) {
 		sts := newFakeSTS(t)
 		sts.status = http.StatusInternalServerError
+		_, err := sts.verifier().Verify(context.Background(), CloudEnrollmentProof{AWS: awsTestProof()}, awsTestPolicy(t, nil))
+		require.ErrorIs(t, err, ErrCloudEnrollmentUnavailable)
+	})
+	t.Run("429 is unavailable", func(t *testing.T) {
+		sts := newFakeSTS(t)
+		sts.status = http.StatusTooManyRequests
 		_, err := sts.verifier().Verify(context.Background(), CloudEnrollmentProof{AWS: awsTestProof()}, awsTestPolicy(t, nil))
 		require.ErrorIs(t, err, ErrCloudEnrollmentUnavailable)
 	})
