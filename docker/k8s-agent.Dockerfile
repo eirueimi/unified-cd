@@ -1,5 +1,5 @@
 # Stage 1: Build Go binary
-FROM golang:1.26-alpine AS go-build
+FROM golang:1.26.10-alpine AS go-build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

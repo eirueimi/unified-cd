@@ -70,7 +70,7 @@ Open http://localhost:8080/ui/ in your browser. The Connection card will appear 
 
 ### 3. Install the CLI
 
-Download from the [Releases page](https://github.com/eirueimi/unified-cd/releases), or build from source (requires Go 1.26+):
+Download from the [Releases page](https://github.com/eirueimi/unified-cd/releases), or build from source (requires Go 1.26.10+):
 
 ```bash
 make build     # outputs bin/unified-cli
