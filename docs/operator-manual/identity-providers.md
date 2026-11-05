@@ -16,7 +16,7 @@ These points come from the controller implementation and decide what a working I
 - **Claims come from the ID token only.** The controller reads the roles claim from the verified ID token. It does not call the `userinfo` endpoint and does not read the access token. A claim that the IdP only exposes through `userinfo` or the access token is invisible to unified-cd.
 - **Top-level claim name only.** `rolesClaim` is looked up as a single key of the ID token. A dotted name such as `realm_access.roles` is treated as one literal key and will not match the nested JSON object. Namespaced URL claims (Auth0) are top-level keys and work. The default is `groups`.
 - **Accepted value shapes.** A JSON array of strings, or a single string, which is treated as one value. A comma- or space-separated string is **not** split: `"a b"` is the one value `a b`. Non-string array elements are dropped.
-- **Scopes requested.** `openid`, `email`, `profile`, plus `rolesClaim` itself as an extra scope when the claim name contains neither `/` nor `:` (so `groups` adds the scope `groups`, `roles` adds the scope `roles`; a namespaced Auth0 claim adds nothing). The CLI reads the same list from `GET /api/v1/auth/oidc-config` (`scopes`). There is no separate setting to add or remove scopes. If your IdP rejects an unknown scope, see the per-IdP notes.
+- **Scopes requested.** `openid`, `email`, `profile`, plus `rolesClaim` itself as an extra scope when the claim name contains neither `/` nor `:` (so `groups` adds the scope `groups`, `roles` adds the scope `roles`; a namespaced Auth0 claim adds nothing). The CLI reads the same list from `GET /api/v1/auth/oidc-config` (`scopes`). To change this, set `oidc.scopes` (YAML list, or `UNIFIED_OIDC_SCOPES` comma-separated): when non-empty it is requested exactly, in order, with `openid` prepended if missing and duplicates dropped, and the automatic `rolesClaim` scope is **not** added. Use it when the IdP rejects the extra scope, or when you need a scope the default list lacks. Each entry is one scope; an entry containing whitespace (for example `"openid email profile"`) is a startup error. The CLI device flow uses the same override through `/api/v1/auth/oidc-config`. When the roles claim only appears if its scope is requested (Dex `groups`, Okta `groups`), keep that scope in the list yourself.
 - **Identity matching.** `userMap` and `permissions.*.users` match the token's `email` and its `sub`. If the token has no `email`, the controller uses `sub` in its place. The `email_verified` claim is **not** checked, so only use IdPs where users cannot choose an unverified email address of their own.
 - **Group changes** reach unified-cd at the next browser login (the ID token is re-issued then) and on silent session refresh when the refreshed ID token still carries the claim. CLI id_tokens carry the groups from login time until they expire.
 
@@ -124,7 +124,7 @@ Gotchas:
 
 - **Groups overage.** A JWT carries at most 200 groups. Beyond that Entra drops the `groups` claim and puts a link in `_claim_names` / `_claim_sources` instead. unified-cd does not follow that link, so the user appears to have no groups. Use App Roles, or limit the claim to groups assigned to the application (see [Entra optional claims](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims)).
 - **GUIDs vs names.** Without extra configuration the claim contains GUIDs, not names. Comment your config with the group names. Entra can emit on-premises `sAMAccountName` values for synced groups through the `groups` optional claim, and cloud group display names with the `cloud_displayname` option together with "groups assigned to the application". Prefer GUIDs or App Roles unless you need names.
-- **Scope name (verify).** unified-cd adds `rolesClaim` as a scope (`roles` or `groups`) because it is a bare word. Entra does not define scopes with those names; whether the v2.0 endpoint ignores or rejects them was not verified here. If login fails with an invalid-scope error, put Dex in front with the generic `oidc` connector (`insecureEnableGroups: true`, and map the Entra claim to Dex groups; the claim-mapping option names depend on the Dex version) and set `rolesClaim: groups` in unified-cd. Test in a non-production tenant first.
+- **Scope name.** By default unified-cd adds `rolesClaim` as a scope (`roles` or `groups`) because it is a bare word. Entra does not define scopes with those names, and whether the v2.0 endpoint ignores or rejects them was not verified here. App Roles and the `groups` claim are emitted from the app registration, not from a scope, so set `scopes: [openid, email, profile]` under `oidc` to stop the extra scope from being requested. If you would rather not connect Entra directly, put Dex in front with the generic `oidc` connector (`insecureEnableGroups: true`, and map the Entra claim to Dex groups; the claim-mapping option names depend on the Dex version) and set `rolesClaim: groups` in unified-cd. Test in a non-production tenant first.
 - Users without an assignment get no `roles` claim; `defaultRole: deny` then refuses them unless a `permissions` entry matches.
 
 ## Okta
@@ -206,7 +206,7 @@ Gotchas:
 
 - `/team-a` and `team-a` are different values. Changing the mapper's **Full group path** switch changes every group key; re-check with a decoded token.
 - Keycloak lists the member's own group path (for example `/teams/team-a`); do not assume parent groups are included.
-- unified-cd requests a scope named `groups` when `rolesClaim` is `groups`. The mapper does not depend on it, but verify that your Keycloak version does not reject a scope it does not know.
+- unified-cd requests a scope named `groups` when `rolesClaim` is `groups`. The mapper does not depend on it, but verify that your Keycloak version does not reject a scope it does not know; if it does, set `oidc.scopes` (for example `[openid, email, profile]`) to drop it.
 - Use the realm's issuer URL exactly as shown by its discovery document.
 
 ## Google Workspace
@@ -359,7 +359,8 @@ oidc:
 Gotchas:
 
 - **Direct members only.** A user in `mycompany/team-a/sub` is not reported as a member of `mycompany/team-a` through `groups_direct`. Grant the exact groups users belong to, or use Dex.
-- **Scope and device flow (verify).** unified-cd adds `rolesClaim` (`groups_direct`) as a scope. GitLab's documented OIDC scopes do not include it, and device-flow support for OIDC applications depends on the GitLab version; neither was verified here. If either is a problem, use the Dex `gitlab` connector instead.
+- **Scope.** By default unified-cd adds `rolesClaim` (`groups_direct`) as a scope, which GitLab's documented OIDC scopes do not include. Set `scopes: [openid, email, profile]` under `oidc`: according to GitLab's documentation `groups_direct` is in the ID token with the `openid` scope, so no extra scope is needed (not verified here against every GitLab version).
+- **Device flow (verify).** Device-flow support for GitLab OIDC applications depends on the GitLab version and was not verified here. If it is a problem, use the Dex `gitlab` connector instead.
 - **Via Dex:** the `gitlab` connector emits the user's group paths as `groups`; set `rolesClaim: groups` in unified-cd.
 
 ```yaml
@@ -419,7 +420,7 @@ oidc:
 Gotchas:
 
 - The issuer must match the `iss` claim character for character, including the trailing `/`.
-- A claim name containing `/` or `:` is not added as a scope, so no extra scope is requested.
+- A claim name containing `/` or `:` is not added as a scope, so no extra scope is requested (and `oidc.scopes` is not needed).
 - Auth0 requires custom ID-token claims to be namespaced; that is why the claim is a URL.
 
 ---

@@ -390,3 +390,44 @@ workspaceRetentionDays: 30
 	require.NoError(t, err)
 	assert.Equal(t, 30, eff.WorkspaceRetentionDays, "file workspaceRetentionDays should override the env value")
 }
+
+func TestControllerOIDCScopes_Env(t *testing.T) {
+	t.Setenv("UNIFIED_OIDC_ISSUER", "https://idp.example.com")
+	t.Setenv("UNIFIED_OIDC_CLIENT_ID", "c")
+	t.Setenv("UNIFIED_OIDC_SCOPES", " openid, email ,,profile ")
+	eff, err := config.ControllerEffective("")
+	require.NoError(t, err)
+	require.NotNil(t, eff.OIDC)
+	assert.Equal(t, []string{"openid", "email", "profile"}, eff.OIDC.Scopes)
+}
+
+func TestControllerOIDCScopes_FileOverridesEnv(t *testing.T) {
+	t.Setenv("UNIFIED_OIDC_ISSUER", "https://idp.example.com")
+	t.Setenv("UNIFIED_OIDC_CLIENT_ID", "c")
+	t.Setenv("UNIFIED_OIDC_SCOPES", "openid,groups")
+	path := writeFile(t, "oidc:\n  scopes: [openid, email]\n")
+	eff, err := config.ControllerEffective(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"openid", "email"}, eff.OIDC.Scopes)
+
+	// Env kept when the file omits scopes.
+	path = writeFile(t, "oidc:\n  rolesClaim: groups\n")
+	eff, err = config.ControllerEffective(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"openid", "groups"}, eff.OIDC.Scopes)
+}
+
+func TestControllerOIDCScopes_RejectsWhitespaceEntry(t *testing.T) {
+	path := writeFile(t, "oidc:\n  issuer: https://idp.example.com\n  clientId: c\n  scopes: [\"openid email profile\"]\n")
+	_, err := config.ControllerEffective(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "oidc.scopes")
+	assert.Contains(t, err.Error(), "whitespace")
+
+	t.Setenv("UNIFIED_OIDC_ISSUER", "https://idp.example.com")
+	t.Setenv("UNIFIED_OIDC_CLIENT_ID", "c")
+	t.Setenv("UNIFIED_OIDC_SCOPES", "openid email")
+	_, err = config.ControllerEffective("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "oidc.scopes")
+}
