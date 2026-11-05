@@ -1,9 +1,11 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -233,4 +235,31 @@ func TestAgentEnrollRequest_KubernetesJSONUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"provider":"kubernetes","policy":"p"}`, string(b))
 	assert.NotContains(t, string(b), "aws")
+}
+
+// Rejections before and after verification are invisible to the caller, so the
+// reason must reach the controller log (and nothing about the proof).
+func TestCloudEnroll_RejectionReasonsAreLogged(t *testing.T) {
+	f := newCloudEnrollFixture(t)
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	token := f.issuer.Sign(gcpClaims(nil))
+	f.requireRejected(f.enroll(`{"provider":"gcp","policy":"gcp-ci","labels":["pool:admin"]}`, token))
+	out := buf.String()
+	assert.Contains(t, out, "cloud enrollment rejected")
+	assert.Contains(t, out, "provider=gcp")
+	assert.Contains(t, out, "policy=gcp-ci")
+	assert.Contains(t, out, "reason=\"labels not allowed\"")
+	assert.NotContains(t, out, token)
+
+	buf.Reset()
+	f.requireRejected(f.enroll(`{"provider":"gcp","policy":"missing"}`, token))
+	assert.Contains(t, buf.String(), "reason=\"policy not found\"")
+
+	buf.Reset()
+	f.requireRejected(f.enroll(`{"provider":"azure","policy":"gcp-ci"}`, token))
+	assert.Contains(t, buf.String(), "reason=\"provider mismatch\"")
 }

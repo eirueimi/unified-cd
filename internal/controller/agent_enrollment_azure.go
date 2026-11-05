@@ -100,7 +100,8 @@ func (v *azureEnrollmentVerifier) Verify(ctx context.Context, proof CloudEnrollm
 	if err != nil {
 		return CloudEnrollmentIdentity{}, err
 	}
-	if token.Issuer != "https://sts.windows.net/"+cfg.TenantID+"/" && token.Issuer != v.authority+"/"+cfg.TenantID+"/v2.0" {
+	// The tenant GUID in a policy may be upper case while Entra issues it lower case.
+	if !strings.EqualFold(token.Issuer, "https://sts.windows.net/"+cfg.TenantID+"/") && !strings.EqualFold(token.Issuer, v.authority+"/"+cfg.TenantID+"/v2.0") {
 		return CloudEnrollmentIdentity{}, fmt.Errorf("%w: issuer %q", ErrCloudEnrollmentRejected, token.Issuer)
 	}
 	var claims struct {

@@ -321,3 +321,27 @@ func TestCloudEnroll_AWSThroughHandler(t *testing.T) {
 func TestDefaultCloudEnrollmentVerifiers_IncludesAWS(t *testing.T) {
 	assert.Contains(t, defaultCloudEnrollmentVerifiers(), "aws")
 }
+
+func TestCloudEnroll_AWSDisabledIdentityOnReproof(t *testing.T) {
+	sts := newFakeSTS(t)
+	pg := store.NewTestPostgres(t)
+	s := NewServer(Config{CloudEnrollmentVerifiers: map[string]CloudEnrollmentVerifier{"aws": sts.verifier()}}, pg)
+	t.Cleanup(s.Close)
+	_, err := pg.UpsertAgentEnrollmentPolicy(context.Background(), awsTestPolicy(t, nil))
+	require.NoError(t, err)
+
+	post := func(addr string) *httptest.ResponseRecorder {
+		body, err := json.Marshal(api.AgentEnrollRequest{Provider: "aws", Policy: "aws-ci", AWS: awsTestProof()})
+		require.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/enroll", strings.NewReader(string(body)))
+		req.RemoteAddr = addr
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		return rec
+	}
+	require.Equal(t, http.StatusOK, post("192.0.2.1:1234").Code)
+	require.NoError(t, pg.SetAgentIdentityEnabled(t.Context(), "aws:123456789012:i-0abc1234def567890", false))
+	rec := post("192.0.2.2:1234")
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Equal(t, "agent identity disabled\n", rec.Body.String())
+}

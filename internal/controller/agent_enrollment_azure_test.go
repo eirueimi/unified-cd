@@ -71,6 +71,17 @@ func TestAzureVerifier_ValidTokens(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "azure:"+azSub+":ci:vm-01", id.AgentID)
 	})
+	t.Run("uppercase tenant in policy, lowercase issuer and tid", func(t *testing.T) {
+		p := azPolicy(t, nil)
+		cfg, _ := json.Marshal(store.AzurePolicyConfig{TenantID: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", Audience: azAudience})
+		p.ProviderConfig = cfg
+		lower := strings.ToLower("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
+		for _, iss := range []string{issuer.Server.URL + "/" + lower + "/v2.0", "https://sts.windows.net/" + lower + "/"} {
+			id, err := verifyAz(t, v, issuer.Sign(azClaims(issuer.Server.URL, map[string]any{"iss": iss, "tid": lower})), p)
+			require.NoError(t, err, iss)
+			assert.Equal(t, "azure:"+azSub+":ci:vm-01", id.AgentID)
+		}
+	})
 	t.Run("case-insensitive resource id, lower-cased agent id", func(t *testing.T) {
 		mirid := "/SUBSCRIPTIONS/" + strings.ToUpper(azSub) + "/RESOURCEGROUPS/CI/PROVIDERS/MICROSOFT.COMPUTE/VIRTUALMACHINES/VM-01"
 		id, err := verifyAz(t, v, issuer.Sign(azClaims(issuer.Server.URL, map[string]any{"xms_mirid": mirid})), azPolicy(t, nil))
@@ -280,4 +291,30 @@ func TestVerifyOIDCToken_TruncationKeepsValidUTF8(t *testing.T) {
 		assert.True(t, utf8.ValidString(msg), "pad %d", pad)
 		assert.True(t, strings.HasSuffix(msg, "(truncated)"), "pad %d", pad)
 	}
+}
+
+func TestCloudEnroll_AzureDisabledIdentityOnReproof(t *testing.T) {
+	issuer := newTestIssuer(t)
+	pg := store.NewTestPostgres(t)
+	s := NewServer(Config{CloudEnrollmentVerifiers: map[string]CloudEnrollmentVerifier{
+		"azure": NewAzureEnrollmentVerifier(issuer.Server.URL, nil),
+	}}, pg)
+	t.Cleanup(s.Close)
+	_, err := pg.UpsertAgentEnrollmentPolicy(context.Background(), azPolicy(t, nil))
+	require.NoError(t, err)
+
+	token := issuer.Sign(azClaims(issuer.Server.URL, nil))
+	post := func(addr string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/enroll", strings.NewReader(`{"provider":"azure","policy":"azure-ci"}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.RemoteAddr = addr
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		return rec
+	}
+	require.Equal(t, http.StatusOK, post("192.0.2.1:1234").Code)
+	require.NoError(t, pg.SetAgentIdentityEnabled(t.Context(), "azure:"+azSub+":ci:vm-01", false))
+	rec := post("192.0.2.2:1234")
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Equal(t, "agent identity disabled\n", rec.Body.String())
 }

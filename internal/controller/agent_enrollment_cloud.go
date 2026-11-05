@@ -70,7 +70,10 @@ func (s *Server) handleCloudAgentEnroll(w http.ResponseWriter, r *http.Request, 
 		s.recordAgentAuth(provider, "failure", "unavailable")
 		http.Error(w, provider+" identity unavailable", http.StatusServiceUnavailable)
 	}
-	rejected := func() {
+	// rejected answers the generic 403. The reason goes to the controller log
+	// only (never to the caller) and never includes proof contents.
+	rejected := func(policyName, reason string) {
+		slog.Warn("cloud enrollment rejected", "provider", provider, "policy", policyName, "reason", reason)
 		s.recordAgentAuth(provider, "failure", "policy")
 		http.Error(w, "enrollment policy rejected", http.StatusForbidden)
 	}
@@ -98,8 +101,15 @@ func (s *Server) handleCloudAgentEnroll(w http.ResponseWriter, r *http.Request, 
 		unavailable()
 		return
 	}
-	if policy == nil || !policy.Enabled || policy.Provider != provider {
-		rejected()
+	switch {
+	case policy == nil:
+		rejected(req.Policy, "policy not found")
+		return
+	case !policy.Enabled:
+		rejected(policy.Name, "policy disabled")
+		return
+	case policy.Provider != provider:
+		rejected(policy.Name, "provider mismatch")
 		return
 	}
 	verifier := s.cloudEnrollmentVerifiers[provider]
@@ -113,13 +123,14 @@ func (s *Server) handleCloudAgentEnroll(w http.ResponseWriter, r *http.Request, 
 		if errors.Is(err, ErrCloudEnrollmentUnavailable) {
 			unavailable()
 		} else {
-			rejected()
+			s.recordAgentAuth(provider, "failure", "policy")
+			http.Error(w, "enrollment policy rejected", http.StatusForbidden)
 		}
 		return
 	}
 	labels, ok := authorizedEnrollmentLabels(req, *policy)
 	if !ok {
-		rejected()
+		rejected(policy.Name, "labels not allowed")
 		return
 	}
 	access, err := agentauth.Generate(agentauth.AccessToken)
