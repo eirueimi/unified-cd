@@ -34,7 +34,7 @@ controller:
       # Run the KEK Job as a Helm pre-install and pre-upgrade hook.
       helmHook: true
       # Image providing kubectl for the KEK Job.
-      image: alpine/k8s:1.31.2
+      image: alpine/k8s:1.37.2
   # Deep-merged over the chart-computed controller config (agentAuth defaults:
   # an in-cluster Kubernetes enrollment policy for the release namespace, plus
   # store credential policies for the job namespace when bundledStores.enabled).

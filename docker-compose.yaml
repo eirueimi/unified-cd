@@ -157,7 +157,7 @@ services:
   # and in the agent so `docker run -v <workspace>:...` (resolved by THIS daemon)
   # sees the files the agent wrote.
   dind:
-    image: docker:27-dind
+    image: docker:29-dind
     privileged: true
     environment:
       DOCKER_TLS_CERTDIR: ""

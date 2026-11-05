@@ -332,7 +332,7 @@ jobs:
         # rate limits.
         run: |
           set -euo pipefail
-          for img in postgres:16-alpine dxflrs/garage:v2.3.0 alpine/k8s:1.31.2; do
+          for img in postgres:16-alpine dxflrs/garage:v2.3.0 alpine/k8s:1.37.2; do
             docker pull "$img"
             echo "FROM $img" | docker build -t "$img" -
             kind load docker-image "$img" --name helm-ci
