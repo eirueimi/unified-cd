@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
 # alpine (not distroless) because the AppSource reconciler shells out to the
 # git CLI at runtime (internal/gittemplate: git ls-remote / fetch) to resolve
 # and read repo contents. distroless has no git, causing "exec: git: not found".
-FROM alpine:3.20
+FROM alpine:3.24
 RUN apk add --no-cache git ca-certificates
 COPY --from=go-build /controller /controller
 COPY --from=node-build /src/dist /ui
