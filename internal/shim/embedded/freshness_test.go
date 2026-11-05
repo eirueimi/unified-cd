@@ -73,7 +73,7 @@ OS that built them (see embed.go's package doc), so a non-Linux regeneration
 churns the git diff more than necessary even though it is not wrong. Via
 Docker from the repo root (match the image tag to go.mod's `+"`go`"+` directive):
 
-    docker run --rm -v "$PWD:/work" -w /work golang:1.26.2 go generate ./internal/shim/embedded/...
+    docker run --rm -v "$PWD:/work" -w /work golang:1.26.10 go generate ./internal/shim/embedded/...
 `, srchash.RecordedHashPath, want, got)
 	}
 }

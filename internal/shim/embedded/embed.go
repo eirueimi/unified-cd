@@ -23,7 +23,7 @@
 // churn the diff more than necessary. Via Docker from the repo root
 // (match the image tag to go.mod's `go` directive):
 //
-//	docker run --rm -v "$PWD:/work" -w /work golang:1.26.2 go generate ./internal/shim/embedded/...
+//	docker run --rm -v "$PWD:/work" -w /work golang:1.26.10 go generate ./internal/shim/embedded/...
 //
 // The committed bytes are NOT required to be byte-identical to a fresh
 // rebuild, and a byte-exact `git diff` guard is unworkable — this was tried
@@ -39,7 +39,7 @@
 //     this is not staleness, it recurs by construction and can never be
 //     regenerated away from this project's actual development platform.
 //   - Content. Even setting mode aside, a rebuild via the go.mod-pinned
-//     toolchain (go1.26.2, CGO_ENABLED=0, GOOS=linux, these exact flags) did
+//     toolchain (go1.26.10, CGO_ENABLED=0, GOOS=linux, these exact flags) did
 //     NOT reproduce byte-for-byte across three independently-checked
 //     environments: a local Docker build, a second local Docker build used
 //     to probe absolute source path / relocated GOROOT / CPU-count and
