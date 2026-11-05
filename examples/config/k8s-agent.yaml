@@ -102,7 +102,7 @@ podTemplates:
         # in a separate namespace labelled pod-security.kubernetes.io/enforce=privileged (or
         # relabel `ci`). jobPodPolicy does not apply here: templates are not filtered.
         - name: docker
-          image: docker:24-dind
+          image: docker:29-dind
           securityContext:
             privileged: true
       volumes:

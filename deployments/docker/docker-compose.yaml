@@ -206,7 +206,7 @@ services:
   # ucd-workspaces volume is mounted at the SAME path here and in the agent so
   # bind mounts resolved by this daemon see the agent's workspace files.
   dind:
-    image: docker:27-dind
+    image: docker:29-dind
     privileged: true
     environment:
       DOCKER_TLS_CERTDIR: ""
