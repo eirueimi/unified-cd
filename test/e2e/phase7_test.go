@@ -12,7 +12,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/controller"
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +31,7 @@ func writeSPAFixture(t *testing.T) string {
 }
 
 func TestPhase7_UIServed(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t", WebDir: writeSPAFixture(t)}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
@@ -44,7 +44,7 @@ func TestPhase7_UIServed(t *testing.T) {
 }
 
 func TestPhase7_RootRedirectsToUI(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t", WebDir: writeSPAFixture(t)}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
@@ -63,7 +63,7 @@ func TestPhase7_RootRedirectsToUI(t *testing.T) {
 // The frontend is built with Svelte, so the index.html itself does not contain the framework name
 // (it appears only in the bundled JS); a string check for "vue" would therefore always have been wrong.
 func TestPhase7_UIServesSPAShell(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t", WebDir: writeSPAFixture(t)}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
@@ -79,7 +79,7 @@ func TestPhase7_UIServesSPAShell(t *testing.T) {
 }
 
 func TestPhase7_AgentsAPI(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
@@ -97,7 +97,7 @@ func TestPhase7_AgentsAPI(t *testing.T) {
 }
 
 func TestPhase7_RunsByJobAPI(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
@@ -117,7 +117,7 @@ func TestPhase7_RunsByJobAPI(t *testing.T) {
 }
 
 func TestPhase7_CancelRun(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
@@ -145,7 +145,7 @@ func TestPhase7_CancelRun(t *testing.T) {
 // browser history, so this behaviour is intentionally left unimplemented.
 // This test exists as a regression guard to prevent accidental future implementation.
 func TestPhase7_SSE_RejectsTokenQuery(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())

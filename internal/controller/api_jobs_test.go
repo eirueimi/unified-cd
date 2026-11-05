@@ -12,6 +12,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,7 +22,7 @@ import (
 // as a PAT to the DB before starting). "secret" is used for tests under ServerAuth.
 func newTestServer(t *testing.T) (*Server, store.Store) {
 	t.Helper()
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
 	s := NewServer(Config{}, pg)
@@ -221,7 +222,7 @@ func TestAPI_DeleteJob_CascadesRuns(t *testing.T) {
 }
 
 func TestHandleApplyJob_UsesQualifiedName(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	s := &Server{store: pg}
 	ctx := context.Background()
 
@@ -337,7 +338,7 @@ spec:
 }
 
 func TestListJobs_DerivesPathAndLeaf(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	s := &Server{store: pg}
 	ctx := context.Background()
 	_, err := pg.UpsertJob(ctx, "team-a/build", "unified-cd/v1", []byte(`{}`))

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -50,7 +51,7 @@ spec:
 `
 
 func TestReconciler_AppliesJobsFromGit(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(appSourceSpecJSON))
@@ -78,7 +79,7 @@ func TestReconciler_AppliesJobsFromGit(t *testing.T) {
 // a warning while the other valid files in the same sync are still applied and
 // the sync completes successfully.
 func TestReconciler_SkipsInvalidFileButAppliesValidOnes(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(appSourceSpecJSON))
@@ -118,7 +119,7 @@ spec:
 }
 
 func TestReconciler_SkipsWhenSHAUnchanged(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(appSourceSpecJSON))
@@ -135,7 +136,7 @@ func TestReconciler_SkipsWhenSHAUnchanged(t *testing.T) {
 }
 
 func TestReconciler_PruneDeletesRemovedJobs(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	pruneSpec := `{"repoURL":"https://github.com/org/repo","targetRevision":"main","path":"jobs/","syncPolicy":{"prune":true}}`
@@ -160,7 +161,7 @@ func TestReconciler_PruneDeletesRemovedJobs(t *testing.T) {
 }
 
 func TestReconciler_WarnOnlyWithoutPrune(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(appSourceSpecJSON))
@@ -181,7 +182,7 @@ func TestReconciler_WarnOnlyWithoutPrune(t *testing.T) {
 }
 
 func TestReconciler_AppliesAllKinds(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	_, err := pg.UpsertAppSource(ctx, "multi", []byte(appSourceSpecJSON))
@@ -212,7 +213,7 @@ func TestReconciler_AppliesAllKinds(t *testing.T) {
 }
 
 func TestReconciler_PruneNonCascadeAppSource(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	// Parent manages a child AppSource; parent has prune enabled.
@@ -250,7 +251,7 @@ func TestReconciler_PruneNonCascadeAppSource(t *testing.T) {
 }
 
 func TestReconciler_ForceSyncOnEmptyCommit(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(appSourceSpecJSON))
@@ -270,7 +271,7 @@ func TestReconciler_ForceSyncOnEmptyCommit(t *testing.T) {
 }
 
 func TestReconcile_RecordsFailedStatusOnError(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(appSourceSpecJSON))
@@ -297,7 +298,7 @@ func TestReconcile_RecordsFailedStatusOnError(t *testing.T) {
 // would otherwise interpret the "URL" as a command-line option (git option
 // injection / RCE).
 func TestReconciler_RejectsLegacyDashRepoURL(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	// Bypass apply-time validation entirely, simulating a legacy/back-door row.
@@ -322,7 +323,7 @@ func TestReconciler_RejectsLegacyDashRepoURL(t *testing.T) {
 }
 
 func TestReconciler_DuplicateResourceFirstWins(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	_, err := pg.UpsertAppSource(ctx, "dup-src", []byte(appSourceSpecJSON))
@@ -357,7 +358,7 @@ func TestReconciler_DuplicateResourceFirstWins(t *testing.T) {
 // that the legacy bare {Job,"build"} entry and the new {Job,"team-a/build"} entry are
 // the SAME resource merely re-keyed, and must NOT delete the live job.
 func TestReconciler_LegacyBareJobNameNotPrunedOnUpgrade(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	// prune:true is the dangerous case: without the guard the job is deleted+recreated,
@@ -436,7 +437,7 @@ func TestReconciler_LegacyBareJobNameNotPrunedOnUpgrade(t *testing.T) {
 // seen entry has the SAME leaf. A bare prev entry whose leaf appears NOWHERE in the
 // desired set is a genuine removal and must still be pruned.
 func TestReconciler_LegacyBareGuardDoesNotSpareGenuinelyRemovedJob(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	pruneSpec := `{"repoURL":"https://github.com/org/repo","targetRevision":"main","path":"jobs/","syncPolicy":{"prune":true}}`
@@ -464,7 +465,7 @@ func TestReconciler_LegacyBareGuardDoesNotSpareGenuinelyRemovedJob(t *testing.T)
 }
 
 func TestReconciler_DirectoryBecomesQualifiedName(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 	_, err := pg.UpsertAppSource(ctx, "src", []byte(appSourceSpecJSON))
 	require.NoError(t, err)
@@ -503,7 +504,7 @@ func TestReconciler_DirectoryBecomesQualifiedName(t *testing.T) {
 // (which places schedules/ alongside qualified job paths) always syncs in one
 // pass.
 func TestReconciler_SchedulesAppliedAfterJobsInSortedTree(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	_, err := pg.UpsertAppSource(ctx, "src", []byte(appSourceSpecJSON))
@@ -588,7 +589,7 @@ func TestRedactURLCredentials(t *testing.T) {
 // reconciler error path: a fetch error that echoes a credentialed URL (e.g. from a
 // git remote redirect or helper) must not leak the secret into the stored last_error.
 func TestReconciler_RedactsCredentialsInLastError(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	spec := `{"repoURL":"https://github.com/org/repo","targetRevision":"main","path":"jobs/"}`
@@ -613,7 +614,7 @@ func TestReconciler_RedactsCredentialsInLastError(t *testing.T) {
 // the reconciler's re-validation refuses it without fetching and without echoing
 // the secret into last_error.
 func TestReconciler_RejectsStoredCredentialedRepoURL(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	spec := `{"repoURL":"https://alice:s3cr3t@github.com/org/repo","targetRevision":"main","path":"jobs/"}`

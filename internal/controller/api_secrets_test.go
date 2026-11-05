@@ -16,6 +16,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -30,7 +31,7 @@ func testKeyManager(t *testing.T) secrets.KeyManager {
 
 func newTestServerWithKM(t *testing.T) (*Server, store.Store) {
 	t.Helper()
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
 	km := testKeyManager(t)
@@ -238,7 +239,7 @@ func TestAPI_FetchSecrets_ReturnsExistingSecret(t *testing.T) {
 }
 
 func TestAPI_FetchSecrets_NotConfigured(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	s := NewServer(Config{Token: "secret"}, pg)
 	// KeyManager is not configured.
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)

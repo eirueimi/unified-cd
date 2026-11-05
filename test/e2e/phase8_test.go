@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/eirueimi/unified-cd/internal/controller"
 	"github.com/eirueimi/unified-cd/internal/secrets"
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 )
 
 // newTestKeyManager creates a LocalKeyManager with a random master key for testing.
@@ -101,7 +101,7 @@ func mockIdP(t *testing.T, privateKey *rsa.PrivateKey, sub, email string) *httpt
 }
 
 func TestPhase8_OIDCConfig_NotConfigured(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
@@ -114,7 +114,7 @@ func TestPhase8_OIDCConfig_NotConfigured(t *testing.T) {
 }
 
 func TestPhase8_OIDCConfig_WithoutSecret(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	srv.SetOIDCConfig(&controller.OIDCConfig{Issuer: "https://example.com", ClientID: "cid"})
@@ -131,7 +131,7 @@ func TestPhase8_OIDCConfig_WithoutSecret(t *testing.T) {
 }
 
 func TestPhase8_OIDCConfig_WithSecret(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	srv.SetOIDCConfig(&controller.OIDCConfig{Issuer: "https://example.com", ClientID: "cid", ClientSecret: "secret"})
@@ -154,7 +154,7 @@ func TestPhase8_FullOIDCFlow(t *testing.T) {
 	idpSrv := mockIdP(t, privateKey, "user-sub-123", "testuser@example.com")
 	defer idpSrv.Close()
 
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	km := newTestKeyManager(t)
@@ -213,7 +213,7 @@ func TestPhase8_FullOIDCFlow(t *testing.T) {
 }
 
 func TestPhase8_PATAndSessionCoexist(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "static-token"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "static-token"))
 	httpSrv := httptest.NewServer(srv.Router())

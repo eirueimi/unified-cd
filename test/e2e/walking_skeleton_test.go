@@ -12,7 +12,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/controller"
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +22,7 @@ func TestWalkingSkeleton_EndToEnd(t *testing.T) {
 		t.Skip("phase 1 is linux/mac only")
 	}
 
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())

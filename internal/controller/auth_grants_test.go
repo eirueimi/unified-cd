@@ -11,6 +11,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -149,7 +150,7 @@ func TestServerAuth_OwnerPATRoleCeilingClampsRole(t *testing.T) {
 }
 
 func TestServerAuth_OwnerPATFollowsCurrentConfig(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	mustOwnedPAT(t, pg, "follow", "developer", nil, []string{"owner-group"})
 
 	with := newAuthzTestServerOn(t, pg, authz.Legacy{RoleMap: map[string]string{"owner-group": "developer"}}, "")

@@ -12,6 +12,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
@@ -24,7 +25,7 @@ const authzTestIssuer = "https://idp.example.com"
 // "idtoken:<email>|-" omits the groups claim).
 func newAuthzTestServer(t *testing.T, legacy authz.Legacy, permissionsYAML string) (*Server, store.Store) {
 	t.Helper()
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	return newAuthzTestServerOn(t, pg, legacy, permissionsYAML), pg
 }
 

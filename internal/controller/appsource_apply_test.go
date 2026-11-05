@@ -7,11 +7,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 )
 
 func TestApplyResource_EachKind(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 	cases := []struct {
 		kind, wantName, doc string
@@ -34,7 +34,7 @@ func TestApplyResource_EachKind(t *testing.T) {
 }
 
 func TestApplyResource_UnknownAndBad(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 	_, err := applyResource(ctx, pg, "Nope", "", []byte("kind: Nope"))
 	if err == nil {

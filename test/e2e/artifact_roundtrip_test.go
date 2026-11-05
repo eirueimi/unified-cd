@@ -19,6 +19,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/controller"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +39,7 @@ import (
 func startArtifactController(t *testing.T) (baseURL string, pg *store.Postgres) {
 	t.Helper()
 
-	pg = store.NewTestPostgres(t)
+	pg = storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	srv.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))

@@ -9,13 +9,13 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/gittemplate"
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestScheduler_MovesPendingToQueued(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	_, _ = pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 
@@ -30,7 +30,7 @@ func TestScheduler_MovesPendingToQueued(t *testing.T) {
 }
 
 func TestScheduler_OnlyOneLeaderQueues(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	_, _ = pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 
@@ -64,7 +64,7 @@ func TestRunCacheCleanup_SkipsOnNilSt(t *testing.T) {
 }
 
 func TestResolveGitPendingRuns_DeterministicErrorFailsRun(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	specJSON := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
 	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "", "")
@@ -80,7 +80,7 @@ func TestResolveGitPendingRuns_DeterministicErrorFailsRun(t *testing.T) {
 }
 
 func TestResolveGitPendingRuns_TransientErrorKeepsPending(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	specJSON := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
 	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "", "")
@@ -100,7 +100,7 @@ func TestResolveGitPendingRuns_TransientErrorKeepsPending(t *testing.T) {
 // subsequent call with the same backoff instance excludes the run from the
 // candidate batch (it is not re-resolved every tick while poisoned).
 func TestResolveGitPendingRuns_TransientErrorRecordsBackoffFailure(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	specJSON := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
 	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "", "")
@@ -119,7 +119,7 @@ func TestResolveGitPendingRuns_TransientErrorRecordsBackoffFailure(t *testing.T)
 // Failed (instead of staying Pending forever) with a system log line
 // explaining why.
 func TestResolveGitPendingRuns_DeadlineExceededFailsRun(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	specJSON := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
 	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "", "")
@@ -139,7 +139,7 @@ func TestResolveGitPendingRuns_DeadlineExceededFailsRun(t *testing.T) {
 	// Backdate created_at past the deadline and retry with a FRESH backoff
 	// (a real restart would also start fresh) so the run isn't excluded by
 	// the first call's recorded failure.
-	require.NoError(t, pg.BackdateRunCreatedAt(t.Context(), run.ID, 2*time.Hour))
+	require.NoError(t, storetest.BackdateRunCreatedAt(t.Context(), pg, run.ID, 2*time.Hour))
 	bo2 := newFailureBackoff(time.Minute, time.Hour, 10_000)
 	resolveGitPendingRuns(t.Context(), pg, resolver, nil, bo2, time.Hour)
 
@@ -171,7 +171,7 @@ func (c contentFetcher) Fetch(ctx context.Context, uri gittemplate.URI, token, s
 // to a step referencing a container defined nowhere (neither caller nor template)
 // is failed deterministically at resolution, not persisted as runnable.
 func TestResolveGitPendingRuns_FailsOnDanglingContainer(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	specJSON := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
 	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "", "")
@@ -195,7 +195,7 @@ func TestResolveGitPendingRuns_FailsOnDanglingContainer(t *testing.T) {
 // carries the reason. A forbidden step inside the fetched template is already
 // rejected by the resolver's own template validation.
 func TestResolveGitPendingRuns_FailsOnForbiddenContainerTarget(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	specJSON := []byte(`{"podTemplate":{"name":"golang"},"steps":[{"name":"up","container":"unified-artifact","run":"env"},{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
 	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "", "")
@@ -223,7 +223,7 @@ func TestResolveGitPendingRuns_FailsOnForbiddenContainerTarget(t *testing.T) {
 // defines its own container AND targets it resolves + validates successfully
 // (the container is merged into the caller), so the run is NOT failed.
 func TestResolveGitPendingRuns_MergedTemplateContainerResolvesOK(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	specJSON := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
 	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "", "")
@@ -245,7 +245,7 @@ func TestResolveGitPendingRuns_MergedTemplateContainerResolvesOK(t *testing.T) {
 // agent-config containers must NOT be failed at resolution — container
 // references are only checkable at pod build time on the agent.
 func TestResolveGitPendingRuns_NamedPodTemplateDefersContainerValidation(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	specJSON := []byte(`{"podTemplate":{"name":"golang"},"steps":[{"name":"build","container":"builder","run":"go build"},{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
 	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "", "")
@@ -271,7 +271,7 @@ func TestResolveGitPendingRuns_NamedPodTemplateDefersContainerValidation(t *test
 // container-reference sweep — ValidateContainerReferences must see
 // override.containers, not just spec.containers.
 func TestResolveGitPendingRuns_OverrideContainerNotFailed(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	specJSON := []byte(`{"podTemplate":{"override":{"containers":[{"name":"sidecar","image":"img"}]},"spec":{"containers":[{"name":"job","image":"img"}]}},"steps":[{"name":"build","container":"sidecar","run":"go build"},{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
 	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "", "")

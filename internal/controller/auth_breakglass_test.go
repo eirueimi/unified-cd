@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 )
 
 // adminOnly runs the request through ServerAuth + an admin-only gate and
@@ -34,7 +35,7 @@ func adminOnly(t *testing.T, st store.Store, srv *Server, token string) (int, st
 }
 
 func TestServerAuth_NameImpersonationIsNotBreakGlass(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	s := NewServer(Config{Token: "real-bootstrap"}, pg)
 	t.Cleanup(s.Close)
 
@@ -46,7 +47,7 @@ func TestServerAuth_NameImpersonationIsNotBreakGlass(t *testing.T) {
 }
 
 func TestServerAuth_RealBootstrapTokenIsAdmin(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	s := NewServer(Config{Token: "real-bootstrap"}, pg)
 	t.Cleanup(s.Close)
 
@@ -60,7 +61,7 @@ func TestServerAuth_RealBootstrapTokenIsAdmin(t *testing.T) {
 }
 
 func TestServerAuth_NoConfiguredTokenNoBreakGlass(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("some-token"), "developer", nil)
 	require.NoError(t, err)
 

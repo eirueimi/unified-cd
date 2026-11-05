@@ -16,14 +16,14 @@ import (
 	"github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/controller"
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // TestPhase6_PATAuthentication verifies that a PAT can authenticate API calls.
 func TestPhase6_PATAuthentication(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "admin-secret"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "admin-secret"))
 	httpSrv := httptest.NewServer(srv.Router())
@@ -63,7 +63,7 @@ func TestPhase6_WebhookTrigger(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("phase 6 is linux/mac only")
 	}
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
@@ -145,7 +145,7 @@ spec:
 
 // TestPhase6_WebhookHMACVerification verifies a webhook with an HMAC signature.
 func TestPhase6_WebhookHMACVerification(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	km := testKM(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
@@ -228,7 +228,7 @@ func TestPhase6_WebhookFilter(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip()
 	}
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())

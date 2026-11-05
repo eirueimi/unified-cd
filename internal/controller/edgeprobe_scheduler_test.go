@@ -15,12 +15,13 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/require"
 )
 
 func probeSetup(t *testing.T) *store.Postgres {
 	t.Helper()
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 	_, err := pg.UpsertJob(ctx, "probe-job", "unified-cd/v1",
 		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
