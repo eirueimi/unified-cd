@@ -34,7 +34,7 @@ for an owner PAT intersected with its ceiling.
 The decision logic lives in `internal/authz`, which has no dependency on the
 controller:
 
-- `catalogue.go` — the 25 permissions, which nine are folder-scopable, and the
+- `catalogue.go` — the 26 permissions, which nine are folder-scopable, and the
   role bundles (`Bundle`).
 - `grants.go` — `Grants`: `Can`, `Decide` (allowed plus the `grantedBy` string),
   `Explain`, `HeldAnywhere`, `Restrict` (the PAT ceiling) and `View` (the

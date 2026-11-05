@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,20 +26,129 @@ type kubernetesSubjectConstraints struct {
 	ServiceAccounts []string `json:"serviceAccounts"`
 }
 
-func validateAgentEnrollmentPolicy(policy AgentEnrollmentPolicy) error {
-	if policy.Name == "" || policy.Provider != "kubernetes" {
-		return errors.New("policy name and kubernetes provider are required")
+// Cloud provider agent ID templates. The controller derives the canonical
+// agent ID from verified identity claims; a policy may not choose another.
+const (
+	awsAgentIDTemplate   = "aws:{account}:{instanceId}"
+	gcpAgentIDTemplate   = "gcp:{project}:{instanceId}"
+	azureAgentIDTemplate = "azure:{subscription}:{resourceGroup}:{vmName}"
+)
+
+// stsRegionPattern bounds an stsRegions entry to a plausible AWS region name so
+// a policy cannot steer the controller's STS call to an arbitrary host.
+var stsRegionPattern = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]$`)
+
+// azureTenantIDPattern requires an Azure tenant ID to be a GUID: it is placed in
+// the JWKS URL path, so anything else is refused.
+var azureTenantIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$`)
+
+// AWSPolicyConfig is the provider_config of an aws enrollment policy.
+type AWSPolicyConfig struct {
+	Audience   string   `json:"audience"`
+	STSRegions []string `json:"stsRegions,omitempty"`
+}
+
+// AWSSubjectConstraints is the subject_constraints of an aws enrollment policy.
+type AWSSubjectConstraints struct {
+	AccountIDs []string `json:"accountIds"`
+	RoleNames  []string `json:"roleNames"`
+}
+
+// GCPPolicyConfig is the provider_config of a gcp enrollment policy.
+type GCPPolicyConfig struct {
+	Audience string `json:"audience"`
+}
+
+// GCPSubjectConstraints is the subject_constraints of a gcp enrollment policy.
+type GCPSubjectConstraints struct {
+	ProjectIDs      []string `json:"projectIds"`
+	ServiceAccounts []string `json:"serviceAccounts"`
+}
+
+// AzurePolicyConfig is the provider_config of an azure enrollment policy.
+type AzurePolicyConfig struct {
+	TenantID string `json:"tenantId"`
+	Audience string `json:"audience"`
+}
+
+// AzureSubjectConstraints is the subject_constraints of an azure enrollment policy.
+type AzureSubjectConstraints struct {
+	SubscriptionIDs          []string `json:"subscriptionIds"`
+	ResourceGroups           []string `json:"resourceGroups,omitempty"`
+	ManagedIdentityObjectIDs []string `json:"managedIdentityObjectIds"`
+}
+
+// DecodeCloudPolicy decodes a cloud policy's provider config and subject
+// constraints into the provider's typed shapes, for example
+// DecodeCloudPolicy[AWSPolicyConfig, AWSSubjectConstraints](policy).
+func DecodeCloudPolicy[C, S any](p AgentEnrollmentPolicy) (C, S, error) {
+	var cfg C
+	var constraints S
+	if err := json.Unmarshal(p.ProviderConfig, &cfg); err != nil {
+		return cfg, constraints, fmt.Errorf("decode provider config: %w", err)
 	}
-	if policy.AgentIDTemplate != kubernetesAgentIDTemplate {
+	if err := json.Unmarshal(p.SubjectConstraints, &constraints); err != nil {
+		return cfg, constraints, fmt.Errorf("decode subject constraints: %w", err)
+	}
+	return cfg, constraints, nil
+}
+
+func validateAgentEnrollmentPolicy(policy AgentEnrollmentPolicy) error {
+	if policy.Name == "" {
+		if policy.Provider == "kubernetes" {
+			return errors.New("policy name and kubernetes provider are required")
+		}
+		return errors.New("policy name is required")
+	}
+	var template string
+	switch policy.Provider {
+	case "kubernetes":
+		template = kubernetesAgentIDTemplate
+	case "aws":
+		template = awsAgentIDTemplate
+	case "gcp":
+		template = gcpAgentIDTemplate
+	case "azure":
+		template = azureAgentIDTemplate
+	default:
+		return fmt.Errorf("unsupported enrollment provider %q", policy.Provider)
+	}
+	if policy.AgentIDTemplate != template {
 		return fmt.Errorf("unsupported agent ID template")
 	}
 	if policy.AccessTokenTTL < minAgentEnrollmentPolicyTTL || policy.AccessTokenTTL > maxAgentEnrollmentPolicyTTL {
 		return fmt.Errorf("access token TTL must be between 5m and 4h")
 	}
-	var cfg kubernetesPolicyConfig
-	var constraints kubernetesSubjectConstraints
-	if json.Unmarshal(policy.ProviderConfig, &cfg) != nil || cfg.Cluster == "" || json.Unmarshal(policy.SubjectConstraints, &constraints) != nil || len(constraints.Namespaces) == 0 || len(constraints.ServiceAccounts) == 0 {
-		return errors.New("invalid kubernetes enrollment policy constraints")
+	switch policy.Provider {
+	case "aws":
+		cfg, c, err := DecodeCloudPolicy[AWSPolicyConfig, AWSSubjectConstraints](policy)
+		if err != nil || cfg.Audience == "" || len(c.AccountIDs) == 0 || len(c.RoleNames) == 0 {
+			return errors.New("aws enrollment policy requires audience, accountIds and roleNames")
+		}
+		for _, region := range cfg.STSRegions {
+			if !stsRegionPattern.MatchString(region) {
+				return fmt.Errorf("invalid stsRegions entry %q", region)
+			}
+		}
+	case "gcp":
+		cfg, c, err := DecodeCloudPolicy[GCPPolicyConfig, GCPSubjectConstraints](policy)
+		if err != nil || cfg.Audience == "" || len(c.ProjectIDs) == 0 || len(c.ServiceAccounts) == 0 {
+			return errors.New("gcp enrollment policy requires audience, projectIds and serviceAccounts")
+		}
+	case "azure":
+		cfg, c, err := DecodeCloudPolicy[AzurePolicyConfig, AzureSubjectConstraints](policy)
+		if err != nil || cfg.TenantID == "" || cfg.Audience == "" || len(c.SubscriptionIDs) == 0 || len(c.ManagedIdentityObjectIDs) == 0 {
+			return errors.New("azure enrollment policy requires tenantId, audience, subscriptionIds and managedIdentityObjectIds")
+		}
+		if !azureTenantIDPattern.MatchString(cfg.TenantID) {
+			return fmt.Errorf("invalid tenantId %q", cfg.TenantID)
+		}
+	default:
+		var cfg kubernetesPolicyConfig
+		var constraints kubernetesSubjectConstraints
+		if json.Unmarshal(policy.ProviderConfig, &cfg) != nil || cfg.Cluster == "" || json.Unmarshal(policy.SubjectConstraints, &constraints) != nil || len(constraints.Namespaces) == 0 || len(constraints.ServiceAccounts) == 0 {
+			return errors.New("invalid kubernetes enrollment policy constraints")
+		}
 	}
 	return nil
 }

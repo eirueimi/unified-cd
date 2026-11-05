@@ -39,6 +39,27 @@ No active items.
 - **Evidence:** `extractRoleValues` (`internal/controller/rbac.go:91-117`); claims decoded from the verified ID token only (`internal/controller/auth_oidc.go`). Workarounds are documented in `docs/operator-manual/identity-providers.md`.
 - **Done when:** Each gap is either fixed (for example a dotted-path `rolesClaim`, ID-token overage handling, an `email_verified` check for email matches) or recorded as a decision not to; tests cover each change, and `docs/operator-manual/identity-providers.md`, `authorization.md` and `docs/reference/configuration.md` describe the result.
 
+### 50. Prune external agent identities that have not been seen for a long time
+
+- **Status:** Open
+- **Impact:** Every Kubernetes pod UID and every cloud VM becomes a new external agent identity, and identity rows are never deleted, so an autoscaling fleet grows the `agent_identities` table (and the agent inventory) without bound.
+- **Evidence:** `IssueExternalAgentAccess` in `internal/store/postgres_agent_auth.go` creates one row per `(enrollment method, external subject)` and no code path removes one. The agent ID templates `k8s:{cluster}:{namespace}:{podUID}`, `aws:{account}:{instanceId}`, `gcp:{project}:{instanceId}` and `azure:{subscription}:{resourceGroup}:{vmName}` all include a per-instance value.
+- **Done when:** A documented, configurable retention (off by default) removes or archives external identities, and their credentials, whose last use is older than the limit, with a test per enrollment method; a pruned identity that returns enrolls again as a new row; `docs/operator-manual/agents.md` and `docs/operator-manual/operations.md` describe the setting.
+
+### 51. Azure scale set instances and user-assigned managed identities
+
+- **Status:** Open
+- **Impact:** Cloud VM enrollment on Azure accepts only a plain virtual machine with a system-assigned managed identity. A VM scale set instance, or any VM that uses a user-assigned identity (shared by several VMs), is refused with `403 enrollment policy rejected`, so autoscaled Azure fleets cannot use it.
+- **Evidence:** `parseAzureVMResourceID` in `internal/controller/agent_enrollment_azure.go` accepts only `Microsoft.Compute/virtualMachines`; for a user-assigned identity `xms_mirid` names the identity, not the VM, so the token alone cannot yield a unique per-VM agent ID.
+- **Done when:** Scale set instances are accepted with a per-instance agent ID, and user-assigned identities either work through another signed source of the VM identity or are documented as permanently unsupported with the reason; each case has a test against a simulated issuer; `docs/operator-manual/agents.md` ("Limitations") is updated.
+
+### 53. Audit rejected agent enrollment exchanges
+
+- **Status:** Open
+- **Impact:** A rejected `POST /api/v1/agents/enroll` (cloud provider or Kubernetes) writes no audit row. The reason (`cloud enrollment rejected`, `cloud enrollment verification failed`) is only in the controller log, so an operator who wants a queryable record of failed exchanges, for example repeated probing of a policy, has nothing in the audit log.
+- **Evidence:** `handleCloudAgentEnroll` in `internal/controller/agent_enrollment_cloud.go` calls `slog.Warn` and `recordAgentAuth` (a metric) on every rejection but `auditAgentCredential` only on success.
+- **Done when:** Rejected exchanges produce an audit entry with the provider, policy name and a coarse reason (never token or proof contents), subject to the existing rate limit so a flood cannot grow the audit table without bound; a test per provider; `docs/operator-manual/agents.md` and `docs/troubleshooting/agents-and-enrollment.md` say where the reason is recorded.
+
 ## Low
 
 ### 48. Apply-time validation parity and remaining knob differences
@@ -47,3 +68,17 @@ No active items.
 - **Impact:** (a) A `podTemplate` with duplicate container names starts on a host agent (the second is dropped with a log warning) and fails on k8s at pod creation. (b) An absolute `spec.volumes[].mountPath` over a system directory works on the host and is refused at k8s claim time, not at apply. (c) The host has no per-run workspace quota (k8s has `workspaceSizeLimit`), and `maxConcurrent` defaults to 1 on the host and 100 on k8s.
 - **Evidence:** (a) `internal/agent/claim_pod.go:213-217`; no duplicate check in `internal/dsl`. (b) `CheckJobMountPaths` runs at `internal/k8sagent/agent.go:392` (`internal/k8sagent/podmountpaths.go`); apply-time `CheckContainerMountPath` (`internal/dsl/mountpath.go:63`) covers only `workspace.mountPath`. (c) `cmd/unified-cd-agent/main.go:101-105`, `internal/k8sagent/config.go:208`.
 - **Done when:** `apply` rejects duplicate container names and an absolute volume `mountPath` that k8s would refuse, with tests; for (c) the quota and defaults are either aligned or the difference is documented in `docs/operator-manual/agents.md`, with the decision recorded in the commit message.
+
+### 52. VM tags as a cloud enrollment policy condition
+
+- **Status:** Open (needs design)
+- **Impact:** A cloud enrollment policy can match only on account, project or subscription plus role, service account or managed identity. Operators who separate fleets by VM tag or label cannot express that, and must use one role or service account per fleet.
+- **Evidence:** No cloud signs VM tags into its identity proof, so the controller cannot read them without cloud read credentials, which the controller deliberately does not hold (`docs/superpowers/specs/2026-11-02-cloud-vm-agent-enrollment-design.md`, non-goals). Tag-write permission is also often broader than IAM-role assignment.
+- **Done when:** A design records whether to add tag conditions (and how the controller would get least-privilege read access per cloud), then either implements it with simulated-provider tests and updates `docs/operator-manual/agents.md` ("Limitations"), or records the decision not to.
+
+### 54. Bound the /api/v1/agents/enroll request body before decoding
+
+- **Status:** Open
+- **Impact:** The enroll handler decodes the JSON body without a size limit, so an unauthenticated caller can make the controller read an arbitrarily large body. The per-IP rate limit bounds the request count, not the size. This predates cloud enrollment and is shared with the Kubernetes exchange.
+- **Evidence:** `handleAgentEnroll` in `internal/controller/api_agent_enrollment.go` passes `r.Body` straight to `json.NewDecoder`; no `http.MaxBytesReader` wraps it.
+- **Done when:** The body is wrapped in `http.MaxBytesReader` with a limit well above a signed AWS request (for example 64 KiB) before decoding, an oversized body gets `413`, and a test covers it for both the Kubernetes and cloud paths.

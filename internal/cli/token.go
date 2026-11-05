@@ -32,6 +32,7 @@ func newTokenCreateCmd(resolve func() (Config, error), httpClient *http.Client) 
 	var expiresIn string
 	var role string
 	var permissions []string
+	var enrollLabels []string
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a new Personal Access Token",
@@ -41,7 +42,7 @@ func newTokenCreateCmd(resolve func() (Config, error), httpClient *http.Client) 
 			if err != nil {
 				return err
 			}
-			body, _ := json.Marshal(api.CreatePATRequest{Name: args[0], ExpiresIn: expiresIn, Role: role, Permissions: permissions})
+			body, _ := json.Marshal(api.CreatePATRequest{Name: args[0], ExpiresIn: expiresIn, Role: role, Permissions: permissions, EnrollLabels: enrollLabels})
 			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, cfg.Server+"/api/v1/tokens", bytes.NewReader(body))
 			if err != nil {
 				return err
@@ -60,6 +61,14 @@ func newTokenCreateCmd(resolve func() (Config, error), httpClient *http.Client) 
 			var result api.CreatePATResponse
 			if err := json.Unmarshal(b, &result); err != nil {
 				return err
+			}
+			if len(enrollLabels) > 0 && len(result.EnrollLabels) == 0 {
+				// An older controller ignores "enrollLabels" and mints an unbounded token.
+				const refusal = "the server does not support --enroll-label"
+				if err := revokeToken(cmd.Context(), httpClient, cfg, result.ID); err != nil {
+					return fmt.Errorf("%s; the token (ID %s) could not be revoked: %v; revoke it manually (unified-cd token delete %s) and upgrade the controller", refusal, result.ID, err, result.ID)
+				}
+				return fmt.Errorf("%s; the token was revoked; upgrade the controller", refusal)
 			}
 			narrowed := false
 			if len(permissions) > 0 {
@@ -87,6 +96,9 @@ func newTokenCreateCmd(resolve func() (Config, error), httpClient *http.Client) 
 			if len(result.Permissions) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "Permissions: %s\n", strings.Join(result.Permissions, ", "))
 			}
+			if len(result.EnrollLabels) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Enroll labels: %s\n", strings.Join(result.EnrollLabels, ", "))
+			}
 			if narrowed {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: the token was narrowed to the permissions you hold: %s\n", strings.Join(result.Permissions, ", "))
 			}
@@ -96,6 +108,7 @@ func newTokenCreateCmd(resolve func() (Config, error), httpClient *http.Client) 
 	cmd.Flags().StringVar(&expiresIn, "expires-in", "", "expiry duration (e.g. 720h, 8760h)")
 	cmd.Flags().StringVar(&role, "role", "", "role ceiling for the token: admin, developer, or viewer (must not exceed your global role)")
 	cmd.Flags().StringArrayVar(&permissions, "permission", nil, "permission ceiling for the token, e.g. job.read (repeatable; you must hold each one; cannot be combined with --role)")
+	cmd.Flags().StringArrayVar(&enrollLabels, "enroll-label", nil, "label bound for an enrollment-only token: the enrollment tokens it creates may carry only these labels (repeatable; requires --permission agent.enroll)")
 	return cmd
 }
 
@@ -135,6 +148,9 @@ func newTokenListCmd(resolve func() (Config, error), httpClient *http.Client) *c
 				ceiling := t.Role
 				if len(t.Permissions) > 0 {
 					ceiling = strings.Join(t.Permissions, ",")
+				}
+				if len(t.EnrollLabels) > 0 {
+					ceiling += " enroll-labels=" + strings.Join(t.EnrollLabels, ",")
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t(%s)\n", t.ID, t.Name, ceiling, t.CreatedAt.Format("2006-01-02"))
 			}

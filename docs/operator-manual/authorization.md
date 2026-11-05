@@ -1,6 +1,6 @@
 # Authorization (RBAC and matrix permissions)
 
-unified-cd authorizes every human caller with a set of **permissions** drawn from a fixed catalogue of 25. The three roles — **admin**, **developer**, **viewer** — still exist and still work exactly as before, but they are now *named bundles* of permissions. For a single-team deployment nothing has to change: `roleMap` / `userMap` / `defaultRole` keep their meaning and produce one global role per caller.
+unified-cd authorizes every human caller with a set of **permissions** drawn from a fixed catalogue of 26. The three roles — **admin**, **developer**, **viewer** — still exist and still work exactly as before, but they are now *named bundles* of permissions. For a single-team deployment nothing has to change: `roleMap` / `userMap` / `defaultRole` keep their meaning and produce one global role per caller.
 
 To let several teams share one deployment without touching each other's jobs, add the optional `oidc.permissions` block. It grants permissions (individually or as role bundles) to OIDC groups and users, globally or **per job folder**, in the style of Jenkins' project-based matrix authorization. A folder is just a path prefix of the qualified job name: `team-a` covers `team-a/build` and `team-a/sub/build`.
 
@@ -8,7 +8,7 @@ Every route is classified: the API refuses an action the caller has no permissio
 
 ## Permission catalogue
 
-There are 25 permissions, written `<resource>.<verb>`. Nine are **folder-scopable**: they can be granted globally or on a folder and are checked against the job a request targets. Sixteen are **global-only**: they can only be granted in `permissions.global` (or through a role).
+There are 26 permissions, written `<resource>.<verb>`. Nine are **folder-scopable**: they can be granted globally or on a folder and are checked against the job a request targets. Seventeen are **global-only**: they can only be granted in `permissions.global` (or through a role).
 
 ### Folder-scopable (9)
 
@@ -24,7 +24,7 @@ There are 25 permissions, written `<resource>.<verb>`. Nine are **folder-scopabl
 | `run.approve` | Approve or reject a waiting `approval` step. | | yes | yes |
 | `schedule.configure` | Create, re-target or delete a Schedule that targets the job. | | yes | yes |
 
-### Global-only (16)
+### Global-only (17)
 
 | Permission | Meaning | viewer | developer | admin |
 |---|---|:--:|:--:|:--:|
@@ -40,6 +40,7 @@ There are 25 permissions, written `<resource>.<verb>`. Nine are **folder-scopabl
 | `appsource.write` | Apply, delete or force-sync an AppSource. | | | yes |
 | `agent.read` | List and get agents, an agent's recent runs (rows are additionally filtered by `job.read`), enrollments, enrollment policies and agent identities. | yes | yes | yes |
 | `agent.manage` | Create and revoke enrollments; create, update and delete enrollment policies; enable and disable identities; revoke agent credentials. | | | yes |
+| `agent.enroll` | Create host-agent enrollment tokens, limited to the labels bound to the caller's PAT (see [Enrollment-only PATs](#enrollment-only-pats)). | | | yes |
 | `token.create` | Create PATs (never above your own permissions); list and delete **your own** PATs. | | yes | yes |
 | `token.manage` | List and delete **every** PAT. | | | yes |
 | `audit.read` | Read the [audit log](audit.md). | | | yes |
@@ -55,7 +56,7 @@ A role used anywhere a permission can be named expands to its bundle:
 |---|---|
 | `viewer` | `job.read`, `vars.read`, `webhook.read`, `appsource.read`, `agent.read` |
 | `developer` | `viewer` plus `job.configure`, `job.delete`, `run.trigger`, `run.replay`, `run.cancel`, `run.delete`, `run.approve`, `schedule.configure`, `secret.list`, `token.create` |
-| `admin` | all 25 (`authz.read` is only in this bundle) |
+| `admin` | all 26 (`authz.read` is only in this bundle) |
 
 A role resolved by `roleMap` / `userMap` / `defaultRole`, a role-only PAT's role and a pre-upgrade session's role are *global* grants of these bundles. A bundle granted on a **folder** contributes only its folder-scopable members: `admin` on `team-a` means "every one of the nine folder-scopable permissions under `team-a/`", never `secret.write`.
 
@@ -87,7 +88,8 @@ A role resolved by `roleMap` / `userMap` / `defaultRole`, a role-only PAT's role
 | `POST /api/v1/schedules` | `schedule.configure` | the target job, **and** the current target if the name exists |
 | `DELETE /api/v1/schedules/{name}` | `schedule.configure` | the schedule's current target job |
 | `GET /api/v1/agents`, `/agents/{id}`, `/agents/{id}/runs`, enrollments, enrollment policies, identities | `agent.read` | global |
-| enrollment, policy and identity writes | `agent.manage` | global |
+| `POST /api/v1/agent-enrollments` | `agent.manage` **or** `agent.enroll` | global |
+| other enrollment, policy and identity writes | `agent.manage` | global |
 | `GET /api/v1/audit` | `audit.read` | global |
 | `GET /api/v1/authz/policy`, `POST /api/v1/authz/explain` | `authz.read` | global |
 
@@ -229,7 +231,7 @@ For an OIDC caller (browser session or CLI bearer token):
 
 A browser session stores the caller's claim values (not a role) and recomputes the permissions from them and the **current** config on every request, so editing `roleMap` takes effect for live sessions at the next restart without a re-login. Claim values are refreshed at login and on silent refresh. A session created before the upgrade has no stored claims and is treated as role-only until it expires (at most 24 hours).
 
-**The break-glass `UNIFIED_TOKEN`** holds all 25 permissions globally and is checked before any of this; see [Break-glass](#break-glass).
+**The break-glass `UNIFIED_TOKEN`** holds all 26 permissions globally and is checked before any of this; see [Break-glass](#break-glass).
 
 ### Personal access tokens
 
@@ -248,6 +250,23 @@ recomputed on every request.
 - Creating a PAT is refused for identities whose groups are unknown (a pre-upgrade session, or an OIDC bearer without the roles claim while the config has group-keyed grants), with the strings listed in [CLI: token create](../reference/cli.md#token-create) and in [Troubleshooting](../troubleshooting/controller-and-database.md#token-creation-is-refused-cannot-create-a-token).
 
 See [Authentication](authentication.md) for sessions, silent refresh and PAT owners.
+
+### Enrollment-only PATs
+
+An enrollment-only PAT is a PAT whose only permission is [`agent.enroll`](#permission-catalogue). It can create host-agent enrollment tokens (`POST /api/v1/agent-enrollments`) and nothing else: it cannot list agents, read jobs or manage anything. It is meant for automation that provisions hosts, such as a VM bootstrap script, so that the credential handed to that automation cannot do more than enroll agents.
+
+```bash
+unified-cli token create provisioner \
+  --permission agent.enroll \
+  --enroll-label kind:linux --enroll-label pool:build
+```
+
+- **Label bound.** `--enroll-label` (repeatable; API field `enrollLabels`) restricts the labels of the enrollment tokens the PAT may create. It is valid only together with `agent.enroll`, entries must be non-empty and unique, and a PAT created without it has no bound. The bound is stored with the PAT, shown by `token list`, and echoed by `token create`. The controller enforces it when an enrollment token is created with such a PAT: every requested label must exactly match a bound entry (an unbounded PAT can request no labels), and the agent ID cannot be chosen, it is generated. See [Provisioning many VMs](agents.md#provisioning-many-vms-an-enrollment-only-pat).
+- **Who may mint one.** A creator must hold `agent.enroll` or `agent.manage`. Unless the creator holds `agent.manage`, it can only grant labels within its own enrollment-label bound: the requested `enrollLabels` must be a subset of the creating token's (`enrollLabels must be a subset of the creating token's enrollLabels`, 403), and a creator with no bound, such as a session whose role grants `agent.enroll` or a PAT minted without `--enroll-label`, can grant no labels at all. When a bounded parent asks for none it inherits the parent's bound rather than becoming unbounded. A creator that holds `agent.manage` is not restricted.
+- **Creators without an owner.** The break-glass `UNIFIED_TOKEN` and role-only PATs normally cannot grant `--permission` (`cannot grant permissions: this token has no owner; use --role`). The one exception is a permission list that is exactly `["agent.enroll"]` (with no `--role`, and optional `--enroll-label`): they may create an ownerless enrollment-only PAT. Such a PAT holds exactly `agent.enroll` globally, whatever else the creator holds. Any other permission list from these creators keeps the `400`.
+- **Owner-bound PATs.** When an SSO user creates one, the PAT is the usual owner PAT: its permissions are the owner's intersected with the ceiling `[agent.enroll]`. An owner who holds `agent.manage` but not `agent.enroll` is treated as holding `agent.enroll` for this purpose.
+
+The refusals are listed in [CLI: token create](../reference/cli.md#token-create) and in [Troubleshooting](../troubleshooting/controller-and-database.md#token-creation-is-refused-cannot-create-a-token).
 
 ## Separating teams: a recipe
 
@@ -296,7 +315,7 @@ An agent credential is bound to one immutable `agentId`. The controller
 rejects a differing route/body ID with `agent identity mismatch` (403), and
 preserves the run's immutable `claimed_by` check for writes. An agent cannot
 grant itself scheduling labels or capabilities. Administrators manage
-one-time VM enrollments, Kubernetes enrollment policies, and identity enable,
+one-time VM enrollments, enrollment policies (Kubernetes, AWS, GCP and Azure), and identity enable,
 disable, and credential revocation through the agent lifecycle API/CLI.
 
 **Every write to a run is guarded by the same per-run ownership check,
@@ -379,7 +398,7 @@ Point `oidc.issuer` straight at the IdP; `roleMap` and enforcement are identical
 
 ## Break-glass
 
-The static `UNIFIED_TOKEN` PAT holds all 25 permissions globally, checked before any role, owner or ceiling logic. The controller recognizes it only when **both** hold: the presented token's hash matches the hash of the token the controller was started with (compared in constant time), **and** the PAT row has no owner. The PAT's *name* grants nothing: a PAT that merely is named `env:UNIFIED_TOKEN` is an ordinary PAT with its own stored role. With no `UNIFIED_TOKEN` configured there is no break-glass at all.
+The static `UNIFIED_TOKEN` PAT holds all 26 permissions globally, checked before any role, owner or ceiling logic. The controller recognizes it only when **both** hold: the presented token's hash matches the hash of the token the controller was started with (compared in constant time), **and** the PAT row has no owner. The PAT's *name* grants nothing: a PAT that merely is named `env:UNIFIED_TOKEN` is an ordinary PAT with its own stored role. With no `UNIFIED_TOKEN` configured there is no break-glass at all.
 
 The `env:` name prefix is reserved: `token create` (and `POST /api/v1/tokens`) rejects a name equal to `env:UNIFIED_TOKEN` or starting with `env:` with `400 token name "..." is reserved`. At startup the controller also deletes any pre-existing PAT named `env:UNIFIED_TOKEN` whose hash is not the configured token's, and logs a warning with the count, ids and roles (see [Troubleshooting](../troubleshooting/controller-and-database.md#token-name-env-is-reserved-startup-warning-about-impersonating-tokens)).
 

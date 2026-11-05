@@ -93,9 +93,165 @@ authority. Capabilities are never assigned by the policy: each agent
 auto-detects and self-reports its own capabilities — see [Capabilities and
 routing](#capabilities-and-routing).
 
+Agents on AWS, GCP and Azure VMs can do the same with their cloud identity; see
+[Cloud VM enrollment](#cloud-vm-enrollment-aws-gcp-azure).
+
 After a full controller database loss, host agents must be re-enrolled with a new
-one-time token while Kubernetes agents recover on their own; see [Agent recovery
+one-time token while Kubernetes agents recover on their own (cloud VM agents
+also recover once their policy is re-created); see [Agent recovery
 contract](operations.md#agent-recovery-contract).
+
+### Provisioning many VMs: an enrollment-only PAT
+
+A script that provisions hosts outside AWS, GCP and Azure (or any host that cannot use a cloud identity) needs to create enrollment tokens, but it should not hold `agent.manage` (which can also revoke credentials, disable identities and edit enrollment policies). Give it an [enrollment-only PAT](authorization.md#enrollment-only-pats) instead: a PAT whose only permission is `agent.enroll`, bound to the labels its agents may carry.
+
+```bash
+unified-cli token create provisioner   --permission agent.enroll   --enroll-label kind:linux --enroll-label pool:build
+```
+
+With that token, `unified-cli agent enrollment create --label kind:linux --quiet` creates a one-time enrollment token. The controller applies two rules to a caller that holds `agent.enroll` but not `agent.manage`:
+
+- **Labels stay inside the bound.** Every `--label` must exactly match an entry in the PAT's enrollment labels (no trimming, case-sensitive). Otherwise the request is refused with `403 label "<label>" is not in this token's enrollment labels`. A PAT created without `--enroll-label` has no labels to offer, so it can only create enrollment tokens with no `--label`.
+- **The agent ID is generated.** Passing `--agent-id` is refused with `403 agentId cannot be set with agent.enroll; it is generated`. The controller mints a random `agent-XXXXXXXX` ID and returns it in the response.
+
+A caller with `agent.manage` is not affected: it may set any agent ID and any labels. The audit log's `resource` for each `agent.enrollment.create` entry is the enrollment token ID, the agent ID and the requested labels, for example `enr-123 agent=agent-1a2b3c4d labels=kind:linux,pool:build`.
+
+## Cloud VM enrollment (AWS, GCP, Azure)
+
+!!! warning "Verified only against simulated responses"
+    In this release each cloud provider (AWS, GCP and Azure) was verified only against simulated responses: local JWKS servers for GCP and Azure tokens and a fake STS endpoint for AWS. It has not been run against a real cloud account. Treat it as new: try it on a non-production controller first, and report any difference from the behaviour described here.
+
+A VM in AWS, GCP or Azure can enroll itself with the identity its cloud gives it, with no enrollment token and no provisioner PAT. The agent proves who it is, the controller checks the proof against an [enrollment policy](../reference/cli.md#agent-enrollment-identity-and-enrollment-policy), derives the agent ID from the verified identity, and returns a short-lived access credential. This is the same model as Kubernetes workload enrollment, and it uses the same `POST /api/v1/agents/enroll` endpoint.
+
+How it works:
+
+1. The agent reads a proof from the instance metadata service: a signed `sts:GetCallerIdentity` request (AWS), an instance identity token (GCP) or a managed-identity access token (Azure).
+2. The controller verifies the proof, then requires the verified identity to match the policy: account, project or subscription, together with a role, service account or managed identity.
+3. The agent ID comes from the verified identity, never from the request:
+
+    | Provider | Agent ID |
+    |---|---|
+    | AWS | `aws:<account>:<instance-id>` |
+    | GCP | `gcp:<project>:<instance-id>` |
+    | Azure | `azure:<subscription>:<resource-group>:<vm-name>` (lowercased) |
+
+4. Labels follow the Kubernetes rule: the policy's required labels are always applied, a label the agent requests with `--labels` is applied only if the policy lists it with `--allowed-label`, and any other requested label rejects the enrollment.
+5. The agent receives an access credential only, valid for the policy's `--access-token-ttl` (5 minutes to 4 hours, default 1 hour). There is no refresh credential and nothing long-lived is written to disk. The agent proves its identity again about 15 minutes before the credential expires.
+
+An explicit VM `--agent-id` cannot collide with a cloud agent ID, because explicit IDs cannot contain `:`. A disabled identity (`unified-cli agent identity disable`) stays disabled: that VM keeps getting `403 agent identity disabled` when it enrolls again.
+
+The controller holds no cloud credentials. Its only outbound calls are to the public JWKS endpoints of Google and Microsoft Entra and, for AWS, forwarding the agent's own signed `GetCallerIdentity` request to an STS endpoint.
+
+### AWS
+
+The VM needs an instance profile. The role's trust policy must allow only the EC2 service:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": { "Service": "ec2.amazonaws.com" },
+    "Action": "sts:AssumeRole"
+  }]
+}
+```
+
+!!! danger "The session name is chosen by whoever assumes the role"
+    The controller reads the instance ID from the session name in the caller's ARN (`arn:aws:sts::123456789012:assumed-role/ci-agent/i-0123456789abcdef0`). For an instance profile, EC2 sets that name. If the trust policy also lets other principals call `sts:AssumeRole`, any of them can choose an instance-ID-shaped session name and enroll as that agent ID. The controller rejects a session name that does not look like an instance ID (`i-` followed by 8 to 17 hex digits), but that is no substitute for a trust policy that names only `ec2.amazonaws.com`. Use a role dedicated to unified-cd agents.
+
+The role needs no permissions: any authenticated caller may call `GetCallerIdentity`. Create the policy:
+
+```bash
+unified-cli agent enrollment-policy create aws-ci --provider aws \
+  --audience unified-cd --account-id 123456789012 --role-name ci-agent \
+  --required-label kind:linux
+```
+
+- `--role-name` is the role name only, not the path or the full ARN.
+- `--audience` is any string you choose. The agent signs it into the request in the `x-unified-cd-audience` header, and the controller requires that header to be listed in the signature's `SignedHeaders`, so a request signed for another service is refused.
+- `--sts-region` (repeatable) limits the STS endpoints the controller will call. The agent always signs for the regional endpoint `sts.<region>.amazonaws.com` of the region the instance metadata reports. With no `--sts-region`, any `sts.<region>.amazonaws.com` host is accepted. When `--sts-region` is set, the global host `sts.amazonaws.com` counts as `us-east-1`. The controller calls no other host.
+- China-partition STS hosts (`*.amazonaws.com.cn`) are not supported.
+
+Start the agent on the VM:
+
+```bash
+unified-cd-agent --server https://ci.example.com \
+  --enrollment-provider aws --enrollment-policy aws-ci --enrollment-audience unified-cd \
+  --labels kind:linux
+```
+
+The agent uses IMDSv2, so the instance metadata service must be reachable from the agent process.
+
+### GCP
+
+The VM runs as a service account. The agent asks the metadata server for an identity token for the audience, and the controller verifies it as a Google ID token (issuer `https://accounts.google.com`).
+
+```bash
+unified-cli agent enrollment-policy create gcp-ci --provider gcp \
+  --audience unified-cd --project-id my-ci-project \
+  --service-account ci-agent@my-ci-project.iam.gserviceaccount.com \
+  --required-label kind:linux
+```
+
+`--project-id` and `--service-account` (the service account email) are both required. They are matched against the token's Compute Engine project and `email` claims, and the token must carry a verified email, a project ID and an instance ID.
+
+```bash
+unified-cd-agent --server https://ci.example.com \
+  --enrollment-provider gcp --enrollment-policy gcp-ci --enrollment-audience unified-cd
+```
+
+### Azure
+
+Use a VM with a **system-assigned** managed identity. The agent requests a managed-identity access token for a resource, and that resource is the audience. Register an application in Microsoft Entra ID whose **Application ID URI** is the audience value (for example `api://unified-cd`), and use the same value in the policy and on the agent. The controller verifies the token against the signing keys of the policy's tenant and accepts both the v1 (`https://sts.windows.net/<tenant>/`) and v2 (`https://login.microsoftonline.com/<tenant>/v2.0`) issuers.
+
+```bash
+unified-cli agent enrollment-policy create azure-ci --provider azure \
+  --tenant-id 00000000-0000-0000-0000-000000000000 --audience api://unified-cd \
+  --subscription-id 11111111-1111-1111-1111-111111111111 \
+  --managed-identity-object-id 22222222-2222-2222-2222-222222222222 \
+  --resource-group ci --required-label kind:linux
+```
+
+- `--tenant-id` must be a GUID; anything else is refused with `invalid tenantId "<value>"`.
+- `--managed-identity-object-id` is the object (principal) ID of the VM's system-assigned identity.
+- `--resource-group` is optional. When set, the VM must be in one of the listed groups. The comparison is case-insensitive, because Azure treats resource group names that way.
+- The token's `aud` must equal `--audience` exactly. If the app registration issues v2 tokens, `aud` is the application (client) ID rather than the Application ID URI, so use the application ID as the audience in that case.
+- Only a plain virtual machine is accepted: the token's `xms_mirid` claim must name a `Microsoft.Compute/virtualMachines` resource. Virtual machine scale set instances and user-assigned managed identities are rejected (see Limitations).
+
+```bash
+unified-cd-agent --server https://ci.example.com \
+  --enrollment-provider azure --enrollment-policy azure-ci --enrollment-audience api://unified-cd
+```
+
+### Agent settings for cloud enrollment
+
+| Flag | Environment variable | `agent.yaml` key |
+|---|---|---|
+| `--enrollment-provider` (`aws`, `gcp` or `azure`) | `UNIFIED_AGENT_ENROLLMENT_PROVIDER` | `enrollmentProvider` |
+| `--enrollment-policy` | `UNIFIED_AGENT_ENROLLMENT_POLICY` | `enrollmentPolicy` |
+| `--enrollment-audience` | `UNIFIED_AGENT_ENROLLMENT_AUDIENCE` | `enrollmentAudience` |
+
+All three are required together. They cannot be combined with `--enrollment-token`, `--enrollment-token-file`, `--credential-file` or `--id`: the controller assigns the ID and nothing is persisted, so the agent exits at startup with an error that names the conflict. In this mode `--labels` is a request bounded by the policy, as for the Kubernetes agent. See [Configuration](../reference/configuration.md) for the full flag table and `examples/config/agent.yaml` for a commented example.
+
+The agent proves its identity again 15 minutes (plus up to 5 minutes of random jitter) before its credential expires. A policy `--access-token-ttl` below about 30 minutes therefore makes the agent re-enroll on nearly every call; use 30 minutes or more.
+
+The agent fetches instance metadata directly: it ignores `HTTP_PROXY` and `HTTPS_PROXY`, does not follow redirects, and allows each metadata request 5 seconds. That keeps the metadata credentials from being sent to any host but the metadata service.
+
+### Security notes
+
+- GCP and Azure proofs are bearer tokens valid for up to about an hour. Anyone who can read one from the VM can replay it within that time to act as that VM's agent ID. The audience binds a token to this controller. This is the same exposure as the projected ServiceAccount token on Kubernetes.
+- The AWS proof can be replayed only while STS still accepts its signature (roughly 15 minutes), and its signed audience header binds it to this controller.
+- A policy is rejected at creation unless it names an audience and the account, project or subscription together with the role, service account or managed identity (Azure also needs the tenant). There is no "any VM in my account" policy.
+- Whatever the cause, the caller sees only `403 enrollment policy rejected`; the reason is in the controller log (`cloud enrollment rejected` for a missing, disabled or mismatched policy or a label outside the policy, `cloud enrollment verification failed` for a proof or subject mismatch), not in the audit log (see `TODO.md`). `503 <provider> identity unavailable` means the controller could not reach STS or the JWKS endpoint. See [Troubleshooting](../troubleshooting/agents-and-enrollment.md#cloud-vm-agent-returns-403-or-503-during-enrollment).
+- Cloud policies live in the controller database, so after a full database loss they must be re-created; see [Agent recovery contract](operations.md#agent-recovery-contract).
+
+### Limitations
+
+- Azure virtual machine scale set instances and user-assigned managed identities are not supported. Several VMs share a user-assigned identity, so a unique agent ID cannot be derived from the token. Both are tracked in `TODO.md`.
+- VM tags and labels are not a policy condition, because no cloud signs them into the identity proof.
+- AWS China-partition STS hosts are not supported, and the AWS instance identity document is not used.
+- Identities of VMs that no longer exist are not pruned (the same is true of Kubernetes pods); tracked in `TODO.md`.
 
 ## Running the agent as a service
 

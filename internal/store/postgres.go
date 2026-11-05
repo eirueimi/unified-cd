@@ -2493,7 +2493,7 @@ func (p *Postgres) RunJobName(ctx context.Context, runID string) (string, bool, 
 }
 
 // patColumns is the column list every PAT read returns, in patScan order.
-const patColumns = `id, name, role, created_at, expires_at, last_used_at, owner_sub, owner_email, owner_claims, permissions`
+const patColumns = `id, name, role, created_at, expires_at, last_used_at, owner_sub, owner_email, owner_claims, permissions, enroll_labels`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -2506,7 +2506,7 @@ func scanPAT(row rowScanner) (PAT, error) {
 	var ownerSub, ownerEmail *string
 	var ownerClaims []string
 	if err := row.Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt,
-		&ownerSub, &ownerEmail, &ownerClaims, &pat.Permissions); err != nil {
+		&ownerSub, &ownerEmail, &ownerClaims, &pat.Permissions, &pat.EnrollLabels); err != nil {
 		return PAT{}, err
 	}
 	if ownerSub != nil {
@@ -2541,13 +2541,27 @@ func (p *Postgres) CreateOwnedPAT(ctx context.Context, in NewOwnedPAT) (*PAT, er
 	if claims == nil {
 		claims = []string{}
 	}
-	const q = `INSERT INTO pats(name, token_hash, role, expires_at, owner_sub, owner_email, owner_claims, permissions)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	const q = `INSERT INTO pats(name, token_hash, role, expires_at, owner_sub, owner_email, owner_claims, permissions, enroll_labels)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING ` + patColumns
 	pat, err := scanPAT(p.pool.QueryRow(ctx, q, in.Name, in.TokenHash, in.Role, in.ExpiresAt,
-		in.Owner.Sub, in.Owner.Email, claims, in.Permissions))
+		in.Owner.Sub, in.Owner.Email, claims, in.Permissions, in.EnrollLabels))
 	if err != nil {
 		return nil, fmt.Errorf("create owned pat: %w", err)
+	}
+	return &pat, nil
+}
+
+// CreateEnrollPAT creates an enrollment-only PAT: no owner, role "" and the
+// single permission agent.enroll, optionally bounded to EnrollLabels.
+func (p *Postgres) CreateEnrollPAT(ctx context.Context, in NewEnrollPAT) (*PAT, error) {
+	const q = `INSERT INTO pats(name, token_hash, role, expires_at, permissions, enroll_labels)
+		VALUES ($1, $2, '', $3, $4, $5)
+		RETURNING ` + patColumns
+	pat, err := scanPAT(p.pool.QueryRow(ctx, q, in.Name, in.TokenHash, in.ExpiresAt,
+		[]string{"agent.enroll"}, in.EnrollLabels))
+	if err != nil {
+		return nil, fmt.Errorf("create enroll pat: %w", err)
 	}
 	return &pat, nil
 }

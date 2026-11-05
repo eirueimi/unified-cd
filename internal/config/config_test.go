@@ -164,6 +164,29 @@ func TestAgentEffective_CredentialFiles(t *testing.T) {
 	assert.Equal(t, "/file/enrollment", eff.EnrollmentTokenFile)
 }
 
+func TestAgentEffective_CloudEnrollmentKeys(t *testing.T) {
+	t.Setenv("UNIFIED_AGENT_ENROLLMENT_PROVIDER", "aws")
+	t.Setenv("UNIFIED_AGENT_ENROLLMENT_POLICY", "env-policy")
+	t.Setenv("UNIFIED_AGENT_ENROLLMENT_AUDIENCE", "env-audience")
+
+	eff, err := config.AgentEffective("")
+	require.NoError(t, err)
+	assert.Equal(t, "aws", eff.EnrollmentProvider)
+	assert.Equal(t, "env-policy", eff.EnrollmentPolicy)
+	assert.Equal(t, "env-audience", eff.EnrollmentAudience)
+
+	// The file overrides env per key; an unset file key keeps the env value.
+	path := writeFile(t, `
+enrollmentProvider: gcp
+enrollmentPolicy: file-policy
+`)
+	eff, err = config.AgentEffective(path)
+	require.NoError(t, err)
+	assert.Equal(t, "gcp", eff.EnrollmentProvider)
+	assert.Equal(t, "file-policy", eff.EnrollmentPolicy)
+	assert.Equal(t, "env-audience", eff.EnrollmentAudience)
+}
+
 func TestAgentEffective_FileOverridesEnv(t *testing.T) {
 	t.Setenv("UNIFIED_SERVER", "http://env-server")
 

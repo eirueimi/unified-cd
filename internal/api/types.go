@@ -388,15 +388,19 @@ type CreatePATRequest struct {
 	ExpiresIn   string   `json:"expiresIn,omitempty"`
 	Role        string   `json:"role,omitempty"`
 	Permissions []string `json:"permissions,omitempty"`
+	// EnrollLabels bounds the labels of the enrollment tokens an agent.enroll
+	// PAT may create; only valid together with the agent.enroll permission.
+	EnrollLabels []string `json:"enrollLabels,omitempty"`
 }
 
 // CreatePATResponse is the PAT creation response (the token is shown only once).
 type CreatePATResponse struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Role        string   `json:"role"`
-	Token       string   `json:"token"` // returned only at creation time
-	Permissions []string `json:"permissions,omitempty"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Role         string   `json:"role"`
+	Token        string   `json:"token"` // returned only at creation time
+	Permissions  []string `json:"permissions,omitempty"`
+	EnrollLabels []string `json:"enrollLabels,omitempty"`
 }
 
 // PATMeta is the metadata for a PAT (does not include the token hash).
@@ -408,8 +412,9 @@ type PATMeta struct {
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
 	// Owner is the owner's email, else its sub; empty for a role-only token.
-	Owner       string   `json:"owner,omitempty"`
-	Permissions []string `json:"permissions,omitempty"`
+	Owner        string   `json:"owner,omitempty"`
+	Permissions  []string `json:"permissions,omitempty"`
+	EnrollLabels []string `json:"enrollLabels,omitempty"`
 }
 
 // ---- webhook ----

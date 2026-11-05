@@ -11,6 +11,11 @@ id: my-agent-1
 # paths private; do not pass credential values as arguments or environment.
 credentialFile: /var/lib/unified-cd-agent/credentials.json
 enrollmentTokenFile: /var/lib/unified-cd-agent/enrollment.token
+# Cloud VM alternative: enroll with the VM's cloud identity instead of the id,
+# credentialFile and enrollmentTokenFile above (they cannot be combined).
+# enrollmentProvider: gcp          # aws, gcp or azure
+# enrollmentPolicy: gcp-ci         # controller enrollment policy name
+# enrollmentAudience: unified-cd   # must match the policy's audience
 labels:
   - kind:linux
   - env:prod

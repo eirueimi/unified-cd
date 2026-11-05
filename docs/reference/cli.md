@@ -538,13 +538,16 @@ Manage Personal Access Tokens (PATs) for authentication.
 ### token create
 
 ```
-unified-cli token create <name> [--expires-in duration] [--role role] [--permission name]...
+unified-cli token create <name> [--expires-in duration] [--role role] [--permission name]... [--enroll-label label]...
 
   --expires-in  string   Token expiry duration (e.g. "720h", "8760h"). No expiry if omitted.
   --role        string   Role ceiling for the token: admin, developer, or viewer.
                          Must not exceed your own global role; it is refused, never reduced.
   --permission  string   Permission ceiling, e.g. job.read. Repeatable. You must hold each one
                          (globally or on at least one folder). Cannot be combined with --role.
+  --enroll-label string  Label bound for an enrollment-only token. Repeatable. Requires
+                         --permission agent.enroll; the enrollment tokens the PAT creates may carry
+                         only these labels. Entries must be non-empty and unique.
 ```
 
 Generates a new PAT. The token value is shown only once.
@@ -568,7 +571,11 @@ Refusals, printed as `server error: <message>` (the HTTP status in parentheses):
 | `unknown role "x"` / `unknown permission "x"` | 400 | A misspelled `--role` / `--permission` |
 | `role and permissions are mutually exclusive` | 400 | `--role` together with `--permission` |
 | `permissions must not be empty` | 400 | An API request with `"permissions": []` |
-| `cannot grant permissions: this token has no owner; use --role` | 400 | `--permission` used with the break-glass `UNIFIED_TOKEN` or another role-only PAT |
+| `cannot grant permissions: this token has no owner; use --role` | 400 | `--permission` used with the break-glass `UNIFIED_TOKEN` or another role-only PAT, with any list other than exactly `agent.enroll` (that one is allowed) |
+| `enrollLabels requires the agent.enroll permission` | 400 | `--enroll-label` without `--permission agent.enroll` |
+| `enrollLabels must not contain empty entries` | 400 | A blank `--enroll-label` |
+| `enrollLabels must not contain duplicates` | 400 | The same `--enroll-label` twice |
+| `enrollLabels must be a subset of the creating token's enrollLabels` | 403 | You do not hold `agent.manage` and asked for a label outside your own enrollment-label bound (a creator with no bound can grant no labels) |
 | `token name "env:x" is reserved` | 400 | A name equal to `env:UNIFIED_TOKEN` or starting with `env:` |
 
 | `cannot create a token: this login predates group-aware tokens; log out and log in again, then retry` | 403 | You are using a browser session created before the upgrade |
@@ -586,6 +593,10 @@ If the server instead returns permissions that were not requested, the token is 
 (`the server returned permissions that were not requested; the token was revoked`). When you create
 a token with a PAT, the server may return fewer permissions than requested (the ones you hold); the
 CLI keeps that token and prints `warning: the token was narrowed to the permissions you hold: <list>` to stderr.
+
+Against a controller that predates `--enroll-label`, the response carries no `enrollLabels`, so the CLI
+revokes the token without printing it and fails with
+`the server does not support --enroll-label; the token was revoked; upgrade the controller`.
 
 ```bash
 unified-cli token create ci-bot
@@ -606,6 +617,12 @@ unified-cli token create viewer-bot --role viewer
 unified-cli token create ci-trigger --permission job.read --permission run.trigger
 # => Name: ci-trigger  ID: 5d0e...  Role:
 # => Permissions: job.read, run.trigger
+
+# An enrollment-only token bound to two labels (see Authorization: Enrollment-only PATs)
+unified-cli token create provisioner --permission agent.enroll --enroll-label kind:linux --enroll-label pool:build
+# => Name: provisioner  ID: 9b1e...  Role:
+# => Permissions: agent.enroll
+# => Enroll labels: kind:linux, pool:build
 ```
 
 Use the printed token as a bearer token in CLI, API calls, or agent configuration.
@@ -618,7 +635,8 @@ unified-cli token list
 
 Lists the tokens you may see (IDs, names, and the ceiling only; values are never retrievable): your own
 tokens with `token.create`, every token with `token.manage` (admin). The ceiling column is the role,
-or the comma-separated permission list for a permission-ceiling token. A role-only (pre-upgrade)
+or the comma-separated permission list for a permission-ceiling token, followed by
+`enroll-labels=<labels>` for a token with an enrollment label bound. A role-only (pre-upgrade)
 token has no owner, so a caller without `token.manage` does not see it.
 
 ```
@@ -960,6 +978,8 @@ unified-cli agent enrollment list
 unified-cli agent enrollment revoke <enrollment-id>
 ```
 
+A caller with only `agent.enroll` (an [enrollment-only PAT](../operator-manual/authorization.md#enrollment-only-pats)) cannot pass `--agent-id`, and every `--label` must be one of the PAT's enrollment labels; otherwise the command fails with `403` followed by the controller's reason, for example `label "pool:gpu" is not in this token's enrollment labels`. See [Provisioning many VMs](../operator-manual/agents.md#provisioning-many-vms-an-enrollment-only-pat).
+
 `enrollment create` prints the exact `unified-cd-agent --server ... --id ...
 --enrollment-token-file ...` (or, without `--output-file`, `--enrollment-token
 <value>`) command to run on the target host once the token is in place —
@@ -996,12 +1016,42 @@ exclusive; the agent exits with an error if both are set.
 
 Manage an identity with `agent identity get|enable|disable|revoke-credentials
 <agent-id>`. Use `agent enrollment-policy create|update|get|list|delete` for
-Kubernetes workload enrollment. Create/update accepts `--cluster`, repeatable
-`--namespace` and `--service-account`, repeatable `--allowed-label` and
-`--required-label`, `--access-token-ttl` (5 minutes to 4 hours), and
-`--enabled`; it never accepts kubeconfig contents. Capabilities are not part
-of the policy: each enrolled pod's agent auto-detects and self-reports its
-own capabilities on registration.
+workload enrollment policies. `--provider` selects the identity provider
+(`kubernetes`, `aws`, `gcp` or `azure`; default `kubernetes`). Create/update
+accepts, for every provider, repeatable `--allowed-label` and
+`--required-label`, `--access-token-ttl` (5 minutes to 4 hours), `--enabled`,
+and `--agent-id-template`. The template is fixed per provider, so the default
+is the only accepted value: `k8s:{cluster}:{namespace}:{podUID}`,
+`aws:{account}:{instanceId}`, `gcp:{project}:{instanceId}` or
+`azure:{subscription}:{resourceGroup}:{vmName}`. The provider-specific flags
+are:
+
+| Provider | Required flags | Optional flags |
+|---|---|---|
+| `kubernetes` | `--cluster`, repeatable `--namespace` and `--service-account` | |
+| `aws` | `--audience`, repeatable `--account-id` and `--role-name` | repeatable `--sts-region` (for example `eu-west-1`) |
+| `gcp` | `--audience`, repeatable `--project-id` and `--service-account` (a service account email) | |
+| `azure` | `--tenant-id`, `--audience`, repeatable `--subscription-id` and `--managed-identity-object-id` | repeatable `--resource-group` |
+
+```bash
+unified-cli agent enrollment-policy create aws-ci --provider aws \
+  --audience unified-cd --account-id 123456789012 --role-name ci-agent \
+  --required-label kind:linux
+```
+
+For the cloud providers, the IAM-side setup and the matching agent flags are in
+[Cloud VM enrollment](../operator-manual/agents.md#cloud-vm-enrollment-aws-gcp-azure);
+each cloud provider was verified only against simulated responses in this release.
+
+A flag that belongs to another provider is ignored without an error. The `kubernetes` flags are
+checked by the CLI; for the other providers the controller rejects a policy
+with a missing field (`400 invalid enrollment policy: ...`, for example `aws
+enrollment policy requires audience, accountIds and roleNames`). The
+`--sts-region` values must look like an AWS region name. The same policies are
+available over `/api/v1/agent-enrollment-policies`. A policy never accepts
+kubeconfig contents or cloud credentials. Capabilities are not part of the
+policy: each enrolled agent auto-detects and self-reports its own
+capabilities on registration.
 
 ### agent list
 

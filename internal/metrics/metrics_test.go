@@ -84,3 +84,10 @@ func TestAgentAuthEventsUseBoundedLabels(t *testing.T) {
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.agentAuthEvents.WithLabelValues("one-time-token", "success", "other")))
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.agentAuthEvents.WithLabelValues("other", "failure", "other")))
 }
+
+func TestAgentAuthProviderCloudProviders(t *testing.T) {
+	for _, provider := range []string{"kubernetes", "aws", "gcp", "azure"} {
+		assert.Equal(t, provider, agentAuthProvider(provider))
+	}
+	assert.Equal(t, "other", agentAuthProvider("oracle"))
+}

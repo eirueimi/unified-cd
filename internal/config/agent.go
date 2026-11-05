@@ -85,15 +85,23 @@ type AgentConfig struct {
 	// field: it is populated only from the --enrollment-token flag, the
 	// UNIFIED_AGENT_ENROLLMENT_TOKEN env var, or stdin, never from a
 	// persisted config file.
-	EnrollmentToken string   `yaml:"-"`
-	ID              string   `yaml:"id"`
-	Labels          []string `yaml:"labels"`
-	ExposeEnv       []string `yaml:"exposeEnv"`
-	CacheEndpoint   string   `yaml:"cacheEndpoint"`
-	CacheKey        string   `yaml:"cacheKey"`
-	CacheSecret     string   `yaml:"cacheSecret"`
-	CacheBucket     string   `yaml:"cacheBucket"`
-	MaxConcurrent   int      `yaml:"maxConcurrent"`
+	EnrollmentToken string `yaml:"-"`
+	// EnrollmentProvider selects cloud instance-identity enrollment (aws, gcp
+	// or azure). EnrollmentPolicy names the controller enrollment policy and
+	// EnrollmentAudience the audience the identity proof is issued for.
+	// Env: UNIFIED_AGENT_ENROLLMENT_PROVIDER, UNIFIED_AGENT_ENROLLMENT_POLICY,
+	// UNIFIED_AGENT_ENROLLMENT_AUDIENCE.
+	EnrollmentProvider string   `yaml:"enrollmentProvider"`
+	EnrollmentPolicy   string   `yaml:"enrollmentPolicy"`
+	EnrollmentAudience string   `yaml:"enrollmentAudience"`
+	ID                 string   `yaml:"id"`
+	Labels             []string `yaml:"labels"`
+	ExposeEnv          []string `yaml:"exposeEnv"`
+	CacheEndpoint      string   `yaml:"cacheEndpoint"`
+	CacheKey           string   `yaml:"cacheKey"`
+	CacheSecret        string   `yaml:"cacheSecret"`
+	CacheBucket        string   `yaml:"cacheBucket"`
+	MaxConcurrent      int      `yaml:"maxConcurrent"`
 	// MaxDetachedConcurrent caps how many detached (spec.detached) runs this
 	// agent claims concurrently, from a pool separate from MaxConcurrent.
 	// 0 / unset -> the agent applies the default (16), so detached jobs are
@@ -203,6 +211,9 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 		CredentialFile:      os.Getenv("UNIFIED_AGENT_CREDENTIAL_FILE"),
 		EnrollmentTokenFile: os.Getenv("UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE"),
 		EnrollmentToken:     os.Getenv("UNIFIED_AGENT_ENROLLMENT_TOKEN"),
+		EnrollmentProvider:  os.Getenv("UNIFIED_AGENT_ENROLLMENT_PROVIDER"),
+		EnrollmentPolicy:    os.Getenv("UNIFIED_AGENT_ENROLLMENT_POLICY"),
+		EnrollmentAudience:  os.Getenv("UNIFIED_AGENT_ENROLLMENT_AUDIENCE"),
 		ID:                  os.Getenv("UNIFIED_AGENT_ID"),
 		CacheEndpoint:       os.Getenv("UNIFIED_CACHE_ENDPOINT"),
 		CacheKey:            os.Getenv("UNIFIED_CACHE_KEY"),
@@ -266,6 +277,15 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.EnrollmentTokenFile != "" {
 		eff.EnrollmentTokenFile = file.EnrollmentTokenFile
+	}
+	if file.EnrollmentProvider != "" {
+		eff.EnrollmentProvider = file.EnrollmentProvider
+	}
+	if file.EnrollmentPolicy != "" {
+		eff.EnrollmentPolicy = file.EnrollmentPolicy
+	}
+	if file.EnrollmentAudience != "" {
+		eff.EnrollmentAudience = file.EnrollmentAudience
 	}
 	if file.ID != "" {
 		eff.ID = file.ID

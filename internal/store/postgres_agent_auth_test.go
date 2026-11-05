@@ -588,3 +588,103 @@ func identityIDForAgent(t *testing.T, pg *Postgres, agentID string) string {
 	require.NoError(t, pg.pool.QueryRow(context.Background(), `SELECT id::text FROM agent_identities WHERE agent_id = $1`, agentID).Scan(&identityID))
 	return identityID
 }
+
+func cloudPolicy(name, provider, template, config, constraints string) AgentEnrollmentPolicy {
+	return AgentEnrollmentPolicy{
+		Name: name, Provider: provider, AgentIDTemplate: template,
+		ProviderConfig: json.RawMessage(config), SubjectConstraints: json.RawMessage(constraints),
+		AllowedLabels: []string{"kind:linux"}, AccessTokenTTL: time.Hour, Enabled: true,
+	}
+}
+
+func TestPostgres_CloudEnrollmentPolicyRoundTrip(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	aws := cloudPolicy("aws-ci", "aws", "aws:{account}:{instanceId}",
+		`{"audience":"unified-cd","stsRegions":["eu-west-1","us-gov-west-1"]}`,
+		`{"accountIds":["123456789012"],"roleNames":["ci-agent"]}`)
+	gcp := cloudPolicy("gcp-ci", "gcp", "gcp:{project}:{instanceId}",
+		`{"audience":"unified-cd"}`,
+		`{"projectIds":["my-ci"],"serviceAccounts":["ci@my-ci.iam.gserviceaccount.com"]}`)
+	azure := cloudPolicy("azure-ci", "azure", "azure:{subscription}:{resourceGroup}:{vmName}",
+		`{"tenantId":"11111111-1111-1111-1111-111111111111","audience":"unified-cd"}`,
+		`{"subscriptionIds":["22222222-2222-2222-2222-222222222222"],"managedIdentityObjectIds":["33333333-3333-3333-3333-333333333333"]}`)
+	for _, policy := range []AgentEnrollmentPolicy{aws, gcp, azure} {
+		created, err := pg.UpsertAgentEnrollmentPolicy(ctx, policy)
+		require.NoError(t, err, policy.Name)
+		got, err := pg.GetAgentEnrollmentPolicy(ctx, policy.Name)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Equal(t, created.ID, got.ID)
+		assert.Equal(t, policy.Provider, got.Provider)
+		assert.JSONEq(t, string(policy.ProviderConfig), string(got.ProviderConfig))
+		assert.JSONEq(t, string(policy.SubjectConstraints), string(got.SubjectConstraints))
+	}
+
+	got, err := pg.GetAgentEnrollmentPolicy(ctx, "aws-ci")
+	require.NoError(t, err)
+	cfg, constraints, err := DecodeCloudPolicy[AWSPolicyConfig, AWSSubjectConstraints](*got)
+	require.NoError(t, err)
+	assert.Equal(t, AWSPolicyConfig{Audience: "unified-cd", STSRegions: []string{"eu-west-1", "us-gov-west-1"}}, cfg)
+	assert.Equal(t, AWSSubjectConstraints{AccountIDs: []string{"123456789012"}, RoleNames: []string{"ci-agent"}}, constraints)
+}
+
+func TestPostgres_CloudEnrollmentPolicyValidation(t *testing.T) {
+	pg := NewTestPostgres(t)
+	const awsTpl = "aws:{account}:{instanceId}"
+	cases := []struct {
+		name   string
+		policy AgentEnrollmentPolicy
+		want   string
+	}{
+		{"aws no audience", cloudPolicy("p", "aws", awsTpl, `{}`, `{"accountIds":["123456789012"],"roleNames":["r"]}`), "aws enrollment policy requires audience, accountIds and roleNames"},
+		{"aws no accounts", cloudPolicy("p", "aws", awsTpl, `{"audience":"a"}`, `{"roleNames":["r"]}`), "aws enrollment policy requires audience, accountIds and roleNames"},
+		{"aws no roles", cloudPolicy("p", "aws", awsTpl, `{"audience":"a"}`, `{"accountIds":["123456789012"]}`), "aws enrollment policy requires audience, accountIds and roleNames"},
+		{"aws bad region", cloudPolicy("p", "aws", awsTpl, `{"audience":"a","stsRegions":["evil.example.com"]}`, `{"accountIds":["123456789012"],"roleNames":["r"]}`), `invalid stsRegions entry "evil.example.com"`},
+		{"gcp missing", cloudPolicy("p", "gcp", "gcp:{project}:{instanceId}", `{"audience":"a"}`, `{"projectIds":["p"]}`), "gcp enrollment policy requires audience, projectIds and serviceAccounts"},
+		{"azure missing", cloudPolicy("p", "azure", "azure:{subscription}:{resourceGroup}:{vmName}", `{"audience":"a"}`, `{"subscriptionIds":["s"],"managedIdentityObjectIds":["o"]}`), "azure enrollment policy requires tenantId, audience, subscriptionIds and managedIdentityObjectIds"},
+		{"azure tenant dotdot", azBadTenant(".."), `invalid tenantId ".."`},
+		{"azure tenant escaped slash", azBadTenant("%2f"), `invalid tenantId "%2f"`},
+		{"azure tenant backslash", azBadTenant(`a\b`), `invalid tenantId "a\\b"`},
+		{"azure tenant not guid", azBadTenant("tenant-1"), `invalid tenantId "tenant-1"`},
+		{"unknown provider", cloudPolicy("p", "x", awsTpl, `{}`, `{}`), `unsupported enrollment provider "x"`},
+		{"wrong template", cloudPolicy("p", "gcp", awsTpl, `{"audience":"a"}`, `{"projectIds":["p"],"serviceAccounts":["s"]}`), "unsupported agent ID template"},
+	}
+	for _, tc := range cases {
+		_, err := pg.UpsertAgentEnrollmentPolicy(t.Context(), tc.policy)
+		require.Error(t, err, tc.name)
+		assert.Equal(t, tc.want, err.Error(), tc.name)
+	}
+}
+
+func TestMigration026AllowsCloudPolicyProviders(t *testing.T) {
+	dsn := NewEmptyTestDatabase(t)
+	require.NoError(t, (&Postgres{}).MigrateTo(dsn, 25))
+	pg, err := NewPostgres(context.Background(), dsn)
+	require.NoError(t, err)
+	t.Cleanup(pg.Close)
+	ctx := context.Background()
+	const insert = `INSERT INTO agent_enrollment_policies (name, provider, agent_id_template, access_token_ttl_seconds) VALUES ($1,$2,'t',3600)`
+	_, err = pg.pool.Exec(ctx, insert, "before", "gcp")
+	require.Error(t, err, "migration 025 only allows kubernetes")
+
+	require.NoError(t, (&Postgres{}).MigrateTo(dsn, 26))
+	for _, provider := range []string{"kubernetes", "aws", "gcp", "azure"} {
+		_, err = pg.pool.Exec(ctx, insert, "after-"+provider, provider)
+		require.NoError(t, err, provider)
+	}
+	_, err = pg.pool.Exec(ctx, insert, "after-other", "other")
+	require.Error(t, err)
+
+	require.NoError(t, (&Postgres{}).MigrateTo(dsn, 25))
+	var count int
+	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM agent_enrollment_policies`).Scan(&count))
+	assert.Equal(t, 1, count, "down migration keeps only kubernetes rows")
+	_, err = pg.pool.Exec(ctx, insert, "again", "aws")
+	require.Error(t, err)
+}
+
+func azBadTenant(tenant string) AgentEnrollmentPolicy {
+	cfg, _ := json.Marshal(map[string]string{"tenantId": tenant, "audience": "a"})
+	return cloudPolicy("p", "azure", "azure:{subscription}:{resourceGroup}:{vmName}", string(cfg), `{"subscriptionIds":["s"],"managedIdentityObjectIds":["o"]}`)
+}

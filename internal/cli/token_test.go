@@ -168,3 +168,50 @@ func TestTokenCreateForeignPermissionsRevoked(t *testing.T) {
 		})
 	}
 }
+
+func TestTokenCreateSendsEnrollLabels(t *testing.T) {
+	tr := &captureTransport{responseFor: func(string) (int, []byte) {
+		b, _ := json.Marshal(api.CreatePATResponse{ID: "1", Name: "prov", Token: "exc_x",
+			Permissions: []string{"agent.enroll"}, EnrollLabels: []string{"kind:linux", "pool:build"}})
+		return http.StatusOK, b
+	}}
+	cmd, out := newTestTokenCmd(tr)
+	cmd.SetArgs([]string{"create", "prov", "--permission", "agent.enroll", "--enroll-label", "kind:linux", "--enroll-label", "pool:build"})
+	require.NoError(t, cmd.Execute())
+	assert.JSONEq(t, `{"name":"prov","permissions":["agent.enroll"],"enrollLabels":["kind:linux","pool:build"]}`, string(tr.records[0].body))
+	assert.Contains(t, out.String(), "Enroll labels: kind:linux, pool:build")
+}
+
+// An old controller ignores "enrollLabels" and would mint an unbounded token.
+func TestTokenCreateEnrollLabelIgnoredByServerRevokes(t *testing.T) {
+	tr := &captureTransport{responseFor: func(path string) (int, []byte) {
+		if path == "/api/v1/tokens/42" {
+			return http.StatusNoContent, nil
+		}
+		b, _ := json.Marshal(api.CreatePATResponse{ID: "42", Name: "prov", Token: "exc_secret", Permissions: []string{"agent.enroll"}})
+		return http.StatusOK, b
+	}}
+	cmd, out := newTestTokenCmd(tr)
+	cmd.SetArgs([]string{"create", "prov", "--permission", "agent.enroll", "--enroll-label", "kind:linux"})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the server does not support --enroll-label")
+	require.Len(t, tr.records, 2)
+	assert.Equal(t, http.MethodDelete, tr.records[1].method)
+	assert.Equal(t, "/api/v1/tokens/42", tr.records[1].path)
+	assert.NotContains(t, out.String(), "exc_secret")
+	assert.NotContains(t, err.Error(), "exc_secret")
+}
+
+func TestTokenListShowsEnrollLabels(t *testing.T) {
+	tr := &captureTransport{responseFor: func(string) (int, []byte) {
+		b, _ := json.Marshal([]api.PATMeta{{ID: "1", Name: "prov", Permissions: []string{"agent.enroll"}, EnrollLabels: []string{"kind:linux"}, CreatedAt: time.Now()}})
+		return http.StatusOK, b
+	}}
+	cmd, out := newTestTokenCmd(tr)
+	cmd.SetArgs([]string{"list"})
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, out.String(), "agent.enroll")
+	assert.Contains(t, out.String(), "enroll-labels=kind:linux")
+}

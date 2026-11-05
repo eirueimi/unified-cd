@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -231,7 +232,7 @@ func TestAgentEnrollRejectsRepeatedAndInvalidEnrollment(t *testing.T) {
 func TestAgentEnrollRateLimitCannotBeBypassedWithDistinctPolicies(t *testing.T) {
 	s := NewServer(Config{}, nil)
 	for i := 0; i < enrollmentLimiterCapacity+10; i++ {
-		body, err := json.Marshal(api.AgentEnrollRequest{Provider: "one-time-token", Policy: fmt.Sprintf("untrusted-%d", i)})
+		body, err := json.Marshal(api.AgentEnrollRequest{Policy: fmt.Sprintf("untrusted-%d", i)})
 		require.NoError(t, err)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/enroll", bytes.NewReader(body))
 		req.RemoteAddr = "192.0.2.44:1234"
@@ -315,4 +316,155 @@ func TestAgentEnrollDisabledIdentityResponseIsExplicit(t *testing.T) {
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusForbidden, rec.Code)
 	require.Equal(t, "agent identity disabled\n", rec.Body.String())
+}
+
+// enrollOnlyToken mints an ownerless agent.enroll PAT with the given label
+// bound (nil = unbounded) and returns its plaintext token.
+func enrollOnlyToken(t *testing.T, s *Server, bound []string) string {
+	t.Helper()
+	code, body, resp := postToken(t, s, "secret",
+		api.CreatePATRequest{Name: "prov", Permissions: []string{"agent.enroll"}, EnrollLabels: bound})
+	require.Equal(t, http.StatusOK, code, body)
+	return resp.Token
+}
+
+func TestAgentEnrollmentEnrollOnlyCallerBoundToLabels(t *testing.T) {
+	s, _ := breakGlassServer(t)
+	bounded := enrollOnlyToken(t, s, []string{"kind:linux", "pool:build"})
+
+	rec := enrollmentRequest(t, s, bounded, api.CreateAgentEnrollmentRequest{Labels: []string{"kind:linux"}})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var created api.CreateAgentEnrollmentResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	assert.Regexp(t, `^agent-[0-9a-f]{8}$`, created.AgentID)
+
+	rec = enrollmentRequest(t, s, bounded, api.CreateAgentEnrollmentRequest{Labels: []string{"kind:linux", "pool:gpu"}})
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Equal(t, "label \"pool:gpu\" is not in this token's enrollment labels\n", rec.Body.String())
+
+	// Labels are compared exactly, without trimming.
+	rec = enrollmentRequest(t, s, bounded, api.CreateAgentEnrollmentRequest{Labels: []string{" kind:linux"}})
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+
+	// No labels at all is within any bound.
+	rec = enrollmentRequest(t, s, bounded, api.CreateAgentEnrollmentRequest{})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+}
+
+func TestAgentEnrollmentEnrollOnlyCallerWithoutBound(t *testing.T) {
+	s, _ := breakGlassServer(t)
+	unbounded := enrollOnlyToken(t, s, nil)
+
+	rec := enrollmentRequest(t, s, unbounded, api.CreateAgentEnrollmentRequest{Labels: []string{"kind:linux"}})
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Equal(t, "label \"kind:linux\" is not in this token's enrollment labels\n", rec.Body.String())
+
+	rec = enrollmentRequest(t, s, unbounded, api.CreateAgentEnrollmentRequest{})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+}
+
+func TestAgentEnrollmentEnrollOnlyCallerCannotSetAgentID(t *testing.T) {
+	s, _ := breakGlassServer(t)
+	tok := enrollOnlyToken(t, s, []string{"kind:linux"})
+	for _, id := range []string{"vm-agent-01", "aws:123456789012:i-0abc12345678", "Bad ID"} {
+		rec := enrollmentRequest(t, s, tok, api.CreateAgentEnrollmentRequest{AgentID: id})
+		require.Equal(t, http.StatusForbidden, rec.Code, id+": "+rec.Body.String())
+		assert.Equal(t, "agentId cannot be set with agent.enroll; it is generated\n", rec.Body.String())
+	}
+}
+
+func TestAgentEnrollmentManageCallerUnchanged(t *testing.T) {
+	s, _ := newTestServer(t)
+	rec := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{AgentID: "vm-agent-01", Labels: []string{"anything:goes"}})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+}
+
+func TestAgentEnrollmentRejectsCloudShapedAgentID(t *testing.T) {
+	s, _ := newTestServer(t)
+	rec := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{AgentID: "aws:123456789012:i-0abc12345678"})
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+}
+
+func TestAgentEnrollmentAuditResourceCarriesAgentIDAndLabels(t *testing.T) {
+	s, pg := breakGlassServer(t)
+	tok := enrollOnlyToken(t, s, []string{"kind:linux", "pool:build"})
+	rec := enrollmentRequest(t, s, tok, api.CreateAgentEnrollmentRequest{Labels: []string{"kind:linux", "pool:build"}})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var created api.CreateAgentEnrollmentResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+
+	logs, err := pg.ListAuditLogs(t.Context(), 20, 0)
+	require.NoError(t, err)
+	var found bool
+	for _, l := range logs {
+		if l.Action == "agent.enrollment.create" {
+			found = true
+			assert.Equal(t, created.ID+" agent="+created.AgentID+" labels=kind:linux,pool:build", l.Resource)
+		}
+	}
+	require.True(t, found)
+
+	// Without labels the resource is just the agent ID.
+	rec = enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{AgentID: "vm-agent-02"})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	logs, err = pg.ListAuditLogs(t.Context(), 20, 0)
+	require.NoError(t, err)
+	var second api.CreateAgentEnrollmentResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &second))
+	assert.Equal(t, second.ID+" agent=vm-agent-02", logs[0].Resource)
+}
+
+func TestAgentEnrollmentPolicyCloudProviders(t *testing.T) {
+	s, _ := newTestServer(t)
+	post := func(body string) (int, string) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-enrollment-policies", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	get := func(name string) api.AgentEnrollmentPolicyRequest {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/agent-enrollment-policies/"+name, nil)
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		var got api.AgentEnrollmentPolicyRequest
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		return got
+	}
+
+	code, body := post(`{"name":"gcp-ci","provider":"gcp","audience":"unified-cd","projectIds":["my-ci"],"serviceAccounts":["ci@my-ci.iam.gserviceaccount.com"],"agentIdTemplate":"gcp:{project}:{instanceId}","allowedLabels":["kind:linux"],"accessTokenTTL":"1h","enabled":true}`)
+	require.Equal(t, http.StatusCreated, code, body)
+	assert.NotContains(t, body, "cluster")
+	assert.NotContains(t, body, "namespaces")
+	gcp := get("gcp-ci")
+	assert.Equal(t, "gcp", gcp.Provider)
+	assert.Equal(t, "unified-cd", gcp.Audience)
+	assert.Equal(t, []string{"my-ci"}, gcp.ProjectIDs)
+	assert.Equal(t, []string{"ci@my-ci.iam.gserviceaccount.com"}, gcp.ServiceAccounts)
+
+	code, body = post(`{"name":"aws-ci","provider":"aws","audience":"unified-cd","stsRegions":["eu-west-1"],"accountIds":["123456789012"],"roleNames":["ci-agent"],"agentIdTemplate":"aws:{account}:{instanceId}","accessTokenTTL":"1h","enabled":true}`)
+	require.Equal(t, http.StatusCreated, code, body)
+	aws := get("aws-ci")
+	assert.Equal(t, []string{"eu-west-1"}, aws.STSRegions)
+	assert.Equal(t, []string{"123456789012"}, aws.AccountIDs)
+	assert.Equal(t, []string{"ci-agent"}, aws.RoleNames)
+
+	code, body = post(`{"name":"azure-ci","provider":"azure","tenantId":"11111111-1111-1111-1111-111111111111","audience":"unified-cd","subscriptionIds":["sub-1"],"resourceGroups":["ci"],"managedIdentityObjectIds":["oid-1"],"agentIdTemplate":"azure:{subscription}:{resourceGroup}:{vmName}","accessTokenTTL":"1h","enabled":true}`)
+	require.Equal(t, http.StatusCreated, code, body)
+	azure := get("azure-ci")
+	assert.Equal(t, "11111111-1111-1111-1111-111111111111", azure.TenantID)
+	assert.Equal(t, []string{"sub-1"}, azure.SubscriptionIDs)
+	assert.Equal(t, []string{"ci"}, azure.ResourceGroups)
+	assert.Equal(t, []string{"oid-1"}, azure.ManagedIdentityObjectIDs)
+
+	code, body = post(`{"name":"bad","provider":"gcp","audience":"unified-cd","agentIdTemplate":"gcp:{project}:{instanceId}","accessTokenTTL":"1h","enabled":true}`)
+	assert.Equal(t, http.StatusBadRequest, code)
+	assert.Contains(t, body, "invalid enrollment policy: gcp enrollment policy requires audience, projectIds and serviceAccounts")
+
+	code, body = post(`{"name":"bad","provider":"x","agentIdTemplate":"t","accessTokenTTL":"1h","enabled":true}`)
+	assert.Equal(t, http.StatusBadRequest, code)
+	assert.Contains(t, body, `invalid enrollment policy: unsupported enrollment provider "x"`)
 }

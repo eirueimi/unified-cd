@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -92,6 +93,9 @@ func main() {
 	// startup from the enrollment response or persisted credential (see
 	// EnsureIdentity below) rather than defaulting to the hostname.
 	id := flag.String("id", eff.ID, "agent ID (optional; defaults to the identity bound to the enrollment token / persisted credential)")
+	enrollmentProvider := flag.String("enrollment-provider", eff.EnrollmentProvider, "enroll with a cloud instance identity: aws, gcp or azure; requires --enrollment-policy and --enrollment-audience (env: UNIFIED_AGENT_ENROLLMENT_PROVIDER)")
+	enrollmentPolicy := flag.String("enrollment-policy", eff.EnrollmentPolicy, "controller enrollment policy to use with --enrollment-provider (env: UNIFIED_AGENT_ENROLLMENT_POLICY)")
+	enrollmentAudience := flag.String("enrollment-audience", eff.EnrollmentAudience, "audience the cloud identity proof is issued for; must match the policy (env: UNIFIED_AGENT_ENROLLMENT_AUDIENCE)")
 	labelsStr := flag.String("labels", eff.LabelsString(), "comma-separated agent labels (env: UNIFIED_AGENT_LABELS)")
 	exposeEnvStr := flag.String("expose-env", strings.Join(eff.ExposeEnv, ","), "comma-separated environment variable names to expose (env: UNIFIED_AGENT_EXPOSE_ENV)")
 	cacheEndpoint := flag.String("cache-endpoint", eff.CacheEndpoint, "MinIO endpoint for cache (e.g. localhost:9000)")
@@ -144,6 +148,14 @@ func main() {
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
+
+	if err := validateCloudEnrollmentFlags(cloudEnrollmentFlags{
+		provider: *enrollmentProvider, policy: *enrollmentPolicy, audience: *enrollmentAudience,
+		token: tokenValue, tokenFile: *enrollmentTokenFile, credentialFile: *credentialFile, id: *id,
+	}); err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
 
 	if *server == "" {
 		slog.Error("--server is required")
@@ -202,22 +214,64 @@ func main() {
 		}
 	}
 
-	source := agent.NewCredentialManager(agent.CredentialManagerConfig{
-		Server: *server, AgentID: *id, CredentialFile: *credentialFile, EnrollmentTokenFile: *enrollmentTokenFile, EnrollmentToken: tokenValue,
-	})
-	cli := agent.NewClientWithTokenSource(*server, source, nil)
+	// The agent is created before its identity is known so cloud enrollment can
+	// ask it which capabilities it advertises (the same set Run registers); ID,
+	// Labels and Client are filled in once the identity is resolved.
+	a := agent.NewWithLabels("", labels, nil)
+	a.RuntimePref = *containerRuntime
+	a.PauseImage = *pauseImage
+	a.RunnerImage = *runnerImage
+	a.ToolsDir = toolsDir
+	a.WorkspaceDir = resolvedWorkspaceDir
 
-	// Resolve the effective agent ID before building the run loop. With --id
-	// set this is a no-op assertion; with --id omitted it is adopted from the
-	// persisted credential (no network call) or, on a genuinely first run,
-	// from the enrollment response.
-	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	agentID, err := source.EnsureIdentity(resolveCtx)
-	resolveCancel()
-	if err != nil {
-		slog.Error("resolve agent identity", "error", err)
-		os.Exit(1)
+	var cli *agent.Client
+	var agentID string
+	// Capability detection can run the securityContext probe (up to 90s, and it
+	// may pull the pause image), so it happens before the 30s identity budget
+	// starts: only the enrollment exchange itself runs under resolveCtx.
+	var caps []string
+	if *enrollmentProvider != "" {
+		caps = a.Capabilities()
 	}
+	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if *enrollmentProvider != "" {
+		// Cloud instance-identity enrollment: the controller assigns the
+		// agent ID and authorizes the labels, so both come from the source.
+		cloudSource, err := agent.NewCloudCredentialSource(agent.CloudCredentialSourceConfig{
+			Server: *server, Provider: *enrollmentProvider, Policy: *enrollmentPolicy, Audience: *enrollmentAudience,
+			Labels: labels, Capabilities: caps,
+		})
+		if err != nil {
+			resolveCancel()
+			slog.Error("cloud enrollment", "error", err)
+			os.Exit(1)
+		}
+		if _, err := cloudSource.Token(resolveCtx); err != nil {
+			resolveCancel()
+			slog.Error("resolve agent identity", "error", err)
+			os.Exit(1)
+		}
+		agentID = cloudSource.AgentID()
+		labels = cloudSource.Labels()
+		cli = agent.NewClientWithTokenSource(*server, cloudSource, nil)
+	} else {
+		source := agent.NewCredentialManager(agent.CredentialManagerConfig{
+			Server: *server, AgentID: *id, CredentialFile: *credentialFile, EnrollmentTokenFile: *enrollmentTokenFile, EnrollmentToken: tokenValue,
+		})
+		cli = agent.NewClientWithTokenSource(*server, source, nil)
+
+		// Resolve the effective agent ID before building the run loop. With --id
+		// set this is a no-op assertion; with --id omitted it is adopted from the
+		// persisted credential (no network call) or, on a genuinely first run,
+		// from the enrollment response.
+		agentID, err = source.EnsureIdentity(resolveCtx)
+		if err != nil {
+			resolveCancel()
+			slog.Error("resolve agent identity", "error", err)
+			os.Exit(1)
+		}
+	}
+	resolveCancel()
 	slog.Info("agent identity resolved", "agentId", agentID)
 
 	// First SIGINT/SIGTERM begins a graceful shutdown (drain in-flight runs up to
@@ -234,17 +288,14 @@ func main() {
 		}
 	})
 	defer cancel()
-	a := agent.NewWithLabels(agentID, labels, cli)
+	a.ID = agentID
+	a.Labels = labels
+	a.Client = cli
 	a.ExposeEnv = exposeEnv
 	a.MaxConcurrent = *maxConcurrent
 	a.MaxDetachedConcurrent = *maxDetachedConcurrent
 	a.CleanWorkspace = *cleanWorkspace
-	a.WorkspaceDir = resolvedWorkspaceDir
 	a.DrainTimeout = *drainTimeout
-	a.RuntimePref = *containerRuntime
-	a.PauseImage = *pauseImage
-	a.RunnerImage = *runnerImage
-	a.ToolsDir = toolsDir
 	a.MinFreeDisk = minFreeDiskThreshold.OrDefault()
 	slog.Info("disk gate: " + minFreeDiskLogValue(minFreeDiskThreshold))
 	a.WorkspaceRetentionDays = *workspaceRetentionDays
@@ -303,4 +354,33 @@ func minFreeDiskLogValue(t config.DiskThreshold) string {
 	default:
 		return "minFreeDisk=" + t.String()
 	}
+}
+
+// cloudEnrollmentFlags carries the effective values that decide whether cloud
+// instance-identity enrollment is valid.
+type cloudEnrollmentFlags struct {
+	provider, policy, audience       string
+	token, tokenFile, credentialFile string
+	id                               string
+}
+
+// validateCloudEnrollmentFlags checks the --enrollment-provider combination.
+// With no provider it accepts anything, leaving the existing token and
+// credential-file startup path untouched.
+func validateCloudEnrollmentFlags(f cloudEnrollmentFlags) error {
+	if f.provider == "" {
+		return nil
+	}
+	switch f.provider {
+	case "aws", "gcp", "azure":
+	default:
+		return errors.New("--enrollment-provider must be aws, gcp or azure")
+	}
+	if f.policy == "" || f.audience == "" {
+		return errors.New("--enrollment-provider requires --enrollment-policy and --enrollment-audience")
+	}
+	if f.token != "" || f.tokenFile != "" || f.credentialFile != "" || f.id != "" {
+		return errors.New("--enrollment-provider cannot be combined with --enrollment-token, --enrollment-token-file, --credential-file or --id")
+	}
+	return nil
 }

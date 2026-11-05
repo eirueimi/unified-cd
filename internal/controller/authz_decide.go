@@ -49,6 +49,9 @@ type authzDecision struct {
 	GrantedBy  string
 	Denied     bool
 	Status     int
+	// Resource, when set by a handler through setAuditResource, overrides the
+	// resource the audit middleware would otherwise derive for the request.
+	Resource string
 }
 
 // scopeGlobalName is the Scope of a decision that is not tied to a job.
@@ -68,6 +71,15 @@ func withDecisionSlot(r *http.Request) (*http.Request, *authzDecision) {
 func recordDecision(r *http.Request, d authzDecision) {
 	if slot, ok := r.Context().Value(decisionSlotKey{}).(*authzDecision); ok {
 		*slot = d
+	}
+}
+
+// setAuditResource lets a handler name the audit resource itself, for routes
+// whose resource is not a URL param or a single body field. Without a decision
+// slot it does nothing.
+func setAuditResource(r *http.Request, resource string) {
+	if slot, ok := r.Context().Value(decisionSlotKey{}).(*authzDecision); ok {
+		slot.Resource = resource
 	}
 }
 

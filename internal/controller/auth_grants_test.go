@@ -42,7 +42,7 @@ func mustOwnedPAT(t *testing.T, st store.Store, token, role string, perms []stri
 	return pat
 }
 
-func TestServerAuth_BreakGlassHoldsAll25(t *testing.T) {
+func TestServerAuth_BreakGlassHoldsAll26(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
 	s.cfg.Token = "bg-token" // break-glass requires the configured bootstrap token
 	_, err := pg.UpsertBootstrapPAT(context.Background(), BootstrapPATName, HashToken("bg-token"))
@@ -57,7 +57,7 @@ func TestServerAuth_BreakGlassHoldsAll25(t *testing.T) {
 	assert.Empty(t, p.OwnerPATID)
 	assert.False(t, p.ClaimsKnown)
 	all := authz.All()
-	require.Len(t, all, 25)
+	require.Len(t, all, 26)
 	for _, perm := range all {
 		assert.True(t, p.Grants.Can(perm, ""), string(perm))
 		assert.True(t, p.Grants.HeldAnywhere(perm), string(perm))

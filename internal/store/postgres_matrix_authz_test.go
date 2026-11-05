@@ -262,3 +262,66 @@ func TestLatestSessionClaims(t *testing.T) {
 	assert.NotNil(t, claims)
 	assert.Empty(t, claims)
 }
+
+func TestMigration025AddsPATEnrollLabels(t *testing.T) {
+	dsn := NewEmptyTestDatabase(t)
+	require.NoError(t, (&Postgres{}).MigrateTo(dsn, 24))
+	require.NoError(t, (&Postgres{}).MigrateTo(dsn, 25))
+	pg, err := NewPostgres(context.Background(), dsn)
+	require.NoError(t, err)
+	t.Cleanup(pg.Close)
+
+	var typ, nullable string
+	require.NoError(t, pg.pool.QueryRow(context.Background(), `SELECT data_type, is_nullable FROM information_schema.columns
+		WHERE table_name = 'pats' AND column_name = 'enroll_labels'`).Scan(&typ, &nullable))
+	assert.Equal(t, "ARRAY", typ)
+	assert.Equal(t, "YES", nullable)
+}
+
+func TestPATEnrollLabelsRoundTrip(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	_, err := pg.CreateOwnedPAT(ctx, NewOwnedPAT{
+		Name: "owned", TokenHash: "h1",
+		Owner:        PATOwner{Sub: "s1", Email: "a@example.com"},
+		Permissions:  []string{"agent.enroll"},
+		EnrollLabels: []string{"kind:linux"},
+	})
+	require.NoError(t, err)
+	got, err := pg.GetPATByHash(ctx, "h1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"kind:linux"}, got.EnrollLabels)
+
+	_, err = pg.CreatePAT(ctx, "legacy", "h2", "developer", nil)
+	require.NoError(t, err)
+	legacy, err := pg.GetPATByHash(ctx, "h2")
+	require.NoError(t, err)
+	assert.Nil(t, legacy.EnrollLabels)
+
+	list, err := pg.ListPATs(ctx)
+	require.NoError(t, err)
+	byName := map[string]PAT{}
+	for _, p := range list {
+		byName[p.Name] = p
+	}
+	assert.Equal(t, []string{"kind:linux"}, byName["owned"].EnrollLabels)
+}
+
+func TestCreateEnrollPATRoundTrip(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	created, err := pg.CreateEnrollPAT(ctx, NewEnrollPAT{Name: "prov", TokenHash: "h1", EnrollLabels: []string{"kind:linux", "pool:build"}})
+	require.NoError(t, err)
+	assert.Nil(t, created.Owner)
+
+	got, err := pg.GetPATByHash(ctx, "h1")
+	require.NoError(t, err)
+	assert.Nil(t, got.Owner)
+	assert.Equal(t, "", got.Role)
+	assert.Equal(t, []string{"agent.enroll"}, got.Permissions)
+	assert.Equal(t, []string{"kind:linux", "pool:build"}, got.EnrollLabels)
+
+	unbounded, err := pg.CreateEnrollPAT(ctx, NewEnrollPAT{Name: "free", TokenHash: "h2"})
+	require.NoError(t, err)
+	assert.Nil(t, unbounded.EnrollLabels)
+}

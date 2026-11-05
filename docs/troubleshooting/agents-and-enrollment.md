@@ -67,6 +67,19 @@ Kubernetes agents recover by themselves once their enrollment policy exists agai
 the identity or replace it. `enrollment unavailable` is retryable only after
 PostgreSQL/controller availability is restored; auth fails closed.
 
+### Enrollment creation is refused with an enrollment-labels or agentId message
+
+**Symptom:** `unified-cli agent enrollment create` fails with `403` and one of:
+
+```
+label "pool:gpu" is not in this token's enrollment labels
+agentId cannot be set with agent.enroll; it is generated
+```
+
+**Cause:** the token in use holds `agent.enroll` without `agent.manage` (an [enrollment-only PAT](../operator-manual/authorization.md#enrollment-only-pats)). Such a token can request only labels listed in its enrollment labels (a PAT created without `--enroll-label` can request none), and it cannot choose the agent ID.
+
+**Fix:** drop `--agent-id`, request only labels from the PAT's bound (`unified-cli token list` shows it), or create the PAT again with the labels you need. A caller with `agent.manage` has neither restriction.
+
 ### Agent startup reports multiple default credential files
 
 **Symptom:** an ID-less agent start without an enrollment token fails with:
@@ -135,6 +148,28 @@ projected token volume; do not substitute a static Secret. A 503 is retryable:
 check the configured cluster verifier, TokenReview permission, bounded Pod
 `get` permission, and API-server health. The required audience is
 `unified-cd-agent-enrollment`.
+
+### Cloud VM agent returns 403 or 503 during enrollment
+
+**Symptom:** an agent started with `--enrollment-provider aws`, `gcp` or `azure` fails with `403 enrollment policy rejected`, `503 <provider> identity unavailable` (for example `503 aws identity unavailable`) or `403 agent identity disabled`.
+
+**Cause and fix:**
+
+- `403 enrollment policy rejected` is returned for every verification or policy mismatch, deliberately without a reason. The reason is in the controller log, not in the audit log: `cloud enrollment rejected` (with `provider`, `policy` and `reason`: policy not found, policy disabled, provider mismatch or labels not allowed) or `cloud enrollment verification failed` (with `provider`, `policy` and `error`). Common causes: the policy does not exist, is disabled or belongs to another provider; the audience on the agent differs from the policy's `--audience`; the account, project, subscription, role, service account or managed identity is not in the policy; a requested label is not in the policy's `--allowed-label`.
+- AWS: the role's session name is not an instance ID (the role was assumed by something other than the instance profile); an `--sts-region` list that does not include the VM's region; a China-partition STS host (`*.amazonaws.com.cn`), which is not supported.
+- Azure: a scale set instance or a user-assigned managed identity (the token's `xms_mirid` is not a plain virtual machine), a `--tenant-id` that differs from the token's tenant, or an audience that is not the app registration's Application ID URI.
+- `503 <provider> identity unavailable` means the controller could not reach STS (AWS) or the Google or Microsoft Entra key endpoint, or got a server error. It is retryable; check the controller's outbound HTTPS access.
+- `403 agent identity disabled`: an administrator disabled this VM's identity (`unified-cli agent identity get <agent-id>`). Re-enrolling never enables it again; run `unified-cli agent identity enable <agent-id>` if that is intended.
+
+**Agent startup errors.** These are printed before any network call:
+
+```
+--enrollment-provider must be aws, gcp or azure
+--enrollment-provider requires --enrollment-policy and --enrollment-audience
+--enrollment-provider cannot be combined with --enrollment-token, --enrollment-token-file, --credential-file or --id
+```
+
+If the first enrollment fails (for example the agent cannot read the instance metadata, or the controller refuses it), the agent logs `resolve agent identity` with the cause and exits; it must complete this within 30 seconds of starting, so let your service manager restart it. The agent fetches metadata directly, so `HTTP_PROXY` and `HTTPS_PROXY` are not used for it, redirects are not followed and each request times out after 5 seconds; a metadata endpoint that is only reachable through a proxy, or that is blocked by a host firewall, cannot work. Check from the VM that the metadata address (`169.254.169.254`, or `metadata.google.internal` on GCP) is reachable without a proxy. See [Cloud VM enrollment](../operator-manual/agents.md#cloud-vm-enrollment-aws-gcp-azure).
 
 ### Agent request returns `agent identity mismatch`
 

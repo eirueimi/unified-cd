@@ -26,7 +26,7 @@ The controller exits at startup and logs `config file` with one of these errors 
 
 | Error | Cause |
 |---|---|
-| `oidc.permissions.folders["team-a"].groups["my-org:team-a"]: unknown permission or role "jobs.read"` | A grant names something that is not one of the 25 permissions or `viewer` / `developer` / `admin` (a typo) |
+| `oidc.permissions.folders["team-a"].groups["my-org:team-a"]: unknown permission or role "jobs.read"` | A grant names something that is not one of the 26 permissions or `viewer` / `developer` / `admin` (a typo) |
 | `oidc.permissions.folders["team-a"].groups["my-org:team-a"]: permission "secret.write" is global-only and cannot be granted on a folder` | A global-only permission appears in a folder entry |
 | `oidc.permissions.folders["team-a//x"]: invalid folder: segments must be non-empty and must not be "." or ".."` | An empty, `.` or `..` segment in a folder key |
 | `oidc.permissions.folders["team-*"]: invalid folder: folders are literal job-name prefixes, "*", "?", "[" are not allowed` | A wildcard in a folder key |
@@ -62,7 +62,7 @@ The controller logs `UNIFIED_TOKEN is set while SSO is configured: the env:UNIFI
 
 **Cause and fix**
 
-Both an OIDC issuer and the bootstrap token (`--token`, `UNIFIED_TOKEN`, or `token` in the config file) are set. The bootstrap token holds all 25 permissions and ignores every folder grant. That is its purpose as a break-glass credential, so the controller keeps booting. Once SSO works, either unset `UNIFIED_TOKEN` or keep it stored securely and unused. Without an issuer the token is the only login and nothing is logged.
+Both an OIDC issuer and the bootstrap token (`--token`, `UNIFIED_TOKEN`, or `token` in the config file) are set. The bootstrap token holds all 26 permissions and ignores every folder grant. That is its purpose as a break-glass credential, so the controller keeps booting. Once SSO works, either unset `UNIFIED_TOKEN` or keep it stored securely and unused. Without an issuer the token is the only login and nothing is logged.
 
 ## Startup warning: role-only personal access tokens bypass folder grants
 
@@ -150,11 +150,17 @@ Map the user's group or email to a role or a grant, or set `defaultRole`. Re-cre
 - `cannot create a token: your OIDC token carries no "groups" claim; log in again so the token includes it, then retry` (403; the claim name is your configured `oidc.rolesClaim`)
 - `cannot create a token: your identity has no subject (sub); log in again, then retry` (403)
 - `cannot grant role "developer": it exceeds your global role "viewer"; use --permission to grant folder permissions you hold` (400; `(none)` instead of the quoted role for a user with only folder grants)
-- `cannot grant permission "secret.write": you do not hold it` (400)
+- `cannot grant permission "secret.write": you do not hold it` (400; for `agent.enroll` the creator must hold `agent.enroll` or `agent.manage`)
+- `cannot grant permissions: this token has no owner; use --role` (400; the break-glass token and role-only PATs may grant only the exact list `agent.enroll`)
+- `enrollLabels requires the agent.enroll permission` (400)
+- `enrollLabels must not contain empty entries` (400)
+- `enrollLabels must not contain duplicates` (400)
+- `enrollLabels must be a subset of the creating token's enrollLabels` (403; without `agent.manage` you can only grant labels inside your own enrollment-label bound, and no bound means no labels)
+- `the server does not support --enroll-label; the token was revoked; upgrade the controller` (CLI, against an older controller)
 
 **Cause**
 
-A PAT records the creator's identity and groups so that it can never exceed them. The first message is a browser session created before the upgrade (it has no stored groups); log in again. The second is a CLI login whose id_token does not carry the roles claim while the config has group-keyed grants. The controller advertises the scopes the device flow must request (`openid`, `email`, `profile` plus the bare `oidc.rolesClaim`, e.g. `groups`, exactly as the browser login does), and a current `unified-cli login` uses them. A CLI built before this behaviour requests only `openid`, `email` and `profile`, so an IdP that emits groups only on request (Dex does) omits the claim; with a config that has no group-keyed grants an absent claim is simply recorded as no groups and creation works. The 400s are deliberate, nothing is silently reduced: ask for a role or permissions you hold.
+A PAT records the creator's identity and groups so that it can never exceed them. The first message is a browser session created before the upgrade (it has no stored groups); log in again. The second is a CLI login whose id_token does not carry the roles claim while the config has group-keyed grants. The controller advertises the scopes the device flow must request (`openid`, `email`, `profile` plus the bare `oidc.rolesClaim`, e.g. `groups`, exactly as the browser login does), and a current `unified-cli login` uses them. A CLI built before this behaviour requests only `openid`, `email` and `profile`, so an IdP that emits groups only on request (Dex does) omits the claim; with a config that has no group-keyed grants an absent claim is simply recorded as no groups and creation works. The 400s are deliberate, nothing is silently reduced: ask for a role or permissions you hold. The `enrollLabels` messages come from `--enroll-label` misuse; see [Authorization: Enrollment-only PATs](../operator-manual/authorization.md#enrollment-only-pats).
 
 **Fix**
 

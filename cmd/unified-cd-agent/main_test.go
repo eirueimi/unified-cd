@@ -189,3 +189,62 @@ func TestMinFreeDiskLogValue(t *testing.T) {
 	assert.Equal(t, "minFreeDisk=2%", minFreeDiskLogValue(config.DiskThreshold{Percent: 2, Set: true}))
 	assert.Equal(t, "disabled", minFreeDiskLogValue(config.DiskThreshold{Set: true, Off: true}))
 }
+
+func TestValidateCloudEnrollmentFlags(t *testing.T) {
+	const combined = "--enrollment-provider cannot be combined with --enrollment-token, --enrollment-token-file, --credential-file or --id"
+	for _, tc := range []struct {
+		name string
+		in   cloudEnrollmentFlags
+		want string // "" = valid
+	}{
+		{"unset", cloudEnrollmentFlags{}, ""},
+		{"unset ignores other flags", cloudEnrollmentFlags{token: "t", id: "a"}, ""},
+		{"valid aws", cloudEnrollmentFlags{provider: "aws", policy: "p", audience: "a"}, ""},
+		{"valid gcp", cloudEnrollmentFlags{provider: "gcp", policy: "p", audience: "a"}, ""},
+		{"valid azure", cloudEnrollmentFlags{provider: "azure", policy: "p", audience: "a"}, ""},
+		{"bad provider", cloudEnrollmentFlags{provider: "kubernetes", policy: "p", audience: "a"}, "--enrollment-provider must be aws, gcp or azure"},
+		{"missing policy", cloudEnrollmentFlags{provider: "gcp", audience: "a"}, "--enrollment-provider requires --enrollment-policy and --enrollment-audience"},
+		{"missing audience", cloudEnrollmentFlags{provider: "gcp", policy: "p"}, "--enrollment-provider requires --enrollment-policy and --enrollment-audience"},
+		{"with token", cloudEnrollmentFlags{provider: "gcp", policy: "p", audience: "a", token: "t"}, combined},
+		{"with token file", cloudEnrollmentFlags{provider: "gcp", policy: "p", audience: "a", tokenFile: "f"}, combined},
+		{"with credential file", cloudEnrollmentFlags{provider: "gcp", policy: "p", audience: "a", credentialFile: "f"}, combined},
+		{"with id", cloudEnrollmentFlags{provider: "gcp", policy: "p", audience: "a", id: "x"}, combined},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateCloudEnrollmentFlags(tc.in)
+			if tc.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, tc.want)
+		})
+	}
+}
+
+// TestCloudEnrollmentStartupErrorsExit runs the real main() so the exit status
+// and the logged error string are covered, not just the validation function.
+func TestCloudEnrollmentStartupErrorsExit(t *testing.T) {
+	if args := os.Getenv("UCD_TEST_RUN_MAIN_ARGS"); args != "" {
+		os.Args = append([]string{"unified-cd-agent"}, strings.Fields(args)...)
+		main()
+		os.Exit(0)
+	}
+	for _, tc := range []struct{ args, want string }{
+		{"--server http://127.0.0.1:1 --enrollment-provider nope --enrollment-policy p --enrollment-audience a", "--enrollment-provider must be aws, gcp or azure"},
+		{"--server http://127.0.0.1:1 --enrollment-provider gcp", "--enrollment-provider requires --enrollment-policy and --enrollment-audience"},
+		{"--server http://127.0.0.1:1 --enrollment-provider gcp --enrollment-policy p --enrollment-audience a --id x", "--enrollment-provider cannot be combined with"},
+	} {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestCloudEnrollmentStartupErrorsExit$")
+		cmd.Dir = t.TempDir()
+		env := []string{"UCD_TEST_RUN_MAIN_ARGS=" + tc.args}
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, "UNIFIED_AGENT_") && !strings.HasPrefix(kv, "UCD_TEST_RUN_MAIN_ARGS") {
+				env = append(env, kv)
+			}
+		}
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		require.Error(t, err, tc.args)
+		assert.Contains(t, string(out), tc.want)
+	}
+}
