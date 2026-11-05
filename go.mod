@@ -7,7 +7,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-jose/go-jose/v4 v4.1.8
 	github.com/golang-migrate/migrate/v4 v4.19.1
-	github.com/google/cel-go v0.28.1
+	github.com/google/cel-go v0.30.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/jackc/pgx/v5 v5.9.2
