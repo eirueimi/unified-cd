@@ -19,7 +19,9 @@ An open-source CI/CD tool (Jenkins alternative) written in Go.
 ---
 
 Per-agent enrollment gives every VM and Kubernetes agent independently
-revocable credentials.
+revocable credentials. VMs on AWS, GCP and Azure can enroll with their cloud
+identity instead of a token (see
+[Cloud VM enrollment](docs/operator-manual/agents.md#cloud-vm-enrollment-aws-gcp-azure)).
 
 ## Installation
 

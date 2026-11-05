@@ -1039,7 +1039,11 @@ unified-cli agent enrollment-policy create aws-ci --provider aws \
   --required-label kind:linux
 ```
 
-A flag that belongs to another provider is ignored. The `kubernetes` flags are
+For the cloud providers, the IAM-side setup and the matching agent flags are in
+[Cloud VM enrollment](../operator-manual/agents.md#cloud-vm-enrollment-aws-gcp-azure);
+each cloud provider was verified only against simulated responses in this release.
+
+A flag that belongs to another provider is ignored without an error. The `kubernetes` flags are
 checked by the CLI; for the other providers the controller rejects a policy
 with a missing field (`400 invalid enrollment policy: ...`, for example `aws
 enrollment policy requires audience, accountIds and roleNames`). The

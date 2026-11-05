@@ -735,3 +735,23 @@ UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="/var/lib/unified-cd-agent/enrollment.token"
 Create the private enrollment-token file with `unified-cli agent enrollment
 create` before starting the VM agent. Production requires HTTPS; the
 repository-root Compose files are development-only.
+
+A VM on AWS, GCP or Azure can skip the token and enroll with its cloud identity
+(each provider was verified only against simulated responses in this release).
+The three settings are required together and exclude `UNIFIED_AGENT_ID`, the
+credential file and the enrollment token; the agent ID comes from the verified
+identity and no credential is written to disk:
+
+```bash
+UNIFIED_SERVER="https://controller.example.invalid" \
+UNIFIED_AGENT_LABELS="kind:linux" \
+UNIFIED_AGENT_ENROLLMENT_PROVIDER="gcp" \
+UNIFIED_AGENT_ENROLLMENT_POLICY="gcp-ci" \
+UNIFIED_AGENT_ENROLLMENT_AUDIENCE="unified-cd" \
+./bin/unified-cd-agent
+```
+
+Metadata requests bypass `HTTP_PROXY`, follow no redirects and time out after 5
+seconds. Startup errors and the per-provider setup (policy, IAM role, service
+account, managed identity) are in [Cloud VM
+enrollment](../operator-manual/agents.md#cloud-vm-enrollment-aws-gcp-azure).

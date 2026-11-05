@@ -143,7 +143,7 @@ current config, intersected with the PAT's optional ceiling*:
 
 ## Agent authentication and enrollment
 
-Agents are not human API clients. Every new VM or Kubernetes agent has a
+Agents are not human API clients. Every new VM, cloud VM or Kubernetes agent has a
 separate controller identity; a credential for one identity cannot make calls
 as another identity or write a run claimed by another agent.
 
@@ -156,6 +156,15 @@ as another identity or write a run claimed by another agent.
   `unified-cd-agent-enrollment`. TokenReview and a live bound Pod check select
   a controller policy; the agent gets an in-memory access credential only, no
   refresh credential or shared Secret.
+- VMs on AWS, GCP and Azure can exchange a cloud identity proof (a signed
+  STS `GetCallerIdentity` request, a Google instance identity token or an
+  Azure managed-identity token) against a controller policy. They get an
+  in-memory access credential only, like Kubernetes agents. Each provider was
+  verified only against simulated responses in this release. See [Cloud VM
+  enrollment](agents.md#cloud-vm-enrollment-aws-gcp-azure).
+- A provisioning script that mints VM enrollment credentials should use an
+  [enrollment-only PAT](authorization.md#enrollment-only-pats) (`agent.enroll`)
+  rather than `agent.manage`.
 - The controller stores only SHA-256 hashes, never plaintext credentials.
   Labels and capabilities are granted by the enrollment/policy, not trusted
   from an agent request.

@@ -38,6 +38,8 @@ See [Agents](agents.md) for the enrollment options and [Troubleshooting](../trou
 
 **Kubernetes agents after a full loss.** The controller restarted on the fresh database has the config-declared policies again. The agent keeps getting `401` on its requests until its cached access token (valid for at most one hour; roughly 40-45 minutes of uptime in practice) is due for renewal, then it proves its projected ServiceAccount token against the policy and receives new credentials with no operator action. Restarting the agent Pod makes this immediate. A policy that existed only in the lost database makes enrollment fail (`enrollment policy rejected`) until the policy is re-created.
 
+**Cloud VM agents after a full loss.** Agents enrolled with an AWS, GCP or Azure identity hold an access credential only, so they recover like Kubernetes agents: once their credential is due for renewal (or the agent restarts) they prove their cloud identity again and receive new credentials with no new enrollment. Their policies are never declared in the controller config, so every cloud policy created through the API must be re-created first; until then enrollment fails with `enrollment policy rejected`. See [Cloud VM enrollment](agents.md#cloud-vm-enrollment-aws-gcp-azure).
+
 During a database outage (as opposed to loss), agent authentication fails closed with `authentication unavailable` or `enrollment unavailable`, and agents recover on their own once PostgreSQL is back.
 
 ## Backup

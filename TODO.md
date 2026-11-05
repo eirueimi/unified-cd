@@ -32,6 +32,20 @@ No active items.
 - **Evidence:** `internal/k8sagent/config.go` `loadYAML` uses `yaml.Unmarshal` (only `jobPodPolicy` is checked, via `KnownFields`); `config.LoadAgent` (`internal/config/agent.go:188`) uses `KnownFields(true)`. `UNIFIED_K8S_MAX_DETACHED` parse failure is skipped in `Validate` (`config.go:418-422`).
 - **Done when:** `loadYAML` decodes the agent config with `KnownFields(true)` (the chart-rendered config and every example still load, and the already tolerated `podTemplates[*].workspace.pvc` handling is kept), a test shows a typo'd key fails startup, and an unparseable `UNIFIED_K8S_MAX_DETACHED` aborts startup; both are documented in `docs/reference/configuration.md`.
 
+### 49. Prune external agent identities that have not been seen for a long time
+
+- **Status:** Open
+- **Impact:** Every Kubernetes pod UID and every cloud VM becomes a new external agent identity, and identity rows are never deleted, so an autoscaling fleet grows the `agent_identities` table (and the agent inventory) without bound.
+- **Evidence:** `IssueExternalAgentAccess` in `internal/store/postgres_agent_auth.go` creates one row per `(enrollment method, external subject)` and no code path removes one. The agent ID templates `k8s:{cluster}:{namespace}:{podUID}`, `aws:{account}:{instanceId}`, `gcp:{project}:{instanceId}` and `azure:{subscription}:{resourceGroup}:{vmName}` all include a per-instance value.
+- **Done when:** A documented, configurable retention (off by default) removes or archives external identities, and their credentials, whose last use is older than the limit, with a test per enrollment method; a pruned identity that returns enrolls again as a new row; `docs/operator-manual/agents.md` and `docs/operator-manual/operations.md` describe the setting.
+
+### 50. Azure scale set instances and user-assigned managed identities
+
+- **Status:** Open
+- **Impact:** Cloud VM enrollment on Azure accepts only a plain virtual machine with a system-assigned managed identity. A VM scale set instance, or any VM that uses a user-assigned identity (shared by several VMs), is refused with `403 enrollment policy rejected`, so autoscaled Azure fleets cannot use it.
+- **Evidence:** `parseAzureVMResourceID` in `internal/controller/agent_enrollment_azure.go` accepts only `Microsoft.Compute/virtualMachines`; for a user-assigned identity `xms_mirid` names the identity, not the VM, so the token alone cannot yield a unique per-VM agent ID.
+- **Done when:** Scale set instances are accepted with a per-instance agent ID, and user-assigned identities either work through another signed source of the VM identity or are documented as permanently unsupported with the reason; each case has a test against a simulated issuer; `docs/operator-manual/agents.md` ("Limitations") is updated.
+
 ## Low
 
 ### 48. Apply-time validation parity and remaining knob differences
@@ -40,3 +54,10 @@ No active items.
 - **Impact:** (a) A `podTemplate` with duplicate container names starts on a host agent (the second is dropped with a log warning) and fails on k8s at pod creation. (b) An absolute `spec.volumes[].mountPath` over a system directory works on the host and is refused at k8s claim time, not at apply. (c) The host has no per-run workspace quota (k8s has `workspaceSizeLimit`), and `maxConcurrent` defaults to 1 on the host and 100 on k8s.
 - **Evidence:** (a) `internal/agent/claim_pod.go:213-217`; no duplicate check in `internal/dsl`. (b) `CheckJobMountPaths` runs at `internal/k8sagent/agent.go:392` (`internal/k8sagent/podmountpaths.go`); apply-time `CheckContainerMountPath` (`internal/dsl/mountpath.go:63`) covers only `workspace.mountPath`. (c) `cmd/unified-cd-agent/main.go:101-105`, `internal/k8sagent/config.go:208`.
 - **Done when:** `apply` rejects duplicate container names and an absolute volume `mountPath` that k8s would refuse, with tests; for (c) the quota and defaults are either aligned or the difference is documented in `docs/operator-manual/agents.md`, with the decision recorded in the commit message.
+
+### 51. VM tags as a cloud enrollment policy condition
+
+- **Status:** Open (needs design)
+- **Impact:** A cloud enrollment policy can match only on account, project or subscription plus role, service account or managed identity. Operators who separate fleets by VM tag or label cannot express that, and must use one role or service account per fleet.
+- **Evidence:** No cloud signs VM tags into its identity proof, so the controller cannot read them without cloud read credentials, which the controller deliberately does not hold (`docs/superpowers/specs/2026-11-02-cloud-vm-agent-enrollment-design.md`, non-goals). Tag-write permission is also often broader than IAM-role assignment.
+- **Done when:** A design records whether to add tag conditions (and how the controller would get least-privilege read access per cloud), then either implements it with simulated-provider tests and updates `docs/operator-manual/agents.md` ("Limitations"), or records the decision not to.
