@@ -275,7 +275,7 @@ containing only folders where a grant matched the caller) and, when known, `sub`
 unified-cli login --server http://localhost:8080
 ```
 
-1. CLI fetches issuer, `deviceClientId`, and endpoints from `/api/v1/auth/oidc-config` and the scopes to request (`openid`, `email`, `profile` plus the bare `oidc.rolesClaim`, so the IdP emits groups; an older CLI requests only the first three)
+1. CLI fetches issuer, `deviceClientId`, and endpoints from `/api/v1/auth/oidc-config` and the scopes to request (`openid`, `email`, `profile` plus the bare `oidc.rolesClaim`, so the IdP emits groups, unless `oidc.scopes` overrides the list; an older CLI requests only the first three)
 2. Starts device authorization and displays the URL to open in a browser
 3. Authenticate with `admin@example.com` / `password` and approve
 4. CLI receives the **id_token (JWT)** and saves it to `~/.config/unified-cd/config.yaml`
@@ -302,7 +302,7 @@ terminating TLS in front of the controller instead whenever possible.
 
 ### Production / External IdP
 
-For IdPs other than Dex (Auth0, Keycloak, Okta, etc.):
+For IdPs other than Dex (Auth0, Keycloak, Okta, etc.), see [Identity provider setup](identity-providers.md) for per-IdP registration steps, group-claim configuration and example `oidc:` blocks. In short:
 
 - Set `UNIFIED_OIDC_ISSUER` to the IdP's issuer URL (no `/dex` proxy needed, `ISSUER_INTERNAL` can be empty).
 - Create one confidential client for browser SSO and one public client for CLI device flow.

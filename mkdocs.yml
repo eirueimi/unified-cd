@@ -120,6 +120,7 @@ nav:
       - Kubernetes Integration: operator-manual/kubernetes-integration.md
       - Authentication: operator-manual/authentication.md
       - Authorization: operator-manual/authorization.md
+      - Identity Provider Setup: operator-manual/identity-providers.md
       - High Availability: operator-manual/high-availability.md
       - Operations and Backup: operator-manual/operations.md
       - Audit Log: operator-manual/audit.md

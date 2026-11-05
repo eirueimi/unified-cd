@@ -118,6 +118,8 @@ type OIDCConfig struct {
 	ClientID       string
 	ClientSecret   string
 	DeviceClientID string // Public client ID for the CLI device flow (defaults to ClientID when omitted).
+	// Scopes overrides the requested OIDC scopes when non-empty (see oidcScopes).
+	Scopes []string
 
 	// Role resolution (mirrors config.ControllerOIDCConfig).
 	RolesClaim  string

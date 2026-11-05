@@ -42,6 +42,10 @@ agentAuth:
 #   issuerInternal: ""        # override for in-cluster IdP access
 #   clientId: your-client-id
 #   clientSecret: your-client-secret
+#   # Optional: replaces the requested scopes (default: openid email profile plus
+#   # oidc.rolesClaim when it is a bare word). Use it when the IdP rejects that
+#   # extra scope. openid is added if missing. Env: UNIFIED_OIDC_SCOPES (comma-separated).
+#   # scopes: [openid, email, profile]
 #   # Optional, additive: grants on top of the roleMap/userMap/defaultRole role.
 #   # Values are a role name, a permission name, or a list mixing both.
 #   # Config file only (no env var); requires oidc.issuer.

@@ -64,6 +64,7 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_OIDC_CLIENT_SECRET` | No (SSO only) | OIDC client secret |
 | `UNIFIED_OIDC_DEVICE_CLIENT_ID` | No (SSO only) | OIDC public client ID for CLI device flow. Falls back to `UNIFIED_OIDC_CLIENT_ID` if unset. |
 | `UNIFIED_OIDC_ROLES_CLAIM` | No (SSO only) | ID-token claim that carries group/role values (default `groups`). See [Authorization](../operator-manual/authorization.md). |
+| `UNIFIED_OIDC_SCOPES` | No (SSO only) | Comma-separated OIDC scopes to request instead of the default list (`openid email profile` plus `rolesClaim` when it is a bare word); spaces around entries and empty entries are dropped. `openid` is added if missing. See [Identity providers](../operator-manual/identity-providers.md#how-unified-cd-reads-identity-what-every-idp-must-satisfy). |
 | `UNIFIED_OIDC_DEFAULT_ROLE` | No (SSO only) | Global role for a user nothing in `roleMap` / `userMap` matches; `""` or `deny` means no global role. |
 | `UNIFIED_AUDIT_RETENTION_DAYS` | No | Days to keep `audit_logs` rows before a leader-only background task deletes them. Default `90`. `0` = keep forever. See [Audit Log](../operator-manual/audit.md). |
 | `UNIFIED_RUN_RETENTION_DAYS` | No | Days to keep terminal (Succeeded/Failed/Cancelled) runs. When a run expires, its database records **and** its object-store data (archived logs, artifacts) are deleted. `0` (default) keeps runs forever. Deletion is irreversible — an expired run can no longer be replayed, because `run replay` uses the run's stored spec snapshot. |
@@ -107,6 +108,7 @@ oidc:
   clientSecret: unified-cd-secret        # set => browser SSO enabled
   deviceClientId: unified-cd-cli         # public client for the CLI device flow
   rolesClaim: groups
+  scopes: [openid, email, profile]       # optional; replaces the default scope list (no automatic rolesClaim scope)
   defaultRole: viewer
   roleMap:                               # OIDC group/role -> unified-cd role
     unified-admins: admin
