@@ -288,6 +288,15 @@ func (a *Agent) capabilities() []string {
 	return agentCapabilities(true, a.securityContextProbe().OK)
 }
 
+// Capabilities returns the capability set this agent advertises. The result is
+// cached by the first call (runtime detection and the securityContext probe
+// each run once), so a caller that needs the set before Run, such as cloud
+// enrollment, sees the same list that Run registers. ToolsDir, PauseImage,
+// WorkspaceDir and RuntimePref must be set first.
+func (a *Agent) Capabilities() []string {
+	return a.capabilities()
+}
+
 // logRegistration records what the agent registered as. Without it a host whose
 // container runtime was not found (docker not on PATH, or started after the
 // agent) silently registers as native-only: isolated jobs route elsewhere or

@@ -181,6 +181,9 @@ unified-cd-agent [FLAGS]
   --server                string    Controller URL (env: UNIFIED_SERVER)
   --credential-file       string    Protected VM refresh-credential file (default: $HOME/.unified-cd/<agent-id>/credential.json; env: UNIFIED_AGENT_CREDENTIAL_FILE)
   --enrollment-token-file string    One-time VM enrollment-token file (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)
+  --enrollment-provider   string    Enroll with a cloud instance identity instead of a token: aws, gcp or azure. Requires --enrollment-policy and --enrollment-audience; cannot be combined with --enrollment-token, --enrollment-token-file, --credential-file or --id (env: UNIFIED_AGENT_ENROLLMENT_PROVIDER)
+  --enrollment-policy     string    Controller enrollment policy to use with --enrollment-provider (env: UNIFIED_AGENT_ENROLLMENT_POLICY)
+  --enrollment-audience   string    Audience the cloud identity proof is issued for; must match the policy (env: UNIFIED_AGENT_ENROLLMENT_AUDIENCE)
   --id                    string    Agent identifier (optional; adopted from the enrollment token / persisted credential when unset, asserted when set; env: UNIFIED_AGENT_ID)
   --labels                string    Comma-separated labels, e.g. "kind:linux,env:prod" (env: UNIFIED_AGENT_LABELS)
   --expose-env            string    Comma-separated env vars to allow into job steps; steps get ONLY these plus a minimal OS baseline, never the agent's full environment (env: UNIFIED_AGENT_EXPOSE_ENV)
@@ -218,6 +221,9 @@ for how to pin the runner by digest.
 | `UNIFIED_SERVER` | Controller URL |
 | `UNIFIED_AGENT_CREDENTIAL_FILE` | Protected persistent VM refresh-credential file. Required for secure VM mode. |
 | `UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE` | One-time VM enrollment credential file. Required only until initial enrollment succeeds. |
+| `UNIFIED_AGENT_ENROLLMENT_PROVIDER` | Cloud instance-identity enrollment provider: `aws`, `gcp` or `azure` (env equivalent of `--enrollment-provider`). Mutually exclusive with the token, credential-file and ID settings. |
+| `UNIFIED_AGENT_ENROLLMENT_POLICY` | Enrollment policy name for cloud enrollment (env equivalent of `--enrollment-policy`) |
+| `UNIFIED_AGENT_ENROLLMENT_AUDIENCE` | Audience for the cloud identity proof (env equivalent of `--enrollment-audience`) |
 | `UNIFIED_AGENT_ID` | Agent identifier (optional; adopted from the enrollment token / persisted credential when unset, asserted when set) |
 | `UNIFIED_AGENT_LABELS` | Comma-separated labels, e.g. `kind:docker,env:prod` |
 | `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps. **This is an allowlist, not an add-on.** A native (`spec.native: true`) step no longer inherits the agent's process environment at all — it only sees an OS baseline plus whatever is named here plus the orchestrator's own step env (`env:`, secrets). The baseline covers shell essentials **and** the well-known per-user config/data/cache directory variables common toolchains resolve their config from — Windows: `PATH`, `PATHEXT`, `SystemRoot`, `SystemDrive`, `COMSPEC`, `TEMP`, `TMP`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `ALLUSERSPROFILE`, `USERNAME`, `HOMEDRIVE`, `HOMEPATH`, `NUMBER_OF_PROCESSORS`, `PROCESSOR_ARCHITECTURE`; Linux/macOS: `PATH`, `HOME`, `PWD`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ`, `USER`, `LOGNAME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` (so tools like Unity, npm, dotnet, and pip work without extra config). Any other variable a job reads must be named here explicitly, or the step sees it unset. Agent credentials (`UNIFIED_CACHE_KEY`, `UNIFIED_CACHE_SECRET`, `UNIFIED_TOKEN`) are dropped unconditionally even if named here — there is no way to expose them to a step. |
@@ -253,6 +259,10 @@ server: https://unified-cd-controller.example.com
 id: worker-01
 credentialFile: /var/lib/unified-cd-agent/credentials.json
 enrollmentTokenFile: /var/lib/unified-cd-agent/enrollment.token
+# Cloud VM alternative to id/credentialFile/enrollmentTokenFile (cannot be combined with them):
+# enrollmentProvider: gcp          # aws, gcp or azure
+# enrollmentPolicy: gcp-ci
+# enrollmentAudience: unified-cd
 labels:
   - kind:linux
   - env:prod
