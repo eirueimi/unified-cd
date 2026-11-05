@@ -155,7 +155,7 @@ Map the user's group or email to a role or a grant, or set `defaultRole`. Re-cre
 - `enrollLabels requires the agent.enroll permission` (400)
 - `enrollLabels must not contain empty entries` (400)
 - `enrollLabels must not contain duplicates` (400)
-- `enrollLabels must be a subset of the creating token's enrollLabels` (400)
+- `enrollLabels must be a subset of the creating token's enrollLabels` (403; without `agent.manage` you can only grant labels inside your own enrollment-label bound, and no bound means no labels)
 - `the server does not support --enroll-label; the token was revoked; upgrade the controller` (CLI, against an older controller)
 
 **Cause**

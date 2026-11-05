@@ -85,10 +85,12 @@ func validateEnrollLabels(creator Principal, req api.CreatePATRequest) (int, str
 		}
 		seen[l] = true
 	}
-	if creator.EnrollLabels != nil {
+	if !creator.Grants.Can(authz.AgentManage, "") {
+		// Without agent.manage the creator can only hand out labels inside its own
+		// bound; no bound (nil) means no labels, matching handleCreateAgentEnrollment.
 		for _, l := range req.EnrollLabels {
 			if !slices.Contains(creator.EnrollLabels, l) {
-				return http.StatusBadRequest, "enrollLabels must be a subset of the creating token's enrollLabels"
+				return http.StatusForbidden, "enrollLabels must be a subset of the creating token's enrollLabels"
 			}
 		}
 	}

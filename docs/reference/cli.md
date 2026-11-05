@@ -575,7 +575,7 @@ Refusals, printed as `server error: <message>` (the HTTP status in parentheses):
 | `enrollLabels requires the agent.enroll permission` | 400 | `--enroll-label` without `--permission agent.enroll` |
 | `enrollLabels must not contain empty entries` | 400 | A blank `--enroll-label` |
 | `enrollLabels must not contain duplicates` | 400 | The same `--enroll-label` twice |
-| `enrollLabels must be a subset of the creating token's enrollLabels` | 400 | The creating PAT is itself bound to enrollment labels and you asked for one outside its bound |
+| `enrollLabels must be a subset of the creating token's enrollLabels` | 403 | You do not hold `agent.manage` and asked for a label outside your own enrollment-label bound (a creator with no bound can grant no labels) |
 | `token name "env:x" is reserved` | 400 | A name equal to `env:UNIFIED_TOKEN` or starting with `env:` |
 
 | `cannot create a token: this login predates group-aware tokens; log out and log in again, then retry` | 403 | You are using a browser session created before the upgrade |

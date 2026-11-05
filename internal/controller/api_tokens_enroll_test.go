@@ -17,6 +17,7 @@ global:
   groups:
     "g-mgr": [token.create, agent.manage]
     "g-none": [token.create, job.read]
+    "g-enr": [token.create, agent.enroll]
 `
 
 func postToken(t *testing.T, s *Server, token string, req api.CreatePATRequest) (int, string, api.CreatePATResponse) {
@@ -123,7 +124,7 @@ func TestCreateToken_EnrollPATFromPATLabelSubset(t *testing.T) {
 
 	code, body, _ := postToken(t, s, parent.Token,
 		api.CreatePATRequest{Name: "child", Permissions: []string{"agent.enroll"}, EnrollLabels: []string{"pool:build"}})
-	assert.Equal(t, http.StatusBadRequest, code)
+	assert.Equal(t, http.StatusForbidden, code)
 	assert.Equal(t, "enrollLabels must be a subset of the creating token's enrollLabels\n", body)
 
 	code, body, ok := postToken(t, s, parent.Token,
@@ -223,4 +224,42 @@ func TestPatPrincipal_OwnerWithoutManageOrEnrollGetsNoEnroll(t *testing.T) {
 	require.True(t, ok)
 	assert.False(t, p.Grants.Can(authz.AgentEnroll, ""))
 	assert.True(t, p.Grants.Can(authz.JobRead, ""))
+}
+
+// A creator without agent.manage can only grant labels inside its own bound;
+// a missing bound means no labels at all.
+func TestCreateToken_UnboundedEnrollParentCannotGrantLabels(t *testing.T) {
+	s, _ := newAuthzTestServer(t, authz.Legacy{}, enrollAdminPolicy)
+	_, _, parent := postToken(t, s, bearer("m@example.com", "g-mgr"),
+		api.CreatePATRequest{Name: "parent", Permissions: []string{"agent.enroll", "token.create"}})
+	require.NotEmpty(t, parent.Token)
+
+	rec := enrollmentRequest(t, s, parent.Token, api.CreateAgentEnrollmentRequest{Labels: []string{"pool:gpu"}})
+	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+
+	code, body, _ := postToken(t, s, parent.Token,
+		api.CreatePATRequest{Name: "child", Permissions: []string{"agent.enroll"}, EnrollLabels: []string{"pool:gpu"}})
+	assert.Equal(t, http.StatusForbidden, code)
+	assert.Equal(t, "enrollLabels must be a subset of the creating token's enrollLabels\n", body)
+
+	// Without labels the child is still allowed (it simply carries none).
+	code, body, _ = postToken(t, s, parent.Token,
+		api.CreatePATRequest{Name: "child2", Permissions: []string{"agent.enroll"}})
+	require.Equal(t, http.StatusOK, code, body)
+}
+
+func TestCreateToken_SessionWithEnrollButNotManageCannotGrantLabels(t *testing.T) {
+	s, _ := newAuthzTestServer(t, authz.Legacy{}, enrollAdminPolicy)
+	code, body, _ := postToken(t, s, bearer("e@example.com", "g-enr"),
+		api.CreatePATRequest{Name: "prov", Permissions: []string{"agent.enroll"}, EnrollLabels: []string{"pool:gpu"}})
+	assert.Equal(t, http.StatusForbidden, code)
+	assert.Equal(t, "enrollLabels must be a subset of the creating token's enrollLabels\n", body)
+}
+
+func TestCreateToken_ManageHolderMayGrantAnyLabels(t *testing.T) {
+	s, _ := newAuthzTestServer(t, authz.Legacy{}, enrollAdminPolicy)
+	code, body, resp := postToken(t, s, bearer("m@example.com", "g-mgr"),
+		api.CreatePATRequest{Name: "prov", Permissions: []string{"agent.enroll"}, EnrollLabels: []string{"pool:gpu"}})
+	require.Equal(t, http.StatusOK, code, body)
+	assert.Equal(t, []string{"pool:gpu"}, resp.EnrollLabels)
 }
