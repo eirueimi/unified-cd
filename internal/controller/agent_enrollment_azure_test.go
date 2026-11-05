@@ -267,11 +267,17 @@ func TestAzureVerifier_AttackerTextDoesNotLookLikeOutage(t *testing.T) {
 
 func TestVerifyOIDCToken_TruncationKeepsValidUTF8(t *testing.T) {
 	signer := newTestIssuer(t)
-	// Multi-byte text in aud lands in the (rejected) error text and gets cut.
-	aud := strings.Repeat("é", 600)
-	_, err := NewAzureEnrollmentVerifier(signer.Server.URL, nil).Verify(context.Background(),
-		CloudEnrollmentProof{BearerToken: signer.Sign(azClaims(signer.Server.URL, map[string]any{"aud": aud}))}, azPolicy(t, nil))
-	require.ErrorIs(t, err, ErrCloudEnrollmentRejected)
-	assert.True(t, utf8.ValidString(err.Error()))
-	assert.Contains(t, err.Error(), "(truncated)")
+	v := NewAzureEnrollmentVerifier(signer.Server.URL, nil)
+	// The rejected-audience error embeds aud. Three-byte runes with 0..2 leading
+	// ASCII bytes put the 512-byte cut mid-rune for at least two of the offsets
+	// whatever the fixed prefix length is.
+	for pad := 0; pad < 3; pad++ {
+		aud := strings.Repeat("x", pad) + strings.Repeat("€", 400)
+		_, err := v.Verify(context.Background(),
+			CloudEnrollmentProof{BearerToken: signer.Sign(azClaims(signer.Server.URL, map[string]any{"aud": aud}))}, azPolicy(t, nil))
+		require.ErrorIs(t, err, ErrCloudEnrollmentRejected)
+		msg := err.Error()
+		assert.True(t, utf8.ValidString(msg), "pad %d", pad)
+		assert.True(t, strings.HasSuffix(msg, "(truncated)"), "pad %d", pad)
+	}
 }

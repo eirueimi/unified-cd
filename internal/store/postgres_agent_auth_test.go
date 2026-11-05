@@ -645,7 +645,7 @@ func TestPostgres_CloudEnrollmentPolicyValidation(t *testing.T) {
 		{"azure missing", cloudPolicy("p", "azure", "azure:{subscription}:{resourceGroup}:{vmName}", `{"audience":"a"}`, `{"subscriptionIds":["s"],"managedIdentityObjectIds":["o"]}`), "azure enrollment policy requires tenantId, audience, subscriptionIds and managedIdentityObjectIds"},
 		{"azure tenant dotdot", azBadTenant(".."), `invalid tenantId ".."`},
 		{"azure tenant escaped slash", azBadTenant("%2f"), `invalid tenantId "%2f"`},
-		{"azure tenant backslash", azBadTenant(`a`), `invalid tenantId "a\b"`},
+		{"azure tenant backslash", azBadTenant(`a\b`), `invalid tenantId "a\\b"`},
 		{"azure tenant not guid", azBadTenant("tenant-1"), `invalid tenantId "tenant-1"`},
 		{"unknown provider", cloudPolicy("p", "x", awsTpl, `{}`, `{}`), `unsupported enrollment provider "x"`},
 		{"wrong template", cloudPolicy("p", "gcp", awsTpl, `{"audience":"a"}`, `{"projectIds":["p"],"serviceAccounts":["s"]}`), "unsupported agent ID template"},
