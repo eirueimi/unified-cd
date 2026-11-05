@@ -10,7 +10,7 @@ import (
 
 	hostagent "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +21,7 @@ import (
 // JWKS issuer, then register and one claim poll with the authorized labels.
 func TestCloudEnroll_E2EHostAgentRegistersAndClaims(t *testing.T) {
 	issuer := newTestIssuer(t)
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
 	s := NewServer(Config{CloudEnrollmentVerifiers: map[string]CloudEnrollmentVerifier{

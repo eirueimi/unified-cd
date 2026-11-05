@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +14,7 @@ import (
 // approval as TimedOut (system-decided). The full ticker loop is not tested —
 // the leader helper covers the reaper logic.
 func TestRunApprovalReaperAsLeader_MarksExpired(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 	_, _ = pg.UpsertJob(ctx, "jrr", "unified-cd/v1", []byte(`{}`))
 

@@ -16,6 +16,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,7 +27,7 @@ import (
 // tests below).
 func newTestServerWithConfig(t *testing.T, cfg Config) (*Server, store.Store) {
 	t.Helper()
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, err := pg.UpsertBootstrapPAT(t.Context(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
 	s := NewServer(cfg, pg)

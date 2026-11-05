@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -66,7 +67,7 @@ func TestAuditRetention_ZeroDaysMeansKeepForever(t *testing.T) {
 // TestAuditRetention_Integration verifies end-to-end against a real Postgres:
 // rows older than the retention window are deleted, recent rows are kept.
 func TestAuditRetention_Integration(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	require.NoError(t, pg.InsertAuditLog(ctx, store.AuditEntry{Actor: "alice", Method: "POST", Path: "/api/v1/jobs", Action: "job.apply", Resource: "j", Status: 200}))

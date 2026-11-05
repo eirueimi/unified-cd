@@ -14,6 +14,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/gittemplate"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -806,8 +807,8 @@ func TestAgentHeartbeat_ReconcilesLostClaims(t *testing.T) {
 
 	// r1 and r3 were claimed "5 minutes ago" (past the 60s grace); r2 keeps
 	// its natural just-claimed timestamp (well within grace).
-	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r1.ID, 5*time.Minute))
-	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r3.ID, 5*time.Minute))
+	require.NoError(t, storetest.BackdateRunClaimedAt(ctx, pgc, r1.ID, 5*time.Minute))
+	require.NoError(t, storetest.BackdateRunClaimedAt(ctx, pgc, r3.ID, 5*time.Minute))
 
 	body, err := json.Marshal(api.HeartbeatRequest{ActiveRunIDs: []string{r1.ID}})
 	require.NoError(t, err)
@@ -853,7 +854,7 @@ func TestAgentHeartbeat_ReconcileEmptyActiveSetStillFails(t *testing.T) {
 	claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-empty", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, r4.ID, claimed.ID)
-	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r4.ID, 5*time.Minute))
+	require.NoError(t, storetest.BackdateRunClaimedAt(ctx, pgc, r4.ID, 5*time.Minute))
 
 	body, err := json.Marshal(api.HeartbeatRequest{ActiveRunIDs: []string{}})
 	require.NoError(t, err)
@@ -891,7 +892,7 @@ func TestAgentHeartbeat_BodylessSkipsReconcile(t *testing.T) {
 	claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-legacy", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, r5.ID, claimed.ID)
-	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r5.ID, 5*time.Minute))
+	require.NoError(t, storetest.BackdateRunClaimedAt(ctx, pgc, r5.ID, 5*time.Minute))
 
 	token := issueAgentAccessForTest(t, pg, "agent-hb-legacy", nil, nil)
 	rr := httptest.NewRecorder()

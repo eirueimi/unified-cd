@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,7 +21,7 @@ import (
 // asserts the listen pool never needs more than one connection to serve
 // both, and stays there for as long as both streams are open.
 func TestAPI_RunEvents_SSE_TwoViewersOneRun_ShareOneListenConnection(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
 	s := NewServer(Config{}, pg)
@@ -87,7 +87,7 @@ func TestAPI_RunEvents_SSE_TwoViewersOneRun_ShareOneListenConnection(t *testing.
 // out, and it is invisible to the two-viewers-one-connection test above,
 // which only ever checks state while both viewers are still connected.
 func TestAPI_RunEvents_SSE_DisconnectRemovesSubscriber(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
 	s := NewServer(Config{}, pg)

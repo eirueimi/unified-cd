@@ -14,7 +14,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/controller"
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -54,7 +54,7 @@ func TestPhase9_ParallelSteps(t *testing.T) {
 		t.Skip("requires POSIX shell (sleep, exit, printf)")
 	}
 
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	const tok = "test-token"
 	srv := controller.NewServer(controller.Config{Token: tok}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, tok))
@@ -117,7 +117,7 @@ func TestPhase9_ParallelRunsToCompletion(t *testing.T) {
 		t.Skip("requires POSIX shell (exit)")
 	}
 
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	const tok = "test-token"
 	srv := controller.NewServer(controller.Config{Token: tok}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, tok))
@@ -178,7 +178,7 @@ func TestPhase9_ContinueOnError(t *testing.T) {
 		t.Skip("requires POSIX shell (sleep, exit, printf)")
 	}
 
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	const tok = "test-token"
 	srv := controller.NewServer(controller.Config{Token: tok}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, tok))

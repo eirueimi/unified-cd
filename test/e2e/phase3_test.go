@@ -15,7 +15,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/controller"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +24,7 @@ func TestPhase3_AdvisoryLockScheduler(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("phase 3 is linux/mac only")
 	}
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	_, _ = pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 
@@ -49,7 +49,7 @@ func TestPhase3_LogArchival(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("phase 3 is linux/mac only")
 	}
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	obj := objectstore.NewLocalObjectStore(t.TempDir())
 
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
@@ -127,7 +127,7 @@ func TestPhase3_SSE(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("phase 3 is linux/mac only")
 	}
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
@@ -198,7 +198,7 @@ func TestPhase3_BulkLogPush(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("phase 3 is linux/mac only")
 	}
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())

@@ -1,4 +1,7 @@
-package store
+// Package pgtest provides the shared Docker-backed Postgres used by store tests.
+// It deliberately does not import package store so that both store's own
+// in-package tests and the storetest package can use it without import cycles.
+package pgtest
 
 import (
 	"context"
@@ -49,7 +52,7 @@ func pgDSN(host, dbname string) string {
 
 // startSharedPostgres boots the single shared container and migrates the template DB.
 // It records any failure in sharedPGErr so every waiting test fails with the same cause.
-func startSharedPostgres() {
+func startSharedPostgres(migrate func(dsn string) error) {
 	pool, err := dockertest.NewPool("")
 	if err != nil {
 		sharedPGErr = fmt.Errorf("dockertest pool: %w", err)
@@ -76,7 +79,7 @@ func startSharedPostgres() {
 	// per test. There is no package TestMain to tear it down at the end, so Expire
 	// tells the Docker daemon to kill it after a generous bound even if the test
 	// process dies; AutoRemove then removes it. This is the safety net against leaks.
-	_ = resource.Expire(900)
+	_ = resource.Expire(3600)
 
 	host := "localhost:" + resource.GetPort("5432/tcp")
 	adminDSN := pgDSN(host, pgAdminDB)
@@ -104,7 +107,7 @@ func startSharedPostgres() {
 		sharedPGErr = fmt.Errorf("create template db: %w", err)
 		return
 	}
-	if err := (&Postgres{}).Migrate(pgDSN(host, pgTemplateDB)); err != nil {
+	if err := migrate(pgDSN(host, pgTemplateDB)); err != nil {
 		admin.Close()
 		sharedPGErr = fmt.Errorf("migrate template db: %w", err)
 		return
@@ -144,16 +147,18 @@ func waitTemplateIdle(admin *sql.DB) error {
 	return fmt.Errorf("template db still has active connections after eviction")
 }
 
-// NewTestPostgres returns a Postgres backed by a fresh, fully-migrated database
-// cloned from the shared container's template. The database is dropped on cleanup.
-func NewTestPostgres(t *testing.T) *Postgres {
+// NewDatabase returns the DSN of a fresh, fully-migrated database cloned from the
+// shared container's template. migrate is invoked once to migrate the template.
+// The database is dropped on cleanup; callers must close their own connections
+// (or rely on DROP ... WITH (FORCE)).
+func NewDatabase(t *testing.T, migrate func(dsn string) error) string {
 	t.Helper()
 
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	sharedPGOnce.Do(startSharedPostgres)
+	sharedPGOnce.Do(func() { startSharedPostgres(migrate) })
 	if sharedPGErr != nil {
 		t.Fatalf("shared postgres: %v", sharedPGErr)
 	}
@@ -167,35 +172,29 @@ func NewTestPostgres(t *testing.T) *Postgres {
 	if err != nil {
 		t.Fatalf("create test db %s: %v", dbName, err)
 	}
-
-	pg, err := NewPostgres(context.Background(), pgDSN(sharedPG.host, dbName))
-	if err != nil {
-		t.Fatalf("NewPostgres: %v", err)
-	}
-	t.Cleanup(func() {
-		pg.Close() // release pooled connections before dropping
-		createDBMu.Lock()
-		// WITH (FORCE) terminates any stragglers (Postgres 13+); the container is 16.
-		_, _ = sharedPG.admin.ExecContext(context.Background(),
-			fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
-		createDBMu.Unlock()
-	})
-	return pg
+	t.Cleanup(func() { dropDatabase(dbName) })
+	return pgDSN(sharedPG.host, dbName)
 }
 
-// NewEmptyTestDatabase creates a brand-new, completely unmigrated database on
-// the shared test container and returns its DSN. Upgrade tests use it with
-// (*Postgres).MigrateTo to build genuine old-schema state. The database is
-// dropped on cleanup (callers must close their own connections first, or rely
-// on DROP ... WITH (FORCE)).
-func NewEmptyTestDatabase(t *testing.T) string {
+func dropDatabase(dbName string) {
+	createDBMu.Lock()
+	// WITH (FORCE) terminates any stragglers (Postgres 13+); the container is 16.
+	_, _ = sharedPG.admin.ExecContext(context.Background(),
+		fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
+	createDBMu.Unlock()
+}
+
+// NewEmptyDatabase creates a brand-new, completely unmigrated database on the
+// shared test container and returns its DSN. migrate is only used if the shared
+// container has not been started yet.
+func NewEmptyDatabase(t *testing.T, migrate func(dsn string) error) string {
 	t.Helper()
 
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	sharedPGOnce.Do(startSharedPostgres)
+	sharedPGOnce.Do(func() { startSharedPostgres(migrate) })
 	if sharedPGErr != nil {
 		t.Fatalf("shared postgres: %v", sharedPGErr)
 	}
@@ -207,33 +206,6 @@ func NewEmptyTestDatabase(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("create empty test db %s: %v", dbName, err)
 	}
-	t.Cleanup(func() {
-		createDBMu.Lock()
-		_, _ = sharedPG.admin.ExecContext(context.Background(),
-			fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
-		createDBMu.Unlock()
-	})
+	t.Cleanup(func() { dropDatabase(dbName) })
 	return pgDSN(sharedPG.host, dbName)
-}
-
-// BackdateRunCreatedAt sets a run's created_at to age before now. Test-only
-// helper (Postgres.pool is unexported, so packages other than store — e.g.
-// the git-resolver deadline tests in internal/controller — need this to
-// simulate an old Pending run without a store.Store method for it).
-func (p *Postgres) BackdateRunCreatedAt(ctx context.Context, runID string, age time.Duration) error {
-	_, err := p.pool.Exec(ctx,
-		`UPDATE runs SET created_at = NOW() - ($1 * interval '1 second') WHERE id = $2`,
-		age.Seconds(), runID)
-	return err
-}
-
-// BackdateRunClaimedAt sets a run's claimed_at to age before now. Test-only
-// helper (Postgres.pool is unexported, so packages other than store — e.g.
-// the heartbeat-reconcile tests in internal/controller — need this to
-// simulate a run claimed well outside the reconcile grace window).
-func (p *Postgres) BackdateRunClaimedAt(ctx context.Context, runID string, age time.Duration) error {
-	_, err := p.pool.Exec(ctx,
-		`UPDATE runs SET claimed_at = NOW() - ($1 * interval '1 second') WHERE id = $2`,
-		age.Seconds(), runID)
-	return err
 }

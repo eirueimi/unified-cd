@@ -11,6 +11,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +22,7 @@ import (
 // chain, and then drives the real reconciler's first and repeat syncs.
 func TestAppSourceMigration003_ThroughFirstSync(t *testing.T) {
 	ctx := context.Background()
-	dsn := store.NewEmptyTestDatabase(t)
+	dsn := storetest.NewEmptyTestDatabase(t)
 
 	// 1. Migrate to version 002 only: managed_jobs exists, managed_resources does not.
 	require.NoError(t, (&store.Postgres{}).MigrateTo(dsn, 2))

@@ -16,6 +16,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/controller"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,7 +30,7 @@ func testKM(t *testing.T) secrets.KeyManager {
 
 func newControllerWithKM(t *testing.T) (*controller.Server, *store.Postgres, *httptest.Server) {
 	t.Helper()
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	km := testKM(t)
 	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))

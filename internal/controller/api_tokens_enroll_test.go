@@ -8,6 +8,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,7 +36,7 @@ func postToken(t *testing.T, s *Server, token string, req api.CreatePATRequest) 
 // break-glass PAT, as at startup.
 func breakGlassServer(t *testing.T) (*Server, store.Store) {
 	t.Helper()
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	s := NewServer(Config{Token: "secret"}, pg)
 	t.Cleanup(s.Close)
 	_, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("secret"), "admin", nil)

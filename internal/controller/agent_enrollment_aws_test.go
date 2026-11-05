@@ -14,6 +14,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -290,7 +291,7 @@ func TestAWSVerifier_ARNAndPolicy(t *testing.T) {
 
 func TestCloudEnroll_AWSThroughHandler(t *testing.T) {
 	sts := newFakeSTS(t)
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	s := NewServer(Config{CloudEnrollmentVerifiers: map[string]CloudEnrollmentVerifier{"aws": sts.verifier()}}, pg)
 	t.Cleanup(s.Close)
 	_, err := pg.UpsertAgentEnrollmentPolicy(context.Background(), awsTestPolicy(t, nil))
@@ -324,7 +325,7 @@ func TestDefaultCloudEnrollmentVerifiers_IncludesAWS(t *testing.T) {
 
 func TestCloudEnroll_AWSDisabledIdentityOnReproof(t *testing.T) {
 	sts := newFakeSTS(t)
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	s := NewServer(Config{CloudEnrollmentVerifiers: map[string]CloudEnrollmentVerifier{"aws": sts.verifier()}}, pg)
 	t.Cleanup(s.Close)
 	_, err := pg.UpsertAgentEnrollmentPolicy(context.Background(), awsTestPolicy(t, nil))

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +43,7 @@ spec:
 // that claim, and a migration guide that overstates a consequence is as bad as
 // one that understates it.
 func TestReconciler_InvalidIfDeletesTheJobUnderPrune(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	pruneSpec := `{"repoURL":"https://github.com/org/repo","targetRevision":"main","path":"jobs/","syncPolicy":{"prune":true}}`
@@ -73,7 +74,7 @@ func TestReconciler_InvalidIfDeletesTheJobUnderPrune(t *testing.T) {
 // migration guide, so both are pinned: the consequence an operator faces
 // depends entirely on a syncPolicy flag they may not remember setting.
 func TestReconciler_InvalidIfStopsUpdatesWithoutPrune(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 
 	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(appSourceSpecJSON))

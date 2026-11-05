@@ -15,6 +15,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +39,7 @@ type cloudEnrollFixture struct {
 func newCloudEnrollFixture(t *testing.T) *cloudEnrollFixture {
 	t.Helper()
 	issuer := newTestIssuer(t)
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	s := NewServer(Config{CloudEnrollmentVerifiers: map[string]CloudEnrollmentVerifier{
 		"gcp": NewGCPEnrollmentVerifier(issuer.Name, issuer.URL, nil),
 	}}, pg)

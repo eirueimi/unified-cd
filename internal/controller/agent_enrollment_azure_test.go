@@ -12,6 +12,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -222,7 +223,7 @@ func TestParseAzureVMResourceID(t *testing.T) {
 
 func TestCloudEnroll_AzureThroughHandler(t *testing.T) {
 	issuer := newTestIssuer(t)
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	s := NewServer(Config{CloudEnrollmentVerifiers: map[string]CloudEnrollmentVerifier{
 		"azure": NewAzureEnrollmentVerifier(issuer.Server.URL, nil),
 	}}, pg)
@@ -295,7 +296,7 @@ func TestVerifyOIDCToken_TruncationKeepsValidUTF8(t *testing.T) {
 
 func TestCloudEnroll_AzureDisabledIdentityOnReproof(t *testing.T) {
 	issuer := newTestIssuer(t)
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	s := NewServer(Config{CloudEnrollmentVerifiers: map[string]CloudEnrollmentVerifier{
 		"azure": NewAzureEnrollmentVerifier(issuer.Server.URL, nil),
 	}}, pg)

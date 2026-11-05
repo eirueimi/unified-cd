@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,7 +14,7 @@ import (
 
 func TestInstrumentedStoreCountsTransitions(t *testing.T) {
 	m := New()
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	st := NewInstrumentedStore(pg, m)
 	ctx := context.Background()
 
@@ -44,7 +44,7 @@ func TestInstrumentedStoreCountsTransitions(t *testing.T) {
 
 func TestInstrumentedStoreDoesNotCountFailures(t *testing.T) {
 	m := New()
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	st := NewInstrumentedStore(pg, m)
 
 	// Finishing a nonexistent run errors and must not count.

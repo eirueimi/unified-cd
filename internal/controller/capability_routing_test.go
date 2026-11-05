@@ -12,7 +12,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/gittemplate"
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 )
 
 // A Kubernetes agent whose row a heartbeat recreated (so capabilities are
@@ -81,7 +81,7 @@ func mustSpec(t *testing.T, raw string) dsl.Spec {
 // that contributes a pod-level volume makes the run Kubernetes-only, so a host
 // agent must not be able to claim it once resolution has run.
 func TestResolveGitPendingRuns_TemplateThatNeedsKubernetesMovesTheRunToPod(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := t.Context()
 	require.NoError(t, pg.UpsertAgent(ctx, "host", "h", "linux", "", nil, []string{dsl.CapNative, dsl.CapContainer}, nil, nil))
 	require.NoError(t, pg.UpsertAgent(ctx, "k8s", "k", "linux/k8s", "", nil, []string{dsl.CapPod, dsl.CapContainer}, nil, nil))
@@ -112,7 +112,7 @@ func TestResolveGitPendingRuns_TemplateThatNeedsKubernetesMovesTheRunToPod(t *te
 // A template that adds only host-runnable containers changes nothing about
 // where the run may go, so a host agent still claims it.
 func TestResolveGitPendingRuns_HostRunnableTemplateStaysClaimableByAHostAgent(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	ctx := t.Context()
 	require.NoError(t, pg.UpsertAgent(ctx, "host", "h", "linux", "", nil, []string{dsl.CapNative, dsl.CapContainer}, nil, nil))
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))

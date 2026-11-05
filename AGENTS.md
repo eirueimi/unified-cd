@@ -108,6 +108,6 @@ make dev-ui                     # Vite dev server for the UI
 ```
 
 The tests do **not** need the compose stack: the store's integration tests call `NewTestPostgres`
-(`internal/store/testutil.go`), which starts its own PostgreSQL container, so a running Docker
+(`internal/store/testutil_test.go`, or `storetest.NewTestPostgres` from other packages' tests), which starts its own PostgreSQL container, so a running Docker
 daemon is the only requirement. `docker compose up -d postgres` is only for running the controller
 yourself against a database.

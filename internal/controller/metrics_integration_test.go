@@ -10,7 +10,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/metrics"
-	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,7 +27,7 @@ import (
 // being registered stops appearing here, whether it was dropped from
 // NewForController or from main.go's single call to it.
 func TestMetricsEndToEndWiring(t *testing.T) {
-	pg := store.NewTestPostgres(t)
+	pg := storetest.NewTestPostgres(t)
 	m := metrics.NewForController("v-test", pg, 90*time.Second)
 	t.Cleanup(func() { metrics.SetBackgroundRecorder(nil) })
 	st := metrics.NewInstrumentedStore(pg, m)
