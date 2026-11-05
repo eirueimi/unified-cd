@@ -42,6 +42,7 @@ type CloudCredentialSource struct {
 	requestedLabels                    []string
 	requestedCapabilities              []string
 	http                               *http.Client
+	metadata                           *http.Client // direct, no proxy, no redirects; used only for metadata fetches
 	now                                func() time.Time
 	refreshJitter                      time.Duration
 	sleep                              func(context.Context, time.Duration) error
@@ -79,7 +80,7 @@ func NewCloudCredentialSource(cfg CloudCredentialSourceConfig) (*CloudCredential
 		server: cfg.Server, provider: cfg.Provider, policy: cfg.Policy, audience: cfg.Audience,
 		metadataBaseURL: cfg.MetadataBaseURL, stsHostOverride: cfg.STSHostOverride,
 		requestedLabels: append([]string(nil), cfg.Labels...), requestedCapabilities: append([]string(nil), cfg.Capabilities...),
-		http: httpClient, now: now, refreshJitter: jitter(), sleep: sleepCloudCredential,
+		http: httpClient, metadata: newMetadataClient(), now: now, refreshJitter: jitter(), sleep: sleepCloudCredential,
 	}, nil
 }
 

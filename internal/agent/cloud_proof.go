@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 )
@@ -71,7 +72,7 @@ func (s *CloudCredentialSource) metadataGet(ctx context.Context, method, target 
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := s.http.Do(req)
+	resp, err := s.metadata.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -176,4 +177,17 @@ func (s *CloudCredentialSource) awsProof(ctx context.Context) (*api.AWSSignedReq
 		},
 		Body: base64.StdEncoding.EncodeToString([]byte(awsGetCallerIdentity)),
 	}, nil
+}
+
+// newMetadataClient returns the client for instance metadata requests. It
+// never uses a proxy and never follows redirects, so metadata credentials and
+// headers cannot be sent to another host.
+func newMetadataClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return &http.Client{
+		Transport:     transport,
+		Timeout:       5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }

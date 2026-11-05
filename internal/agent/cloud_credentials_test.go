@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -270,4 +271,67 @@ func TestNewCloudCredentialSource_Validation(t *testing.T) {
 		_, err := NewCloudCredentialSource(cfg)
 		assert.Error(t, err, name)
 	}
+}
+
+func TestCloudCredentialSource_MetadataDoesNotFollowRedirects(t *testing.T) {
+	var otherHits int
+	var mu sync.Mutex
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		otherHits++
+		mu.Unlock()
+		_, _ = w.Write([]byte("stolen"))
+	}))
+	defer other.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusFound)
+	}))
+	defer redirector.Close()
+	for _, provider := range []string{"gcp", "azure", "aws"} {
+		c, now := newFakeController(t), cloudTestNow
+		s, err := NewCloudCredentialSource(CloudCredentialSourceConfig{Server: c.srv.URL, Provider: provider, Policy: "ci", Audience: "unified-cd", MetadataBaseURL: redirector.URL, Now: func() time.Time { return now }})
+		require.NoError(t, err)
+		_, err = s.Token(context.Background())
+		require.Error(t, err, provider)
+		assert.Equal(t, "fetch cloud identity proof failed", err.Error())
+		reqs, _ := c.snapshot()
+		assert.Empty(t, reqs, provider)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Zero(t, otherHits)
+}
+
+func TestCloudCredentialSource_MetadataBypassesProxy(t *testing.T) {
+	var proxyHits int
+	var mu sync.Mutex
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		proxyHits++
+		mu.Unlock()
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("HTTPS_PROXY", proxy.URL)
+	t.Setenv("http_proxy", proxy.URL)
+	t.Setenv("https_proxy", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+
+	// Use a non-loopback-looking host name so ProxyFromEnvironment would apply.
+	m, c, now := newFakeMetadata(t), newFakeController(t), cloudTestNow
+	s := newTestCloudSource(t, "gcp", m, c, &now)
+	s.metadataBaseURL = strings.Replace(m.srv.URL, "127.0.0.1", "localhost.localdomain", 1)
+	// Resolve the fake name locally without relying on DNS.
+	tr := s.metadata.Transport.(*http.Transport)
+	assert.Nil(t, tr.Proxy, "metadata transport must not use a proxy")
+	tr.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, strings.TrimPrefix(m.srv.URL, "http://"))
+	}
+	_, err := s.Token(context.Background())
+	require.NoError(t, err)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Zero(t, proxyHits)
 }
