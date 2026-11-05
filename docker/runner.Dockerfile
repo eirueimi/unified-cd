@@ -24,8 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
   && rm -rf /var/lib/apt/lists/*
 
-# yq (YAML processor) - multi-arch
-RUN curl -sSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${TARGETARCH}" \
+# yq (YAML processor) - multi-arch, pinned release
+ARG YQ_VERSION=v4.54.1
+RUN curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${TARGETARCH}" \
     -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq
 
 # kubectl via pkgs.k8s.io v1.32
