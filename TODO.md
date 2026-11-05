@@ -46,6 +46,13 @@ No active items.
 - **Evidence:** `parseAzureVMResourceID` in `internal/controller/agent_enrollment_azure.go` accepts only `Microsoft.Compute/virtualMachines`; for a user-assigned identity `xms_mirid` names the identity, not the VM, so the token alone cannot yield a unique per-VM agent ID.
 - **Done when:** Scale set instances are accepted with a per-instance agent ID, and user-assigned identities either work through another signed source of the VM identity or are documented as permanently unsupported with the reason; each case has a test against a simulated issuer; `docs/operator-manual/agents.md` ("Limitations") is updated.
 
+### 52. Audit rejected agent enrollment exchanges
+
+- **Status:** Open
+- **Impact:** A rejected `POST /api/v1/agents/enroll` (cloud provider or Kubernetes) writes no audit row. The reason (`cloud enrollment rejected`, `cloud enrollment verification failed`) is only in the controller log, so an operator who wants a queryable record of failed exchanges, for example repeated probing of a policy, has nothing in the audit log.
+- **Evidence:** `handleCloudAgentEnroll` in `internal/controller/agent_enrollment_cloud.go` calls `slog.Warn` and `recordAgentAuth` (a metric) on every rejection but `auditAgentCredential` only on success.
+- **Done when:** Rejected exchanges produce an audit entry with the provider, policy name and a coarse reason (never token or proof contents), subject to the existing rate limit so a flood cannot grow the audit table without bound; a test per provider; `docs/operator-manual/agents.md` and `docs/troubleshooting/agents-and-enrollment.md` say where the reason is recorded.
+
 ## Low
 
 ### 48. Apply-time validation parity and remaining knob differences
@@ -61,3 +68,10 @@ No active items.
 - **Impact:** A cloud enrollment policy can match only on account, project or subscription plus role, service account or managed identity. Operators who separate fleets by VM tag or label cannot express that, and must use one role or service account per fleet.
 - **Evidence:** No cloud signs VM tags into its identity proof, so the controller cannot read them without cloud read credentials, which the controller deliberately does not hold (`docs/superpowers/specs/2026-11-02-cloud-vm-agent-enrollment-design.md`, non-goals). Tag-write permission is also often broader than IAM-role assignment.
 - **Done when:** A design records whether to add tag conditions (and how the controller would get least-privilege read access per cloud), then either implements it with simulated-provider tests and updates `docs/operator-manual/agents.md` ("Limitations"), or records the decision not to.
+
+### 53. Bound the /api/v1/agents/enroll request body before decoding
+
+- **Status:** Open
+- **Impact:** The enroll handler decodes the JSON body without a size limit, so an unauthenticated caller can make the controller read an arbitrarily large body. The per-IP rate limit bounds the request count, not the size. This predates cloud enrollment and is shared with the Kubernetes exchange.
+- **Evidence:** `handleAgentEnroll` in `internal/controller/api_agent_enrollment.go` passes `r.Body` straight to `json.NewDecoder`; no `http.MaxBytesReader` wraps it.
+- **Done when:** The body is wrapped in `http.MaxBytesReader` with a limit well above a signed AWS request (for example 64 KiB) before decoding, an oversized body gets `413`, and a test covers it for both the Kubernetes and cloud paths.

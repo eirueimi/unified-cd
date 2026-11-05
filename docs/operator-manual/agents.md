@@ -215,7 +215,8 @@ unified-cli agent enrollment-policy create azure-ci --provider azure \
 
 - `--tenant-id` must be a GUID; anything else is refused with `invalid tenantId "<value>"`.
 - `--managed-identity-object-id` is the object (principal) ID of the VM's system-assigned identity.
-- `--resource-group` is optional. When set, the VM must be in one of the listed groups.
+- `--resource-group` is optional. When set, the VM must be in one of the listed groups. The comparison is case-insensitive, because Azure treats resource group names that way.
+- The token's `aud` must equal `--audience` exactly. If the app registration issues v2 tokens, `aud` is the application (client) ID rather than the Application ID URI, so use the application ID as the audience in that case.
 - Only a plain virtual machine is accepted: the token's `xms_mirid` claim must name a `Microsoft.Compute/virtualMachines` resource. Virtual machine scale set instances and user-assigned managed identities are rejected (see Limitations).
 
 ```bash
@@ -233,6 +234,8 @@ unified-cd-agent --server https://ci.example.com \
 
 All three are required together. They cannot be combined with `--enrollment-token`, `--enrollment-token-file`, `--credential-file` or `--id`: the controller assigns the ID and nothing is persisted, so the agent exits at startup with an error that names the conflict. In this mode `--labels` is a request bounded by the policy, as for the Kubernetes agent. See [Configuration](../reference/configuration.md) for the full flag table and `examples/config/agent.yaml` for a commented example.
 
+The agent proves its identity again 15 minutes (plus up to 5 minutes of random jitter) before its credential expires. A policy `--access-token-ttl` below about 30 minutes therefore makes the agent re-enroll on nearly every call; use 30 minutes or more.
+
 The agent fetches instance metadata directly: it ignores `HTTP_PROXY` and `HTTPS_PROXY`, does not follow redirects, and allows each metadata request 5 seconds. That keeps the metadata credentials from being sent to any host but the metadata service.
 
 ### Security notes
@@ -240,7 +243,7 @@ The agent fetches instance metadata directly: it ignores `HTTP_PROXY` and `HTTPS
 - GCP and Azure proofs are bearer tokens valid for up to about an hour. Anyone who can read one from the VM can replay it within that time to act as that VM's agent ID. The audience binds a token to this controller. This is the same exposure as the projected ServiceAccount token on Kubernetes.
 - The AWS proof can be replayed only while STS still accepts its signature (roughly 15 minutes), and its signed audience header binds it to this controller.
 - A policy is rejected at creation unless it names an audience and the account, project or subscription together with the role, service account or managed identity (Azure also needs the tenant). There is no "any VM in my account" policy.
-- Whatever the cause, the caller sees only `403 enrollment policy rejected`; the reason is in the controller log (`cloud enrollment verification failed`) and the audit log. `503 <provider> identity unavailable` means the controller could not reach STS or the JWKS endpoint. See [Troubleshooting](../troubleshooting/agents-and-enrollment.md#cloud-vm-agent-returns-403-or-503-during-enrollment).
+- Whatever the cause, the caller sees only `403 enrollment policy rejected`; the reason is in the controller log (`cloud enrollment rejected` for a missing, disabled or mismatched policy or a label outside the policy, `cloud enrollment verification failed` for a proof or subject mismatch), not in the audit log (see `TODO.md`). `503 <provider> identity unavailable` means the controller could not reach STS or the JWKS endpoint. See [Troubleshooting](../troubleshooting/agents-and-enrollment.md#cloud-vm-agent-returns-403-or-503-during-enrollment).
 - Cloud policies live in the controller database, so after a full database loss they must be re-created; see [Agent recovery contract](operations.md#agent-recovery-contract).
 
 ### Limitations
