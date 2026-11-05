@@ -32,6 +32,13 @@ No active items.
 - **Evidence:** `internal/k8sagent/config.go` `loadYAML` uses `yaml.Unmarshal` (only `jobPodPolicy` is checked, via `KnownFields`); `config.LoadAgent` (`internal/config/agent.go:188`) uses `KnownFields(true)`. `UNIFIED_K8S_MAX_DETACHED` parse failure is skipped in `Validate` (`config.go:418-422`).
 - **Done when:** `loadYAML` decodes the agent config with `KnownFields(true)` (the chart-rendered config and every example still load, and the already tolerated `podTemplates[*].workspace.pvc` handling is kept), a test shows a typo'd key fails startup, and an unparseable `UNIFIED_K8S_MAX_DETACHED` aborts startup; both are documented in `docs/reference/configuration.md`.
 
+### 49. OIDC claim and scope handling for direct IdP setups
+
+- **Status:** Open
+- **Impact:** Connecting to some IdPs directly (without Dex) needs workarounds. The controller requests the `rolesClaim` value as an extra OAuth scope whenever it contains no `/` or `:` (for example `roles` for Entra App Roles, `groups_direct` for GitLab), and an IdP may reject that unknown scope at login. `rolesClaim` names a top-level claim only, so Keycloak's nested `realm_access.roles` needs a flat protocol mapper. Claims are read from the ID token only, so an Entra groups overage (more than 200 groups) silently yields no groups. `email_verified` is never checked before `userMap` / `permissions.*.users` match on `email`.
+- **Evidence:** `oidcScopes` (`internal/controller/auth_oidc.go:85-91`); `extractRoleValues` (`internal/controller/rbac.go:91-117`); claims decoded from the verified ID token only (`internal/controller/auth_oidc.go`). Workarounds are documented in `docs/operator-manual/identity-providers.md`.
+- **Done when:** Each gap is either fixed (for example an `oidc.scopes` override or opt-out, a dotted-path `rolesClaim`, an `email_verified` check for email matches) or recorded as a decision not to; tests cover each change, and `docs/operator-manual/identity-providers.md`, `authorization.md` and `docs/reference/configuration.md` describe the result.
+
 ## Low
 
 ### 48. Apply-time validation parity and remaining knob differences

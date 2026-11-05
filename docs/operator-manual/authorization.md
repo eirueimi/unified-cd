@@ -318,6 +318,8 @@ Several things act as the system, with no human in the request, so no permission
 
 ## SSO topologies
 
+For per-IdP setup steps (app registration, claim configuration, value shapes) see [Identity provider setup](identity-providers.md).
+
 unified-cd is a generic OIDC relying party and points at exactly **one** issuer. Both setups below use the same `roleMap`/`userMap`/enforcement — only `issuer`/`clientId`/`rolesClaim` and the presence of Dex connectors differ.
 
 ### (A) Dex as broker (recommended for multiple sources / GitHub / uniform CLI device flow)
@@ -361,42 +363,7 @@ Groups are fetched at login by the single connector the user authenticates throu
 
 ### (B) Direct to an IdP (no Dex)
 
-Point `oidc.issuer` straight at the IdP. `roleMap`/enforcement are identical to (A).
-
-```yaml
-# Entra ID (App Roles — recommended; emits a "roles" claim)
-oidc:
-  issuer:       https://login.microsoftonline.com/<tenant-id>/v2.0
-  clientId:     <app-client-id>
-  clientSecret: <client-secret>
-  rolesClaim:   roles
-  roleMap: { admin: admin, developer: developer, viewer: viewer }
-  defaultRole:  deny
-# For the CLI device flow, enable "Allow public client flows" on the app registration.
-```
-
-```yaml
-# GitLab (self-hosted)
-oidc:
-  issuer:       https://gitlab.example.com          # exposes /.well-known/openid-configuration
-  clientId:     <application-id>
-  clientSecret: <secret>
-  rolesClaim:   groups_direct                        # GitLab's group claim name (verify for your version)
-  roleMap: { "mygroup/admins": admin, "mygroup/devs": developer }
-  defaultRole:  viewer
-# CLI device flow support depends on GitLab version; use topology (A) if you rely on it.
-```
-
-```yaml
-# Auth0 (namespaced custom claim via a Post-Login Action)
-oidc:
-  issuer:       https://<tenant>.us.auth0.com/
-  clientId:     <client-id>
-  clientSecret: <secret>
-  rolesClaim:   "https://unified-cd.example.com/roles"
-  roleMap: { admin: admin, developer: developer, viewer: viewer }
-  defaultRole:  deny
-```
+Point `oidc.issuer` straight at the IdP; `roleMap` and enforcement are identical to (A). The claim must be a flat top-level claim in the ID token, because unified-cd reads neither `userinfo` nor the access token and does not resolve nested claim paths. Step-by-step setups with ready-to-use `oidc:` snippets for Microsoft Entra ID, Okta, Keycloak, Google Workspace, GitHub (via Dex), GitLab and Auth0 are in [Identity provider setup](identity-providers.md).
 
 > **GitHub cannot be used directly** — it is not an OIDC provider (no id_token; org/team membership is only available via its REST API). Use topology (A) with the Dex `github` connector.
 
