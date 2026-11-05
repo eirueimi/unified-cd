@@ -226,13 +226,20 @@ func main() {
 
 	var cli *agent.Client
 	var agentID string
+	// Capability detection can run the securityContext probe (up to 90s, and it
+	// may pull the pause image), so it happens before the 30s identity budget
+	// starts: only the enrollment exchange itself runs under resolveCtx.
+	var caps []string
+	if *enrollmentProvider != "" {
+		caps = a.Capabilities()
+	}
 	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if *enrollmentProvider != "" {
 		// Cloud instance-identity enrollment: the controller assigns the
 		// agent ID and authorizes the labels, so both come from the source.
 		cloudSource, err := agent.NewCloudCredentialSource(agent.CloudCredentialSourceConfig{
 			Server: *server, Provider: *enrollmentProvider, Policy: *enrollmentPolicy, Audience: *enrollmentAudience,
-			Labels: labels, Capabilities: a.Capabilities(),
+			Labels: labels, Capabilities: caps,
 		})
 		if err != nil {
 			resolveCancel()
