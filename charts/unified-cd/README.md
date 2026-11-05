@@ -168,7 +168,7 @@ first; see `docs/operator-manual/kubernetes-integration.md`.
 | `controller.kek.secretName` | `unified-cd-controller-kek` | Secret holding the KEK, mounted as a file. |
 | `controller.kek.generate` | `null` | Run the KEK Job. `null` follows `bundledStores.enabled`; `true` or `false` overrides. |
 | `controller.kek.job.helmHook` | `true` | Run the KEK Job as a `pre-install,pre-upgrade` hook. |
-| `controller.kek.job.image` | `alpine/k8s:1.37.2` | Image providing `kubectl` for the KEK Job. |
+| `controller.kek.job.image` | `alpine/k8s:1.31.2` | Image providing `kubectl` for the KEK Job. |
 | `controller.config` | `{}` | Deep-merged over the computed controller config (see above). |
 | `controller.service.type` | `ClusterIP` | Controller Service type. HTTP only; terminate TLS at an Ingress. |
 | `controller.service.port` | `80` | Controller Service port. |

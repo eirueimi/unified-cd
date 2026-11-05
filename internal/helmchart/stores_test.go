@@ -364,7 +364,7 @@ func TestKEKJobHook(t *testing.T) {
 	assert.Equal(t, "unified-cd-kek-init", dig(t, rb, "roleRef", "name"))
 	job := map[string]any(Find(objs, "Job", "unified-cd-kek-init"))
 	assert.Equal(t, "unified-cd-kek-init", dig(t, job, "spec", "template", "spec", "serviceAccountName"))
-	assert.Equal(t, "alpine/k8s:1.37.2", dig(t, job, "spec", "template", "spec", "containers", 0, "image"))
+	assert.Equal(t, "alpine/k8s:1.31.2", dig(t, job, "spec", "template", "spec", "containers", 0, "image"))
 
 	script := dig(t, job, "spec", "template", "spec", "containers", 0, "command", 2).(string)
 	assert.Contains(t, script, "kubectl -n cd-system create secret generic unified-cd-controller-kek")
