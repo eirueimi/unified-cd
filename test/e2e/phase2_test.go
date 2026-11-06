@@ -36,7 +36,7 @@ func TestPhase2_StepOutputs(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
 	agentToken := issueAgentAccessToken(t, pg, "agent-e2e")
-	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, agentToken))
+	ag := newTestAgent(t, "agent-e2e", agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	yamlJob := `
@@ -102,8 +102,8 @@ func TestPhase2_Mutex(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag1 := agent.New("agent-1", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-1")))
-	ag2 := agent.New("agent-2", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-2")))
+	ag1 := newTestAgent(t, "agent-1", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-1")))
+	ag2 := newTestAgent(t, "agent-2", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-2")))
 	go func() { _ = ag1.Run(ctx) }()
 	go func() { _ = ag2.Run(ctx) }()
 
@@ -184,7 +184,7 @@ func TestPhase2_Semaphores(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		agentID := fmt.Sprintf("agent-%d", i)
-		ag := agent.New(agentID, agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, agentID)))
+		ag := newTestAgent(t, agentID, agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, agentID)))
 		go func() { _ = ag.Run(ctx) }()
 	}
 
@@ -258,7 +258,7 @@ func TestPhase2_CallStep(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
 		agentID := fmt.Sprintf("agent-%d", i)
-		ag := agent.New(agentID, agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, agentID)))
+		ag := newTestAgent(t, agentID, agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, agentID)))
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

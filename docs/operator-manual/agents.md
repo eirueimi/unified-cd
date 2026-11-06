@@ -921,6 +921,11 @@ Each concurrency slot owns one slot directory:
 `<workspace-dir>/working<N>`. When no override is supplied, `workspace-dir`
 is the agent's startup working directory; override it with `--workspace-dir`,
 `UNIFIED_AGENT_WORKSPACE_DIR`, or the `workspaceDir` config key.
+Never run two agent processes on one machine with the same `workspace-dir`: they would share
+`working<N>/<job>`, and each run wipes that directory when it starts and when it ends, so one
+agent's cleanup deletes the directory the other agent's step is running in (the step fails with
+`fork/exec /usr/bin/bash: no such file or directory`). Because the default is the startup working
+directory, give every additional agent on a host its own `--workspace-dir`.
 Within that slot directory, **every job gets its own
 subdirectory**, named after a sanitized form of the job's `metadata.name`:
 `working<N>/<sanitized-job-name>`. `run:` steps execute with this per-job

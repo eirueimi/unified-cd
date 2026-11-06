@@ -66,7 +66,7 @@ func TestPhase9_ParallelSteps(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
 	agentToken := issueAgentAccessTokenWithLabels(t, pg, "agent-1", []string{"kind:test"}, nil)
-	ag := agent.NewWithLabels("agent-1", []string{"kind:test"}, agent.NewClient(httpSrv.URL, agentToken))
+	ag := newTestAgentWithLabels(t, "agent-1", []string{"kind:test"}, agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	applyJobPhase9(t, httpSrv.URL, tok, `
@@ -129,7 +129,7 @@ func TestPhase9_ParallelRunsToCompletion(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
 	agentToken := issueAgentAccessTokenWithLabels(t, pg, "agent-1", []string{"kind:test"}, nil)
-	ag := agent.NewWithLabels("agent-1", []string{"kind:test"}, agent.NewClient(httpSrv.URL, agentToken))
+	ag := newTestAgentWithLabels(t, "agent-1", []string{"kind:test"}, agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	applyJobPhase9(t, httpSrv.URL, tok, `
@@ -190,7 +190,7 @@ func TestPhase9_ContinueOnError(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
 	agentToken := issueAgentAccessTokenWithLabels(t, pg, "agent-1", []string{"kind:test"}, nil)
-	ag := agent.NewWithLabels("agent-1", []string{"kind:test"}, agent.NewClient(httpSrv.URL, agentToken))
+	ag := newTestAgentWithLabels(t, "agent-1", []string{"kind:test"}, agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	applyJobPhase9(t, httpSrv.URL, tok, `

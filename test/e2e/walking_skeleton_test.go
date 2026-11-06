@@ -33,7 +33,7 @@ func TestWalkingSkeleton_EndToEnd(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
 	agentToken := issueAgentAccessToken(t, pg, "agent-e2e")
-	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, agentToken))
+	ag := newTestAgent(t, "agent-e2e", agent.NewClient(httpSrv.URL, agentToken))
 	agErr := make(chan error, 1)
 	go func() { agErr <- ag.Run(ctx) }()
 

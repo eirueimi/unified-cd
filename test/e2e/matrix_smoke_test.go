@@ -38,7 +38,7 @@ func TestMatrixSmoke(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
 	agentToken := issueAgentAccessToken(t, pg, "agent-e2e")
-	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, agentToken))
+	ag := newTestAgent(t, "agent-e2e", agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	// os x arch = 4 combinations, minus one exclude = 3 expected variants.

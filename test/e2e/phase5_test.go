@@ -104,7 +104,7 @@ func TestPhase5_SecretInjection(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
 	agentToken := issueAgentAccessToken(t, pg, "agent-e2e")
-	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, agentToken))
+	ag := newTestAgent(t, "agent-e2e", agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	// Register the secret
@@ -190,7 +190,7 @@ func TestPhase5_StdoutMasking(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
 	agentToken := issueAgentAccessToken(t, pg, "agent-mask")
-	ag := agent.New("agent-mask", agent.NewClient(httpSrv.URL, agentToken))
+	ag := newTestAgent(t, "agent-mask", agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	// Register the secret
