@@ -34,7 +34,7 @@ func TestPhase4_AgentLabelFilter(t *testing.T) {
 
 	// linux-only agent
 	linuxToken := issueAgentAccessTokenWithLabels(t, pg, "linux-1", []string{"kind:linux"}, nil)
-	linuxAgent := agent.NewWithLabels("linux-1", []string{"kind:linux"}, agent.NewClient(httpSrv.URL, linuxToken))
+	linuxAgent := newTestAgentWithLabels(t, "linux-1", []string{"kind:linux"}, agent.NewClient(httpSrv.URL, linuxToken))
 	go func() { _ = linuxAgent.Run(ctx) }()
 
 	// k8s-only job
@@ -92,7 +92,7 @@ func TestPhase4_AnyAgentRun(t *testing.T) {
 
 	anyLabels := []string{"kind:linux", "pool:default"}
 	anyToken := issueAgentAccessTokenWithLabels(t, pg, "agent-any", anyLabels, nil)
-	ag := agent.NewWithLabels("agent-any", anyLabels, agent.NewClient(httpSrv.URL, anyToken))
+	ag := newTestAgentWithLabels(t, "agent-any", anyLabels, agent.NewClient(httpSrv.URL, anyToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	yamlJob := `
@@ -148,7 +148,7 @@ func TestPhase4_LabeledAgentClaimsLabeledRun(t *testing.T) {
 	// k8s-labeled agent (simulated, not a real k8s agent — just uses the same label)
 	k8sLabels := []string{"kind:kubernetes", "pool:build"}
 	k8sToken := issueAgentAccessTokenWithLabels(t, pg, "k8s-sim-1", k8sLabels, nil)
-	k8sAgent := agent.NewWithLabels("k8s-sim-1", k8sLabels, agent.NewClient(httpSrv.URL, k8sToken))
+	k8sAgent := newTestAgentWithLabels(t, "k8s-sim-1", k8sLabels, agent.NewClient(httpSrv.URL, k8sToken))
 	go func() { _ = k8sAgent.Run(ctx) }()
 
 	k8sJob := `
