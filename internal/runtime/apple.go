@@ -47,12 +47,13 @@ func (a *appleContainer) Run(ctx context.Context, spec RunSpec, stdout, stderr i
 	if err := imageref.Validate(spec.Image); err != nil {
 		return -1, err
 	}
-	envArgs, cleanup, eerr := appleEnvFile(spec.Env)
+	prep, cleanup, eerr := prepareAppleEnv(spec.Env)
 	defer cleanup()
 	if eerr != nil {
 		return -1, eerr
 	}
-	cmd := execCommand(ctx, "container", withAppleEnvFile(a.runArgs(spec), envArgs)...)
+	cmd := execCommand(ctx, "container", prep.withEnv(a.runArgs(spec))...)
+	cmd.Env = prep.childEnv
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err := cmd.Run()
@@ -126,12 +127,14 @@ func (a *appleContainer) Create(ctx context.Context, spec CreateSpec) (Container
 	if err != nil {
 		return ContainerHandle{}, err
 	}
-	envArgs, cleanup, err := appleEnvFile(spec.Env)
+	prep, cleanup, err := prepareAppleEnv(spec.Env)
 	defer cleanup()
 	if err != nil {
 		return ContainerHandle{}, err
 	}
-	out, err := execCommand(ctx, "container", withAppleEnvFile(args, envArgs)...).Output()
+	createCmd := execCommand(ctx, "container", prep.withEnv(args)...)
+	createCmd.Env = prep.childEnv
+	out, err := createCmd.Output()
 	if err != nil {
 		return ContainerHandle{}, fmt.Errorf("container run -d: %w", err)
 	}
@@ -151,12 +154,13 @@ func (a *appleContainer) Exec(ctx context.Context, h ContainerHandle, spec ExecS
 	args = append(args, h.ID)
 	args = append(args, shell...)
 	args = append(args, spec.Script)
-	envArgs, cleanup, eerr := appleEnvFile(spec.Env)
+	prep, cleanup, eerr := prepareAppleEnv(spec.Env)
 	defer cleanup()
 	if eerr != nil {
 		return -1, eerr
 	}
-	cmd := execCommand(ctx, "container", withAppleEnvFile(args, envArgs)...)
+	cmd := execCommand(ctx, "container", prep.withEnv(args)...)
+	cmd.Env = prep.childEnv
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err := cmd.Run()
