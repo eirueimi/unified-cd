@@ -4,7 +4,11 @@
 # Priority: CLI flags > this file > environment variables
 # All fields are optional; omit to fall back to env vars or defaults.
 
-server: http://unified-cd-master:8080
+server: https://unified-cd-master:8080
+# The agent refuses http:// for any non-loopback host because its enrollment
+# token and credentials would travel in cleartext. On a trusted network you may
+# keep http:// and opt in explicitly:
+# allowInsecureHTTP: true
 id: my-agent-1
 # The one-time file contains a uce_ enrollment credential. The agent consumes
 # it on first start and writes its rotating refresh credential here. Keep both

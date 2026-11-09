@@ -503,3 +503,47 @@ func TestControllerEffectiveMaxRequestBodyBytes(t *testing.T) {
 	_, err = config.ControllerEffective("")
 	require.Error(t, err)
 }
+
+func TestValidateAgentServer(t *testing.T) {
+	for _, tc := range []struct {
+		server string
+		allow  bool
+		ok     bool
+	}{
+		{"https://cd.example.com", false, true},
+		{"http://localhost:8080", false, true},
+		{"http://127.0.0.1:8080", false, true},
+		{"http://[::1]:8080", false, true},
+		{"http://controller:8080", false, false},
+		{"http://cd.example.com", false, false},
+		{"http://controller:8080", true, true},
+		{"ftp://cd.example.com", true, false},
+		{"cd.example.com:8080", true, false},
+		{"", true, false},
+	} {
+		err := config.ValidateAgentServer(tc.server, tc.allow)
+		if tc.ok {
+			require.NoError(t, err, tc.server)
+		} else {
+			require.Error(t, err, tc.server)
+		}
+	}
+}
+
+func TestAgentEffectiveAllowInsecureHTTP(t *testing.T) {
+	eff, err := config.AgentEffective("")
+	require.NoError(t, err)
+	require.False(t, eff.AllowInsecureHTTP)
+
+	t.Setenv("UNIFIED_ALLOW_INSECURE_HTTP", "true")
+	eff, err = config.AgentEffective("")
+	require.NoError(t, err)
+	require.True(t, eff.AllowInsecureHTTP)
+
+	t.Setenv("UNIFIED_ALLOW_INSECURE_HTTP", "")
+	path := filepath.Join(t.TempDir(), "a.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("server: http://controller:8080\nallowInsecureHTTP: true\n"), 0o600))
+	eff, err = config.AgentEffective(path)
+	require.NoError(t, err)
+	require.True(t, eff.AllowInsecureHTTP)
+}

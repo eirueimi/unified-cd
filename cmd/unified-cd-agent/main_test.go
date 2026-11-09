@@ -233,6 +233,7 @@ func TestCloudEnrollmentStartupErrorsExit(t *testing.T) {
 		{"--server http://127.0.0.1:1 --enrollment-provider nope --enrollment-policy p --enrollment-audience a", "--enrollment-provider must be aws, gcp or azure"},
 		{"--server http://127.0.0.1:1 --enrollment-provider gcp", "--enrollment-provider requires --enrollment-policy and --enrollment-audience"},
 		{"--server http://127.0.0.1:1 --enrollment-provider gcp --enrollment-policy p --enrollment-audience a --id x", "--enrollment-provider cannot be combined with"},
+		{"--server http://controller.example.com:8080 --enrollment-token t", "plain http"},
 	} {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestCloudEnrollmentStartupErrorsExit$")
 		cmd.Dir = t.TempDir()

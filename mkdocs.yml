@@ -146,6 +146,7 @@ nav:
           - "Kustomize Overlays Replaced by a Helm Chart": operator-manual/migrations/2026-10-30-helm-chart.md
           - "Host Agent Symlinks in Artifacts and Cache": operator-manual/migrations/2026-10-30-host-agent-symlinks.md
           - "Trusted Proxies for Client Addresses": operator-manual/migrations/2026-11-09-trusted-proxies.md
+          - "Host Agents Require https": operator-manual/migrations/2026-11-09-agent-require-https.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md

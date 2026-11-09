@@ -187,7 +187,8 @@ Group keys are compared to the values of `oidc.rolesClaim`; user keys to the tok
 unified-cd-agent [FLAGS]
 
   -f                      string    Config file path (default: unified-agent.yaml if exists)
-  --server                string    Controller URL (env: UNIFIED_SERVER)
+  --server                string    Controller URL. Must be https://, or http:// only for a loopback host unless --allow-insecure-http is set (env: UNIFIED_SERVER)
+  --allow-insecure-http   bool      Accept an http:// controller URL for a non-loopback host. The enrollment token and the agent's credentials then cross the network unencrypted; use only on a trusted network such as a compose or VM-local bridge (env: UNIFIED_ALLOW_INSECURE_HTTP)
   --credential-file       string    Protected VM refresh-credential file (default: $HOME/.unified-cd/<agent-id>/credential.json; env: UNIFIED_AGENT_CREDENTIAL_FILE)
   --enrollment-token-file string    One-time VM enrollment-token file (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)
   --enrollment-provider   string    Enroll with a cloud instance identity instead of a token: aws, gcp or azure. Requires --enrollment-policy and --enrollment-audience; cannot be combined with --enrollment-token, --enrollment-token-file, --credential-file or --id (env: UNIFIED_AGENT_ENROLLMENT_PROVIDER)
@@ -227,7 +228,8 @@ for how to pin the runner by digest.
 
 | Variable | Description |
 |---|---|
-| `UNIFIED_SERVER` | Controller URL |
+| `UNIFIED_SERVER` | Controller URL (`https://`, or `http://` for loopback only unless `UNIFIED_ALLOW_INSECURE_HTTP` is set) |
+| `UNIFIED_ALLOW_INSECURE_HTTP` | When `true`, accept an `http://` controller URL for a non-loopback host (env equivalent of `--allow-insecure-http`). Default `false`: the agent refuses to start. |
 | `UNIFIED_AGENT_CREDENTIAL_FILE` | Protected persistent VM refresh-credential file. Required for secure VM mode. |
 | `UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE` | One-time VM enrollment credential file. Required only until initial enrollment succeeds. |
 | `UNIFIED_AGENT_ENROLLMENT_PROVIDER` | Cloud instance-identity enrollment provider: `aws`, `gcp` or `azure` (env equivalent of `--enrollment-provider`). Mutually exclusive with the token, credential-file and ID settings. |
@@ -265,6 +267,7 @@ Additionally, every step receives the following environment variables automatica
 ```yaml
 # unified-agent.yaml
 server: https://unified-cd-controller.example.com
+# allowInsecureHTTP: true   # accept http:// for a non-loopback host (credentials are sent unencrypted)
 id: worker-01
 credentialFile: /var/lib/unified-cd-agent/credentials.json
 enrollmentTokenFile: /var/lib/unified-cd-agent/enrollment.token
@@ -706,8 +709,8 @@ CLI flags  >  config file  >  environment variables
 ```
 
 Examples:
-- `--server http://override.example.com` overrides `UNIFIED_SERVER`
-- `UNIFIED_SERVER=http://env.example.com` overrides the `server:` value in the config file
+- `--server https://override.example.com` overrides `UNIFIED_SERVER`
+- `UNIFIED_SERVER=https://env.example.com` overrides the `server:` value in the config file
 - The config file value is the lowest-priority fallback
 
 ---

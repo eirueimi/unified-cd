@@ -75,6 +75,7 @@ services:
     command:
       - "--server"
       - "http://nginx:8080"
+      - "--allow-insecure-http"
       - "--id"
       - "agent1"
       - "--credential-file"
