@@ -8,8 +8,8 @@
 .superpowers/
 
 # Secrets and local environment
-secrets/
-**/secrets/
+# Root only: internal/secrets is a Go package the images build from.
+/secrets/
 .env*
 **/.env
 **/.env.*
