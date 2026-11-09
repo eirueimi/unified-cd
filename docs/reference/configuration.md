@@ -25,6 +25,7 @@ unified-cd-controller [FLAGS]
   --audit-retention-days  int      Days to keep audit_logs rows; 0 = keep forever (default: 90, env: UNIFIED_AUDIT_RETENTION_DAYS)
   --run-retention-days    int      Days to keep terminal (Succeeded/Failed/Cancelled) runs; 0 = keep forever (default: 0, env: UNIFIED_RUN_RETENTION_DAYS)
   --log-trim-days         int      Days after a run's logs are archived before its DB log rows are deleted; 0 = never trim (default: 0, env: UNIFIED_LOG_TRIM_DAYS)
+  --allow-default-token   bool     Allow starting with the publicly documented default admin token; trial use only (env: UNIFIED_ALLOW_DEFAULT_TOKEN)
   --insecure-cookies      bool     Do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)
   --git-known-hosts-file   string   Persistent SSH known_hosts file for trust-on-first-use of git SSH host keys (default: <data-dir>/.ssh/known_hosts, else a temp dir; env: UNIFIED_GIT_KNOWN_HOSTS_FILE)
   --git-timeout           duration Maximum time for one controller-side git operation before its process tree is killed (default: 5m, env: UNIFIED_GIT_TIMEOUT)
@@ -40,7 +41,8 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_DB_BACKGROUND_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for scheduler, reaper, archiver, retention, and reconciler queries. Positive integer; default `32`. |
 | `UNIFIED_DB_LOCK_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for session-level advisory locks. Positive integer; default `16`. |
 | `UNIFIED_DB_LISTEN_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for SSE `LISTEN` sessions. Positive integer; default `128`. |
-| `UNIFIED_TOKEN` | Yes (without SSO) | Static admin bearer token. Auto-synced to DB as a PAT named `env:UNIFIED_TOKEN`. Required when OIDC is not configured. |
+| `UNIFIED_TOKEN` | Yes (without SSO) | Static admin bearer token. Auto-synced to DB as a PAT named `env:UNIFIED_TOKEN`. Required when OIDC is not configured. The controller refuses to start when this equals the published default token (the one in the quickstarts and `.env.example`) unless `UNIFIED_DEV_MODE=1` or `UNIFIED_ALLOW_DEFAULT_TOKEN=1` is set. |
+| `UNIFIED_ALLOW_DEFAULT_TOKEN` | No | `1` lets the controller start with the published default admin token. For throwaway trials only (the Helm trial Secret and the repo-root dev compose set it). Never use in production. |
 | `UNIFIED_CONTROLLER_KEY_FILE` | Required | Path to a file containing a 32-byte hex master key (`unified-cli keygen --out /etc/unified-cd/kek`). Mutually exclusive with `UNIFIED_KMS_URI`. **All replicas must be given the same file in HA setups.** |
 | `UNIFIED_KMS_URI` | Optional | External KMS: `hashivault://[<mount>/]<key>` (default mount `transit`). The controller wraps DEKs with Vault/OpenBao Transit and never holds the key itself. |
 | `UNIFIED_VAULT_ADDR` | With KMS | Vault/OpenBao address. |

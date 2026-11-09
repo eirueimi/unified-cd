@@ -5,12 +5,18 @@
 # is baked into the controller image (UNIFIED_WEB_DIR=/ui), so no Vite service is
 # needed.
 #
+# Nothing here has a built-in secret. Compose refuses to start until these are
+# set (see deployments/docker/.env.example for how to generate each one):
+#   UNIFIED_TOKEN, POSTGRES_PASSWORD, GARAGE_RPC_SECRET,
+#   GARAGE_S3_ACCESS_KEY, GARAGE_S3_SECRET_KEY, UNIFIED_KEK_FILE
+#
 # Usage (run from the repository root so relative paths resolve):
-#   cp .env.example .env
-#   docker compose --env-file .env -f deployments/docker/docker-compose.yaml up -d
+#   cp deployments/docker/.env.example deployments/docker/.env   # fill in every value
+#   unified-cli keygen --out deployments/docker/kek
+#   docker compose -f deployments/docker/docker-compose.yaml up -d
 #   docker compose -f deployments/docker/docker-compose.yaml logs -f controller
 #
-# Pin a release instead of :latest by setting UNIFIED_CD_VERSION in .env, e.g.
+# Pin a release instead of :latest by setting UNIFIED_CD_VERSION in deployments/docker/.env, e.g.
 #   UNIFIED_CD_VERSION=v0.0.3
 #
 # After startup:
@@ -18,6 +24,10 @@
 #   CLI:    export UNIFIED_SERVER=http://localhost:8080
 #           export UNIFIED_TOKEN=<your token>
 #           unified-cli apply -f examples/jobs/hello.yaml
+#
+# The controller publishes 8080 on all interfaces and speaks plain HTTP. Put a
+# TLS-terminating reverse proxy in front of it and, if the proxy runs on this
+# host, publish 127.0.0.1:8080:8080 instead of 8080:8080 below.
 
 services:
 
@@ -30,7 +40,7 @@ services:
     command: [ "postgres", "-c", "max_connections=1000" ]
     environment:
       POSTGRES_USER: unified
-      POSTGRES_PASSWORD: unified
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (use hex only, e.g. openssl rand -hex 24)}
       POSTGRES_DB: unified
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -48,9 +58,9 @@ services:
     image: dxflrs/garage:v2.3.0
     command: /garage server --single-node --default-bucket
     environment:
-      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-0000000000000000000000000000000000000000000000000000000000000000}
-      GARAGE_DEFAULT_ACCESS_KEY: garageadmin
-      GARAGE_DEFAULT_SECRET_KEY: garageadmin12345
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?set GARAGE_RPC_SECRET in .env (64 hex chars, openssl rand -hex 32)}
+      GARAGE_DEFAULT_ACCESS_KEY: ${GARAGE_S3_ACCESS_KEY:?set GARAGE_S3_ACCESS_KEY in .env (openssl rand -hex 12)}
+      GARAGE_DEFAULT_SECRET_KEY: ${GARAGE_S3_SECRET_KEY:?set GARAGE_S3_SECRET_KEY in .env (openssl rand -hex 32)}
       GARAGE_DEFAULT_BUCKET: unified-cd-logs
     volumes:
       - garagedata:/data
@@ -79,31 +89,25 @@ services:
       garage:
         condition: service_healthy
     environment:
-      UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
+      UNIFIED_DB_DSN: postgres://unified:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/unified?sslmode=disable
       UNIFIED_DB_API_MAX_CONNS: "${UNIFIED_DB_API_MAX_CONNS:-128}"
       UNIFIED_DB_BACKGROUND_MAX_CONNS: "${UNIFIED_DB_BACKGROUND_MAX_CONNS:-32}"
       UNIFIED_DB_LOCK_MAX_CONNS: "${UNIFIED_DB_LOCK_MAX_CONNS:-16}"
       UNIFIED_DB_LISTEN_MAX_CONNS: "${UNIFIED_DB_LISTEN_MAX_CONNS:-128}"
-      UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
-      # Defaults to dev mode: an ephemeral, in-memory key, so secrets do not
-      # survive a restart. For a persistent local setup:
-      #   unified-cli keygen --out ./kek
-      # then in .env set:
-      #   UNIFIED_CONTROLLER_KEY_FILE=/run/secrets/kek
-      # and add this volume mount under this service:
-      #   volumes:
-      #     - ./kek:/run/secrets/kek:ro
-      # (UNIFIED_CONTROLLER_KEY_FILE takes precedence over UNIFIED_DEV_MODE
-      # when both are set, so you don't need to unset the latter.)
-      UNIFIED_DEV_MODE: "${UNIFIED_DEV_MODE:-1}"
-      UNIFIED_CONTROLLER_KEY_FILE: "${UNIFIED_CONTROLLER_KEY_FILE:-}"
+      UNIFIED_TOKEN: ${UNIFIED_TOKEN:?set UNIFIED_TOKEN in .env (openssl rand -hex 32)}
+      # Dev mode is off: it would use an ephemeral in-memory key, so every
+      # stored secret would be lost on restart. The persistent key comes from
+      # the `kek` file secret below (generate it with `unified-cli keygen`).
+      UNIFIED_CONTROLLER_KEY_FILE: /run/secrets/kek
       UNIFIED_S3_ENDPOINT: garage:3900
       UNIFIED_S3_BUCKET: unified-cd-logs
-      UNIFIED_S3_KEY: garageadmin
-      UNIFIED_S3_SECRET: garageadmin12345
+      UNIFIED_S3_KEY: ${GARAGE_S3_ACCESS_KEY:?set GARAGE_S3_ACCESS_KEY in .env}
+      UNIFIED_S3_SECRET: ${GARAGE_S3_SECRET_KEY:?set GARAGE_S3_SECRET_KEY in .env}
       UNIFIED_OIDC_ISSUER: ${UNIFIED_OIDC_ISSUER:-}
       UNIFIED_OIDC_CLIENT_ID: ${UNIFIED_OIDC_CLIENT_ID:-}
       UNIFIED_OIDC_CLIENT_SECRET: ${UNIFIED_OIDC_CLIENT_SECRET:-}
+    secrets:
+      - kek
     ports:
       - "8080:8080"
     # The controller image is alpine-based (it needs the git CLI for AppSource
@@ -143,7 +147,7 @@ services:
         condition: service_healthy
     environment:
       UNIFIED_SERVER: http://controller:8080
-      UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
+      UNIFIED_TOKEN: ${UNIFIED_TOKEN:?set UNIFIED_TOKEN in .env}
     command:
       - sh
       - -c
@@ -188,16 +192,21 @@ services:
       UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE: /var/lib/unified-cd-agent/enrollment.token
       UNIFIED_AGENT_ID: ${UNIFIED_AGENT_ID:-docker-agent-1}
       UNIFIED_AGENT_LABELS: ${UNIFIED_AGENT_LABELS:-kind:docker,pool:default}
-      DOCKER_HOST: tcp://dind:2375
+      # The dind daemon requires mutual TLS: the client certificate comes from
+      # the read-only dind-client-certs volume that dind generates on first start.
+      DOCKER_HOST: tcp://dind:2376
+      DOCKER_TLS_VERIFY: "1"
+      DOCKER_CERT_PATH: /certs/client
       # Step environments are an allowlist: a native step no longer inherits
-      # the agent process env, so DOCKER_HOST must be named here or `docker`
-      # in a step falls back to the unix socket (which does not exist here)
-      # and fails.
-      UNIFIED_AGENT_EXPOSE_ENV: DOCKER_HOST
+      # the agent process env, so the Docker variables must be named here or
+      # `docker` in a step falls back to the unix socket (which does not exist
+      # here) and fails.
+      UNIFIED_AGENT_EXPOSE_ENV: DOCKER_HOST,DOCKER_TLS_VERIFY,DOCKER_CERT_PATH
       UNIFIED_AGENT_WORKSPACE_DIR: /ucd-workspaces
     volumes:
       - ucd-workspaces:/ucd-workspaces
       - agent-credentials:/var/lib/unified-cd-agent
+      - dind-client-certs:/certs/client:ro
     restart: unless-stopped
 
   # ---- Docker-in-Docker (container runtime for isolated jobs) ----
@@ -205,14 +214,25 @@ services:
   # talks to this daemon via DOCKER_HOST. Job containers live inside dind. The
   # ucd-workspaces volume is mounted at the SAME path here and in the agent so
   # bind mounts resolved by this daemon see the agent's workspace files.
+  #
+  # The daemon listens on 2376 with mutual TLS only (never plain 2375), and
+  # no port is published to the host: only containers on this compose network
+  # can reach it, and only with a client certificate from the dind-client-certs volume
+  # (mounted read-only into the agent). `privileged: true` is required by
+  # Docker-in-Docker itself; anything that can talk to this daemon can take over
+  # the dind container, so keep it off the host network and unpublished.
   dind:
     image: docker:29-dind
     privileged: true
     environment:
-      DOCKER_TLS_CERTDIR: ""
+      DOCKER_TLS_CERTDIR: /certs
+      # The server certificate must name the host the agent dials.
+      DOCKER_TLS_SAN: DNS:dind
     volumes:
       - ucd-workspaces:/ucd-workspaces
       - dind-storage:/var/lib/docker
+      - dind-certs:/certs
+      - dind-client-certs:/certs/client
     healthcheck:
       test: [ "CMD", "docker", "info" ]
       interval: 5s
@@ -226,4 +246,14 @@ volumes:
   garagedata:
   ucd-workspaces:
   dind-storage:
+  dind-certs:
+  dind-client-certs:
   agent-credentials:
+
+secrets:
+  # 64-hex-char secret-encryption key (KEK). Create it once with
+  # `unified-cli keygen --out deployments/docker/kek` and back it up: losing it
+  # makes every stored secret unreadable. Path is relative to this file unless
+  # UNIFIED_KEK_FILE is absolute.
+  kek:
+    file: ${UNIFIED_KEK_FILE:?set UNIFIED_KEK_FILE in .env (path to the file written by unified-cli keygen)}

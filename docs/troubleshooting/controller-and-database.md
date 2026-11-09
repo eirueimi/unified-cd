@@ -54,6 +54,16 @@ The controller logs `oidc.roleMap["my-org:devs"]: unknown role "develper" is ign
 
 A `roleMap` value that is not `admin`, `developer` or `viewer` never matches. Without an `oidc.permissions` block this is only a warning (refusing to start would break existing setups); with the block it is a startup error. Fix the spelling. Only `roleMap` is checked: an unknown `userMap` role denies that user.
 
+## Controller refuses to start: `the admin token (UNIFIED_TOKEN) is set to the publicly documented default value`
+
+**Symptom**
+
+The controller exits immediately with `refusing to start` and an error beginning `the admin token (UNIFIED_TOKEN) is set to the publicly documented default value`.
+
+**Cause and fix**
+
+`UNIFIED_TOKEN` (or `--token`, or `token` in the config file) equals the default admin token printed in the quickstarts and `.env.example`. Anyone who has read the docs knows it. Set `UNIFIED_TOKEN` to a long random value, for example `openssl rand -hex 32`, and restart. For a throwaway trial or local development you can instead set `UNIFIED_DEV_MODE=1` or `UNIFIED_ALLOW_DEFAULT_TOKEN=1` (flag: `--allow-default-token`). The Helm trial install and the repo-root development compose already set the opt-in.
+
 ## Startup warning: `UNIFIED_TOKEN is set while SSO is configured`
 
 **Symptom**

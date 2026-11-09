@@ -210,6 +210,7 @@ func main() {
 	stderrPlain := flag.Bool("log-stderr-plain", eff.StderrPlain, "render step stderr in the run log the same color as stdout instead of red (env: UNIFIED_LOG_STDERR_PLAIN)")
 	insecureCookies := flag.Bool("insecure-cookies", eff.InsecureCookies, "do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)")
 	storeCredentialRequireRunBinding := flag.Bool("store-credential-require-run-binding", eff.StoreCredentialRequireRunBinding, "reject a store-credentials request when no run->pod binding is known yet, instead of allowing it; leave false during a rolling upgrade or while any host agent may call this endpoint (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING)")
+	allowDefaultToken := flag.Bool("allow-default-token", eff.AllowDefaultToken, "allow starting with the publicly documented default admin token; trial use only (env: UNIFIED_ALLOW_DEFAULT_TOKEN)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
 	auditRetentionDays := flag.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
 	runRetentionDays := flag.Int("run-retention-days", runRetentionDaysDefault(), "days to keep terminal runs incl. their logs, log archives, and artifacts; 0 = keep forever (env: UNIFIED_RUN_RETENTION_DAYS)")
@@ -252,6 +253,10 @@ func main() {
 	ssoConfigured := config.OIDCConfigured(eff.OIDC)
 	if *token == "" && !ssoConfigured {
 		slog.Error("token is required when SSO is not configured (--token, UNIFIED_TOKEN, config file, or UNIFIED_OIDC_ISSUER/UNIFIED_OIDC_CLIENT_ID)")
+		os.Exit(1)
+	}
+	if err := config.CheckAdminToken(*token, eff.KeySource.DevMode, *allowDefaultToken); err != nil {
+		slog.Error("refusing to start", "error", err)
 		os.Exit(1)
 	}
 
