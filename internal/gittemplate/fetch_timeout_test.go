@@ -131,3 +131,32 @@ func TestFetchDir_SizeLimit(t *testing.T) {
 		t.Fatalf("size limit did not abort the fetch promptly")
 	}
 }
+
+func TestGitShow_RejectsOversizedBlob(t *testing.T) {
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}} {
+		c := exec.Command("git", args...)
+		c.Dir = repo
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v %s", err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "big.yaml"), make([]byte, 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "x"}} {
+		c := exec.Command("git", args...)
+		c.Dir = repo
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	f := &Fetcher{MaxRepoBytes: 1024}
+	if _, err := f.gitShow(context.Background(), repo, os.Environ(), "HEAD:big.yaml"); !errors.Is(err, errRepoTooLarge) {
+		t.Fatalf("oversized blob must be rejected, got %v", err)
+	}
+	f.MaxRepoBytes = 4096
+	if data, err := f.gitShow(context.Background(), repo, os.Environ(), "HEAD:big.yaml"); err != nil || len(data) != 2048 {
+		t.Fatalf("blob under the limit must be read, got %d bytes err=%v", len(data), err)
+	}
+}

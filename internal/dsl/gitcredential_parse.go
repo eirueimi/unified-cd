@@ -53,11 +53,17 @@ func (gc *GitCredential) Validate() error {
 	return nil
 }
 
+// MaxKnownHostsBytes caps the size of GitCredential spec.knownHosts.
+const MaxKnownHostsBytes = 64 << 10
+
 // ValidateKnownHosts checks that s is a plausible OpenSSH known_hosts block: blank
 // lines and "#" comments are allowed, every other line needs at least a host
 // pattern, a key type and a base64 key (an optional leading "@cert-authority" or
 // "@revoked" marker is accepted). It does not verify the key material itself.
 func ValidateKnownHosts(s string) error {
+	if len(s) > MaxKnownHostsBytes {
+		return fmt.Errorf("knownHosts is larger than %d bytes", MaxKnownHostsBytes)
+	}
 	n := 0
 	for i, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(line)

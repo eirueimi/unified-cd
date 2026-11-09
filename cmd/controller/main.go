@@ -545,6 +545,10 @@ func main() {
 	}
 	go controller.RunLogTrim(ctx, backgroundSt, obj, time.Hour, *logTrimDays)
 	knownHostsFile := gitKnownHostsPath(*gitKnownHostsFlag, *dataDir)
+	if err := gittemplate.ValidateKnownHostsFile(knownHostsFile); err != nil {
+		slog.Error("invalid SSH known_hosts location", "path", knownHostsFile, "error", err)
+		os.Exit(1)
+	}
 	go func() {
 		var gitCache *gittemplate.Cache
 		if obj != nil {

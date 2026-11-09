@@ -82,3 +82,10 @@ No active items.
 - **Impact:** The enroll handler decodes the JSON body without a size limit, so an unauthenticated caller can make the controller read an arbitrarily large body. The per-IP rate limit bounds the request count, not the size. This predates cloud enrollment and is shared with the Kubernetes exchange.
 - **Evidence:** `handleAgentEnroll` in `internal/controller/api_agent_enrollment.go` passes `r.Body` straight to `json.NewDecoder`; no `http.MaxBytesReader` wraps it.
 - **Done when:** The body is wrapped in `http.MaxBytesReader` with a limit well above a signed AWS request (for example 64 KiB) before decoding, an oversized body gets `413`, and a test covers it for both the Kubernetes and cloud paths.
+
+### 55. Host key verification in the git-checkout and rsync-deploy templates
+
+- **Status:** Open
+- **Impact:** `templates/git-checkout.yaml` and `templates/rsync-deploy.yaml` run on agents with `StrictHostKeyChecking=no` and `UserKnownHostsFile=/dev/null`, so any host can impersonate the git or deploy server for jobs that use them. The controller-side fetchers verify host keys (GitCredential `knownHosts`); these templates do not.
+- **Evidence:** `templates/git-checkout.yaml` (the `GIT_SSH_COMMAND` export) and `templates/rsync-deploy.yaml` (the `-e "ssh ..."` option).
+- **Done when:** Both templates take a `known_hosts` input (or secret) and default to strict checking against it, with an explicit opt-out for the old behaviour, the template tests and `templates/README.md` updated, and a new tag cut because external references are pinned.

@@ -24,8 +24,15 @@ func gitKnownHostsPath(explicit, dataDir string) string {
 	case dataDir != "":
 		return filepath.Join(dataDir, ".ssh", "known_hosts")
 	default:
-		p := filepath.Join(os.TempDir(), "unified-cd-ssh", "known_hosts")
-		slog.Warn("no persistent directory for SSH known_hosts; trust-on-first-use state will be lost when the temp directory is cleared. Set --git-known-hosts-file or pin keys with GitCredential spec.knownHosts", "path", p)
+		// A fixed temp path would be predictable and could be pre-created by
+		// another local user, so use a fresh private directory per process.
+		dir, err := os.MkdirTemp("", "unified-cd-ssh-")
+		if err != nil {
+			slog.Error("cannot create a temporary directory for SSH known_hosts", "error", err)
+			os.Exit(1)
+		}
+		p := filepath.Join(dir, "known_hosts")
+		slog.Info("no persistent directory for SSH known_hosts; using a per-process temporary file, so trust-on-first-use state is lost on restart. Set --git-known-hosts-file or pin keys with GitCredential spec.knownHosts", "path", p)
 		return p
 	}
 }

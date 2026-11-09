@@ -69,3 +69,13 @@ func TestParseGitCredential_KnownHosts(t *testing.T) {
 		t.Errorf("malformed knownHosts line must be rejected, got %v", err)
 	}
 }
+
+func TestValidateKnownHosts_SizeCap(t *testing.T) {
+	line := "gitlab.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample\n"
+	if err := ValidateKnownHosts(strings.Repeat(line, 2)); err != nil {
+		t.Fatalf("small block rejected: %v", err)
+	}
+	if err := ValidateKnownHosts(strings.Repeat(line, MaxKnownHostsBytes/len(line)+2)); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("oversized knownHosts must be rejected, got %v", err)
+	}
+}

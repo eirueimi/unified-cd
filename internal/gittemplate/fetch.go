@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -104,10 +105,7 @@ func (f *Fetcher) fetchWithURL(ctx context.Context, cancel context.CancelCauseFu
 	if err := stopSize(); err != nil {
 		return nil, err
 	}
-	cmd := gitCommand(ctx, "show", "FETCH_HEAD:"+filePath)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	data, err := cmd.Output()
+	data, err := f.gitShow(ctx, dir, append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), "FETCH_HEAD:"+filePath)
 	if err != nil {
 		return nil, fmt.Errorf("git show FETCH_HEAD:%s: %w", filePath, gitErr(err))
 	}
@@ -153,13 +151,10 @@ func (f *Fetcher) fetchSSH(ctx context.Context, cancel context.CancelCauseFunc, 
 	if err := stopSize(); err != nil {
 		return nil, err
 	}
-	cmd := gitCommand(ctx, "show", "FETCH_HEAD:"+uri.Path)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	data, err := f.gitShow(ctx, dir, append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_SSH_COMMAND="+sshCmd,
-	)
-	data, err := cmd.Output()
+	), "FETCH_HEAD:"+uri.Path)
 	if err != nil {
 		return nil, fmt.Errorf("git show FETCH_HEAD:%s (SSH): %w", uri.Path, gitErr(err))
 	}
@@ -334,10 +329,7 @@ func (f *Fetcher) fetchDirWithURL(ctx context.Context, cancel context.CancelCaus
 		if !strings.HasSuffix(line, ".yaml") && !strings.HasSuffix(line, ".yml") {
 			continue
 		}
-		showCmd := gitCommand(ctx, "show", "FETCH_HEAD:"+line)
-		showCmd.Dir = dir
-		showCmd.Env = env
-		data, err := showCmd.Output()
+		data, err := f.gitShow(ctx, dir, env, "FETCH_HEAD:"+line)
 		if err != nil {
 			return nil, fmt.Errorf("git show FETCH_HEAD:%s: %w", line, gitErr(err))
 		}
@@ -386,30 +378,70 @@ func (f *Fetcher) sshSetup(ctx context.Context, host, sshKey string) (string, fu
 			cleanup()
 			return "", nil, fmt.Errorf("write known_hosts: %w", err)
 		}
-		return buildSSHCommand(keyPath, khPath, true), cleanup, nil
+		cmd, err := buildSSHCommand(keyPath, khPath, true)
+		if err != nil {
+			cleanup()
+			return "", nil, err
+		}
+		return cmd, cleanup, nil
 	}
 
 	khPath := f.KnownHostsFile
 	if khPath == "" {
 		khPath = filepath.Join(keyDir, "known_hosts")
-	} else if err := os.MkdirAll(filepath.Dir(khPath), 0o700); err != nil {
+	} else if err := ValidateKnownHostsFile(khPath); err != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("create known_hosts dir: %w", err)
+		return "", nil, err
 	}
-	return buildSSHCommand(keyPath, khPath, false), cleanup, nil
+	cmd, err := buildSSHCommand(keyPath, khPath, false)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return cmd, cleanup, nil
 }
 
 // buildSSHCommand builds the GIT_SSH_COMMAND value. strict selects
 // StrictHostKeyChecking=yes (pinned keys) over accept-new (trust on first use).
 // The system-wide known_hosts is ignored so the result depends only on the
 // configured keys.
-func buildSSHCommand(keyPath, knownHostsPath string, strict bool) string {
+func buildSSHCommand(keyPath, knownHostsPath string, strict bool) (string, error) {
 	mode := "accept-new"
 	if strict {
 		mode = "yes"
 	}
-	return fmt.Sprintf("ssh -i %s -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=%s -o UserKnownHostsFile=%s -o GlobalKnownHostsFile=/dev/null",
-		shellQuote(filepath.ToSlash(keyPath)), mode, shellQuote(filepath.ToSlash(knownHostsPath)))
+	key, err := sshOptionPath(keyPath)
+	if err != nil {
+		return "", err
+	}
+	kh, err := sshOptionPath(knownHostsPath)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("ssh -o %s -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=%s -o %s -o GlobalKnownHostsFile=/dev/null",
+		shellQuote("IdentityFile="+key), mode, shellQuote("UserKnownHostsFile="+kh)), nil
+}
+
+// sshOptionPath renders a file path as an ssh_config value. ssh splits
+// UserKnownHostsFile on whitespace and expands "~" and "%" tokens in file
+// options, so the path is double-quoted and "%" doubled; otherwise a path with a
+// space would silently point ssh at a different file (and ssh accepts any host
+// key when it cannot write its known_hosts). A path containing a double quote or
+// newline cannot be represented and is rejected.
+func sshOptionPath(p string) (string, error) {
+	if err := CheckSSHPath(p); err != nil {
+		return "", err
+	}
+	return `"` + strings.ReplaceAll(filepath.ToSlash(p), "%", "%%") + `"`, nil
+}
+
+// CheckSSHPath reports whether p can be passed to ssh as a key or known_hosts
+// path (see sshOptionPath).
+func CheckSSHPath(p string) error {
+	if strings.ContainsAny(p, "\"\n\r\x00") {
+		return fmt.Errorf("ssh path %q must not contain a double quote or newline", p)
+	}
+	return nil
 }
 
 // shellQuote single-quotes s for the POSIX shell git uses to run GIT_SSH_COMMAND.
@@ -442,7 +474,7 @@ func sshHostFromURL(repoURL string) string {
 func hostKeyHint(out []byte) string {
 	msg := string(out)
 	if strings.Contains(msg, "Host key verification failed") || strings.Contains(msg, "REMOTE HOST IDENTIFICATION HAS CHANGED") {
-		return "\nSSH host key verification failed: the server's host key does not match the pinned or previously trusted key; if the key legitimately changed, update the GitCredential knownHosts (or remove the stale entry from the controller's known_hosts file)"
+		return "\nSSH host key verification failed: the server's host key does not match the pinned or previously trusted key; if the key legitimately changed, update the GitCredential knownHosts (use the [host]:port form for a non-default port; or remove the stale entry from the controller's known_hosts file)"
 	}
 	return ""
 }
@@ -606,4 +638,45 @@ func (f *Fetcher) FetchDir(ctx context.Context, repoURL, ref, path, token, sshKe
 	defer cancel(nil)
 	files, err := f.fetchDir(ctx, cancel, repoURL, ref, path, token, sshKey)
 	return files, opErr(ctx, f, err)
+}
+
+// gitShow returns the content of obj (e.g. "FETCH_HEAD:path") in the scratch
+// repo at dir. When MaxRepoBytes is set, a blob larger than it is rejected
+// (checked with git cat-file -s) before its content is read into memory.
+func (f *Fetcher) gitShow(ctx context.Context, dir string, env []string, obj string) ([]byte, error) {
+	if f.MaxRepoBytes > 0 {
+		sc := gitCommand(ctx, "cat-file", "-s", obj)
+		sc.Dir = dir
+		sc.Env = env
+		out, err := sc.Output()
+		if err != nil {
+			return nil, err
+		}
+		if n, perr := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64); perr == nil && n > f.MaxRepoBytes {
+			return nil, fmt.Errorf("%w: %s is %d bytes (limit %d)", errRepoTooLarge, obj, n, f.MaxRepoBytes)
+		}
+	}
+	cmd := gitCommand(ctx, "show", obj)
+	cmd.Dir = dir
+	cmd.Env = env
+	return cmd.Output()
+}
+
+// ValidateKnownHostsFile prepares and vets the persistent known_hosts path used
+// for SSH trust-on-first-use: the path must be representable to ssh, and its
+// directory is created (0700) and must be a real directory owned by the current
+// user and not group/other-writable (Unix). The controller calls it at startup
+// so a bad configuration fails closed.
+func ValidateKnownHostsFile(path string) error {
+	if err := CheckSSHPath(path); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create known_hosts dir: %w", err)
+	}
+	if err := checkOwnedPrivateDir(dir); err != nil {
+		return fmt.Errorf("unsafe known_hosts dir: %w", err)
+	}
+	return nil
 }

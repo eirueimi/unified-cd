@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,13 +19,19 @@ import (
 )
 
 func TestBuildSSHCommand(t *testing.T) {
-	strict := buildSSHCommand("/k/id", "/k/known_hosts", true)
-	for _, want := range []string{"-i '/k/id'", "StrictHostKeyChecking=yes", "UserKnownHostsFile='/k/known_hosts'", "GlobalKnownHostsFile=/dev/null", "BatchMode=yes"} {
+	strict, err := buildSSHCommand("/k/id", "/k/known_hosts", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`IdentityFile="/k/id"`, "StrictHostKeyChecking=yes", `UserKnownHostsFile="/k/known_hosts"`, "GlobalKnownHostsFile=/dev/null", "BatchMode=yes"} {
 		if !strings.Contains(strict, want) {
 			t.Errorf("strict command %q missing %q", strict, want)
 		}
 	}
-	tofu := buildSSHCommand("/k/id", "/data/known_hosts", false)
+	tofu, err := buildSSHCommand("/k/id", "/data/known_hosts", false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(tofu, "StrictHostKeyChecking=accept-new") || strings.Contains(tofu, "StrictHostKeyChecking=no") {
 		t.Errorf("TOFU command must use accept-new, got %q", tofu)
 	}
@@ -198,5 +205,85 @@ func TestHostKeyVerification_TOFUDetectsChangedKey(t *testing.T) {
 	_, err = f.FetchDir(ctx, repoURL, "main", "", "", key)
 	if err == nil || !strings.Contains(err.Error(), "host key verification failed") {
 		t.Fatalf("changed host key must fail the fetch, got %v", err)
+	}
+}
+
+func TestBuildSSHCommand_QuotesPaths(t *testing.T) {
+	cmd, err := buildSSHCommand("/tmp/a b/id", "/tmp/a b/100%/known_hosts", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`'IdentityFile="/tmp/a b/id"'`, `'UserKnownHostsFile="/tmp/a b/100%%/known_hosts"'`} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("command %q missing %q", cmd, want)
+		}
+	}
+	if _, err := buildSSHCommand("/k/id", `/k/bad"path/known_hosts`, false); err == nil {
+		t.Error("a path with a double quote must be rejected")
+	}
+	if err := ValidateKnownHostsFile(filepath.Join(t.TempDir(), "x\"y", "known_hosts")); err == nil {
+		t.Error("ValidateKnownHostsFile must reject a double quote")
+	}
+}
+
+func TestValidateKnownHostsFile_RefusesWritableDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ownership and mode checks are Unix-only")
+	}
+	dir := filepath.Join(t.TempDir(), "kh")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateKnownHostsFile(filepath.Join(dir, "known_hosts")); err == nil {
+		t.Error("a world-writable known_hosts directory must be refused")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateKnownHostsFile(filepath.Join(dir, "known_hosts")); err != nil {
+		t.Errorf("a private directory must be accepted: %v", err)
+	}
+}
+
+// TestHostKeyVerification_PathsWithSpaces guards against ssh splitting a path on
+// whitespace: the TOFU file and the pinned known_hosts must be honoured even when
+// their directories contain a space.
+func TestHostKeyVerification_PathsWithSpaces(t *testing.T) {
+	requireSSH(t)
+	spaced := filepath.Join(t.TempDir(), "with space")
+	if err := os.MkdirAll(spaced, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Temp dirs (key + pinned known_hosts) now live under a spaced path too.
+	t.Setenv("TMPDIR", spaced)
+	t.Setenv("TMP", spaced)
+	t.Setenv("TEMP", spaced)
+
+	serverKey := newSigner(t)
+	l, port := fakeSSHServer(t, "127.0.0.1:0", serverKey)
+	defer l.Close()
+	repoURL := fmt.Sprintf("ssh://git@127.0.0.1:%d/o/r.git", port)
+	key := clientKeyPEM(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Pinned, wrong key: must be rejected (not silently accepted).
+	wrong := fmt.Sprintf("[127.0.0.1]:%d %s", port, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(newSigner(t).PublicKey()))))
+	bad := &Fetcher{KnownHosts: func(context.Context, string) (string, error) { return wrong, nil }}
+	if _, err := bad.FetchDir(ctx, repoURL, "main", "", "", key); err == nil || !strings.Contains(err.Error(), "host key verification failed") {
+		t.Fatalf("pinned mismatch under a spaced path must fail verification, got %v", err)
+	}
+
+	// TOFU file under a spaced directory: the key must actually be recorded there.
+	khFile := filepath.Join(spaced, "state", "known_hosts")
+	f := &Fetcher{KnownHostsFile: khFile}
+	if _, err := f.FetchDir(ctx, repoURL, "main", "", "", key); err == nil || strings.Contains(err.Error(), "host key verification failed") {
+		t.Fatalf("first contact must be accepted then fail auth, got %v", err)
+	}
+	if b, err := os.ReadFile(khFile); err != nil || !strings.Contains(string(b), "ssh-ed25519") {
+		t.Fatalf("TOFU key must be written to the spaced path, got %q err=%v", b, err)
 	}
 }
