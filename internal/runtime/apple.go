@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/eirueimi/unified-cd/internal/imageref"
 )
 
 // appleContainer drives Apple's native `container` CLI on macOS. Its surface
@@ -38,10 +40,16 @@ func (a *appleContainer) runArgs(spec RunSpec) []string {
 }
 
 func (a *appleContainer) Pull(ctx context.Context, image string) error {
+	if err := imageref.Validate(image); err != nil {
+		return err
+	}
 	return execCommand(ctx, "container", "pull", image).Run()
 }
 
 func (a *appleContainer) Run(ctx context.Context, spec RunSpec, stdout, stderr io.Writer) (int, error) {
+	if err := imageref.Validate(spec.Image); err != nil {
+		return -1, err
+	}
 	cmd := execCommand(ctx, "container", a.runArgs(spec)...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -65,6 +73,9 @@ func (a *appleContainer) Run(ctx context.Context, spec RunSpec, stdout, stderr i
 // spec.Entrypoint/spec.Args semantics (nil/empty = image's default
 // entrypoint/CMD).
 func (a *appleContainer) createArgs(spec CreateSpec) ([]string, error) {
+	if err := imageref.Validate(spec.Image); err != nil {
+		return nil, err
+	}
 	if spec.User != "" || len(spec.GroupAdd) > 0 || len(spec.CapDrop) > 0 || len(spec.CapAdd) > 0 ||
 		spec.NoNewPrivileges || spec.ReadOnlyRootfs {
 		return nil, fmt.Errorf("apple container: user, groups, capabilities, no-new-privileges and read-only rootfs are not supported (securityContext requires docker/podman/nerdctl)")

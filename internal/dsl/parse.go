@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/imageref"
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -504,6 +505,9 @@ func checkStepExecTarget(container string, runsIn *RunsIn, isUses bool, path, na
 	}
 	if runsIn.Image == "" {
 		return fmt.Errorf("%s (%s): uses runsIn: requires image:", path, name)
+	}
+	if err := imageref.Validate(runsIn.Image); err != nil {
+		return fmt.Errorf("%s (%s): runsIn.image: %w", path, name, err)
 	}
 	if container != "" {
 		return fmt.Errorf("%s (%s): cannot set both container: and runsIn:", path, name)
