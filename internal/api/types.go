@@ -562,20 +562,22 @@ type PostStep struct {
 
 // UpsertGitCredentialRequest is the request for registering or updating a GitCredential.
 type UpsertGitCredentialRequest struct {
-	Name      string `json:"name"`
-	Host      string `json:"host"`
-	CredType  string `json:"credType"`  // "token" | "sshKey"
-	SecretRef string `json:"secretRef"` // name of an existing secret
+	Name       string `json:"name"`
+	Host       string `json:"host"`
+	CredType   string `json:"credType"`             // "token" | "sshKey"
+	SecretRef  string `json:"secretRef"`            // name of an existing secret
+	KnownHosts string `json:"knownHosts,omitempty"` // optional pinned OpenSSH known_hosts lines (sshKey only)
 }
 
 // GitCredentialMeta is the metadata for a GitCredential (for API responses).
 type GitCredentialMeta struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Host      string    `json:"host"`
-	CredType  string    `json:"credType"`
-	SecretRef string    `json:"secretRef"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Host       string    `json:"host"`
+	CredType   string    `json:"credType"`
+	SecretRef  string    `json:"secretRef"`
+	KnownHosts string    `json:"knownHosts,omitempty"`
+	CreatedAt  time.Time `json:"createdAt"`
 }
 
 // ---- approvals ----

@@ -426,3 +426,23 @@ whose objects are missing; later ones may be missing too.
 
 **If the error says `schema_migrations is dirty` instead:**
 Either a previous migration attempt crashed midway, leaving the dirty flag set, or another replica's migration is currently in flight (this can happen transiently during a mixed-version rolling deploy). Restart the controller first; if the error persists across restarts, it is the crashed-migration case, not an in-flight one — inspect which statements of the named version actually applied to the schema, repair them manually to a consistent state, then clear the flag with golang-migrate's `force` command or `UPDATE schema_migrations SET dirty = false` once the schema matches the version number. Then restart the controller.
+
+## AppSource or `git://` template fails with `SSH host key verification failed`
+
+**Symptom:** an AppSource shows `Failed` with a last error, or a run's `git://` template resolution fails, containing:
+
+```
+SSH host key verification failed: the server's host key does not match the pinned or previously trusted key
+```
+
+**Cause:** the controller verifies SSH host keys. Either the GitCredential's `spec.knownHosts` does not list the key the server presents, or (with no `knownHosts`) the server's key differs from the one the controller trusted on first use (`--git-known-hosts-file`). This is also what a man-in-the-middle looks like, so confirm the new fingerprint with the Git host before accepting it.
+
+**Fix:** if the key legitimately changed, update `spec.knownHosts` on the GitCredential (`ssh-keyscan -t ed25519 <host>`), or remove the stale line for the host from the controller's known_hosts file and let it trust the new key on next contact.
+
+## AppSource fails with `git operation timed out` or `repository exceeds the size limit`
+
+**Symptom:** an AppSource is `Failed` and its `lastError` (or a `git://` template resolution error) contains `git operation timed out after 5m0s` or `repository exceeds the size limit (limit 1073741824 bytes ...)`.
+
+**Cause:** the controller bounds every git operation it runs. A slow or hung remote (network stall, a prompt waiting on a firewall, an unreachable host) hits the timeout and the git process tree is killed so it cannot block other AppSources. A repository larger than the size limit is aborted while it is still downloading.
+
+**Fix:** check connectivity to the repository from the controller host. For a legitimately slow or large repository raise `UNIFIED_GIT_TIMEOUT` (Go duration) or `UNIFIED_GIT_MAX_REPO_BYTES` (`0` disables the size limit), or point the AppSource at a smaller repository or path. See the [configuration reference](../reference/configuration.md#controller-environment-variables).

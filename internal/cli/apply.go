@@ -100,9 +100,10 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 				Name string `yaml:"name"`
 			} `yaml:"metadata"`
 			Spec struct {
-				Host      string `yaml:"host"`
-				Type      string `yaml:"type"`
-				SecretRef string `yaml:"secretRef"`
+				Host       string `yaml:"host"`
+				Type       string `yaml:"type"`
+				SecretRef  string `yaml:"secretRef"`
+				KnownHosts string `yaml:"knownHosts"`
 			} `yaml:"spec"`
 		}
 		if err := yaml.Unmarshal(b, &gc); err != nil {
@@ -110,10 +111,11 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 		}
 		endpoint = cfg.Server + "/api/v1/gitcredentials"
 		bodyBytes, _ = json.Marshal(api.UpsertGitCredentialRequest{
-			Name:      gc.Metadata.Name,
-			Host:      gc.Spec.Host,
-			CredType:  gc.Spec.Type,
-			SecretRef: gc.Spec.SecretRef,
+			Name:       gc.Metadata.Name,
+			Host:       gc.Spec.Host,
+			CredType:   gc.Spec.Type,
+			SecretRef:  gc.Spec.SecretRef,
+			KnownHosts: gc.Spec.KnownHosts,
 		})
 	case "WebhookReceiver":
 		endpoint = cfg.Server + "/api/v1/webhooks/"

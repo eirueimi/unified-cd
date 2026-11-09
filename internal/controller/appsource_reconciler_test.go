@@ -632,3 +632,54 @@ func TestReconciler_RejectsStoredCredentialedRepoURL(t *testing.T) {
 	assert.NotContains(t, src.LastError, "s3cr3t")
 	assert.NotContains(t, src.LastError, "alice")
 }
+
+// perRepoFetcher serves a different outcome per repoURL so one test can mix a
+// repository whose git operation timed out with healthy ones.
+type perRepoFetcher struct {
+	errs  map[string]error
+	files map[string][]byte
+}
+
+func (p *perRepoFetcher) ResolveCommitSHA(_ context.Context, repoURL, _, _, _ string) (string, error) {
+	if err := p.errs[repoURL]; err != nil {
+		return "", err
+	}
+	return "abc123", nil
+}
+
+func (p *perRepoFetcher) FetchDir(_ context.Context, _, _, _, _, _ string) (map[string][]byte, error) {
+	return p.files, nil
+}
+
+// TestReconciler_TimedOutRepoDoesNotBlockOthers verifies that a git timeout on
+// one AppSource is recorded in its lastError and the serial reconcile loop
+// still syncs the AppSources after it.
+func TestReconciler_TimedOutRepoDoesNotBlockOthers(t *testing.T) {
+	pg := storetest.NewTestPostgres(t)
+	ctx := context.Background()
+
+	hung := `{"repoURL":"https://git.example.com/org/hung","targetRevision":"main","path":"jobs/"}`
+	healthy := `{"repoURL":"https://git.example.com/org/healthy","targetRevision":"main","path":"jobs/"}`
+	// Names sort so the hung source is listed first.
+	_, err := pg.UpsertAppSource(ctx, "a-hung", []byte(hung))
+	require.NoError(t, err)
+	_, err = pg.UpsertAppSource(ctx, "b-healthy", []byte(healthy))
+	require.NoError(t, err)
+
+	fetcher := &perRepoFetcher{
+		errs:  map[string]error{"https://git.example.com/org/hung": fmt.Errorf("git operation timed out after 5m0s: signal: killed")},
+		files: map[string][]byte{"jobs/build.yaml": []byte(jobYAML)},
+	}
+	reconcileAppSources(ctx, pg, fetcher, nil)
+
+	a, err := pg.GetAppSource(ctx, "a-hung")
+	require.NoError(t, err)
+	assert.Equal(t, "Failed", a.SyncStatus)
+	assert.Contains(t, a.LastError, "timed out")
+
+	b, err := pg.GetAppSource(ctx, "b-healthy")
+	require.NoError(t, err)
+	assert.Equal(t, "abc123", b.LastCommit)
+	_, err = pg.GetJob(ctx, "build")
+	require.NoError(t, err)
+}

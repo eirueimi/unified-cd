@@ -2942,25 +2942,26 @@ func (p *Postgres) TouchSession(ctx context.Context, id string) error {
 	return err
 }
 
-func (p *Postgres) UpsertGitCredential(ctx context.Context, name, host, credType, secretRef string) error {
+func (p *Postgres) UpsertGitCredential(ctx context.Context, name, host, credType, secretRef, knownHosts string) error {
 	_, err := p.pool.Exec(ctx, `
-		INSERT INTO git_credentials(name, host, cred_type, secret_ref)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO git_credentials(name, host, cred_type, secret_ref, known_hosts)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (name) DO UPDATE
 		SET host = EXCLUDED.host,
 		    cred_type = EXCLUDED.cred_type,
 		    secret_ref = EXCLUDED.secret_ref,
+		    known_hosts = EXCLUDED.known_hosts,
 		    updated_at = NOW()`,
-		name, host, credType, secretRef)
+		name, host, credType, secretRef, knownHosts)
 	return err
 }
 
 func (p *Postgres) GetGitCredentialByHost(ctx context.Context, host string) (*GitCredential, error) {
 	var gc GitCredential
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, name, host, cred_type, secret_ref, created_at, updated_at
+		`SELECT id, name, host, cred_type, secret_ref, known_hosts, created_at, updated_at
 		 FROM git_credentials WHERE host = $1 ORDER BY updated_at DESC LIMIT 1`,
-		host).Scan(&gc.ID, &gc.Name, &gc.Host, &gc.CredType, &gc.SecretRef, &gc.CreatedAt, &gc.UpdatedAt)
+		host).Scan(&gc.ID, &gc.Name, &gc.Host, &gc.CredType, &gc.SecretRef, &gc.KnownHosts, &gc.CreatedAt, &gc.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -2972,7 +2973,7 @@ func (p *Postgres) GetGitCredentialByHost(ctx context.Context, host string) (*Gi
 
 func (p *Postgres) ListGitCredentials(ctx context.Context) ([]GitCredential, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, name, host, cred_type, secret_ref, created_at, updated_at
+		`SELECT id, name, host, cred_type, secret_ref, known_hosts, created_at, updated_at
 		 FROM git_credentials ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -2981,7 +2982,7 @@ func (p *Postgres) ListGitCredentials(ctx context.Context) ([]GitCredential, err
 	var list []GitCredential
 	for rows.Next() {
 		var gc GitCredential
-		if err := rows.Scan(&gc.ID, &gc.Name, &gc.Host, &gc.CredType, &gc.SecretRef, &gc.CreatedAt, &gc.UpdatedAt); err != nil {
+		if err := rows.Scan(&gc.ID, &gc.Name, &gc.Host, &gc.CredType, &gc.SecretRef, &gc.KnownHosts, &gc.CreatedAt, &gc.UpdatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, gc)

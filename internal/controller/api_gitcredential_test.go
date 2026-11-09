@@ -64,3 +64,27 @@ func TestAPI_UpsertGitCredential_RejectsMissingName(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "name is required")
 }
+
+func TestAPI_UpsertGitCredential_KnownHosts(t *testing.T) {
+	post := func(r api.UpsertGitCredentialRequest) *httptest.ResponseRecorder {
+		s, _ := newTestServer(t)
+		body, _ := json.Marshal(r)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/gitcredentials", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		return rec
+	}
+	const kh = "gitlab.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample"
+
+	rec := post(api.UpsertGitCredentialRequest{Name: "gl", Host: "gitlab.example.com", CredType: "sshKey", SecretRef: "k", KnownHosts: kh})
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	rec = post(api.UpsertGitCredentialRequest{Name: "gl", Host: "gitlab.example.com", CredType: "token", SecretRef: "k", KnownHosts: kh})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "knownHosts is only valid")
+
+	rec = post(api.UpsertGitCredentialRequest{Name: "gl", Host: "gitlab.example.com", CredType: "sshKey", SecretRef: "k", KnownHosts: "bogus"})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}

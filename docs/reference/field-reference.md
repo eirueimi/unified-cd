@@ -763,6 +763,7 @@ GitCredentialSpec is the spec section of GitCredential.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `host` | string | yes | hostname to use these credentials for (e.g. github.com) |
+| `knownHosts` | string | no | KnownHosts optionally pins the SSH host keys (OpenSSH known_hosts lines) of host; sshKey type only. When set, ssh runs with StrictHostKeyChecking=yes against exactly these keys; when empty the controller uses trust-on-first-use and rejects a host key that later changes. |
 | `secretRef` | string | yes | name of the StoredSecret that holds the value |
 | `type` | `token` \| `sshKey` | yes | authentication type |
 
