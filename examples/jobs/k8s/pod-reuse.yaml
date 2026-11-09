@@ -30,8 +30,10 @@ spec:
     - name: restore_modules
       cache:
         path: .gomodcache
-        # A real job would derive the key from the lockfile, e.g.
-        #   key: go-mod-{{ hashFile "go.sum" }}
+        # A real job would derive the key from the lockfile: hash it in a
+        # preceding run step, expose the hash as a step output, and use that in
+        # the key (hashFile is not available on the Kubernetes agent), e.g.
+        #   key: go-mod-{{ .Steps.hash.Outputs.lockhash }}
         # This demo has no source checkout, so the key is static.
         key: incremental-build-modules-v1
 

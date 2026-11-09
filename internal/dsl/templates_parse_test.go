@@ -2,6 +2,7 @@ package dsl
 
 import (
 	"os"
+	"strings"
 	"path/filepath"
 	"testing"
 
@@ -66,4 +67,23 @@ func TestBuildkitRootlessTemplateStaysPinned(t *testing.T) {
 	job, err := Parse(f)
 	require.NoError(t, err)
 	assert.Equal(t, []string{CapPod}, RequiredCaps(job.Spec))
+}
+
+// TestTemplatesDoNotUseHashFile guards the templates against the hashFile
+// template function: it is unavailable on the Kubernetes agent, whose workspace
+// lives in the job pod, so a shipped template must hash lockfiles in a run step.
+func TestTemplatesDoNotUseHashFile(t *testing.T) {
+	matches, err := filepath.Glob("../../templates/*.yaml")
+	require.NoError(t, err)
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for _, line := range strings.Split(string(data), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			assert.NotContains(t, line, "hashFile", "%s must not use hashFile", path)
+		}
+	}
 }

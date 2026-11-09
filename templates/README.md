@@ -92,9 +92,12 @@ Each template follows the house style below (`git-checkout.yaml` / `slack-notify
   non-canonical secret-map access is rejected before claim and secret fetch.
 - When writing sensitive information such as private keys or tokens to a file, create a temp file with `mktemp`,
   `chmod 600` it, and clean it up with `trap ... EXIT`.
-- The `path` / `key` / `restoreKeys` fields of a `cache:` step all expand template expressions (use
-  `{{ hashFile "path/glob" }}` for the key; note that no function named `checksum` exists despite what some docs
-  suggest) — see `executeCacheStep` in `internal/agent/agent.go` and the equivalent in `internal/k8sagent/agent.go`.
+- The `path` / `key` / `restoreKeys` fields of a `cache:` step all expand template expressions. `hashFile` works
+  there only on the host agent, not on the Kubernetes agent (its workspace lives in the pod), so templates that must
+  run on both derive the key from a preceding `run:` step that hashes the lockfile (`sha256sum`, falling back to
+  `shasum`/`cksum`) and exposes it as an output, as `setup-go.yaml` and `setup-node.yaml` do
+  (`key: go-mod-{{ .Steps.hash_lockfile.Outputs.lockhash }}`). Note that no function named `checksum` exists
+  despite what some docs suggest.
   A `cache:` step may only target a single `path`, though, so when you need to cache more than one directory (e.g.
   Go's module cache and build cache), split it into separate steps per target as in `setup-go.yaml`.
 - For `type: array` input parameters, the value passed as a YAML array is delivered to the job at runtime as a
