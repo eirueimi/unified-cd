@@ -122,7 +122,7 @@ unconstrained payload-mapped param is a command-injection vector.
 
 For this reason, any `paramsMapping` entry whose template reads `.Payload`
 must target a job input that declares `pattern:` (a regular expression the
-resolved value must match), `choices:` (a fixed allow-list of values), or
+whole resolved value must match), `choices:` (a fixed allow-list of values), or
 `unvalidated: true` (an explicit, greppable opt-out for values that are
 genuinely free-form and never reach a shell). `choices:` satisfies this gate
 on its own, with no `pattern:` needed: it's a strict enumeration of exact
