@@ -276,6 +276,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	if s.verifyIDTokenHook != nil {
 		claims, err = s.verifyIDTokenHook(ctx, rawIDToken, s.oidcCfg.ClientID)
 		if err != nil {
+			reportAuthFailure(s.store, r, "oidc-callback", "id_token_verification_failed")
 			http.Error(w, "id_token verification failed: "+err.Error(), http.StatusUnauthorized)
 			return
 		}
@@ -283,6 +284,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		verifier := provider.Verifier(&oidc.Config{ClientID: s.oidcCfg.ClientID})
 		idToken, err := verifier.Verify(ctx, rawIDToken)
 		if err != nil {
+			reportAuthFailure(s.store, r, "oidc-callback", "id_token_verification_failed")
 			http.Error(w, "id_token verification failed: "+err.Error(), http.StatusUnauthorized)
 			return
 		}

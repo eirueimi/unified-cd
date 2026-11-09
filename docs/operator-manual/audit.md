@@ -47,7 +47,9 @@ Each recorded entry contains:
 | Field | Description |
 |---|---|
 | `occurredAt` | Timestamp of the request |
-| `actor` | The authenticated caller: PAT name, OIDC email/subject, or session identity — whatever `ServerAuth` resolved as the `Principal` for the request (the same identity source used for `run_approvals.decided_by`) |
+| `actor` | Display name of the authenticated caller: PAT name, OIDC email/subject, or session identity — whatever `ServerAuth` resolved as the `Principal` for the request (the same identity source used for `run_approvals.decided_by`). **Not unique and not trustworthy on its own**: a PAT name is chosen by whoever creates the token, so two PATs can share a name, or imitate another user's PAT or the bootstrap token. Use `actorId` to tell callers apart |
+| `actorId` | Stable identity of the caller; see [Actor identity](#actor-identity). Empty for rows written before the field existed |
+| `actorSub` | OIDC subject (`sub`) of the user behind the caller, when there is one (owner PATs, OIDC bearer tokens, sessions); empty for role-only PATs, the bootstrap token and agents |
 | `method` | HTTP method (`POST`/`PUT`/`DELETE`) |
 | `path` | Request path |
 | `action` | Short classification from the table above |
@@ -56,6 +58,22 @@ Each recorded entry contains:
 | `permission` | The permission the request was checked against (for example `run.trigger`); empty when no decision applied |
 | `scope` | The job name for a folder-scopable decision; empty for a global decision and for a refusal before any job was looked at |
 | `grantedBy` | A short description of the first grant that allowed the request; empty on a denial |
+
+### Actor identity
+
+`actor` is a label; `actorId` is the identity. It is derived from the authenticated credential, never
+from anything the caller can choose:
+
+| `actorId` | Caller |
+|---|---|
+| `break-glass` | The `UNIFIED_TOKEN` bootstrap credential. A PAT that merely carries the bootstrap token's name gets its own `pat:<id>` instead |
+| `pat:<pat id>` | Any other PAT (role-only, owner or enrollment). `<pat id>` is the PAT's primary key; unlike the name it is unique |
+| `oidc:<sub>` | An OIDC bearer token or a browser session; `<sub>` is the subject claim (also in `actorSub`) |
+| `agent:<agent id>` | An agent credential exchange or refresh (`agent.enrollment.exchange`, `agent.refresh`); other agent rows carry no `actorId` |
+
+Two PATs with the same name therefore produce rows with the same `actor` and different `actorId`
+values. `pats.name` has no `UNIQUE` constraint (existing databases may already hold duplicates), so
+`actorId` is the field to filter on when investigating who did something.
 
 ### Permission, scope and grantedBy
 
@@ -96,6 +114,22 @@ grow `audit_logs` at request rate. Size the database for that and keep
 request body — the `value` field is never inspected, logged, or stored anywhere in the audit
 trail. `secret.delete` uses the URL path parameter, so no body is involved at all.
 
+### Failed authentication
+
+A request that is rejected with `401` (no credentials, unknown or expired token, failed session
+refresh, failed OIDC `id_token` verification) is logged and audited:
+
+- The controller logs a structured warning, `authentication failed`, with `remote` (the peer
+  address, not `X-Forwarded-For`), `method` (`bearer`, `session`, `none`, `agent-token`,
+  `oidc-callback`), `reason` and `path`. The presented token, or any part of it, is never logged.
+- An audit row with `action` `auth.failed`, `status` `401` and `actor` `unknown` is written (agent
+  static-token failures are only logged). Its `resource` is
+  `method=<method> reason=<reason> remote=<address>`.
+- Reporting is rate limited per controller process (about 5 per second after a burst of 20) so a
+  client cannot grow the log or `audit_logs` at request rate. Dropped reports are counted and the
+  next report that gets through carries `suppressed=<n>` in the log line. Treat a `suppressed` value
+  as evidence of a flood; the audit rows only sample it.
+
 ## What is excluded
 
 The following are deliberately **not** recorded:
@@ -117,8 +151,8 @@ The following are deliberately **not** recorded:
 - **Allowed `GET` requests** — read-only calls are audited only when authorization refuses them
   (see [Denied reads](#denied-reads)).
 - **Refusals that involve no human authorization decision** — an agent principal calling a
-  human-only route, `401 unauthorized` responses, and `403 forbidden: unclassified route` are not
-  recorded.
+  human-only route and `403 forbidden: unclassified route` are not recorded. Failed
+  authentication (`401`) is recorded separately, see [Failed authentication](#failed-authentication).
 - **Artifact upload and allowed downloads** — upload is agent-authenticated and excluded along with the
   rest of the agent-facing surface; a download is a read, so only a refused one (no `job.read` on the
   run's job) is recorded.
@@ -149,6 +183,10 @@ CREATE INDEX idx_audit_logs_occurred_at ON audit_logs (occurred_at);
 Migration `024_matrix_authorization` adds the nullable columns `permission`, `scope` and `granted_by`.
 They are `NULL` for rows written before the upgrade.
 
+Migration `027_audit_actor_identity` adds the nullable columns `actor_id` and `actor_sub`. They are
+`NULL` for rows written before the upgrade, which therefore cannot be attributed beyond the
+(non-unique) `actor` name. The change is additive: no existing API field or column changed.
+
 ## API
 
 ```
@@ -174,6 +212,8 @@ curl -H "Authorization: Bearer $TOKEN" \
     "id": 42,
     "occurredAt": "2026-07-05T10:30:00Z",
     "actor": "alice",
+    "actorId": "oidc:5f2c1a0e-0000-4000-8000-000000000001",
+    "actorSub": "5f2c1a0e-0000-4000-8000-000000000001",
     "method": "DELETE",
     "path": "/api/v1/secrets/AWS_KEY",
     "action": "secret.delete",
@@ -191,14 +231,14 @@ curl -H "Authorization: Bearer $TOKEN" \
 unified-cli audit list [--limit N]
 ```
 
-Prints a table (time, actor, action, resource, status, permission, grantedBy), newest first.
+Prints a table (time, actor, action, resource, status, permission, grantedBy, actorId), newest first.
 A column with no value shows `-`:
 
 ```
 $ unified-cli audit list --limit 5
-2026-07-05T10:30:00Z	alice	secret.delete	AWS_KEY	204	secret.write	role:admin (roleMap["unified-admins"])
-2026-07-05T10:28:11Z	bob	run.cancel	run-abc123	403	run.cancel	-
-2026-07-05T10:15:02Z	alice	token.create	ci-bot	200	token.create	role:admin (roleMap["unified-admins"])
+2026-07-05T10:30:00Z	alice	secret.delete	AWS_KEY	204	secret.write	role:admin (roleMap["unified-admins"])	oidc:5f2c1a0e-0000-4000-8000-000000000001
+2026-07-05T10:28:11Z	bob	run.cancel	run-abc123	403	run.cancel	-	pat:3b1e7c52-0000-4000-8000-0000000000aa
+2026-07-05T10:15:02Z	alice	token.create	ci-bot	200	token.create	role:admin (roleMap["unified-admins"])	oidc:5f2c1a0e-0000-4000-8000-000000000001
 ...
 ```
 

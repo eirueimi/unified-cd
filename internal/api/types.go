@@ -629,6 +629,12 @@ type AuditLog struct {
 	Permission string    `json:"permission,omitempty"`
 	Scope      string    `json:"scope,omitempty"`
 	GrantedBy  string    `json:"grantedBy,omitempty"`
+	// ActorID is the stable identity of the caller ("pat:<id>", "oidc:<sub>",
+	// "break-glass", "agent:<id>"). Actor is only a display name and is not
+	// unique; empty for rows written before ActorID was recorded.
+	ActorID string `json:"actorId,omitempty"`
+	// ActorSub is the OIDC subject behind the actor, when there is one.
+	ActorSub string `json:"actorSub,omitempty"`
 }
 
 // ---- appsource ----

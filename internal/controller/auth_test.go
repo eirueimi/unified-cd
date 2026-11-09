@@ -122,6 +122,9 @@ type fakePATStore struct {
 	pats map[string]*store.PAT
 }
 
+// InsertAuditLog discards the auth.failed rows ServerAuth writes on a 401.
+func (f *fakePATStore) InsertAuditLog(context.Context, store.AuditEntry) error { return nil }
+
 func (f *fakePATStore) GetPATByHash(_ context.Context, hash string) (*store.PAT, error) {
 	if p, ok := f.pats[hash]; ok {
 		return p, nil

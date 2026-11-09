@@ -47,11 +47,31 @@ type Principal struct {
 	CeilingPerms []string
 	// OwnerPATID is the PAT row ID when the principal is an owner PAT.
 	OwnerPATID string
+	// PATID is the PAT row ID for every PAT-authenticated principal (Kind
+	// "pat"), owner or not; empty otherwise. Unlike Name it is unique.
+	PATID string
 	// BreakGlass is true for the env:UNIFIED_TOKEN PAT.
 	BreakGlass bool
 	// EnrollLabels bounds the labels an agent.enroll PAT may put on the
 	// enrollment tokens it creates; nil means no bound.
 	EnrollLabels []string
+}
+
+// AuditActorID returns the stable, unambiguous identity recorded in the audit
+// log next to the display Name (which is a user-chosen PAT name or an email and
+// is not unique): "break-glass" for the UNIFIED_TOKEN credential, "pat:<id>"
+// for any other PAT, "oidc:<sub>" for an OIDC bearer token or session, and ""
+// when nothing stable is known.
+func (p Principal) AuditActorID() string {
+	switch {
+	case p.BreakGlass:
+		return "break-glass"
+	case p.Kind == "pat" && p.PATID != "":
+		return "pat:" + p.PATID
+	case p.Sub != "" && (p.Kind == "oidc" || p.Kind == "session"):
+		return "oidc:" + p.Sub
+	}
+	return ""
 }
 
 func withPrincipal(r *http.Request, p Principal) *http.Request {
@@ -76,11 +96,13 @@ func BearerAuth(expected string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := r.Header.Get("Authorization")
 			if !strings.HasPrefix(h, bearerPrefix) {
+				reportAuthFailure(nil, r, "agent-token", "missing_bearer")
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			got := []byte(strings.TrimPrefix(h, bearerPrefix))
 			if len(expectedBytes) == 0 || subtle.ConstantTimeCompare(got, expectedBytes) != 1 {
+				reportAuthFailure(nil, r, "agent-token", "invalid_token")
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -159,6 +181,7 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 								claims, ok, err := srv.refreshSession(r.Context(), sess, r.Host)
 								if err != nil {
 									_ = st.DeleteSession(context.Background(), sess.ID)
+									reportAuthFailure(st, r, "session", "refresh_failed")
 									http.Error(w, "session refresh failed", http.StatusUnauthorized)
 									return
 								}
@@ -179,6 +202,17 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 				}
 			}
 
+			method, reason := "none", "missing_credentials"
+			if strings.HasPrefix(h, bearerPrefix) {
+				method, reason = "bearer", "invalid_token"
+			} else if _, err := r.Cookie(sessionCookieName); err == nil {
+				method, reason = "session", "invalid_or_expired_session"
+			}
+			var aw auditWriter
+			if st != nil {
+				aw = st
+			}
+			reportAuthFailure(aw, r, method, reason)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 		})
 	}
@@ -209,21 +243,21 @@ func (srv *Server) isBreakGlass(pat *store.PAT, presentedHash string) bool {
 func (srv *Server) patPrincipal(pat *store.PAT, presentedHash string) (Principal, bool) {
 	if srv.isBreakGlass(pat, presentedHash) {
 		// Break-glass is always admin, checked before OIDC resolution.
-		return Principal{Name: pat.Name, Kind: "pat", Role: "admin", BreakGlass: true,
+		return Principal{Name: pat.Name, Kind: "pat", Role: "admin", BreakGlass: true, PATID: pat.ID,
 			Grants: authz.AllGrants("break-glass")}, true
 	}
 	if pat.Owner == nil && isEnrollPAT(pat) {
 		// Enrollment-only PAT: exactly agent.enroll, globally, and nothing else.
 		var g authz.Grants
 		g.Add("", authz.Set(0).With(authz.AgentEnroll), "pat:"+pat.Name)
-		return Principal{Name: pat.Name, Kind: "pat", Grants: g, EnrollLabels: pat.EnrollLabels}, true
+		return Principal{Name: pat.Name, Kind: "pat", PATID: pat.ID, Grants: g, EnrollLabels: pat.EnrollLabels}, true
 	}
 	if pat.Owner == nil {
 		// Role-only PAT: the same semantics as before, the refusal just moves up front.
 		if roleRank(pat.Role) == 0 {
 			return Principal{}, false
 		}
-		return Principal{Name: pat.Name, Kind: "pat", Role: pat.Role,
+		return Principal{Name: pat.Name, Kind: "pat", Role: pat.Role, PATID: pat.ID,
 			Grants: authz.RoleGrants(pat.Role, fmt.Sprintf("role:%s (pat)", pat.Role))}, true
 	}
 	// Owner PAT: the owner's grants under the current config, capped by the ceiling.
@@ -248,7 +282,7 @@ func (srv *Server) patPrincipal(pat *store.PAT, presentedHash string) (Principal
 		Name: pat.Name, Kind: "pat", Role: role,
 		Sub: pat.Owner.Sub, Email: pat.Owner.Email, Claims: nonNilClaims(pat.Owner.Claims), ClaimsKnown: true,
 		Grants: grants, Ceiling: ceiling, CeilingRole: pat.Role, CeilingPerms: pat.Permissions,
-		OwnerPATID: pat.ID, EnrollLabels: pat.EnrollLabels,
+		OwnerPATID: pat.ID, PATID: pat.ID, EnrollLabels: pat.EnrollLabels,
 	}, true
 }
 
