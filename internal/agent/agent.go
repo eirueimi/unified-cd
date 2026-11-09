@@ -749,6 +749,13 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			defer activeWorkDirs.Remove(workDir)
 			defer activeRuns.Remove(resp.RunID)
 
+			// Refuse before anything touches the host: reserving volumes and preparing
+			// the workspace (which can wipe a root volume) must not run for a claim
+			// this agent will not execute. executeRun re-checks as defence in depth.
+			if resp.Native && a.DisableNative {
+				a.failRun(runCtx, resp.RunID, nativeDisabledMsg)
+				return
+			}
 			mode := "isolated"
 			if resp.Native {
 				mode = "native"

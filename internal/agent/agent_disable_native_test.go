@@ -6,12 +6,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
 
 func TestFilterNative(t *testing.T) {
@@ -81,4 +84,72 @@ func TestRun_RefusesToStartWithNoCapabilities(t *testing.T) {
 	err := a.Run(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no capabilities")
+}
+
+// A native claim that reaches a disabled-native agent is failed before the
+// workspace is prepared: preparing can wipe a root volume, which a refused run
+// must not do.
+func TestRunLoop_DisabledNativeClaimFailsBeforeWorkspacePrep(t *testing.T) {
+	orig := prepareWorkspaceFn
+	defer func() { prepareWorkspaceFn = orig }()
+	var prepared atomic.Int32
+	prepareWorkspaceFn = func(ctx context.Context, workDir, mode string, vol *volumeWorkspace, clean bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
+		prepared.Add(1)
+		return orig(ctx, workDir, mode, vol, clean, rtFn, toolsDir)
+	}
+
+	finishCh := make(chan string, 2)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/register", registerHandler)
+	var claims atomic.Int32
+	mux.HandleFunc("POST /api/v1/agents/dn2/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
+		w.Header().Set("Content-Type", "application/json")
+		if claims.Add(1) == 1 {
+			json.NewEncoder(w).Encode(claimResp("run-dn2", "echo hi")) //nolint:errcheck
+			return
+		}
+		<-r.Context().Done()
+		json.NewEncoder(w).Encode(api.ClaimResponse{}) //nolint:errcheck
+	})
+	mux.HandleFunc("POST /api/v1/agents/dn2/steps", stepHandler)
+	mux.HandleFunc("POST /api/v1/agents/dn2/runs/run-dn2/steps/-1/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/dn2/runs/run-dn2/finish", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Status string }
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		select {
+		case finishCh <- body.Status:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := &Agent{ID: "dn2", Client: NewClient(srv.URL, "tok"), MaxConcurrent: 1, MaxDetachedConcurrent: -1,
+		WorkspaceDir: t.TempDir(), DisableNative: true}
+	// A stub runtime keeps the agent's capability set non-empty (container only).
+	a.runtimeOnce.Do(func() { a.resolvedRuntime = &podFakeRT{} })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+
+	select {
+	case st := <-finishCh:
+		assert.Equal(t, "Failed", st)
+	case <-time.After(10 * time.Second):
+		t.Fatal("run was not finished")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return")
+	}
+	assert.Zero(t, prepared.Load(), "workspace must not be prepared for a refused native claim")
 }
