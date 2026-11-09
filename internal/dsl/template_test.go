@@ -221,6 +221,33 @@ func TestHashFile_StepTimeRejectsEscapesAndNonRegularFiles(t *testing.T) {
 	require.ErrorContains(t, err, "not a regular file")
 }
 
+func TestHashFile_UncleanPatternsMatchLikeClean(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "a"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.sum"), []byte("root"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a", "go.sum"), []byte("sub"), 0o644))
+	hash := func(g string) string {
+		out, err := ExpandStepTemplate(`{{ hashFile "`+g+`" }}`, TemplateData{}, dir)
+		require.NoError(t, err, g)
+		return out
+	}
+	root := hash("go.sum")
+	require.NotEmpty(t, root)
+	assert.Equal(t, root, hash("./go.sum"))
+	assert.Equal(t, root, hash("./././go.sum"))
+	sub := hash("a/go.sum")
+	require.NotEmpty(t, sub)
+	assert.NotEqual(t, root, sub)
+	assert.Equal(t, sub, hash("a//go.sum"))
+	assert.Equal(t, sub, hash("a/./go.sum"))
+	assert.Equal(t, sub, hash("./a/go.sum"))
+	// A directory (even spelled "a/" or ".") is not a regular file.
+	_, err := ExpandStepTemplate(`{{ hashFile "a/" }}`, TemplateData{}, dir)
+	require.ErrorContains(t, err, "not a regular file")
+	_, err = ExpandStepTemplate(`{{ hashFile "." }}`, TemplateData{}, dir)
+	require.ErrorContains(t, err, "not a regular file")
+}
+
 func TestHashFile_NoWorkspaceFails(t *testing.T) {
 	_, err := ExpandStepTemplate(`{{ hashFile "go.sum" }}`, TemplateData{}, "")
 	require.ErrorContains(t, err, "not readable")
@@ -233,9 +260,9 @@ func TestHashFile_SymlinkCannotEscapeWorkspace(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "link")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	out, err := ExpandStepTemplate(`{{ hashFile "link/secret" }}`, TemplateData{}, dir)
-	if err == nil {
-		assert.Empty(t, out, "a symlinked directory must not expose files outside the workspace")
+	for _, g := range []string{"link/secret", "link/*", "./link/secret"} {
+		_, err := ExpandStepTemplate(`{{ hashFile "`+g+`" }}`, TemplateData{}, dir)
+		require.ErrorContains(t, err, "symlink", g)
 	}
 }
 

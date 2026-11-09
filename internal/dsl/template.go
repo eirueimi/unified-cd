@@ -5,10 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
-	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -118,7 +119,7 @@ var funcMap = template.FuncMap{
 	// hashFile is unavailable in the default (controller-safe) function map: the
 	// controller must never read its own filesystem on behalf of a job
 	// definition. Step-time expansion on the agent uses ExpandStepTemplate,
-	// which swaps in the real implementation (hashFileLocal).
+	// which swaps in the real implementation (hashFileIn).
 	"hashFile": func(string) (string, error) { return "", errHashFileUnavailable },
 	// keys returns the sorted keys of a map (matrix aggregated outputs helper).
 	"keys": func(m any) []string {
@@ -216,17 +217,33 @@ func hashFileIn(workspaceRoot, glob string) (string, error) {
 	if filepath.IsAbs(glob) || strings.HasPrefix(glob, "/") || strings.HasPrefix(glob, "\\") || filepath.VolumeName(glob) != "" {
 		return "", fmt.Errorf("hashFile %q: absolute paths are not allowed", glob)
 	}
-	pattern := strings.ReplaceAll(glob, "\\", "/")
+	pattern := filepath.ToSlash(glob)
 	for _, seg := range strings.Split(pattern, "/") {
 		if seg == ".." {
 			return "", fmt.Errorf("hashFile %q: \"..\" is not allowed", glob)
 		}
 	}
+	// fs.Glob over an os.Root FS only matches clean paths, so "./go.sum",
+	// "a//go.sum" and "dir/" would silently match nothing.
+	pattern = path.Clean(pattern)
 	root, err := os.OpenRoot(workspaceRoot)
 	if err != nil {
 		return "", fmt.Errorf("hashFile: open workspace: %w", err)
 	}
 	defer root.Close()
+	// A symlinked directory in the literal prefix of the pattern is refused
+	// outright: the confined FS would otherwise just fail to descend into it
+	// and the glob would silently match nothing.
+	prefix := ""
+	for _, seg := range strings.Split(pattern, "/") {
+		if seg == "." || strings.ContainsAny(seg, "*?[\\") {
+			break
+		}
+		prefix = path.Join(prefix, seg)
+		if fi, err := root.Lstat(prefix); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+			return "", fmt.Errorf("hashFile %q: %q is a symlink", glob, prefix)
+		}
+	}
 	files, err := fs.Glob(root.FS(), pattern)
 	if err != nil {
 		return "", fmt.Errorf("hashFile glob: %w", err)
@@ -244,9 +261,13 @@ func hashFileIn(workspaceRoot, glob string) (string, error) {
 		if !fi.Mode().IsRegular() {
 			return "", fmt.Errorf("hashFile %q: not a regular file", f)
 		}
-		fh, err := root.Open(f)
+		fh, err := root.OpenFile(f, os.O_RDONLY|openNonblock, 0)
 		if err != nil {
 			return "", fmt.Errorf("hashFile read %q: %w", f, err)
+		}
+		if hfi, err := fh.Stat(); err != nil || !hfi.Mode().IsRegular() {
+			fh.Close()
+			return "", fmt.Errorf("hashFile %q: not a regular file", f)
 		}
 		fmt.Fprintf(h, "%s\x00", f)
 		_, err = io.Copy(h, fh)
