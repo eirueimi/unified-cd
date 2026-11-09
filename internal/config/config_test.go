@@ -541,6 +541,8 @@ func TestValidateAgentServer(t *testing.T) {
 		{"http://localhost:8080", false, true},
 		{"http://127.0.0.1:8080", false, true},
 		{"http://[::1]:8080", false, true},
+		{"http://LOCALHOST:8080", false, true},
+		{"http://localhost.:8080", false, true},
 		{"http://controller:8080", false, false},
 		{"http://cd.example.com", false, false},
 		{"http://controller:8080", true, true},

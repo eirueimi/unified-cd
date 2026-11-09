@@ -791,7 +791,9 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 							warnSkippedOutput(stepCtx, step.Index, k)
 						})
 						if len(safe) > 0 {
-							_ = client.SetStepOutputs(stepCtx, agentID, c.RunID, step.Index, step.MatrixKey, safe)
+							if err := client.SetStepOutputs(stepCtx, agentID, c.RunID, step.Index, step.MatrixKey, safe); err != nil {
+								slog.Warn("store call step outputs failed", "runID", c.RunID, "step", step.Name, "error", err)
+							}
 						}
 					}
 				}
@@ -997,7 +999,9 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 							warnSkippedOutput(stepCtx, step.Index, k)
 						})
 						if len(safe) > 0 {
-							_ = client.SetStepOutputs(stepCtx, agentID, c.RunID, step.Index, step.MatrixKey, safe)
+							if err := client.SetStepOutputs(stepCtx, agentID, c.RunID, step.Index, step.MatrixKey, safe); err != nil {
+								slog.Warn("store step outputs failed", "runID", c.RunID, "step", step.Name, "error", err)
+							}
 						}
 					}
 				}

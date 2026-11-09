@@ -375,7 +375,7 @@ func ValidateAgentServer(server string, allowInsecureHTTP bool) error {
 	case "https":
 		return nil
 	case "http":
-		if allowInsecureHTTP || isLoopbackHost(u.Hostname()) {
+		if allowInsecureHTTP || IsLoopbackHost(u.Hostname()) {
 			return nil
 		}
 		return fmt.Errorf("server %q uses plain http, which would send agent credentials unencrypted; use https:// or pass --allow-insecure-http (env UNIFIED_ALLOW_INSECURE_HTTP, config allowInsecureHTTP) to accept the risk", server)
@@ -383,7 +383,11 @@ func ValidateAgentServer(server string, allowInsecureHTTP bool) error {
 	return fmt.Errorf("server must use https:// (or http:// with --allow-insecure-http), got scheme %q", u.Scheme)
 }
 
-func isLoopbackHost(host string) bool {
+// IsLoopbackHost reports whether host (as url.URL.Hostname returns it) names
+// the local machine: "localhost" (any case, optional trailing dot) or a
+// loopback IP address. Shared by the host and Kubernetes agents.
+func IsLoopbackHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	if host == "localhost" {
 		return true
 	}

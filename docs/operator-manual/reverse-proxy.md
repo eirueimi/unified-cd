@@ -100,6 +100,10 @@ Large`.
 | Agent log routes (`/api/v1/agents/{id}/logs`, `.../logs/bulk`) | 16 MiB (or `maxRequestBodyBytes` if larger) | not configurable |
 | Artifact upload `PUT /api/v1/runs/{id}/artifacts/{name}` | none (streamed to the object store) | none |
 
+Step and `call:` outputs an agent reports travel as one JSON request, so their combined size is
+bounded by `maxRequestBodyBytes` (1 MiB by default); an agent that exceeds it logs
+`store step outputs failed` at WARN and the outputs are not recorded.
+
 Applying a very large Job, Secret or Vars document needs `maxRequestBodyBytes` raised. A reverse
 proxy in front of the controller has its own limit as well (nginx `client_max_body_size`, default
 1 MiB); it must allow chunked request bodies and the artifact size you expect.

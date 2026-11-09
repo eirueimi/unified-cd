@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"net/netip"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -437,9 +437,10 @@ func (s *Server) registerAgentIdentityRoutes() {
 func (s *Server) routes() {
 	s.r.Use(middleware.Recoverer)
 	s.r.Use(trustedProxyRealIP(s.cfg.TrustedProxies))
-	s.r.Use(requestBodyLimit(s.cfg.MaxRequestBodyBytes))
 	s.r.Use(accessLogMiddleware)
 	s.r.Use(s.metricsMiddleware)
+	// After access log and metrics so a 413 is logged and counted.
+	s.r.Use(requestBodyLimit(s.cfg.MaxRequestBodyBytes))
 	s.r.Use(securityHeadersMiddleware)
 	// Router-wide (not just /api/v1): the auth POST routes (e.g.
 	// /api/v1/auth/logout) are registered directly on s.r outside the

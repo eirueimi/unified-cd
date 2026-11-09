@@ -26,7 +26,7 @@ unified-cd-controller [FLAGS]
   --run-retention-days    int      Days to keep terminal (Succeeded/Failed/Cancelled) runs; 0 = keep forever (default: 0, env: UNIFIED_RUN_RETENTION_DAYS)
   --log-trim-days         int      Days after a run's logs are archived before its DB log rows are deleted; 0 = never trim (default: 0, env: UNIFIED_LOG_TRIM_DAYS)
   --insecure-cookies      bool     Do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)
-  --max-request-body-bytes int     Max size of an API request body; larger bodies get 413. Default 1048576 (1 MiB). Webhook ingress and artifact upload have their own limits (env: UNIFIED_MAX_REQUEST_BODY_BYTES)
+  --max-request-body-bytes int     Max size of an API request body; larger bodies get 413. Default 1048576 (1 MiB). Webhook ingress, agent log routes (16 MiB) and artifact upload have their own limits (env: UNIFIED_MAX_REQUEST_BODY_BYTES)
   --store-credential-rate-burst int        Burst size of the per-client-address rate limit on POST /api/v1/store-credentials (default 200, env: UNIFIED_STORE_CREDENTIAL_RATE_BURST)
   --store-credential-rate-per-second float Sustained requests per second per client address on POST /api/v1/store-credentials (default 20, env: UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND)
   --trusted-proxies       string   Comma-separated CIDRs/IPs of reverse proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the client address; empty ignores those headers (env: UNIFIED_TRUSTED_PROXIES)

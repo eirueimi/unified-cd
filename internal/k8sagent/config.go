@@ -3,7 +3,6 @@ package k8sagent
 import (
 	"bytes"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"sort"
@@ -536,16 +535,8 @@ func validateKubernetesEnrollmentServer(server string, allowInsecureHTTP bool) e
 	if u.Scheme == "https" {
 		return nil
 	}
-	if u.Scheme == "http" && (allowInsecureHTTP || isLoopbackHost(u.Hostname())) {
+	if u.Scheme == "http" && (allowInsecureHTTP || config.IsLoopbackHost(u.Hostname())) {
 		return nil
 	}
 	return fmt.Errorf("server must use https for Kubernetes enrollment (http is allowed only for loopback local development)")
-}
-
-func isLoopbackHost(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
