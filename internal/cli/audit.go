@@ -32,8 +32,8 @@ func dashIfEmpty(s string) string {
 }
 
 // newAuditListCmdWithClient returns the "audit list" subcommand, printing a
-// table of time, actor, action, resource, status, permission and grantedBy,
-// newest first.
+// table of time, actor, action, resource, status, permission, grantedBy and actorId
+// (the stable identity; actor is only a non-unique display name), newest first.
 func newAuditListCmdWithClient(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	var limit int
 	cmd := &cobra.Command{
@@ -71,9 +71,9 @@ func newAuditListCmdWithClient(resolve func() (Config, error), httpClient *http.
 				return nil
 			}
 			for _, a := range list {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 					a.OccurredAt.Format("2006-01-02T15:04:05Z07:00"), a.Actor, a.Action, a.Resource, a.Status,
-					dashIfEmpty(a.Permission), dashIfEmpty(a.GrantedBy))
+					dashIfEmpty(a.Permission), dashIfEmpty(a.GrantedBy), dashIfEmpty(a.ActorID))
 			}
 			return nil
 		},

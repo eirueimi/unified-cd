@@ -2995,12 +2995,13 @@ func (p *Postgres) DeleteGitCredential(ctx context.Context, name string) error {
 }
 
 // InsertAuditLog records a single state-changing API operation. Empty
-// Permission, Scope and GrantedBy are stored as NULL.
+// Permission, Scope, GrantedBy, ActorID and ActorSub are stored as NULL.
 func (p *Postgres) InsertAuditLog(ctx context.Context, e AuditEntry) error {
 	const q = `
-		INSERT INTO audit_logs(actor, method, path, action, resource, status, permission, scope, granted_by)
-		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''))`
-	_, err := p.pool.Exec(ctx, q, e.Actor, e.Method, e.Path, e.Action, e.Resource, e.Status, e.Permission, e.Scope, e.GrantedBy)
+		INSERT INTO audit_logs(actor, method, path, action, resource, status, permission, scope, granted_by, actor_id, actor_sub)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''))`
+	_, err := p.pool.Exec(ctx, q, e.Actor, e.Method, e.Path, e.Action, e.Resource, e.Status, e.Permission, e.Scope, e.GrantedBy,
+		e.ActorID, e.ActorSub)
 	return err
 }
 
@@ -3008,7 +3009,8 @@ func (p *Postgres) InsertAuditLog(ctx context.Context, e AuditEntry) error {
 func (p *Postgres) ListAuditLogs(ctx context.Context, limit, offset int) ([]api.AuditLog, error) {
 	const q = `
 		SELECT id, occurred_at, actor, method, path, action, resource, status,
-		       COALESCE(permission, ''), COALESCE(scope, ''), COALESCE(granted_by, '')
+		       COALESCE(permission, ''), COALESCE(scope, ''), COALESCE(granted_by, ''),
+		       COALESCE(actor_id, ''), COALESCE(actor_sub, '')
 		FROM audit_logs
 		ORDER BY occurred_at DESC, id DESC
 		LIMIT $1 OFFSET $2`
@@ -3021,7 +3023,7 @@ func (p *Postgres) ListAuditLogs(ctx context.Context, limit, offset int) ([]api.
 	for rows.Next() {
 		var a api.AuditLog
 		if err := rows.Scan(&a.ID, &a.OccurredAt, &a.Actor, &a.Method, &a.Path, &a.Action, &a.Resource, &a.Status,
-			&a.Permission, &a.Scope, &a.GrantedBy); err != nil {
+			&a.Permission, &a.Scope, &a.GrantedBy, &a.ActorID, &a.ActorSub); err != nil {
 			return nil, err
 		}
 		list = append(list, a)

@@ -137,11 +137,14 @@ actionable through the API only to callers whose folder grants cover them.
 
 1. The controller clones or fetches the repository at every `interval`.
 2. All `.yaml`/`.yml` files under `path` are scanned recursively.
-3. AppSource syncs `Job`, `Schedule`, `WebhookReceiver`, `GitCredential`, and `AppSource` documents found (recursively) under `spec.path`. Files of other kinds, or files that fail to parse, are skipped with a per-file warning; the rest of the sync continues.
-4. Files are applied in two passes — GitCredentials and Jobs first, then Schedules, WebhookReceivers, and AppSources — so cross-references (e.g. a Schedule's `job`) resolve on the first sync. Within each pass, files are processed in sorted path order. If two files declare the same kind and name, the first (lexicographically earliest path) wins and the rest are skipped with a warning.
+3. AppSource syncs `Job`, `Schedule`, `WebhookReceiver`, `GitCredential`, `AppSource`, and `Vars` documents found (recursively) under `spec.path`. Files of other kinds, or files that fail to parse, are skipped with a per-file warning; the rest of the sync continues.
+4. Files are applied in two passes — GitCredentials and Jobs first, then Schedules, WebhookReceivers, AppSources, and Vars — so cross-references (e.g. a Schedule's `job`) resolve on the first sync. Within each pass, files are processed in sorted path order. If two files declare the same kind and name, the first (lexicographically earliest path) wins and the rest are skipped with a warning.
 5. If `prune: true`, resources that were previously managed by this AppSource but no longer appear in the repo are deleted. Pruning a nested `AppSource` removes only that AppSource; the resources it managed are left in place (non-cascading, matching Argo CD's default).
 
 Do not manage the same resource from two AppSources — the last sync wins.
+
+!!! warning "Anyone who can push to the repository can use every secret"
+    The reconciler applies the repository's contents as the system, with no permission check of its own. A person who can push to the synced path can therefore add a Job that references any secret by name and sends it anywhere, or a GitCredential that binds an existing secret to a host of their choosing. This is the same reach anyone who can create a job already has, because secret names are global (see [Authorization](../../operator-manual/authorization.md)). Protect the synced path with the Git host's branch protection and review rules, and run separate deployments if teams must not see each other's secrets.
 
 **Private repositories:** authentication is resolved automatically by matching the host of `spec.repoURL` against a registered [GitCredential](git-credential.md#gitcredential) (`spec.host`). There is no per-AppSource credential field — register a `GitCredential` for the repo's host and it applies to every AppSource (and `git://` template) using that host.
 

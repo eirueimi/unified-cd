@@ -270,7 +270,7 @@
           "type": "string"
         },
         "pattern": {
-          "description": "Pattern is a regular expression every supplied value must match (defaults\nare checked too, so a bad default cannot slip through). Param values are\ninterpolated into step shell text, so a param fed from an untrusted\nsource — a webhook payload especially — is a command-injection vector\nunless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$",
+          "description": "Pattern is a regular expression every supplied value must match in full\n(applied as ^(?:pattern)$, so a partial match is rejected; defaults\nare checked too, so a bad default cannot slip through). Param values are\ninterpolated into step shell text, so a param fed from an untrusted\nsource — a webhook payload especially — is a command-injection vector\nunless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$",
           "type": "string"
         },
         "required": {

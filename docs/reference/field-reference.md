@@ -297,7 +297,7 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 | `default` | any | no |  |
 | `description` | string | no |  |
 | `name` | string | yes |  |
-| `pattern` | string | no | Pattern is a regular expression every supplied value must match (defaults are checked too, so a bad default cannot slip through). Param values are interpolated into step shell text, so a param fed from an untrusted source — a webhook payload especially — is a command-injection vector unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$ |
+| `pattern` | string | no | Pattern is a regular expression every supplied value must match in full (applied as ^(?:pattern)$, so a partial match is rejected; defaults are checked too, so a bad default cannot slip through). Param values are interpolated into step shell text, so a param fed from an untrusted source — a webhook payload especially — is a command-injection vector unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$ |
 | `required` | boolean | no |  |
 | `type` | `string` \| `bool` \| `int` \| `array` | yes |  |
 | `unvalidated` | boolean | no | Unvalidated explicitly opts this input out of the pattern requirement for payload-mapped params. Use only when the value is genuinely free-form and never reaches a shell. |
@@ -596,7 +596,7 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 | `default` | any | no |  |
 | `description` | string | no |  |
 | `name` | string | yes |  |
-| `pattern` | string | no | Pattern is a regular expression every supplied value must match (defaults are checked too, so a bad default cannot slip through). Param values are interpolated into step shell text, so a param fed from an untrusted source — a webhook payload especially — is a command-injection vector unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$ |
+| `pattern` | string | no | Pattern is a regular expression every supplied value must match in full (applied as ^(?:pattern)$, so a partial match is rejected; defaults are checked too, so a bad default cannot slip through). Param values are interpolated into step shell text, so a param fed from an untrusted source — a webhook payload especially — is a command-injection vector unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$ |
 | `required` | boolean | no |  |
 | `type` | `string` \| `bool` \| `int` \| `array` | yes |  |
 | `unvalidated` | boolean | no | Unvalidated explicitly opts this input out of the pattern requirement for payload-mapped params. Use only when the value is genuinely free-form and never reaches a shell. |

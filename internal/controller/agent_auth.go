@@ -42,6 +42,7 @@ func (s *Server) agentAuth(next http.Handler) http.Handler {
 		header := r.Header.Get("Authorization")
 		if !strings.HasPrefix(header, bearerPrefix) {
 			s.recordAgentAuth("access", "failure", "invalid")
+			reportAuthFailure(nil, r, "agent-access", "missing_bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -51,6 +52,7 @@ func (s *Server) agentAuth(next http.Handler) http.Handler {
 			if err != nil || s.store == nil {
 				if err != nil {
 					s.recordAgentAuth("access", "failure", "invalid")
+					reportAuthFailure(nil, r, "agent-access", "malformed_token")
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 				} else {
 					s.recordAgentAuth("access", "failure", "unavailable")
@@ -63,6 +65,7 @@ func (s *Server) agentAuth(next http.Handler) http.Handler {
 			if err != nil {
 				if errors.Is(err, store.ErrAgentCredentialNotFound) || errors.Is(err, store.ErrAgentIdentityDisabled) {
 					s.recordAgentAuth("access", "failure", "invalid")
+					reportAuthFailure(nil, r, "agent-access", "unknown_credential")
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 				} else {
 					s.recordAgentAuth("access", "failure", "unavailable")
@@ -72,6 +75,7 @@ func (s *Server) agentAuth(next http.Handler) http.Handler {
 			}
 			if credential == nil || credential.Kind != "access" || credential.Status != "active" || credential.RevokedAt != nil || !credential.ExpiresAt.After(time.Now()) || !agentauth.Matches(token, credential.TokenHash) {
 				s.recordAgentAuth("access", "failure", "invalid")
+				reportAuthFailure(nil, r, "agent-access", "invalid_credential")
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -95,6 +99,7 @@ func (s *Server) agentAuth(next http.Handler) http.Handler {
 		}
 
 		s.recordAgentAuth("access", "failure", "invalid")
+		reportAuthFailure(nil, r, "agent-access", "unsupported_token")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
 }
