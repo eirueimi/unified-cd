@@ -27,7 +27,9 @@ Garage on PersistentVolumeClaims with fixed development credentials. The chart
 refuses to render an Ingress while these credentials are in use
 (`ingress.enabled with the bundled trial credentials would expose
 dev-token-change-me ...`). A Secret you create by hand with development values
-cannot be detected, so do not expose one either.
+cannot be detected, so do not expose one either. The trial Secret also sets
+`UNIFIED_ALLOW_DEFAULT_TOKEN=1`, because the controller otherwise refuses to
+start with the published default admin token; your own Secret must not set it.
 
 ### Production
 

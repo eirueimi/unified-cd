@@ -154,6 +154,9 @@ type ControllerConfig struct {
 	// binding (see controller.Config.RequireRunBinding's doc comment for
 	// the full reasoning). Default false (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING).
 	StoreCredentialRequireRunBinding bool `yaml:"storeCredentialRequireRunBinding"`
+	// AllowDefaultToken lets the controller start with the publicly documented
+	// default admin token (env: UNIFIED_ALLOW_DEFAULT_TOKEN). See CheckAdminToken.
+	AllowDefaultToken bool `yaml:"allowDefaultToken"`
 }
 
 // envBool parses a boolean environment variable (strconv.ParseBool semantics);
@@ -215,6 +218,7 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		UIProxyTarget:                    os.Getenv("UNIFIED_UI_PROXY_TARGET"),
 		StderrPlain:                      envBool("UNIFIED_LOG_STDERR_PLAIN"),
 		InsecureCookies:                  envBool("UNIFIED_INSECURE_COOKIES"),
+		AllowDefaultToken:                envBool("UNIFIED_ALLOW_DEFAULT_TOKEN"),
 		StoreCredentialRequireRunBinding: envBool("UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING"),
 		AgentAuth:                        &ControllerAgentAuthConfig{},
 	}
@@ -281,6 +285,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.StderrPlain {
 		eff.StderrPlain = true
+	}
+	if file.AllowDefaultToken {
+		eff.AllowDefaultToken = true
 	}
 	if file.InsecureCookies {
 		eff.InsecureCookies = true

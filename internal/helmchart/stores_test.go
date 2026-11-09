@@ -59,12 +59,13 @@ func TestTrialSecretValues(t *testing.T) {
 	require.NotNil(t, sec)
 	assert.Equal(t, "unified-cd", sec.Namespace())
 	assert.Equal(t, map[string]any{
-		"UNIFIED_DB_DSN":      "postgres://unified:unified@postgres.unified-cd.svc.cluster.local:5432/unified?sslmode=disable",
-		"UNIFIED_TOKEN":       "dev-token-change-me",
-		"UNIFIED_S3_ENDPOINT": "garage.unified-cd.svc.cluster.local:3900",
-		"UNIFIED_S3_BUCKET":   "unified-cd-logs",
-		"UNIFIED_S3_KEY":      "garageadmin",
-		"UNIFIED_S3_SECRET":   "garageadmin12345",
+		"UNIFIED_DB_DSN":              "postgres://unified:unified@postgres.unified-cd.svc.cluster.local:5432/unified?sslmode=disable",
+		"UNIFIED_TOKEN":               "dev-token-change-me",
+		"UNIFIED_ALLOW_DEFAULT_TOKEN": "1",
+		"UNIFIED_S3_ENDPOINT":         "garage.unified-cd.svc.cluster.local:3900",
+		"UNIFIED_S3_BUCKET":           "unified-cd-logs",
+		"UNIFIED_S3_KEY":              "garageadmin",
+		"UNIFIED_S3_SECRET":           "garageadmin12345",
 	}, dig(t, map[string]any(sec), "stringData"))
 
 	prov, _ := dig(t, map[string]any(sec), "metadata", "annotations", "unified-cd.io/kek-provenance").(string)
