@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
+	"io/fs"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -186,32 +188,46 @@ func expandWith(funcs template.FuncMap, tpl string, data TemplateData) (string, 
 }
 
 // stepFuncMap returns funcMap with hashFile bound to the real, filesystem-reading
-// implementation. Only agent-side step-time expansion may use it.
-func stepFuncMap() template.FuncMap {
+// implementation, confined to workspaceRoot. Only agent-side step-time expansion
+// may use it.
+func stepFuncMap(workspaceRoot string) template.FuncMap {
 	m := make(template.FuncMap, len(funcMap))
 	for k, v := range funcMap {
 		m[k] = v
 	}
-	m["hashFile"] = hashFileLocal
+	m["hashFile"] = func(glob string) (string, error) { return hashFileIn(workspaceRoot, glob) }
 	return m
 }
 
-// hashFileLocal returns the SHA-256 hex digest of all files matching glob (sorted).
-// Returns "" if no files match. Callers should ensure the glob matches at least one file
-// to avoid cache key collisions (e.g., use a literal suffix: "deps-{{ hashFile \"go.sum\" }}-v1").
-// The glob is resolved relative to the agent's working directory (the template
-// engine has no workspace root); absolute patterns and ".." segments are
-// rejected, and only regular files are read (no devices, FIFOs or directories).
-func hashFileLocal(glob string) (string, error) {
+// hashFileIn returns the SHA-256 hex digest of all files matching glob (sorted),
+// resolved inside workspaceRoot. Returns "" if no files match. Callers should
+// ensure the glob matches at least one file to avoid cache key collisions
+// (e.g., use a literal suffix: "deps-{{ hashFile \"go.sum\" }}-v1").
+// The glob is relative to the workspace root. Absolute patterns and ".."
+// segments are rejected, the lookup goes through os.Root so symlinked path
+// components cannot escape the workspace, and only regular files are read (no
+// devices, FIFOs or directories). An empty workspaceRoot means the job's
+// workspace is not readable by this process (e.g. it lives in a pod), so
+// hashFile fails rather than guess.
+func hashFileIn(workspaceRoot, glob string) (string, error) {
+	if workspaceRoot == "" {
+		return "", errors.New("hashFile: the job workspace is not readable from this agent")
+	}
 	if filepath.IsAbs(glob) || strings.HasPrefix(glob, "/") || strings.HasPrefix(glob, "\\") || filepath.VolumeName(glob) != "" {
 		return "", fmt.Errorf("hashFile %q: absolute paths are not allowed", glob)
 	}
-	for _, seg := range strings.FieldsFunc(glob, func(r rune) bool { return r == '/' || r == '\\' }) {
+	pattern := strings.ReplaceAll(glob, "\\", "/")
+	for _, seg := range strings.Split(pattern, "/") {
 		if seg == ".." {
 			return "", fmt.Errorf("hashFile %q: \"..\" is not allowed", glob)
 		}
 	}
-	files, err := filepath.Glob(glob)
+	root, err := os.OpenRoot(workspaceRoot)
+	if err != nil {
+		return "", fmt.Errorf("hashFile: open workspace: %w", err)
+	}
+	defer root.Close()
+	files, err := fs.Glob(root.FS(), pattern)
 	if err != nil {
 		return "", fmt.Errorf("hashFile glob: %w", err)
 	}
@@ -221,28 +237,33 @@ func hashFileLocal(glob string) (string, error) {
 	sort.Strings(files)
 	h := sha256.New()
 	for _, f := range files {
-		fi, err := os.Lstat(f)
+		fi, err := root.Lstat(f)
 		if err != nil {
 			return "", fmt.Errorf("hashFile stat %q: %w", f, err)
 		}
 		if !fi.Mode().IsRegular() {
 			return "", fmt.Errorf("hashFile %q: not a regular file", f)
 		}
-		data, err := os.ReadFile(f)
+		fh, err := root.Open(f)
 		if err != nil {
 			return "", fmt.Errorf("hashFile read %q: %w", f, err)
 		}
 		fmt.Fprintf(h, "%s\x00", f)
-		h.Write(data)
+		_, err = io.Copy(h, fh)
+		fh.Close()
+		if err != nil {
+			return "", fmt.Errorf("hashFile read %q: %w", f, err)
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // ExpandStepTemplate is ExpandTemplate for agent-side, step-time expansion: it
-// additionally provides hashFile, which reads files from the agent's working
-// directory. It must never be called from the controller.
-func ExpandStepTemplate(tpl string, data TemplateData) (string, error) {
-	return expandWith(stepFuncMap(), tpl, data)
+// additionally provides hashFile, which reads files inside workspaceRoot (the
+// job's workspace on the agent host). An empty workspaceRoot makes hashFile
+// fail. It must never be called from the controller.
+func ExpandStepTemplate(tpl string, data TemplateData, workspaceRoot string) (string, error) {
+	return expandWith(stepFuncMap(workspaceRoot), tpl, data)
 }
 
 // ExpandAgentSelector applies template expansion with Job input parameters to each element of agentSelector.

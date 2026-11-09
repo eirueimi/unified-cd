@@ -42,7 +42,7 @@ func ExecuteCallStep(ctx context.Context, client *Client, agentID, runID string,
 	callCtx := dsl.TemplateData{Params: tplData.Params, Vars: tplData.Vars, Steps: tplData.Steps}
 	expandedParams := map[string]string{}
 	for k, v := range step.Call.Params {
-		expanded, err := dsl.ExpandStepTemplate(v, callCtx)
+		expanded, err := dsl.ExpandStepTemplate(v, callCtx, "")
 		if err != nil {
 			return nil, "", fmt.Errorf("call param %q template: %w", k, err)
 		}

@@ -155,9 +155,9 @@ func TestExpandTemplate_MultilineGrep(t *testing.T) {
 func TestHashFile_ReturnsHexHash(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "lock.json"), []byte(`{"version":1}`), 0o644))
-	t.Chdir(dir)
+	t.Chdir(t.TempDir()) // process cwd must not matter
 
-	result, err := ExpandStepTemplate(`{{ hashFile "lock.json" }}`, TemplateData{})
+	result, err := ExpandStepTemplate(`{{ hashFile "lock.json" }}`, TemplateData{}, dir)
 	require.NoError(t, err)
 	assert.Len(t, result, 64) // SHA-256 hex = 64 chars
 }
@@ -166,21 +166,20 @@ func TestHashFile_ChangesOnFileModify(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "lock.json")
 	require.NoError(t, os.WriteFile(f, []byte("v1"), 0o644))
-	t.Chdir(dir)
+	t.Chdir(t.TempDir())
 
-	h1, err := ExpandStepTemplate(`{{ hashFile "lock.json" }}`, TemplateData{})
+	h1, err := ExpandStepTemplate(`{{ hashFile "lock.json" }}`, TemplateData{}, dir)
 	require.NoError(t, err)
 
 	require.NoError(t, os.WriteFile(f, []byte("v2"), 0o644))
-	h2, err := ExpandStepTemplate(`{{ hashFile "lock.json" }}`, TemplateData{})
+	h2, err := ExpandStepTemplate(`{{ hashFile "lock.json" }}`, TemplateData{}, dir)
 	require.NoError(t, err)
 
 	assert.NotEqual(t, h1, h2)
 }
 
 func TestHashFile_NoMatchReturnsEmpty(t *testing.T) {
-	t.Chdir(t.TempDir())
-	result, err := ExpandStepTemplate(`{{ hashFile "nonexistent.json" }}`, TemplateData{})
+	result, err := ExpandStepTemplate(`{{ hashFile "nonexistent.json" }}`, TemplateData{}, t.TempDir())
 	require.NoError(t, err)
 	assert.Equal(t, "", result)
 }
@@ -213,14 +212,31 @@ func TestHashFile_ControllerSideExpansionRefuses(t *testing.T) {
 func TestHashFile_StepTimeRejectsEscapesAndNonRegularFiles(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o755))
-	t.Chdir(dir)
 
 	for _, glob := range []string{"/etc/passwd", "../x", "sub/../../x", "/dev/zero"} {
-		_, err := ExpandStepTemplate(`{{ hashFile "`+glob+`" }}`, TemplateData{})
+		_, err := ExpandStepTemplate(`{{ hashFile "`+glob+`" }}`, TemplateData{}, dir)
 		require.Error(t, err, glob)
 	}
-	_, err := ExpandStepTemplate(`{{ hashFile "sub" }}`, TemplateData{})
+	_, err := ExpandStepTemplate(`{{ hashFile "sub" }}`, TemplateData{}, dir)
 	require.ErrorContains(t, err, "not a regular file")
+}
+
+func TestHashFile_NoWorkspaceFails(t *testing.T) {
+	_, err := ExpandStepTemplate(`{{ hashFile "go.sum" }}`, TemplateData{}, "")
+	require.ErrorContains(t, err, "not readable")
+}
+
+func TestHashFile_SymlinkCannotEscapeWorkspace(t *testing.T) {
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret"), []byte("s"), 0o644))
+	dir := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	out, err := ExpandStepTemplate(`{{ hashFile "link/secret" }}`, TemplateData{}, dir)
+	if err == nil {
+		assert.Empty(t, out, "a symlinked directory must not expose files outside the workspace")
+	}
 }
 
 func TestExpandConcurrency_ExpandsOrLockInButNotName(t *testing.T) {
