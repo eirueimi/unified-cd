@@ -22,7 +22,8 @@ import (
 //   - Params not declared as inputs are passed through unchanged.
 //   - A param declared with `pattern:` must have its resolved value (whether
 //     caller-supplied or filled in from `default:`) match the pattern, or the
-//     call fails. This is the shared choke point every param source flows
+//     call fails. The pattern must match the WHOLE value (it is compiled as
+//     ^(?:pattern)$), not merely a substring. This is the shared choke point every param source flows
 //     through (webhook mapping, CLI --param, call:/uses: with:, schedule
 //     params) — and param values are interpolated into step shell text, so an
 //     externally-sourced value is a command-injection vector unless
@@ -72,7 +73,9 @@ func resolveParams(inputs []dsl.Input, supplied map[string]string) (map[string]s
 		if !ok {
 			continue
 		}
-		re, err := regexp.Compile(in.Pattern)
+		// Full match: wrap in a non-capturing group so alternation (a|b) is
+		// anchored as a whole and a partial match cannot slip through.
+		re, err := regexp.Compile("^(?:" + in.Pattern + ")$")
 		if err != nil {
 			return nil, fmt.Errorf("param %q: invalid pattern %q: %w", in.Name, in.Pattern, err)
 		}

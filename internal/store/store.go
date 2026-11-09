@@ -139,11 +139,15 @@ type NewEnrollPAT struct {
 }
 
 // AuditEntry is one audit_logs row. Permission, Scope and GrantedBy describe
-// the authorization decision and are stored as NULL when empty.
+// the authorization decision and are stored as NULL when empty. Actor is a
+// display name only (PAT names are not unique); ActorID is the stable identity
+// ("pat:<id>", "oidc:<sub>", "break-glass", "agent:<id>") and ActorSub the OIDC
+// subject behind it. ActorID and ActorSub are stored as NULL when empty.
 type AuditEntry struct {
 	Actor, Method, Path, Action, Resource string
 	Status                                int
 	Permission, Scope, GrantedBy          string
+	ActorID, ActorSub                     string
 }
 
 // WebhookReceiver holds the configuration of a webhook receiver.
