@@ -346,9 +346,16 @@ func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) (string, 
 	if err != nil {
 		return "", err
 	}
-	// The host directory at a volume's mount path is an empty mountpoint (or, for
-	// a native claim, a link); the files are in the volume itself.
-	return resolveInVolumeMount(b.workDir, resolved, b.volumeRefs), nil
+	mapped := resolveInVolumeMount(b.workDir, resolved, b.volumeRefs)
+	// A path inside a volume mount is served from the volume's own host
+	// directory (outside the workspace by design), so only unmapped paths are
+	// checked for symlinks leaving the workspace.
+	if mapped == resolved {
+		if err := EnsureNoSymlinkEscapeOS(b.workDir, resolved); err != nil {
+			return "", err
+		}
+	}
+	return mapped, nil
 }
 
 // mountedVolumes lists the claim's volumes mounted inside the workspace, each at

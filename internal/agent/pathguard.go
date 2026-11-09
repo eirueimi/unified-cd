@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -42,4 +43,46 @@ func ContainWithinOS(root, p string) (string, error) {
 		return "", fmt.Errorf("artifact/cache path %q escapes the workspace", p)
 	}
 	return joined, nil
+}
+
+// EnsureNoSymlinkEscapeOS verifies that resolved (already lexically confined
+// to root by ContainWithinOS) does not reach outside root through a symlink.
+// The lexical check cannot see a symlink a job planted in the workspace, and
+// os.OpenRoot follows a symlink that is the top-level path it is given, so a
+// `path:` naming such a link would otherwise archive or write its target.
+//
+// Symlinks that stay inside root are fine. For a path that does not exist yet
+// (a download or cache-restore destination) the deepest existing ancestor is
+// resolved instead. A dangling symlink is refused because its target is not
+// known to be inside root.
+func EnsureNoSymlinkEscapeOS(root, resolved string) error {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // no workspace on disk, so nothing in it can be a link
+		}
+		return fmt.Errorf("resolve workspace %q: %w", root, err)
+	}
+	escape := fmt.Errorf("artifact/cache path %q escapes the workspace through a symbolic link", resolved)
+	cur := resolved
+	for {
+		real, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			if real != realRoot && !strings.HasPrefix(real, realRoot+string(filepath.Separator)) {
+				return escape
+			}
+			return nil
+		}
+		if _, lerr := os.Lstat(cur); lerr == nil {
+			// Exists but cannot be resolved: a dangling or looping link.
+			return escape
+		} else if !os.IsNotExist(lerr) {
+			return fmt.Errorf("inspect %q: %w", cur, lerr)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return nil
+		}
+		cur = parent
+	}
 }
