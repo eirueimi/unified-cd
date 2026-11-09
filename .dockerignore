@@ -1,0 +1,23 @@
+# Build-context exclusions for every Dockerfile under docker/ (all build from the repo root).
+# Keeps secrets and local state out of the context sent to the Docker daemon
+# and out of image layers that run `COPY . .`.
+
+# VCS and tooling state
+.git
+.claude/
+.superpowers/
+
+# Secrets and local environment
+secrets/
+.env*
+deployments/docker/kek
+**/*.pem
+**/*.key
+
+# Dependencies and build outputs, rebuilt inside the images
+**/node_modules
+web/dist
+web/coverage
+coverage/
+tmp/
+bin/
