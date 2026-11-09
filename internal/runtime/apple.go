@@ -26,9 +26,6 @@ func (a *appleContainer) Available() bool {
 
 func (a *appleContainer) runArgs(spec RunSpec) []string {
 	args := []string{"run", "--rm"}
-	for _, e := range spec.Env {
-		args = append(args, "-e", e)
-	}
 	args = append(args, spec.Image)
 	shell := spec.Shell
 	if len(shell) == 0 {
@@ -50,7 +47,12 @@ func (a *appleContainer) Run(ctx context.Context, spec RunSpec, stdout, stderr i
 	if err := imageref.Validate(spec.Image); err != nil {
 		return -1, err
 	}
-	cmd := execCommand(ctx, "container", a.runArgs(spec)...)
+	envArgs, cleanup, eerr := appleEnvFile(spec.Env)
+	defer cleanup()
+	if eerr != nil {
+		return -1, eerr
+	}
+	cmd := execCommand(ctx, "container", withAppleEnvFile(a.runArgs(spec), envArgs)...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err := cmd.Run()
@@ -104,9 +106,6 @@ func (a *appleContainer) createArgs(spec CreateSpec) ([]string, error) {
 		}
 		args = append(args, "-v", v)
 	}
-	for _, e := range spec.Env {
-		args = append(args, "-e", e)
-	}
 	if len(spec.Entrypoint) > 0 && !noEmptyEntrypointClear["container"] {
 		args = append(args, "--entrypoint", "")
 	} else if len(spec.Entrypoint) > 0 {
@@ -127,7 +126,12 @@ func (a *appleContainer) Create(ctx context.Context, spec CreateSpec) (Container
 	if err != nil {
 		return ContainerHandle{}, err
 	}
-	out, err := execCommand(ctx, "container", args...).Output()
+	envArgs, cleanup, err := appleEnvFile(spec.Env)
+	defer cleanup()
+	if err != nil {
+		return ContainerHandle{}, err
+	}
+	out, err := execCommand(ctx, "container", withAppleEnvFile(args, envArgs)...).Output()
 	if err != nil {
 		return ContainerHandle{}, fmt.Errorf("container run -d: %w", err)
 	}
@@ -140,9 +144,6 @@ func (a *appleContainer) Create(ctx context.Context, spec CreateSpec) (Container
 
 func (a *appleContainer) Exec(ctx context.Context, h ContainerHandle, spec ExecSpec, stdout, stderr io.Writer) (int, error) {
 	args := []string{"exec"}
-	for _, e := range spec.Env {
-		args = append(args, "-e", e)
-	}
 	shell := spec.Shell
 	if len(shell) == 0 {
 		shell = []string{"sh", "-c"}
@@ -150,7 +151,12 @@ func (a *appleContainer) Exec(ctx context.Context, h ContainerHandle, spec ExecS
 	args = append(args, h.ID)
 	args = append(args, shell...)
 	args = append(args, spec.Script)
-	cmd := execCommand(ctx, "container", args...)
+	envArgs, cleanup, eerr := appleEnvFile(spec.Env)
+	defer cleanup()
+	if eerr != nil {
+		return -1, eerr
+	}
+	cmd := execCommand(ctx, "container", withAppleEnvFile(args, envArgs)...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err := cmd.Run()

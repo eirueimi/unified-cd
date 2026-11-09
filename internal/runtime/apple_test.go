@@ -17,7 +17,7 @@ func TestDriverFor_AppleContainer(t *testing.T) {
 func TestAppleContainer_RunArgs(t *testing.T) {
 	r := &appleContainer{}
 	args := r.runArgs(RunSpec{Image: "alpine", Script: "echo hi", Env: []string{"A=b"}})
-	assert.Equal(t, []string{"run", "--rm", "-e", "A=b", "alpine", "sh", "-c", "echo hi"}, args)
+	assert.Equal(t, []string{"run", "--rm", "alpine", "sh", "-c", "echo hi"}, args)
 }
 
 // TestAppleCreateArgs_ArgsOnly_Positional mirrors
