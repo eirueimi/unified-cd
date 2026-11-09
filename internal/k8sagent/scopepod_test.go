@@ -130,3 +130,10 @@ func TestBuildScopePod_ResourcesOnStepContainerOnly(t *testing.T) {
 		assert.Empty(t, c.Resources, "sidecar container %q must not inherit the scope's resource limits", c.Name)
 	}
 }
+
+func TestBuildScopePodDisablesServiceAccountTokenAutomount(t *testing.T) {
+	pod := buildScopePod("run123", "ci", "scope:build", "golang:1.22",
+		nil, SidecarSpec{}, testShimImage, corev1.ResourceRequirements{})
+	require.NotNil(t, pod.Spec.AutomountServiceAccountToken)
+	assert.False(t, *pod.Spec.AutomountServiceAccountToken)
+}

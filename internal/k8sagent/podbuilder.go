@@ -338,6 +338,18 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 	}
 
 	podSpec.RestartPolicy = corev1.RestartPolicyNever
+	// A Pod that names no ServiceAccount runs as the namespace's default
+	// account, and a job is not entitled to that account's token (podpolicy
+	// denies a job-chosen serviceAccountName unless allowServiceAccounts lists
+	// it). Default the automount off for such Pods. An explicit value is kept,
+	// and a Pod that names a ServiceAccount (an operator's agent template, or
+	// an inline spec the policy allowed) keeps Kubernetes' default. The
+	// artifact sidecar's store-credential token is an explicit projected
+	// volume and is unaffected.
+	if podSpec.AutomountServiceAccountToken == nil && podSpec.ServiceAccountName == "" && podSpec.DeprecatedServiceAccount == "" {
+		off := false
+		podSpec.AutomountServiceAccountToken = &off
+	}
 	injectPrimaryJob(podSpec, fallbackImage)
 	injectKeepAlive(podSpec)
 

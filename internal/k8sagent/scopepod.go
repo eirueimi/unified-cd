@@ -92,6 +92,7 @@ func buildScopePod(runID, namespace, scopeID, image string, env map[string]strin
 		volumes = append(volumes, *sidecarVol)
 	}
 
+	automountOff := false
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("ucd-scope-%s-", suffix),
@@ -108,6 +109,9 @@ func buildScopePod(runID, namespace, scopeID, image string, env map[string]strin
 			RestartPolicy: corev1.RestartPolicyNever,
 			Containers:    containers,
 			Volumes:       volumes,
+			// Names no ServiceAccount, so it would run as the namespace's
+			// default account; its token is not for job code (see BuildPod).
+			AutomountServiceAccountToken: &automountOff,
 		},
 	}
 
