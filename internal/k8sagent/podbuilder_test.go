@@ -867,3 +867,19 @@ func TestBuildPod_BrokerTokenSurvivesAutomountDisabled(t *testing.T) {
 	require.NotNil(t, sc)
 	assert.NotNil(t, sc.VolumeMounts)
 }
+
+// A Pod that names a ServiceAccount (operator agent template, or an inline
+// spec the policy allowed) keeps Kubernetes' default automount behaviour.
+func TestBuildPod_AutomountDefaultKeptWhenServiceAccountNamed(t *testing.T) {
+	for _, field := range []string{"serviceAccountName", "serviceAccount"} {
+		t.Run(field, func(t *testing.T) {
+			spec := map[string]any{
+				field:        "deployer",
+				"containers": []any{map[string]any{"name": "job", "image": "golang:1.24-alpine"}},
+			}
+			pod, err := BuildPod("run1", "ns", nil, &dsl.PodTemplate{Spec: spec}, "job-image:latest", SidecarSpec{}, testShimImage, nil)
+			require.NoError(t, err)
+			assert.Nil(t, pod.Spec.AutomountServiceAccountToken)
+		})
+	}
+}

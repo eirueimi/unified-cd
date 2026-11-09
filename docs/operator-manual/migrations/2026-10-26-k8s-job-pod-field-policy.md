@@ -218,6 +218,10 @@ agent down first (or it may re-pool them), then:
 kubectl -n ci delete pods -l app=unified-cd-agent
 ```
 
+The same applies to the ServiceAccount token: an idle pooled Pod built before the upgrade still has
+the `default` account's token mounted, and a reused Pod keeps it for its whole life. Remove such Pods
+as above to pick up `automountServiceAccountToken: false`.
+
 ## Reserved step targets
 
 Only `job` among the reserved container names is a valid step `container:` target.

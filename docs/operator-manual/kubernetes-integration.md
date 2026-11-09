@@ -1049,8 +1049,12 @@ separate agent with its own namespace. See [Run fails: violates PodSecurity
 the namespace's `default` ServiceAccount, and Kubernetes would mount that account's token. Jobs
 cannot choose a ServiceAccount, so that token gives them nothing they are entitled to and is only
 an API credential inside job code. The agent therefore sets `automountServiceAccountToken: false`
-on every job Pod whose spec does not set the field. A job's own `true` is still refused by the
-policy; an explicit value in an operator-written agent template is kept. The artifact sidecar is
+on every Pod it builds that names no ServiceAccount (neither `serviceAccountName` nor
+`serviceAccount`) and does not set the field: job Pods and the scope Pods created for `runsIn.image`.
+A Pod that names a ServiceAccount (an operator-written agent template, or an inline spec allowed by
+`allowServiceAccounts`) keeps Kubernetes' default, and an explicit value is always kept. A job's own
+`automountServiceAccountToken: true` is still refused by the policy. Idle pooled Pods built before
+the upgrade keep the token until they are removed. The artifact sidecar is
 unaffected: its store-credential token is an explicit projected volume mounted only into the
 sidecar. A job that calls the Kubernetes API with the `default` account's token no longer works;
 give it credentials another way (an allowed Secret, or `allowServiceAccounts` plus an agent
