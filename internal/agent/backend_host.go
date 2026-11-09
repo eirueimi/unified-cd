@@ -422,6 +422,15 @@ func (b *hostBackend) ResolveCachePath(scope ScopeHandle, p string) (string, err
 	return b.ResolveArtifactPath(scope, p)
 }
 
+// HostWorkspaceRoot is the host directory of the non-scoped job workspace, for
+// agent-side template functions (hashFile). A scoped step has no host workspace.
+func (b *hostBackend) HostWorkspaceRoot(scope ScopeHandle) string {
+	if !scope.IsZero() {
+		return ""
+	}
+	return b.workDir
+}
+
 // WorkspacePath reports the cwd workspace root a step sees on this backend,
 // for UNIFIED_WORKSPACE: the scope container's fixed working directory when
 // scope is non-zero (regardless of native/isolated), else the in-container

@@ -25,10 +25,36 @@ spec:
         default: "package-lock.json"
         description: "Name of the lockfile used to compute the cache key"
   steps:
+    # The cache key is derived from a hash of the lockfile computed here, inside
+    # working_dir, rather than with the hashFile template function: hashFile is
+    # not available on the Kubernetes agent (the workspace lives in the pod).
+    # A missing lockfile yields the fixed hash "none".
+    - name: hash_lockfile
+      env:
+        WORKING_DIR: "{{ .Params.working_dir }}"
+        LOCKFILE: "{{ .Params.lockfile }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+        cd "$WORKING_DIR"
+        h=none
+        if [ -f "$LOCKFILE" ]; then
+          if command -v sha256sum >/dev/null 2>&1; then
+            h=$(sha256sum "$LOCKFILE" | cut -d' ' -f1)
+          elif command -v shasum >/dev/null 2>&1; then
+            h=$(shasum -a 256 "$LOCKFILE" | cut -d' ' -f1)
+          else
+            h=$(cksum "$LOCKFILE" | cut -d' ' -f1,2 | tr ' ' '-')
+          fi
+        fi
+        echo "$h"
+      outputs:
+        lockhash: "{{ .Stdout | trim }}"
+
     - name: restore_node_modules_cache
       cache:
         path: "{{ .Params.working_dir }}/node_modules"
-        key: "npm-{{ hashFile .Params.lockfile }}"
+        key: "npm-{{ .Steps.hash_lockfile.Outputs.lockhash }}"
         restoreKeys:
           - "npm-"
 

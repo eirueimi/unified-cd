@@ -371,7 +371,7 @@ spec:
     - name: restore-modules
       cache:
         path: .gomodcache
-        key: go-mod-{{ hashFile "go.sum" }}
+        key: go-mod-v1   # hashFile is not available on the Kubernetes agent
     - name: build
       run: GOMODCACHE="$UNIFIED_WORKSPACE/.gomodcache" go build ./...
 ```
