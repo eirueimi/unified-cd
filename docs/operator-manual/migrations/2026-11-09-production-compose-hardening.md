@@ -29,7 +29,7 @@ The Helm trial Secret and the repo-root development `docker-compose.yaml` set
    an in-memory key that is already gone; re-register them after the upgrade.
    If you already had `UNIFIED_CONTROLLER_KEY_FILE` set, keep using that same
    file as `UNIFIED_KEK_FILE`.
-2. Copy `deployments/docker/.env.example` to `.env` and fill in every value
+2. Copy `deployments/docker/.env.example` to `deployments/docker/.env` (the directory Compose reads it from) and fill in every value
    (the file lists a generator command for each one). For a new KEK run
    `unified-cli keygen --out deployments/docker/kek`.
 3. **PostgreSQL password.** The `postgres` image only reads `POSTGRES_PASSWORD`
@@ -47,8 +47,8 @@ The Helm trial Secret and the repo-root development `docker-compose.yaml` set
    `GARAGE_S3_SECRET_KEY` to the old values, or replace the `garagedata` volume
    (this discards archived logs and artifacts). `GARAGE_RPC_SECRET` may be
    changed freely on a single-node Garage.
-5. Start the stack: `docker compose --env-file .env -f deployments/docker/docker-compose.yaml up -d`.
-   The `dind-storage` volume is reused; `dind-certs` is created on first start.
+5. Start the stack: `docker compose -f deployments/docker/docker-compose.yaml up -d`.
+   The `dind-storage` volume is reused; `dind-certs` and `dind-client-certs` are created on first start.
 6. Set `UNIFIED_TOKEN` in every CLI config and CI system that used the old
    default.
 
@@ -60,7 +60,7 @@ proxy runs on the same host.
 
 | Message | Meaning |
 |---|---|
-| `required variable UNIFIED_TOKEN is missing a value: set UNIFIED_TOKEN in .env ...` | A required variable is unset. Fill it in `.env` (same pattern for `POSTGRES_PASSWORD`, `GARAGE_*`, `UNIFIED_KEK_FILE`). |
+| `required variable UNIFIED_TOKEN is missing a value: set UNIFIED_TOKEN in .env ...` | A required variable is unset. Fill it in `deployments/docker/.env` (same pattern for `POSTGRES_PASSWORD`, `GARAGE_*`, `UNIFIED_KEK_FILE`). |
 | `the admin token (UNIFIED_TOKEN) is set to the publicly documented default value` | Controller refused the default token. Set a random token, or for a throwaway trial set `UNIFIED_DEV_MODE=1` or `UNIFIED_ALLOW_DEFAULT_TOKEN=1`. |
 | `password authentication failed for user "unified"` | An old `pgdata` volume still has the previous password; run step 3. |
-| `Cannot connect to the Docker daemon at tcp://dind:2376` in agent logs | dind is still generating certificates or the agent does not mount `dind-certs`; check that `docker compose ps` shows dind healthy. |
+| `Cannot connect to the Docker daemon at tcp://dind:2376` in agent logs | dind is still generating certificates or the agent does not mount `dind-client-certs`; check that `docker compose ps` shows dind healthy. |

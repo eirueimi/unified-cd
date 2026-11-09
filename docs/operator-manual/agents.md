@@ -698,7 +698,7 @@ listens on plain TCP 2375 on the compose network; this is for local/dev use, so
 do not expose it beyond the compose network. The production stack
 (`deployments/docker/`) instead runs dind with mutual TLS on 2376
 (`DOCKER_HOST=tcp://dind:2376`, `DOCKER_TLS_VERIFY=1`, client certificates from
-a read-only `dind-certs` volume) and publishes no dind port to the host. dind
+a read-only `dind-client-certs` volume holding only the client certificates) and publishes no dind port to the host. dind
 is still `privileged`, so anything that can reach the daemon can take over the
 dind container.
 

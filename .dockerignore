@@ -9,8 +9,12 @@
 
 # Secrets and local environment
 secrets/
+**/secrets/
 .env*
+**/.env
+**/.env.*
 deployments/docker/kek
+**/kek
 **/*.pem
 **/*.key
 

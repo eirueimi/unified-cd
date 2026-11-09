@@ -15,10 +15,10 @@ Images are published to [GitHub Container Registry](https://github.com/eirueimi/
 A ready-to-run stack using these published images (controller + PostgreSQL + Garage + a Docker agent) lives at [`deployments/docker/docker-compose.yaml`](https://github.com/eirueimi/unified-cd/blob/main/deployments/docker/docker-compose.yaml). Unlike the repo-root `docker-compose.yaml` (source build with hot reload, for development), this one pulls the release images:
 
 ```bash
-cp deployments/docker/.env.example .env    # fill in every <placeholder>; each has a generator command
+cp deployments/docker/.env.example deployments/docker/.env    # fill in every <placeholder>; each has a generator command
 # Generate the persistent secret-encryption key (KEK) and back it up:
 unified-cli keygen --out deployments/docker/kek
-docker compose --env-file .env -f deployments/docker/docker-compose.yaml up -d
+docker compose -f deployments/docker/docker-compose.yaml up -d
 ```
 
 This stack ships no default secrets. Compose refuses to start until
