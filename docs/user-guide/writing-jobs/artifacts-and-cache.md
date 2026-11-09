@@ -128,6 +128,8 @@ steps:
 ```
 
 The `path`, `key`, and `restoreKeys` strings support template expressions (e.g. `path: {{ .Params.working_dir }}/node_modules`, `key: go-vendor-{{ hashFile "go.sum" }}`). A `path` or `key` that fails to expand (or expands to empty) fails the step on both agents.
+
+`hashFile` is available only in these step-time templates (cache `key`/`path`/`restoreKeys` and step text evaluated on the agent). It hashes files matched by a glob relative to the agent's working directory; absolute paths, `..` segments, and non-regular files (devices, directories) are rejected. Templates the controller evaluates (`displayName`, `agentSelector`, `concurrency`, `volumes`, webhook mappings) and `foreach`/`matrix` sources cannot use it: they fail with `hashFile is only available in step-time templates (cache key/path)`, because the controller never reads files on behalf of a job definition.
 On hit, the cached directory is restored before the step runs. On miss, the directory is saved after the run completes.
 
 Cache is now supported on the k8s agent (previously a silent no-op) with the same `key`/`restoreKeys`/`ttlDays` semantics — see [Kubernetes Integration: Artifacts and Cache](../../operator-manual/kubernetes-integration.md#artifacts-and-cache) for how transfers work and the required S3 credentials. Restore is best-effort (a miss or error never fails the step); save is deferred until the run's main stages complete.

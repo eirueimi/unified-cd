@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,6 +71,12 @@ func normalizeSecretsRefs(tpl string) string {
 	return tpl
 }
 
+// errHashFileUnavailable is returned by hashFile in every context except
+// agent-side step-time expansion (cache key/path/restoreKeys, step text).
+var errHashFileUnavailable = errors.New("hashFile is only available in step-time templates (cache key/path)")
+
+// funcMap is the default, controller-safe function map. It performs no
+// filesystem access, so new callers of ExpandTemplate are safe by default.
 var funcMap = template.FuncMap{
 	// grep returns the first line containing the pattern. Returns an empty string if there is no match.
 	"grep": func(pattern, text string) string {
@@ -106,29 +113,11 @@ var funcMap = template.FuncMap{
 	},
 	// list constructs a []string literal inline within a template expression.
 	"list": func(items ...string) []string { return items },
-	// hashFile returns the SHA-256 hex digest of all files matching glob (sorted).
-	// Returns "" if no files match. Callers should ensure the glob matches at least one file
-	// to avoid cache key collisions (e.g., use a literal suffix: "deps-{{ hashFile \"go.sum\" }}-v1").
-	"hashFile": func(glob string) (string, error) {
-		files, err := filepath.Glob(glob)
-		if err != nil {
-			return "", fmt.Errorf("hashFile glob: %w", err)
-		}
-		if len(files) == 0 {
-			return "", nil
-		}
-		sort.Strings(files)
-		h := sha256.New()
-		for _, f := range files {
-			data, err := os.ReadFile(f)
-			if err != nil {
-				return "", fmt.Errorf("hashFile read %q: %w", f, err)
-			}
-			fmt.Fprintf(h, "%s\x00", f)
-			h.Write(data)
-		}
-		return hex.EncodeToString(h.Sum(nil)), nil
-	},
+	// hashFile is unavailable in the default (controller-safe) function map: the
+	// controller must never read its own filesystem on behalf of a job
+	// definition. Step-time expansion on the agent uses ExpandStepTemplate,
+	// which swaps in the real implementation (hashFileLocal).
+	"hashFile": func(string) (string, error) { return "", errHashFileUnavailable },
 	// keys returns the sorted keys of a map (matrix aggregated outputs helper).
 	"keys": func(m any) []string {
 		var out []string
@@ -175,12 +164,17 @@ var funcMap = template.FuncMap{
 }
 
 // ExpandTemplate evaluates tpl with Go text/template using parameter, step output,
-// and stdout contexts.
+// and stdout contexts. It is controller-safe: hashFile returns an error and no
+// file is touched (see ExpandStepTemplate for the agent-side variant).
 // Returns an empty string when a map key is not found (missingkey=zero).
 // References of the form "{{ secrets.NAME }}" are automatically converted to "{{ index .Secrets "NAME" }}", supporting hyphenated names.
 func ExpandTemplate(tpl string, data TemplateData) (string, error) {
+	return expandWith(funcMap, tpl, data)
+}
+
+func expandWith(funcs template.FuncMap, tpl string, data TemplateData) (string, error) {
 	tpl = normalizeSecretsRefs(tpl)
-	t, err := template.New("").Funcs(funcMap).Option("missingkey=zero").Parse(tpl)
+	t, err := template.New("").Funcs(funcs).Option("missingkey=zero").Parse(tpl)
 	if err != nil {
 		return "", fmt.Errorf("parse template: %w", err)
 	}
@@ -189,6 +183,66 @@ func ExpandTemplate(tpl string, data TemplateData) (string, error) {
 		return "", fmt.Errorf("execute template: %w", err)
 	}
 	return buf.String(), nil
+}
+
+// stepFuncMap returns funcMap with hashFile bound to the real, filesystem-reading
+// implementation. Only agent-side step-time expansion may use it.
+func stepFuncMap() template.FuncMap {
+	m := make(template.FuncMap, len(funcMap))
+	for k, v := range funcMap {
+		m[k] = v
+	}
+	m["hashFile"] = hashFileLocal
+	return m
+}
+
+// hashFileLocal returns the SHA-256 hex digest of all files matching glob (sorted).
+// Returns "" if no files match. Callers should ensure the glob matches at least one file
+// to avoid cache key collisions (e.g., use a literal suffix: "deps-{{ hashFile \"go.sum\" }}-v1").
+// The glob is resolved relative to the agent's working directory (the template
+// engine has no workspace root); absolute patterns and ".." segments are
+// rejected, and only regular files are read (no devices, FIFOs or directories).
+func hashFileLocal(glob string) (string, error) {
+	if filepath.IsAbs(glob) || strings.HasPrefix(glob, "/") || strings.HasPrefix(glob, "\\") || filepath.VolumeName(glob) != "" {
+		return "", fmt.Errorf("hashFile %q: absolute paths are not allowed", glob)
+	}
+	for _, seg := range strings.FieldsFunc(glob, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if seg == ".." {
+			return "", fmt.Errorf("hashFile %q: \"..\" is not allowed", glob)
+		}
+	}
+	files, err := filepath.Glob(glob)
+	if err != nil {
+		return "", fmt.Errorf("hashFile glob: %w", err)
+	}
+	if len(files) == 0 {
+		return "", nil
+	}
+	sort.Strings(files)
+	h := sha256.New()
+	for _, f := range files {
+		fi, err := os.Lstat(f)
+		if err != nil {
+			return "", fmt.Errorf("hashFile stat %q: %w", f, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return "", fmt.Errorf("hashFile %q: not a regular file", f)
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return "", fmt.Errorf("hashFile read %q: %w", f, err)
+		}
+		fmt.Fprintf(h, "%s\x00", f)
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// ExpandStepTemplate is ExpandTemplate for agent-side, step-time expansion: it
+// additionally provides hashFile, which reads files from the agent's working
+// directory. It must never be called from the controller.
+func ExpandStepTemplate(tpl string, data TemplateData) (string, error) {
+	return expandWith(stepFuncMap(), tpl, data)
 }
 
 // ExpandAgentSelector applies template expansion with Job input parameters to each element of agentSelector.
