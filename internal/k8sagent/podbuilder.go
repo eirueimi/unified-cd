@@ -338,6 +338,15 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 	}
 
 	podSpec.RestartPolicy = corev1.RestartPolicyNever
+	// Jobs cannot choose a ServiceAccount (podpolicy denies serviceAccountName),
+	// so the namespace's default account token that Kubernetes would automount
+	// is a credential they are not entitled to. Default it off; an explicit
+	// value (an operator's agent template) is kept. The artifact sidecar's
+	// store-credential token is an explicit projected volume and is unaffected.
+	if podSpec.AutomountServiceAccountToken == nil {
+		off := false
+		podSpec.AutomountServiceAccountToken = &off
+	}
 	injectPrimaryJob(podSpec, fallbackImage)
 	injectKeepAlive(podSpec)
 

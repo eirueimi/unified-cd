@@ -201,9 +201,10 @@ at `enforce=privileged` or, better, run those jobs from a separate agent with it
 keep `ci` strict. See [Run fails: "k8s: failed to create Pod: ... violates PodSecurity
 "baseline:latest""](../../troubleshooting/steps-and-execution.md#run-fails-k8s-failed-to-create-pod-violates-podsecurity-baselinelatest).
 
-Also consider switching off the `default` ServiceAccount's token in the job namespace. The policy
-does not force it, because jobs that rely on it would break silently; see [Job Pod field
-policy](../kubernetes-integration.md#job-pod-field-policy).
+The agent now sets `automountServiceAccountToken: false` on job Pods that do not set the field, so
+a job no longer finds the `default` ServiceAccount's token in `/var/run/secrets/kubernetes.io/serviceaccount`.
+A job that called the Kubernetes API with that token must be given credentials another way. See
+[Job Pod field policy](../kubernetes-integration.md#job-pod-field-policy).
 
 ## Idle pooled Pods built before the upgrade
 

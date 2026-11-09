@@ -170,7 +170,9 @@ be awkward in environment variables. A misspelled key inside `jobPodPolicy:` is 
 The top-level config decode is lenient, so without that check a typo such as `allowHostAcess`
 would be silently ignored. The failure would be safe (the field stays denied) but confusing.
 
-**R10 — The default ServiceAccount token is left alone.** A Pod that sets no `serviceAccountName`
+**R10 — The default ServiceAccount token is left alone.** *(Superseded: the pod builder now
+defaults `automountServiceAccountToken` to `false` when the spec leaves it unset; see
+docs/operator-manual/kubernetes-integration.md. The text below is the original ruling.)* A Pod that sets no `serviceAccountName`
 runs as the namespace's `default` ServiceAccount, and Kubernetes automounts that account's token
 unless the account or the Pod opts out. This design does not force
 `automountServiceAccountToken: false` onto job Pods, because jobs that rely on the `default`
