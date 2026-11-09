@@ -52,6 +52,28 @@ enabled.
 | Endpoint | Key | Limit |
 |---|---|---|
 | `POST /api/v1/agents/enroll`, `POST /api/v1/agents/token/refresh` | provider, client address, policy | burst 5, then one request per 6 seconds |
+| `POST /api/v1/store-credentials` | client address | burst 20, then one request per second |
 
 A rejected request gets `429 Too Many Requests`. The counters are per controller replica and are
 kept in memory (4096 keys, least recently used evicted first).
+
+`/api/v1/store-credentials` is unauthenticated (the projected ServiceAccount token in the body is
+the credential and is checked with a Kubernetes TokenReview), so the limit protects the cluster API
+from being hammered through it. A job's sidecar asks once per artifact or cache step.
+
+## Request body limits
+
+Every request body is capped, so an unauthenticated caller cannot make the controller buffer an
+arbitrarily large JSON document. A body over its limit is rejected with `413 Request Entity Too
+Large`.
+
+| Routes | Limit | Setting |
+|---|---|---|
+| All API routes, including the unauthenticated `/api/v1/agents/enroll`, `/api/v1/agents/token/refresh` and `/api/v1/store-credentials` | 1 MiB | `maxRequestBodyBytes` / `UNIFIED_MAX_REQUEST_BODY_BYTES` / `--max-request-body-bytes` |
+| Webhook ingress `POST /webhook/{name}` | 1 MiB | `UNIFIED_WEBHOOK_MAX_BODY_BYTES` / `--webhook-max-body-bytes` |
+| Agent log routes (`/api/v1/agents/{id}/logs`, `.../logs/bulk`) | 16 MiB (or `maxRequestBodyBytes` if larger) | not configurable |
+| Artifact upload `PUT /api/v1/runs/{id}/artifacts/{name}` | none (streamed to the object store) | none |
+
+Applying a very large Job, Secret or Vars document needs `maxRequestBodyBytes` raised. A reverse
+proxy in front of the controller has its own limit as well (nginx `client_max_body_size`, default
+1 MiB); it must allow chunked request bodies and the artifact size you expect.

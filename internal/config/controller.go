@@ -160,6 +160,11 @@ type ControllerConfig struct {
 	// default) ignores those headers and uses the TCP peer address as the
 	// client IP (env: UNIFIED_TRUSTED_PROXIES, comma-separated).
 	TrustedProxies []string `yaml:"trustedProxies"`
+	// MaxRequestBodyBytes caps the body of an API request (agent log routes,
+	// webhook ingress and artifact upload have their own limits); a larger
+	// body gets 413. 0 means the built-in default, 1 MiB
+	// (env: UNIFIED_MAX_REQUEST_BODY_BYTES).
+	MaxRequestBodyBytes int64 `yaml:"maxRequestBodyBytes"`
 }
 
 // ParseTrustedProxies parses a list of CIDRs and bare IPs (a bare IP means a
@@ -248,6 +253,13 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		TrustedProxies:                   SplitCSV(os.Getenv("UNIFIED_TRUSTED_PROXIES")),
 		AgentAuth:                        &ControllerAgentAuthConfig{},
 	}
+	if v := strings.TrimSpace(os.Getenv("UNIFIED_MAX_REQUEST_BODY_BYTES")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("UNIFIED_MAX_REQUEST_BODY_BYTES must be a positive integer, got %q", v)
+		}
+		eff.MaxRequestBodyBytes = n
+	}
 	// OIDC from env vars
 	oidcIssuer := os.Getenv("UNIFIED_OIDC_ISSUER")
 	oidcClientID := os.Getenv("UNIFIED_OIDC_CLIENT_ID")
@@ -317,6 +329,12 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.StoreCredentialRequireRunBinding {
 		eff.StoreCredentialRequireRunBinding = true
+	}
+	if file.MaxRequestBodyBytes < 0 {
+		return nil, fmt.Errorf("maxRequestBodyBytes must not be negative")
+	}
+	if file.MaxRequestBodyBytes > 0 {
+		eff.MaxRequestBodyBytes = file.MaxRequestBodyBytes
 	}
 	if len(file.TrustedProxies) > 0 {
 		eff.TrustedProxies = file.TrustedProxies

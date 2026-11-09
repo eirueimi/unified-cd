@@ -482,3 +482,24 @@ func TestControllerEffectiveTrustedProxies(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"172.16.0.0/12"}, eff.TrustedProxies, "config file overrides env")
 }
+
+func TestControllerEffectiveMaxRequestBodyBytes(t *testing.T) {
+	eff, err := config.ControllerEffective("")
+	require.NoError(t, err)
+	require.Zero(t, eff.MaxRequestBodyBytes, "unset means the controller's built-in default")
+
+	t.Setenv("UNIFIED_MAX_REQUEST_BODY_BYTES", "2048")
+	eff, err = config.ControllerEffective("")
+	require.NoError(t, err)
+	require.EqualValues(t, 2048, eff.MaxRequestBodyBytes)
+
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("maxRequestBodyBytes: 4096\n"), 0o600))
+	eff, err = config.ControllerEffective(path)
+	require.NoError(t, err)
+	require.EqualValues(t, 4096, eff.MaxRequestBodyBytes, "config file overrides env")
+
+	t.Setenv("UNIFIED_MAX_REQUEST_BODY_BYTES", "-1")
+	_, err = config.ControllerEffective("")
+	require.Error(t, err)
+}

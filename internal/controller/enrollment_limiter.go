@@ -18,6 +18,8 @@ type enrollmentLimiter struct {
 	now     func() time.Time
 	entries map[string]*list.Element
 	lru     *list.List
+	every   time.Duration
+	burst   int
 }
 
 type enrollmentLimiterEntry struct {
@@ -26,10 +28,16 @@ type enrollmentLimiterEntry struct {
 }
 
 func newEnrollmentLimiter(now func() time.Time) *enrollmentLimiter {
+	return newRateLimiter(now, 6*time.Second, 5)
+}
+
+// newRateLimiter builds a per-client-address limiter that refills one token
+// every `every` up to `burst`.
+func newRateLimiter(now func() time.Time, every time.Duration, burst int) *enrollmentLimiter {
 	if now == nil {
 		now = time.Now
 	}
-	return &enrollmentLimiter{now: now, entries: make(map[string]*list.Element), lru: list.New()}
+	return &enrollmentLimiter{now: now, entries: make(map[string]*list.Element), lru: list.New(), every: every, burst: burst}
 }
 
 func (l *enrollmentLimiter) allow(r *http.Request, provider, policy string) bool {
@@ -41,7 +49,7 @@ func (l *enrollmentLimiter) allow(r *http.Request, provider, policy string) bool
 		l.lru.MoveToFront(element)
 		return element.Value.(*enrollmentLimiterEntry).limiter.AllowN(now, 1)
 	}
-	entry := &enrollmentLimiterEntry{key: key, limiter: rate.NewLimiter(rate.Every(6*time.Second), 5)}
+	entry := &enrollmentLimiterEntry{key: key, limiter: rate.NewLimiter(rate.Every(l.every), l.burst)}
 	element := l.lru.PushFront(entry)
 	l.entries[key] = element
 	if l.lru.Len() > enrollmentLimiterCapacity {

@@ -66,6 +66,14 @@ type StoreCredentialCluster struct {
 // §5.6 and docs/superpowers/plans/2026-08-26-controller-brokered-store-credentials.md
 // Task 2.
 func (s *Server) handleStoreCredentials(w http.ResponseWriter, r *http.Request) {
+	// Unauthenticated and backed by a TokenReview against the cluster API, so
+	// bound the rate per client address before doing any work.
+	if s.storeCredentialLimiter != nil && !s.storeCredentialLimiter.allow(r, "store-credentials", "") {
+		w.Header().Set("Retry-After", "1")
+		s.auditAgentCredential(r, "store-credentials.fetch", "", http.StatusTooManyRequests)
+		http.Error(w, "store credentials rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
 	var req api.StoreCredentialsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
 		s.auditAgentCredential(r, "store-credentials.fetch", "", http.StatusBadRequest)
