@@ -44,6 +44,15 @@ controller:
   # Maps are merged key by key, but a list you supply (for example
   # agentAuth.kubernetesEnrollmentPolicies) replaces the computed list entirely.
   config: {}
+  # CIDRs of the reverse proxies (your Ingress controller / load balancer)
+  # whose X-Forwarded-For and X-Real-IP headers the controller may believe
+  # for the client address. Empty ignores those headers, so every request is
+  # attributed to its TCP peer: behind an Ingress that means all clients share
+  # the Ingress controller's address, and the per-client enrollment and
+  # store-credentials rate limits then count them together. Set this to the
+  # Ingress controller's pod CIDR (or the node/LB range that reaches the
+  # controller), e.g. ["10.244.0.0/16"]. Never include client-reachable ranges.
+  trustedProxies: []
   service:
     # Service type for the controller (HTTP only; terminate TLS at an Ingress).
     type: ClusterIP

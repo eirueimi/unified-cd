@@ -90,6 +90,13 @@ Secrets, and HTTPS in front of the controller.
    use `lookup`). `agent.server`, when set, must be an `https://` URL; with the
    default empty value the agent uses the in-cluster Service over plain HTTP.
 
+   Behind an Ingress, also set `controller.trustedProxies` to the Ingress
+   controller's pod CIDR (for example `--set 'controller.trustedProxies[0]=10.244.0.0/16'`).
+   Without it the controller ignores `X-Forwarded-For` / `X-Real-IP` and treats
+   every client as the Ingress controller, so the per-client rate limits on
+   agent enrollment and token refresh count all clients together. See
+   [Reverse proxy and request limits](../../docs/operator-manual/reverse-proxy.md).
+
    The Ingress does not create certificates. For cert-manager, add its
    annotation through `ingress.annotations`.
 

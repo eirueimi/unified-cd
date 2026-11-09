@@ -26,6 +26,7 @@ unified-cd-controller [FLAGS]
   --run-retention-days    int      Days to keep terminal (Succeeded/Failed/Cancelled) runs; 0 = keep forever (default: 0, env: UNIFIED_RUN_RETENTION_DAYS)
   --log-trim-days         int      Days after a run's logs are archived before its DB log rows are deleted; 0 = never trim (default: 0, env: UNIFIED_LOG_TRIM_DAYS)
   --insecure-cookies      bool     Do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)
+  --trusted-proxies       string   Comma-separated CIDRs/IPs of reverse proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the client address; empty ignores those headers (env: UNIFIED_TRUSTED_PROXIES)
 ```
 
 ### Controller Environment Variables
@@ -60,6 +61,7 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_OIDC_ISSUER_INTERNAL` | No (SSO only) | Internal issuer URL for Docker/container scenarios where the public issuer URL is not reachable inside the container |
 | `UNIFIED_OIDC_EXTERNAL_URL` | No (SSO only) | External base URL for OIDC callbacks, e.g. `https://unified-cd.example.com`. Required when the controller is behind a reverse proxy with a different external URL. |
 | `UNIFIED_INSECURE_COOKIES` | No | When `true`, omits the `Secure` attribute from session cookies. Only for plain-HTTP deployments (see [Authentication](../operator-manual/authentication.md)); leave unset (default `false`) whenever TLS is terminated anywhere in front of the controller. |
+| `UNIFIED_TRUSTED_PROXIES` | No | Comma-separated CIDRs or IPs of the reverse proxies in front of the controller. Only a request whose TCP peer is in this list has its `X-Forwarded-For` / `X-Real-IP` honoured for the client address (rate limits, access log). Default empty: those headers are ignored. See [Reverse Proxy](../operator-manual/reverse-proxy.md). |
 | `UNIFIED_OIDC_CLIENT_ID` | No (SSO only) | OIDC client ID for browser SSO (confidential client) |
 | `UNIFIED_OIDC_CLIENT_SECRET` | No (SSO only) | OIDC client secret |
 | `UNIFIED_OIDC_DEVICE_CLIENT_ID` | No (SSO only) | OIDC public client ID for CLI device flow. Falls back to `UNIFIED_OIDC_CLIENT_ID` if unset. |
@@ -96,6 +98,7 @@ webDir: /srv/unified-cd/web         # static web assets; unset => /ui/* returns 
 uiProxyTarget: http://localhost:5173 # dev only: proxy /ui/* to a Vite dev server
 stderrPlain: false                   # true => run-log stderr is the same color as stdout
 insecureCookies: false                # true => drop Secure attribute on session cookies (plain-HTTP deployments only)
+trustedProxies: []                    # CIDRs/IPs of reverse proxies trusted to set X-Forwarded-For / X-Real-IP, e.g. ["10.244.0.0/16"]
 
 # Log level is a flag/env, not a config-file field: --log-level / UNIFIED_LOG_LEVEL
 

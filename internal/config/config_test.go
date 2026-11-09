@@ -454,3 +454,31 @@ func TestControllerOIDCScopes_RejectsWhitespaceEntry(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "oidc.scopes")
 }
+
+func TestParseTrustedProxies(t *testing.T) {
+	got, err := config.ParseTrustedProxies([]string{"10.0.0.0/8", "192.0.2.7", " 2001:db8::/32 ", "::ffff:198.51.100.1"})
+	require.NoError(t, err)
+	var s []string
+	for _, p := range got {
+		s = append(s, p.String())
+	}
+	require.Equal(t, []string{"10.0.0.0/8", "192.0.2.7/32", "2001:db8::/32", "198.51.100.1/32"}, s)
+
+	for _, bad := range []string{"", "nonsense", "10.0.0.0/33"} {
+		_, err := config.ParseTrustedProxies([]string{bad})
+		require.Error(t, err, bad)
+	}
+}
+
+func TestControllerEffectiveTrustedProxies(t *testing.T) {
+	t.Setenv("UNIFIED_TRUSTED_PROXIES", "10.0.0.0/8, 192.0.2.1")
+	eff, err := config.ControllerEffective("")
+	require.NoError(t, err)
+	require.Equal(t, []string{"10.0.0.0/8", "192.0.2.1"}, eff.TrustedProxies)
+
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("trustedProxies: [172.16.0.0/12]\n"), 0o600))
+	eff, err = config.ControllerEffective(path)
+	require.NoError(t, err)
+	require.Equal(t, []string{"172.16.0.0/12"}, eff.TrustedProxies, "config file overrides env")
+}

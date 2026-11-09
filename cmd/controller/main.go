@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"os/signal"
 	"strconv"
 	"syscall"
@@ -210,6 +211,7 @@ func main() {
 	stderrPlain := flag.Bool("log-stderr-plain", eff.StderrPlain, "render step stderr in the run log the same color as stdout instead of red (env: UNIFIED_LOG_STDERR_PLAIN)")
 	insecureCookies := flag.Bool("insecure-cookies", eff.InsecureCookies, "do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)")
 	storeCredentialRequireRunBinding := flag.Bool("store-credential-require-run-binding", eff.StoreCredentialRequireRunBinding, "reject a store-credentials request when no run->pod binding is known yet, instead of allowing it; leave false during a rolling upgrade or while any host agent may call this endpoint (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING)")
+	trustedProxies := flag.String("trusted-proxies", strings.Join(eff.TrustedProxies, ","), "comma-separated CIDRs/IPs of reverse proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the client IP; empty ignores those headers (env: UNIFIED_TRUSTED_PROXIES)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
 	auditRetentionDays := flag.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
 	runRetentionDays := flag.Int("run-retention-days", runRetentionDaysDefault(), "days to keep terminal runs incl. their logs, log archives, and artifacts; 0 = keep forever (env: UNIFIED_RUN_RETENTION_DAYS)")
@@ -241,6 +243,11 @@ func main() {
 	}
 	if webhookMaxBodyBytesEnvWarning != "" {
 		slog.Warn(webhookMaxBodyBytesEnvWarning)
+	}
+	trustedProxyPrefixes, err := config.ParseTrustedProxies(config.SplitCSV(*trustedProxies))
+	if err != nil {
+		slog.Error("invalid --trusted-proxies", "error", err)
+		os.Exit(1)
 	}
 	if *dsn == "" {
 		slog.Error("dsn is required (--dsn, UNIFIED_DB_DSN, or config file)")
@@ -418,7 +425,7 @@ func main() {
 		}
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, StoreCredentialS3: storeCredentialS3, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, RequireRunBinding: *storeCredentialRequireRunBinding}, st)
+	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, StoreCredentialS3: storeCredentialS3, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, RequireRunBinding: *storeCredentialRequireRunBinding}, st)
 	// Stops the shared log-notify listener goroutine (started lazily on the
 	// first SSE viewer — see (*controller.Server).subscribeLogNotify) if it
 	// was ever started. A no-op otherwise. Deferred here rather than left to

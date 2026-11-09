@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/http/httputil"
 	"net/url"
 	"sync"
@@ -37,6 +38,12 @@ type Config struct {
 	// mapping, so truncation would corrupt auth checks and drop fields
 	// instead of failing loudly.
 	WebhookMaxBodyBytes int64
+
+	// TrustedProxies are the prefixes of reverse proxies whose
+	// X-Forwarded-For / X-Real-IP headers are believed when they are the TCP
+	// peer. Empty (the default) ignores those headers entirely so a client
+	// cannot choose the address that rate limits and logs attribute to it.
+	TrustedProxies []netip.Prefix
 
 	// StderrPlain, when true, tells the web UI (via /api/v1/ui-config) to render
 	// step stderr in the run log the same color as stdout instead of red.
@@ -414,7 +421,7 @@ func (s *Server) registerAgentIdentityRoutes() {
 
 func (s *Server) routes() {
 	s.r.Use(middleware.Recoverer)
-	s.r.Use(middleware.RealIP)
+	s.r.Use(trustedProxyRealIP(s.cfg.TrustedProxies))
 	s.r.Use(accessLogMiddleware)
 	s.r.Use(s.metricsMiddleware)
 	s.r.Use(securityHeadersMiddleware)

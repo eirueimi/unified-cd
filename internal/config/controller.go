@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -154,6 +155,34 @@ type ControllerConfig struct {
 	// binding (see controller.Config.RequireRunBinding's doc comment for
 	// the full reasoning). Default false (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING).
 	StoreCredentialRequireRunBinding bool `yaml:"storeCredentialRequireRunBinding"`
+	// TrustedProxies lists the CIDRs (or bare IPs) of reverse proxies whose
+	// X-Forwarded-For / X-Real-IP headers the controller believes. Empty (the
+	// default) ignores those headers and uses the TCP peer address as the
+	// client IP (env: UNIFIED_TRUSTED_PROXIES, comma-separated).
+	TrustedProxies []string `yaml:"trustedProxies"`
+}
+
+// ParseTrustedProxies parses a list of CIDRs and bare IPs (a bare IP means a
+// single-host prefix) into prefixes. Blank entries are rejected.
+func ParseTrustedProxies(entries []string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			return nil, fmt.Errorf("trustedProxies must not contain an empty entry")
+		}
+		if p, err := netip.ParsePrefix(e); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(e)
+		if err != nil {
+			return nil, fmt.Errorf("trustedProxies entry %q is not a CIDR or IP address", e)
+		}
+		addr = addr.Unmap()
+		out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return out, nil
 }
 
 // envBool parses a boolean environment variable (strconv.ParseBool semantics);
@@ -216,6 +245,7 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		StderrPlain:                      envBool("UNIFIED_LOG_STDERR_PLAIN"),
 		InsecureCookies:                  envBool("UNIFIED_INSECURE_COOKIES"),
 		StoreCredentialRequireRunBinding: envBool("UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING"),
+		TrustedProxies:                   SplitCSV(os.Getenv("UNIFIED_TRUSTED_PROXIES")),
 		AgentAuth:                        &ControllerAgentAuthConfig{},
 	}
 	// OIDC from env vars
@@ -231,7 +261,7 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 			DeviceClientID: os.Getenv("UNIFIED_OIDC_DEVICE_CLIENT_ID"),
 			RolesClaim:     os.Getenv("UNIFIED_OIDC_ROLES_CLAIM"),
 			DefaultRole:    os.Getenv("UNIFIED_OIDC_DEFAULT_ROLE"),
-			Scopes:         splitCSV(os.Getenv("UNIFIED_OIDC_SCOPES")),
+			Scopes:         SplitCSV(os.Getenv("UNIFIED_OIDC_SCOPES")),
 		}
 		if err := validateOIDCScopes(eff.OIDC.Scopes); err != nil {
 			return nil, err
@@ -287,6 +317,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.StoreCredentialRequireRunBinding {
 		eff.StoreCredentialRequireRunBinding = true
+	}
+	if len(file.TrustedProxies) > 0 {
+		eff.TrustedProxies = file.TrustedProxies
 	}
 	if file.OIDC != nil {
 		if eff.OIDC == nil {
@@ -403,9 +436,9 @@ func validateControllerAgentAuth(cfg *ControllerAgentAuthConfig) error {
 	return nil
 }
 
-// splitCSV splits a comma-separated list, trimming spaces and dropping empties.
+// SplitCSV splits a comma-separated list, trimming spaces and dropping empties.
 // It returns nil when nothing remains.
-func splitCSV(v string) []string {
+func SplitCSV(v string) []string {
 	var out []string
 	for _, p := range strings.Split(v, ",") {
 		if p = strings.TrimSpace(p); p != "" {

@@ -154,3 +154,12 @@ func TestControllerDisabled(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, stderr, "nothing to install")
 }
+
+func TestControllerTrustedProxiesValue(t *testing.T) {
+	cfg := controllerConfig(t, Render(t, "unified-cd"))
+	_, set := cfg["trustedProxies"]
+	assert.False(t, set, "trustedProxies is omitted by default so the controller ignores forwarded headers")
+
+	cfg = controllerConfig(t, Render(t, "unified-cd", "controller.trustedProxies[0]=10.244.0.0/16"))
+	assert.Equal(t, []any{"10.244.0.0/16"}, cfg["trustedProxies"])
+}

@@ -23,6 +23,13 @@ unified-cd controller installed in namespace {{ .Release.Namespace }}.
 {{- range .Values.ingress.hosts }}
   {{ if $.Values.ingress.tls }}https{{ else }}http{{ end }}://{{ .host }}/
 {{- end }}
+{{- if not .Values.controller.trustedProxies }}
+
+NOTE: controller.trustedProxies is empty, so the controller ignores
+X-Forwarded-For / X-Real-IP and sees every client as the Ingress controller's
+address (per-client rate limits and the access log are then not per client).
+Set controller.trustedProxies to your Ingress controller's pod CIDR.
+{{- end }}
 {{- else }}
 No Ingress is configured. Reach the controller with:
 

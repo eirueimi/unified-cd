@@ -55,6 +55,10 @@ Chart-computed controller config, rendered as YAML. controller.config is
 deep-merged over it by the ConfigMap template.
 */}}
 {{- define "unified-cd.controllerConfigDefault" -}}
+{{- with .Values.controller.trustedProxies }}
+trustedProxies:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
 agentAuth:
   kubernetesClusters:
     - name: in-cluster
