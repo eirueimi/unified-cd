@@ -18,11 +18,11 @@ func mustSymlink(t *testing.T, target, link string) {
 }
 
 // isolatedLinkBackend is an isolated claim backend whose workspace is workDir.
-func isolatedLinkBackend(t *testing.T) (*hostBackend, *symlinkServer, string) {
+func isolatedLinkBackend(t *testing.T) (*hostBackend, string) {
 	t.Helper()
-	a, srv := newSymlinkAgent(t)
+	a, _ := newSymlinkAgent(t)
 	b, ws := podBackend(t, a, &podFakeRT{}, nil)
-	return b, srv, ws
+	return b, ws
 }
 
 // A job can plant a symlink in the workspace and name it directly as an
@@ -30,7 +30,7 @@ func isolatedLinkBackend(t *testing.T) (*hostBackend, *symlinkServer, string) {
 // top-level symlink, so the resolver itself must refuse a target that leaves
 // the workspace.
 func TestHostBackend_ResolveArtifactPath_RejectsSymlinkLeavingWorkspace(t *testing.T) {
-	b, _, ws := isolatedLinkBackend(t)
+	b, ws := isolatedLinkBackend(t)
 	outside := t.TempDir()
 	secret := filepath.Join(outside, "secret.txt")
 	require.NoError(t, os.WriteFile(secret, []byte("top secret"), 0o600))
@@ -48,7 +48,7 @@ func TestHostBackend_ResolveArtifactPath_RejectsSymlinkLeavingWorkspace(t *testi
 // A symlink planted inside a named volume leads out of the volume's host
 // directory, which is outside the workspace: it is confined to the volume.
 func TestHostBackend_ResolveArtifactPath_ConfinesPathsInsideAVolume(t *testing.T) {
-	b, _, _ := isolatedLinkBackend(t)
+	b, _ := isolatedLinkBackend(t)
 	volDir := t.TempDir()
 	outside := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(volDir, "real"), 0o755))
@@ -68,7 +68,7 @@ func TestHostBackend_ResolveArtifactPath_ConfinesPathsInsideAVolume(t *testing.T
 }
 
 func TestHostBackend_ResolveArtifactPath_AllowsInWorkspaceLinksAndNewPaths(t *testing.T) {
-	b, _, ws := isolatedLinkBackend(t)
+	b, ws := isolatedLinkBackend(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(ws, "real"), 0o755))
 	mustSymlink(t, "real", filepath.Join(ws, "alias"))
 
@@ -99,7 +99,7 @@ func TestHostBackend_ResolveArtifactPath_NativeClaimIsNotConfined(t *testing.T) 
 // that goes through an escaping symlink must fail, not follow it.
 func TestHostBackend_Transfer_OpenIsConfinedEvenWithoutTheUpFrontCheck(t *testing.T) {
 	ctx := context.Background()
-	b, srv, ws := isolatedLinkBackend(t)
+	b, ws := isolatedLinkBackend(t)
 	outside := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("top secret"), 0o600))
 	mustSymlink(t, outside, filepath.Join(ws, "swapped"))
@@ -115,7 +115,6 @@ func TestHostBackend_Transfer_OpenIsConfinedEvenWithoutTheUpFrontCheck(t *testin
 	require.NoError(t, os.MkdirAll(src, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644))
 	require.NoError(t, b.UploadArtifact(ctx, ScopeHandle{}, "r1", "good", src))
-	_ = srv
 	err = b.DownloadArtifact(ctx, ScopeHandle{}, "r1", "good", filepath.Join(ws, "swapped", "dest"))
 	require.Error(t, err)
 	entries, rerr := os.ReadDir(outside)

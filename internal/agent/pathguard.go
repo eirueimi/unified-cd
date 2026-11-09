@@ -61,9 +61,11 @@ func ContainWithinOS(root, p string) (string, error) {
 // because its target is not known to be inside root.
 //
 // On Windows filepath.EvalSymlinks does not resolve NTFS junctions (mount
-// points), so a junction that leaves root passes this check. Only a native
-// Windows job can create one, and native claims are not confined (see the
-// caller), so no isolation boundary is crossed.
+// points), so a junction that leaves root passes this up-front check. It is not
+// what stops the read: the archive and extract layers open the path beneath
+// root with os.Root, which treats a reparse point as a link and refuses to leave
+// root through it. Only a native Windows job can create a junction without the
+// claim-pod boundary, and native claims are not confined (see the caller).
 func ConfineSymlinksOS(root, p string) (string, error) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {

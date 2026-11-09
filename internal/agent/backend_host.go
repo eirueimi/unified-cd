@@ -286,8 +286,8 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return b.readWithFallback(ctx, "cache save", path, func(p string, exclude []string) error {
-			if root, ok := b.confineRootOf(path); ok && p == path {
+		return b.readWithFallback(ctx, "cache save", path, func(root, p string, exclude []string) error {
+			if root != "" {
 				return cache.SaveIn(ctx, b.a.CacheStore, b.jobName, root, p, key, ttlDays, exclude)
 			}
 			return cache.SaveExcluding(ctx, b.a.CacheStore, b.jobName, p, key, ttlDays, exclude)
@@ -306,8 +306,8 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 func (b *hostBackend) UploadArtifact(ctx context.Context, scope ScopeHandle, runID, name, path string) error {
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return b.readWithFallback(ctx, "artifact", path, func(p string, exclude []string) error {
-			if root, ok := b.confineRootOf(path); ok && p == path {
+		return b.readWithFallback(ctx, "artifact", path, func(root, p string, exclude []string) error {
+			if root != "" {
 				return b.a.Client.UploadArtifactIn(ctx, runID, name, root, p, exclude)
 			}
 			return b.a.Client.UploadArtifactExcluding(ctx, runID, name, p, exclude)
@@ -656,9 +656,10 @@ func (b *hostBackend) chownAgentWrite(ctx context.Context, w *artifact.Written) 
 // copy is staged under the workspace base, not the OS temp directory. The copy
 // can be MORE than the pod-level user could read on Kubernetes, which the docs
 // state (design Q7).
-func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved string, op func(path string, exclude []string) error) error {
+func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved string, op func(root, path string, exclude []string) error) error {
 	exclude := b.excludeVolumes(ctx, kind, resolved)
-	err := op(resolved, exclude)
+	root, _ := b.confineRootOf(resolved) // "" for a native claim: not confined
+	err := op(root, resolved, exclude)
 	if err == nil || !errors.Is(err, fs.ErrPermission) || b.pod == nil {
 		return err
 	}
@@ -702,7 +703,17 @@ func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved strin
 		rel := strings.TrimPrefix(ce, src+"/")
 		copyExclude = append(copyExclude, filepath.Join(dst, filepath.FromSlash(rel)))
 	}
-	return op(dst, copyExclude)
+	// The copy is job-controlled until it lands here: docker cp copies a symlink
+	// source as a link, so a job that swaps the directory for a link between the
+	// failed read and the copy would make the host archive whatever it points at.
+	// Refuse a link as the top-level entry, and confine the read to the staging
+	// directory so no link below it is followed out either.
+	if fi, lerr := os.Lstat(dst); lerr != nil {
+		return fmt.Errorf("%w (root copy: %v)", err, lerr)
+	} else if fi.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("%w (root copy: refusing %q, which is a symbolic link)", err, src)
+	}
+	return op(stage, dst, copyExclude)
 }
 
 // stagingDir makes a private scratch directory under the workspace base. The

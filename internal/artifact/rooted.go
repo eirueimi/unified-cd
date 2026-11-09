@@ -80,7 +80,13 @@ func WriteTarZstdIn(w io.Writer, root, path string, exclude []string) error {
 	}
 	skip := make(map[string]bool, len(exclude))
 	for _, e := range exclude {
-		skip[filepath.Clean(e)] = true
+		// Absolute, as the unconfined archivers make them, so a relative
+		// workspace directory still matches the joined absRoot paths below.
+		abs, err := filepath.Abs(e)
+		if err != nil {
+			return fmt.Errorf("resolve excluded path %q: %w", e, err)
+		}
+		skip[abs] = true
 	}
 	// Entries are named relative to the archived directory, or for a single
 	// file relative to its parent so the entry is the base name.
@@ -292,7 +298,11 @@ func ExtractTarZstdInWritten(r io.Reader, root, dest string, exclude []string, r
 	defer dec.Close()
 	var skip []string
 	for _, e := range exclude {
-		skip = append(skip, filepath.Clean(e))
+		abs, err := filepath.Abs(e)
+		if err != nil {
+			return skippedLinks, fmt.Errorf("resolve excluded path %q: %w", e, err)
+		}
+		skip = append(skip, abs)
 	}
 	tr := tar.NewReader(dec)
 	for {

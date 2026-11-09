@@ -33,7 +33,7 @@ var cliReservedEnvExact = map[string]bool{
 }
 
 // cliReservedEnvPrefixes cover whole families of CLI configuration variables.
-var cliReservedEnvPrefixes = []string{"DOCKER_", "CONTAINER_", "PODMAN_", "XDG_", "REGISTRY_AUTH_", "BUILDAH_", "NERDCTL_", "CONTAINERD_", "LC_"}
+var cliReservedEnvPrefixes = []string{"DOCKER_", "CONTAINER_", "PODMAN_", "XDG_", "REGISTRY_AUTH_", "BUILDAH_", "NERDCTL_", "CONTAINERD_", "LC_", "LD_", "DYLD_"}
 
 // cliReservedEnv reports whether key must not be set in the CLI child's
 // environment.

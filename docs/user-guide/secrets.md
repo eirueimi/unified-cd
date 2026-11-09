@@ -213,7 +213,7 @@ runtime the values are written to an owner-only (0600) temporary `--env-file` th
 as soon as the command finishes. A value that contains a newline (a PEM key, a kubeconfig)
 cannot be stored in that line-based file, so it is passed as `-e NAME` and supplied through the
 `container` process environment instead; this needs an Apple `container` release that resolves a
-bare `-e NAME` from its environment. Such a value under a name the CLI itself reads (`PATH`,
+bare `-e NAME` from its environment (on an older release the variable is empty or unset inside the container). Such a value under a name the CLI itself reads (`PATH`,
 `HOME`, `CONTAINER_*`, ...) cannot be passed safely and fails the step with
 `env "NAME" collides with a container CLI variable and its value contains a newline, which cannot be passed safely`.
 
