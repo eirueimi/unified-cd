@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/jackc/pgx/v5"
 )
 
 const bearerPrefix = "Bearer "
@@ -96,13 +98,11 @@ func BearerAuth(expected string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := r.Header.Get("Authorization")
 			if !strings.HasPrefix(h, bearerPrefix) {
-				reportAuthFailure(nil, r, "agent-token", "missing_bearer")
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			got := []byte(strings.TrimPrefix(h, bearerPrefix))
 			if len(expectedBytes) == 0 || subtle.ConstantTimeCompare(got, expectedBytes) != 1 {
-				reportAuthFailure(nil, r, "agent-token", "invalid_token")
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -120,6 +120,7 @@ func BearerAuth(expected string) func(http.Handler) http.Handler {
 func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			lookupFailed := false
 			// 1. Bearer token
 			h := r.Header.Get("Authorization")
 			if strings.HasPrefix(h, bearerPrefix) {
@@ -128,6 +129,9 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 				if st != nil {
 					hash := HashToken(token)
 					pat, err := st.GetPATByHash(r.Context(), hash)
+					if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+						lookupFailed = true
+					}
 					if err == nil && pat != nil {
 						go func() { _ = st.TouchPAT(context.Background(), pat.ID) }()
 						p, ok := srv.patPrincipal(pat, hash)
@@ -205,6 +209,9 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 			method, reason := "none", "missing_credentials"
 			if strings.HasPrefix(h, bearerPrefix) {
 				method, reason = "bearer", "invalid_token"
+				if lookupFailed {
+					reason = "lookup_failed"
+				}
 			} else if _, err := r.Cookie(sessionCookieName); err == nil {
 				method, reason = "session", "invalid_or_expired_session"
 			}

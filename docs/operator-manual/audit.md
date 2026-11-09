@@ -120,13 +120,15 @@ A request that is rejected with `401` (no credentials, unknown or expired token,
 refresh, failed OIDC `id_token` verification) is logged and audited:
 
 - The controller logs a structured warning, `authentication failed`, with `remote` (the peer
-  address, not `X-Forwarded-For`), `method` (`bearer`, `session`, `none`, `agent-token`,
+  address, not `X-Forwarded-For`), `method` (`bearer`, `session`, `none`, `agent-access`,
   `oidc-callback`), `reason` and `path`. The presented token, or any part of it, is never logged.
-- An audit row with `action` `auth.failed`, `status` `401` and `actor` `unknown` is written (agent
-  static-token failures are only logged). Its `resource` is
+- An audit row with `action` `auth.failed`, `status` `401` and `actor` `unknown` is written, except
+  for `agent-access` failures (an invalid `uca_` agent credential) and `none` (no credentials at all),
+  which are only logged. `reason` is a short fixed code such as `invalid_token`, `lookup_failed`
+  (the credential store was unreachable) or `invalid_or_expired_session`. Its `resource` is
   `method=<method> reason=<reason> remote=<address>`.
-- Reporting is rate limited per controller process (about 5 per second after a burst of 20) so a
-  client cannot grow the log or `audit_logs` at request rate. Dropped reports are counted and the
+- Reporting is rate limited per controller process and per `method` (about 5 per second after a burst of 20), so a flood of one method does not hide failures of another,
+  so a client cannot grow the log or `audit_logs` at request rate. Dropped reports are counted and the
   next report that gets through carries `suppressed=<n>` in the log line. Treat a `suppressed` value
   as evidence of a flood; the audit rows only sample it.
 

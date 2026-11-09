@@ -445,7 +445,7 @@ func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	s.recordAgentAuth("kubernetes", "success", "ok")
-	s.auditAgentCredential(r, "agent.enrollment.exchange", policy.Name, http.StatusOK)
+	s.auditAgentCredentialAs(r, agentIdentity.AgentID, "agent.enrollment.exchange", policy.Name, http.StatusOK)
 	writeJSON(w, http.StatusOK, api.AgentTokenResponse{AgentID: agentIdentity.AgentID, AccessToken: access.Plaintext, AccessExpiresAt: now.Add(policy.AccessTokenTTL), Labels: agentIdentity.AuthorizedLabels, Capabilities: agentIdentity.AuthorizedCapabilities})
 }
 

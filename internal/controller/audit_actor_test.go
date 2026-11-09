@@ -15,7 +15,6 @@ import (
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/time/rate"
 )
 
 // auditedDelete issues an audited DELETE (vars.delete) with the given
@@ -124,10 +123,8 @@ func (c *captureAudit) InsertAuditLog(_ context.Context, e store.AuditEntry) err
 
 func resetAuthFailureLimiter(t *testing.T) {
 	t.Helper()
-	old := authFailureLimiter
-	authFailureLimiter = rate.NewLimiter(authFailureRate, authFailureBurst)
-	authFailureSuppressed.Store(0)
-	t.Cleanup(func() { authFailureLimiter = old })
+	authFailureBuckets.Range(func(k, _ any) bool { authFailureBuckets.Delete(k); return true })
+	t.Cleanup(func() { authFailureBuckets.Range(func(k, _ any) bool { authFailureBuckets.Delete(k); return true }) })
 }
 
 func captureSlog(t *testing.T) *bytes.Buffer {
@@ -202,5 +199,41 @@ func TestReportAuthFailure_RateLimited(t *testing.T) {
 		reportAuthFailure(cap, req, "bearer", "invalid_token")
 	}
 	assert.LessOrEqual(t, len(cap.entries), authFailureBurst+2)
-	assert.Greater(t, authFailureSuppressed.Load(), int64(0))
+	assert.Greater(t, authFailureBucketFor("bearer").suppressed.Load(), int64(0))
+
+	// A flood of one method must not crowd out another, and "none" is log-only.
+	reportAuthFailure(cap, req, "session", "invalid_or_expired_session")
+	assert.Equal(t, "session", strings.Fields(strings.TrimPrefix(cap.entries[len(cap.entries)-1].Resource, "method="))[0])
+	n := len(cap.entries)
+	reportAuthFailure(cap, req, "none", "missing_credentials")
+	assert.Len(t, cap.entries, n)
+}
+
+func TestAgentAuth_401IsLogged(t *testing.T) {
+	resetAuthFailureLimiter(t)
+	buf := captureSlog(t)
+	s := &Server{}
+	h := s.agentAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/a/claim", nil)
+	req.RemoteAddr = "192.0.2.5:4000"
+	req.Header.Set("Authorization", "Bearer uca_not-a-valid-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	out := buf.String()
+	assert.Contains(t, out, "method=agent-access")
+	assert.Contains(t, out, "remote=192.0.2.5")
+	assert.NotContains(t, out, "uca_not-a-valid-token")
+}
+
+func TestAudit_EnrollmentExchangeActorID(t *testing.T) {
+	pg := storetest.NewTestPostgres(t)
+	s := NewServer(Config{}, pg)
+	t.Cleanup(s.Close)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/enroll", nil)
+	s.auditAgentCredentialAs(req, "k8s:c:ns:uid", "agent.enrollment.exchange", "pol", http.StatusOK)
+	logs, err := pg.ListAuditLogs(t.Context(), 1, 0)
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	assert.Equal(t, "agent:k8s:c:ns:uid", logs[0].ActorID)
 }
