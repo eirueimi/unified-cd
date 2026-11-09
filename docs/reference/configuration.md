@@ -27,6 +27,8 @@ unified-cd-controller [FLAGS]
   --log-trim-days         int      Days after a run's logs are archived before its DB log rows are deleted; 0 = never trim (default: 0, env: UNIFIED_LOG_TRIM_DAYS)
   --insecure-cookies      bool     Do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)
   --git-known-hosts-file   string   Persistent SSH known_hosts file for trust-on-first-use of git SSH host keys (default: <data-dir>/.ssh/known_hosts, else a temp dir; env: UNIFIED_GIT_KNOWN_HOSTS_FILE)
+  --git-timeout           duration Maximum time for one controller-side git operation before its process tree is killed (default: 5m, env: UNIFIED_GIT_TIMEOUT)
+  --git-max-repo-bytes    int      Abort a controller-side git fetch whose repository exceeds this many bytes; 0 = no limit (default: 1073741824, env: UNIFIED_GIT_MAX_REPO_BYTES)
 ```
 
 ### Controller Environment Variables
@@ -49,6 +51,8 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_DEV_MODE` | Optional | `1` generates an ephemeral key. Secrets are unreadable after a restart. Never use in production. |
 | `UNIFIED_GIT_RESOLVE_DEADLINE` | No | How long a run's `git://` template resolution may keep failing (network/credentials) before the run is Failed instead of waiting as Pending. Go duration, default `1h`. Deterministic resolution errors (e.g. a nonexistent ref) still fail the run immediately. There is no CLI flag; unset/invalid/non-positive values use the default. The run is failed at its *next resolution attempt* after the deadline elapses, which the per-run failure backoff may delay by up to an additional 1 hour. |
 | `UNIFIED_GIT_KNOWN_HOSTS_FILE` | No | Persistent known_hosts file used for SSH trust-on-first-use when a GitCredential has no `knownHosts` pinned (see [GitCredential](../user-guide/resources/git-credential.md#ssh-host-key-verification)). Default `<data-dir>/.ssh/known_hosts` when `--data-dir` is set, otherwise a file in the OS temp directory (TOFU state is then lost when it is cleared, e.g. on container restart). Mount persistent storage here, or pin `knownHosts`. |
+| `UNIFIED_GIT_TIMEOUT` | No | Maximum time one controller-side git operation (an AppSource `ls-remote` or fetch, or a `git://` template fetch) may take. When it elapses the git process tree is killed, the error is recorded (an AppSource's `lastError`) and the controller moves on to the next AppSource. Go duration, default `5m`; invalid or non-positive values use the default. Flag: `--git-timeout`. |
+| `UNIFIED_GIT_MAX_REPO_BYTES` | No | Aborts a controller-side git fetch whose scratch repository grows past this many bytes (measured while fetching). Default `1073741824` (1 GiB); `0` disables the limit. Flag: `--git-max-repo-bytes`. |
 | `UNIFIED_LOG_LEVEL` | No | Log level: `debug`, `info` (default), `warn`, `error` |
 | `UNIFIED_S3_ENDPOINT` | No | S3-compatible object store endpoint (e.g. `garage.internal:3900`). Without S3, log archival and artifacts are disabled. |
 | `UNIFIED_S3_BUCKET` | No | S3 bucket name |

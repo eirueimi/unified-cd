@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // gitErr augments an exec error with git's stderr. cmd.Output()/Run() capture
@@ -36,6 +38,12 @@ type Fetcher struct {
 	// when no keys are pinned for a host. When empty, TOFU state lives in a
 	// per-operation temporary file and is therefore lost after each fetch.
 	KnownHostsFile string
+	// Timeout bounds each whole git operation (fetch, ls-remote); the git process
+	// tree is killed when it elapses. Zero means DefaultGitTimeout.
+	Timeout time.Duration
+	// MaxRepoBytes aborts a fetch whose scratch repository grows past this many
+	// bytes. Zero disables the limit.
+	MaxRepoBytes int64
 }
 
 // NewFetcher returns a new Fetcher.
@@ -45,9 +53,9 @@ func NewFetcher() *Fetcher { return &Fetcher{} }
 // token: plaintext HTTPS token, supplied to git via GIT_ASKPASS (never embedded in the
 // URL or passed as an argument); leave empty for public repos.
 // sshKey: plaintext SSH private key content; leave empty for HTTPS auth.
-func (f *Fetcher) Fetch(ctx context.Context, uri URI, token, sshKey string) ([]byte, error) {
+func (f *Fetcher) fetch(ctx context.Context, cancel context.CancelCauseFunc, uri URI, token, sshKey string) ([]byte, error) {
 	if sshKey != "" {
-		return f.fetchSSH(ctx, uri, sshKey)
+		return f.fetchSSH(ctx, cancel, uri, sshKey)
 	}
 	repoURL := buildHTTPSURL(uri, token)
 	extraEnv, cleanup, err := authEnv(token)
@@ -55,15 +63,18 @@ func (f *Fetcher) Fetch(ctx context.Context, uri URI, token, sshKey string) ([]b
 		return nil, err
 	}
 	defer cleanup()
-	return f.fetchWithURL(ctx, repoURL, uri.Path, uri.Ref, extraEnv)
+	return f.fetchWithURL(ctx, cancel, repoURL, uri.Path, uri.Ref, extraEnv)
 }
 
 // FetchWithURL fetches filePath at ref from repoURL. Exposed for testing with file:// URLs.
 func (f *Fetcher) FetchWithURL(ctx context.Context, repoURL, filePath, ref string) ([]byte, error) {
-	return f.fetchWithURL(ctx, repoURL, filePath, ref, nil)
+	ctx, cancel := f.opContext(ctx)
+	defer cancel(nil)
+	data, err := f.fetchWithURL(ctx, cancel, repoURL, filePath, ref, nil)
+	return data, opErr(ctx, f, err)
 }
 
-func (f *Fetcher) fetchWithURL(ctx context.Context, repoURL, filePath, ref string, extraEnv []string) ([]byte, error) {
+func (f *Fetcher) fetchWithURL(ctx context.Context, cancel context.CancelCauseFunc, repoURL, filePath, ref string, extraEnv []string) ([]byte, error) {
 	dir, err := os.MkdirTemp("", "gittemplate-")
 	if err != nil {
 		return nil, fmt.Errorf("mkdtemp: %w", err)
@@ -73,7 +84,7 @@ func (f *Fetcher) fetchWithURL(ctx context.Context, repoURL, filePath, ref strin
 	env := gitEnv(extraEnv)
 
 	run := func(args ...string) error {
-		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd := gitCommand(ctx, args...)
 		cmd.Dir = dir
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
@@ -86,10 +97,14 @@ func (f *Fetcher) fetchWithURL(ctx context.Context, repoURL, filePath, ref strin
 	if err := run("init"); err != nil {
 		return nil, err
 	}
+	stopSize := f.watchSize(ctx, dir, cancel)
 	if err := run("fetch", "--depth=1", repoURL, "--", ref); err != nil {
 		return nil, fmt.Errorf("fetch %s@%s: %w", repoURL, ref, err)
 	}
-	cmd := exec.CommandContext(ctx, "git", "show", "FETCH_HEAD:"+filePath)
+	if err := stopSize(); err != nil {
+		return nil, err
+	}
+	cmd := gitCommand(ctx, "show", "FETCH_HEAD:"+filePath)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	data, err := cmd.Output()
@@ -99,7 +114,7 @@ func (f *Fetcher) fetchWithURL(ctx context.Context, repoURL, filePath, ref strin
 	return data, nil
 }
 
-func (f *Fetcher) fetchSSH(ctx context.Context, uri URI, sshKey string) ([]byte, error) {
+func (f *Fetcher) fetchSSH(ctx context.Context, cancel context.CancelCauseFunc, uri URI, sshKey string) ([]byte, error) {
 	sshCmd, cleanup, err := f.sshSetup(ctx, uri.Host, sshKey)
 	if err != nil {
 		return nil, err
@@ -115,7 +130,7 @@ func (f *Fetcher) fetchSSH(ctx context.Context, uri URI, sshKey string) ([]byte,
 	defer os.RemoveAll(dir)
 
 	run := func(args ...string) error {
-		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd := gitCommand(ctx, args...)
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(),
 			"GIT_TERMINAL_PROMPT=0",
@@ -131,10 +146,14 @@ func (f *Fetcher) fetchSSH(ctx context.Context, uri URI, sshKey string) ([]byte,
 	if err := run("init"); err != nil {
 		return nil, err
 	}
+	stopSize := f.watchSize(ctx, dir, cancel)
 	if err := run("fetch", "--depth=1", repoURL, "--", uri.Ref); err != nil {
 		return nil, fmt.Errorf("fetch SSH %s@%s: %w", repoURL, uri.Ref, err)
 	}
-	cmd := exec.CommandContext(ctx, "git", "show", "FETCH_HEAD:"+uri.Path)
+	if err := stopSize(); err != nil {
+		return nil, err
+	}
+	cmd := gitCommand(ctx, "show", "FETCH_HEAD:"+uri.Path)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
@@ -206,7 +225,7 @@ func gitEnv(extraEnv []string) []string {
 }
 
 // ResolveCommitSHA uses git ls-remote to return the commit SHA for the given ref in the repository.
-func (f *Fetcher) ResolveCommitSHA(ctx context.Context, repoURL, ref, token, sshKey string) (string, error) {
+func (f *Fetcher) resolveCommitSHA(ctx context.Context, repoURL, ref, token, sshKey string) (string, error) {
 	if strings.HasPrefix(repoURL, "-") {
 		return "", fmt.Errorf("repo URL %q must not start with '-' (git option injection)", repoURL)
 	}
@@ -229,7 +248,7 @@ func (f *Fetcher) ResolveCommitSHA(ctx context.Context, repoURL, ref, token, ssh
 		defer cleanup()
 		env = gitEnv(extraEnv)
 	}
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", repoURL, "--", ref)
+	cmd := gitCommand(ctx, "ls-remote", repoURL, "--", ref)
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
@@ -239,7 +258,7 @@ func (f *Fetcher) ResolveCommitSHA(ctx context.Context, repoURL, ref, token, ssh
 }
 
 // FetchDir retrieves all *.yaml / *.yml files under the specified path in the repository.
-func (f *Fetcher) FetchDir(ctx context.Context, repoURL, ref, path, token, sshKey string) (map[string][]byte, error) {
+func (f *Fetcher) fetchDir(ctx context.Context, cancel context.CancelCauseFunc, repoURL, ref, path, token, sshKey string) (map[string][]byte, error) {
 	var extraEnv []string
 	if sshKey != "" {
 		sshCmd, cleanup, err := f.sshSetup(ctx, sshHostFromURL(repoURL), sshKey)
@@ -257,10 +276,10 @@ func (f *Fetcher) FetchDir(ctx context.Context, repoURL, ref, path, token, sshKe
 		defer cleanup()
 		extraEnv = tokenEnv
 	}
-	return f.fetchDirWithURL(ctx, repoURL, ref, path, extraEnv)
+	return f.fetchDirWithURL(ctx, cancel, repoURL, ref, path, extraEnv)
 }
 
-func (f *Fetcher) fetchDirWithURL(ctx context.Context, repoURL, ref, path string, extraEnv []string) (map[string][]byte, error) {
+func (f *Fetcher) fetchDirWithURL(ctx context.Context, cancel context.CancelCauseFunc, repoURL, ref, path string, extraEnv []string) (map[string][]byte, error) {
 	if strings.HasPrefix(repoURL, "-") {
 		return nil, fmt.Errorf("repo URL %q must not start with '-' (git option injection)", repoURL)
 	}
@@ -273,7 +292,7 @@ func (f *Fetcher) fetchDirWithURL(ctx context.Context, repoURL, ref, path string
 	env := gitEnv(extraEnv)
 
 	runGit := func(args ...string) error {
-		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd := gitCommand(ctx, args...)
 		cmd.Dir = dir
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
@@ -286,8 +305,12 @@ func (f *Fetcher) fetchDirWithURL(ctx context.Context, repoURL, ref, path string
 	if err := runGit("init"); err != nil {
 		return nil, err
 	}
+	stopSize := f.watchSize(ctx, dir, cancel)
 	if err := runGit("fetch", "--depth=1", repoURL, "--", ref); err != nil {
 		return nil, fmt.Errorf("fetch %s@%s: %w", repoURL, ref, err)
+	}
+	if err := stopSize(); err != nil {
+		return nil, err
 	}
 
 	treePath := strings.TrimSuffix(path, "/")
@@ -295,7 +318,7 @@ func (f *Fetcher) fetchDirWithURL(ctx context.Context, repoURL, ref, path string
 	if treePath != "" {
 		lsArgs = append(lsArgs, "--", treePath)
 	}
-	lsCmd := exec.CommandContext(ctx, "git", lsArgs...)
+	lsCmd := gitCommand(ctx, lsArgs...)
 	lsCmd.Dir = dir
 	lsCmd.Env = env
 	lsOut, err := lsCmd.Output()
@@ -311,7 +334,7 @@ func (f *Fetcher) fetchDirWithURL(ctx context.Context, repoURL, ref, path string
 		if !strings.HasSuffix(line, ".yaml") && !strings.HasSuffix(line, ".yml") {
 			continue
 		}
-		showCmd := exec.CommandContext(ctx, "git", "show", "FETCH_HEAD:"+line)
+		showCmd := gitCommand(ctx, "show", "FETCH_HEAD:"+line)
 		showCmd.Dir = dir
 		showCmd.Env = env
 		data, err := showCmd.Output()
@@ -444,4 +467,143 @@ func parseLsRemoteOutput(output, ref string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("ref %q not found in ls-remote output", ref)
+}
+
+// DefaultGitTimeout bounds one controller-side git operation (a whole fetch or
+// ls-remote, not each subprocess) when Fetcher.Timeout is zero.
+const DefaultGitTimeout = 5 * time.Minute
+
+var (
+	errGitTimeout   = errors.New("git operation timed out")
+	errRepoTooLarge = errors.New("repository exceeds the size limit")
+)
+
+// sizePollInterval is how often an in-flight fetch's scratch directory is
+// measured against Fetcher.MaxRepoBytes. A variable so tests can shorten it.
+var sizePollInterval = 250 * time.Millisecond
+
+// opContext derives the context for one public operation: it carries the
+// per-operation deadline (Timeout, default DefaultGitTimeout) and a cancel
+// function used to abort when the size limit is exceeded. The returned cancel
+// must always be called.
+func (f *Fetcher) opContext(parent context.Context) (context.Context, context.CancelCauseFunc) {
+	timeout := f.Timeout
+	if timeout <= 0 {
+		timeout = DefaultGitTimeout
+	}
+	tctx, tcancel := context.WithTimeoutCause(parent, timeout, errGitTimeout)
+	cctx, ccancel := context.WithCancelCause(tctx)
+	return cctx, func(cause error) {
+		ccancel(cause)
+		tcancel()
+	}
+}
+
+// opErr rewrites err into a clear timeout / size-limit error when that is what
+// aborted the operation (git itself only reports "signal: killed").
+func opErr(ctx context.Context, f *Fetcher, err error) error {
+	if err == nil {
+		return nil
+	}
+	switch cause := context.Cause(ctx); {
+	case errors.Is(cause, errGitTimeout):
+		timeout := f.Timeout
+		if timeout <= 0 {
+			timeout = DefaultGitTimeout
+		}
+		return fmt.Errorf("%w after %s: %v", errGitTimeout, timeout, err)
+	case errors.Is(cause, errRepoTooLarge):
+		return fmt.Errorf("%w (limit %d bytes): %v", errRepoTooLarge, f.MaxRepoBytes, err)
+	}
+	return err
+}
+
+// gitCommand builds a git subprocess that is killed together with its children
+// when ctx ends. WaitDelay bounds how long Wait lingers on output pipes still
+// held open by an orphaned helper.
+func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	killTree(cmd)
+	cmd.WaitDelay = 5 * time.Second
+	return cmd
+}
+
+// dirSize sums the sizes of all regular files under dir.
+func dirSize(dir string) int64 {
+	var total int64
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info, ierr := d.Info(); ierr == nil && info.Mode().IsRegular() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+// watchSize aborts the operation (via cancel) as soon as the scratch directory
+// dir grows past MaxRepoBytes while git is fetching into it. The returned
+// function stops the watcher and reports a final verdict. With no limit
+// configured it is a no-op.
+func (f *Fetcher) watchSize(ctx context.Context, dir string, cancel context.CancelCauseFunc) func() error {
+	if f.MaxRepoBytes <= 0 {
+		return func() error { return nil }
+	}
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(sizePollInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if dirSize(dir) > f.MaxRepoBytes {
+					cancel(errRepoTooLarge)
+					return
+				}
+			}
+		}
+	}()
+	return func() error {
+		close(done)
+		if size := dirSize(dir); size > f.MaxRepoBytes {
+			return fmt.Errorf("%w (limit %d bytes, fetched %d)", errRepoTooLarge, f.MaxRepoBytes, size)
+		}
+		return nil
+	}
+}
+
+// Fetch retrieves the file at uri.Path from the git repository at uri.Ref.
+// token: plaintext HTTPS token, supplied to git via GIT_ASKPASS (never embedded in the
+// URL or passed as an argument); leave empty for public repos.
+// sshKey: plaintext SSH private key content; leave empty for HTTPS auth.
+// The whole operation is bounded by Fetcher.Timeout and Fetcher.MaxRepoBytes.
+func (f *Fetcher) Fetch(ctx context.Context, uri URI, token, sshKey string) ([]byte, error) {
+	ctx, cancel := f.opContext(ctx)
+	defer cancel(nil)
+	data, err := f.fetch(ctx, cancel, uri, token, sshKey)
+	return data, opErr(ctx, f, err)
+}
+
+// ResolveCommitSHA uses git ls-remote to return the commit SHA for the given ref
+// in the repository. Bounded by Fetcher.Timeout.
+func (f *Fetcher) ResolveCommitSHA(ctx context.Context, repoURL, ref, token, sshKey string) (string, error) {
+	ctx, cancel := f.opContext(ctx)
+	defer cancel(nil)
+	sha, err := f.resolveCommitSHA(ctx, repoURL, ref, token, sshKey)
+	return sha, opErr(ctx, f, err)
+}
+
+// FetchDir retrieves all *.yaml / *.yml files under the specified path in the
+// repository. Bounded by Fetcher.Timeout and Fetcher.MaxRepoBytes.
+func (f *Fetcher) FetchDir(ctx context.Context, repoURL, ref, path, token, sshKey string) (map[string][]byte, error) {
+	ctx, cancel := f.opContext(ctx)
+	defer cancel(nil)
+	files, err := f.fetchDir(ctx, cancel, repoURL, ref, path, token, sshKey)
+	return files, opErr(ctx, f, err)
 }

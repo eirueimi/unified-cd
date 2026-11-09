@@ -438,3 +438,11 @@ SSH host key verification failed: the server's host key does not match the pinne
 **Cause:** the controller verifies SSH host keys. Either the GitCredential's `spec.knownHosts` does not list the key the server presents, or (with no `knownHosts`) the server's key differs from the one the controller trusted on first use (`--git-known-hosts-file`). This is also what a man-in-the-middle looks like, so confirm the new fingerprint with the Git host before accepting it.
 
 **Fix:** if the key legitimately changed, update `spec.knownHosts` on the GitCredential (`ssh-keyscan -t ed25519 <host>`), or remove the stale line for the host from the controller's known_hosts file and let it trust the new key on next contact.
+
+## AppSource fails with `git operation timed out` or `repository exceeds the size limit`
+
+**Symptom:** an AppSource is `Failed` and its `lastError` (or a `git://` template resolution error) contains `git operation timed out after 5m0s` or `repository exceeds the size limit (limit 1073741824 bytes ...)`.
+
+**Cause:** the controller bounds every git operation it runs. A slow or hung remote (network stall, a prompt waiting on a firewall, an unreachable host) hits the timeout and the git process tree is killed so it cannot block other AppSources. A repository larger than the size limit is aborted while it is still downloading.
+
+**Fix:** check connectivity to the repository from the controller host. For a legitimately slow or large repository raise `UNIFIED_GIT_TIMEOUT` (Go duration) or `UNIFIED_GIT_MAX_REPO_BYTES` (`0` disables the size limit), or point the AppSource at a smaller repository or path. See the [configuration reference](../reference/configuration.md#controller-environment-variables).

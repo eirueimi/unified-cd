@@ -147,6 +147,8 @@ Do not manage the same resource from two AppSources — the last sync wins.
 
 `secretRef` fields (on `GitCredential`/`WebhookReceiver`) reference a `StoredSecret` by name. Secret values are never stored in Git; create them with `unified-cli secret set` before syncing.
 
+**Git operation limits:** each controller-side git operation (the `ls-remote` that checks for a new commit, and the fetch) is bounded by a timeout (`--git-timeout` / `UNIFIED_GIT_TIMEOUT`, default `5m`) and a repository size limit (`--git-max-repo-bytes` / `UNIFIED_GIT_MAX_REPO_BYTES`, default 1 GiB). When either trips, git is killed, the AppSource is marked `Failed` with the reason in `lastError` (for example `git operation timed out after 5m0s`), and the reconciler continues with the next AppSource; the failing one is retried on the next pass. See the [configuration reference](../../reference/configuration.md).
+
 `spec.syncPolicy.interval` has a minimum of `1m`; values below that are rejected.
 
 ### Triggering a sync out of band
