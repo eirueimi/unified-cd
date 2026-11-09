@@ -137,7 +137,8 @@ func TestHostBackend_CacheRestore_ChownsOnAHitOnly(t *testing.T) {
 	require.False(t, hit)
 	assert.Empty(t, chownExecs(f), "a miss writes nothing, so there is nothing to re-own")
 
-	src := t.TempDir()
+	src := filepath.Join(workDir, "cache-src")
+	require.NoError(t, os.MkdirAll(src, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(src, "dep"), []byte("d"), 0o644))
 	require.NoError(t, b.CacheSave(ctx, ScopeHandle{}, "k", src, 1))
 
@@ -343,7 +344,8 @@ func TestHostBackend_CacheRestore_DoesNotReownThePreExistingJobFiles(t *testing.
 	ctx := context.Background()
 	f := &podFakeRT{}
 	b, workDir := podBackend(t, downloadAgent(t), f, permPT(map[string]any{"runAsUser": 1000}, nil))
-	src := t.TempDir()
+	src := filepath.Join(workDir, "cache-src")
+	require.NoError(t, os.MkdirAll(src, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(src, "dep"), []byte("d"), 0o644))
 	require.NoError(t, b.CacheSave(ctx, ScopeHandle{}, "k", src, 1))
 

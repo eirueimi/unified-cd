@@ -342,3 +342,26 @@ func ExtractTarZstdInWritten(r io.Reader, root, dest string, exclude []string, r
 	}
 	return skippedLinks, nil
 }
+
+// ExtractTarZstdDirIn is ExtractTarZstdDir confined to root rather than to
+// dest itself: dest (created if missing, recorded in w when new) must lie at
+// or below root, and every component is resolved beneath root when it is used,
+// so a directory swapped for a symlink after the caller's own checks still
+// cannot lead the extraction outside root.
+func ExtractTarZstdDirIn(r io.Reader, root, dest string, exclude []string, refuseLinks bool, w *Written) (skippedLinks int, err error) {
+	rt, absRoot, err := openRoot(root)
+	if err != nil {
+		return 0, err
+	}
+	destRel, err := RelInRoot(absRoot, dest)
+	if err != nil {
+		rt.Close()
+		return 0, err
+	}
+	err = mkdirAllIn(rt, absRoot, destRel, 0o750, w)
+	rt.Close()
+	if err != nil {
+		return 0, err
+	}
+	return ExtractTarZstdInWritten(r, root, dest, exclude, refuseLinks, w)
+}

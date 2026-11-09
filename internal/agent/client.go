@@ -378,7 +378,17 @@ func (c *Client) UploadArtifact(ctx context.Context, runID, name, path string) e
 // UploadArtifactExcluding is UploadArtifact that leaves the paths in exclude
 // out of the archive (see artifact.WriteTarZstdExcluding).
 func (c *Client) UploadArtifactExcluding(ctx context.Context, runID, name, path string, exclude []string) error {
-	body := artifact.StreamTarZstdExcluding(path, exclude)
+	return c.uploadArtifactBody(ctx, runID, name, artifact.StreamTarZstdExcluding(path, exclude))
+}
+
+// UploadArtifactIn is UploadArtifactExcluding confined to root: path must lie
+// at or below root and every component is resolved beneath root as it is read,
+// so a symlink swapped in after the caller's checks is not followed out.
+func (c *Client) UploadArtifactIn(ctx context.Context, runID, name, root, path string, exclude []string) error {
+	return c.uploadArtifactBody(ctx, runID, name, artifact.StreamTarZstdIn(root, path, exclude))
+}
+
+func (c *Client) uploadArtifactBody(ctx context.Context, runID, name string, body io.ReadCloser) error {
 	defer body.Close()
 
 	url := c.base + fmt.Sprintf("/api/v1/runs/%s/artifacts/%s", runID, name)
@@ -417,6 +427,23 @@ func (c *Client) DownloadArtifactExcluding(ctx context.Context, runID, name, des
 // DownloadArtifactWritten is DownloadArtifactExcluding that records what it
 // extracted in w (nil records nothing).
 func (c *Client) DownloadArtifactWritten(ctx context.Context, runID, name, destDir string, exclude []string, w *artifact.Written) error {
+	return c.downloadArtifact(ctx, runID, name, destDir, func(r io.Reader, dest string) error {
+		_, err := artifact.ExtractTarZstdDir(r, dest, exclude, true, w)
+		return err
+	})
+}
+
+// DownloadArtifactIn is DownloadArtifactWritten confined to root: destDir must
+// lie at or below root and nothing is written through a symlink that leads out
+// of root, including one swapped in after the caller's checks.
+func (c *Client) DownloadArtifactIn(ctx context.Context, runID, name, root, destDir string, exclude []string, w *artifact.Written) error {
+	return c.downloadArtifact(ctx, runID, name, destDir, func(r io.Reader, dest string) error {
+		_, err := artifact.ExtractTarZstdDirIn(r, root, dest, exclude, true, w)
+		return err
+	})
+}
+
+func (c *Client) downloadArtifact(ctx context.Context, runID, name, destDir string, extract func(io.Reader, string) error) error {
 	url := c.base + fmt.Sprintf("/api/v1/runs/%s/artifacts/%s", runID, name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -439,6 +466,5 @@ func (c *Client) DownloadArtifactWritten(ctx context.Context, runID, name, destD
 		destDir = "."
 	}
 	// Link entries are refused, exactly as the k8s sidecar's download does.
-	_, err = artifact.ExtractTarZstdDir(resp.Body, destDir, exclude, true, w)
-	return err
+	return extract(resp.Body, destDir)
 }

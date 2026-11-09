@@ -222,7 +222,15 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
 		var written artifact.Written
-		hit, skipped, err := cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, b.excludeVolumes(ctx, "cache restore", path), &written)
+		exclude := b.excludeVolumes(ctx, "cache restore", path)
+		var hit bool
+		var skipped int
+		var err error
+		if root, ok := b.confineRootOf(path); ok {
+			hit, skipped, err = cache.RestoreInWritten(ctx, b.a.CacheStore, b.jobName, root, path, key, restoreKeys, exclude, &written)
+		} else {
+			hit, skipped, err = cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, exclude, &written)
+		}
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			return false, err
 		}
@@ -279,6 +287,9 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
 		return b.readWithFallback(ctx, "cache save", path, func(p string, exclude []string) error {
+			if root, ok := b.confineRootOf(path); ok && p == path {
+				return cache.SaveIn(ctx, b.a.CacheStore, b.jobName, root, p, key, ttlDays, exclude)
+			}
 			return cache.SaveExcluding(ctx, b.a.CacheStore, b.jobName, p, key, ttlDays, exclude)
 		})
 	}
@@ -296,6 +307,9 @@ func (b *hostBackend) UploadArtifact(ctx context.Context, scope ScopeHandle, run
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
 		return b.readWithFallback(ctx, "artifact", path, func(p string, exclude []string) error {
+			if root, ok := b.confineRootOf(path); ok && p == path {
+				return b.a.Client.UploadArtifactIn(ctx, runID, name, root, p, exclude)
+			}
 			return b.a.Client.UploadArtifactExcluding(ctx, runID, name, p, exclude)
 		})
 	}
@@ -313,7 +327,14 @@ func (b *hostBackend) DownloadArtifact(ctx context.Context, scope ScopeHandle, r
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
 		var written artifact.Written
-		if err := b.a.Client.DownloadArtifactWritten(ctx, runID, name, destDir, b.excludeVolumes(ctx, "artifact download", destDir), &written); err != nil {
+		exclude := b.excludeVolumes(ctx, "artifact download", destDir)
+		var derr error
+		if root, ok := b.confineRootOf(destDir); ok {
+			derr = b.a.Client.DownloadArtifactIn(ctx, runID, name, root, destDir, exclude, &written)
+		} else {
+			derr = b.a.Client.DownloadArtifactWritten(ctx, runID, name, destDir, exclude, &written)
+		}
+		if err := derr; err != nil {
 			return err
 		}
 		return b.chownAgentWrite(ctx, &written)
@@ -346,16 +367,51 @@ func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) (string, 
 	if err != nil {
 		return "", err
 	}
-	mapped := resolveInVolumeMount(b.workDir, resolved, b.volumeRefs)
-	// A path inside a volume mount is served from the volume's own host
-	// directory (outside the workspace by design), so only unmapped paths are
-	// checked for symlinks leaving the workspace.
-	if mapped == resolved {
-		if err := EnsureNoSymlinkEscapeOS(b.workDir, resolved); err != nil {
+	vol, mapped := matchVolumeMount(b.workDir, resolved, b.volumeRefs)
+	if root, ok := b.confineRoot(vol); ok {
+		// Isolated claim: the job controls this tree from inside the claim pod, so
+		// the path must not lead out of the workspace (or of the volume it maps
+		// into) through a symlink. A native claim has no boundary to protect: the
+		// job already runs as the agent user, and may deliberately link a
+		// directory outside the workspace.
+		confined, err := ConfineSymlinksOS(root, mapped)
+		if err != nil {
 			return "", err
 		}
+		mapped = confined
 	}
 	return mapped, nil
+}
+
+// confineRoot reports the directory an isolated claim's artifact or cache path
+// is confined to: the volume it maps into, else the workspace. vol is the
+// matching volume mount (nil for none). ok is false for a native claim.
+func (b *hostBackend) confineRoot(vol *volumeMountRef) (string, bool) {
+	if b.pod == nil {
+		return "", false
+	}
+	if vol != nil {
+		return vol.HostPath, true
+	}
+	return b.workDir, true
+}
+
+// confineRootOf is confineRoot for an already-resolved host path: the volume
+// host directory it lies in (the deepest), else the workspace.
+func (b *hostBackend) confineRootOf(p string) (string, bool) {
+	if b.pod == nil {
+		return "", false
+	}
+	var best *volumeMountRef
+	for i := range b.volumeRefs {
+		r := &b.volumeRefs[i]
+		if rel, err := filepath.Rel(r.HostPath, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if best == nil || len(r.HostPath) > len(best.HostPath) {
+				best = r
+			}
+		}
+	}
+	return b.confineRoot(best)
 }
 
 // mountedVolumes lists the claim's volumes mounted inside the workspace, each at

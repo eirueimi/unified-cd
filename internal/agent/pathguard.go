@@ -45,44 +45,60 @@ func ContainWithinOS(root, p string) (string, error) {
 	return joined, nil
 }
 
-// EnsureNoSymlinkEscapeOS verifies that resolved (already lexically confined
-// to root by ContainWithinOS) does not reach outside root through a symlink.
-// The lexical check cannot see a symlink a job planted in the workspace, and
-// os.OpenRoot follows a symlink that is the top-level path it is given, so a
-// `path:` naming such a link would otherwise archive or write its target.
+// ConfineSymlinksOS checks that p (already lexically confined to root by
+// ContainWithinOS) does not reach outside root through a symlink, and returns
+// p rewritten with every symlink that stays inside root resolved. The lexical
+// check cannot see a symlink a job planted in the workspace, and os.OpenRoot
+// follows a symlink that is the top-level path it is given, so a `path:`
+// naming such a link would otherwise archive or write its target.
 //
-// Symlinks that stay inside root are fine. For a path that does not exist yet
-// (a download or cache-restore destination) the deepest existing ancestor is
-// resolved instead. A dangling symlink is refused because its target is not
-// known to be inside root.
-func EnsureNoSymlinkEscapeOS(root, resolved string) error {
+// This is an up-front check for a clear error message only: the archive and
+// extract layers also open p beneath root (artifact.*In), which is what stops a
+// symlink swapped in after this check.
+//
+// For a path that does not exist yet (a download or cache-restore destination)
+// the deepest existing ancestor is resolved. A dangling symlink is refused
+// because its target is not known to be inside root.
+//
+// On Windows filepath.EvalSymlinks does not resolve NTFS junctions (mount
+// points), so a junction that leaves root passes this check. Only a native
+// Windows job can create one, and native claims are not confined (see the
+// caller), so no isolation boundary is crossed.
+func ConfineSymlinksOS(root, p string) (string, error) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // no workspace on disk, so nothing in it can be a link
+			return p, nil // no workspace on disk, so nothing in it can be a link
 		}
-		return fmt.Errorf("resolve workspace %q: %w", root, err)
+		return "", fmt.Errorf("resolve workspace %q: %w", root, err)
 	}
-	escape := fmt.Errorf("artifact/cache path %q escapes the workspace through a symbolic link", resolved)
-	cur := resolved
+	escape := fmt.Errorf("artifact/cache path %q escapes the workspace through a symbolic link", p)
+	cur := p
+	var rest []string // components below the deepest existing ancestor
 	for {
 		real, err := filepath.EvalSymlinks(cur)
 		if err == nil {
-			if real != realRoot && !strings.HasPrefix(real, realRoot+string(filepath.Separator)) {
-				return escape
+			full := filepath.Join(append([]string{real}, rest...)...)
+			if full != realRoot && !strings.HasPrefix(full, realRoot+string(filepath.Separator)) {
+				return "", escape
 			}
-			return nil
+			rel, err := filepath.Rel(realRoot, full)
+			if err != nil {
+				return "", escape
+			}
+			return filepath.Join(root, rel), nil
 		}
 		if _, lerr := os.Lstat(cur); lerr == nil {
 			// Exists but cannot be resolved: a dangling or looping link.
-			return escape
+			return "", escape
 		} else if !os.IsNotExist(lerr) {
-			return fmt.Errorf("inspect %q: %w", cur, lerr)
+			return "", fmt.Errorf("inspect %q: %w", cur, lerr)
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
-			return nil
+			return p, nil
 		}
+		rest = append([]string{filepath.Base(cur)}, rest...)
 		cur = parent
 	}
 }
