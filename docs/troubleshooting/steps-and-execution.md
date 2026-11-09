@@ -56,6 +56,21 @@ steps on the host (`internal/agent/agent.go`).
 - Add `spec.native: true` to the job if it's meant to run as host processes, or
 - Route the job to an agent that has a runtime via `agentSelector`.
 
+### Run fails immediately: "native execution is disabled on this agent"
+
+```text
+native execution is disabled on this agent (disableNative / --disable-native); route the job to an agent that allows native execution, or remove native: true so it runs isolated
+```
+
+The job has `spec.native: true` and was claimed by a standard agent started with
+`--disable-native` (`UNIFIED_AGENT_DISABLE_NATIVE=true`, or `disableNative: true` in its config).
+Such an agent does not advertise the `native` capability, so this only happens with stale routing.
+Remove `native: true` so the job runs isolated, or run it on an agent that allows native
+execution. See [Disabling native execution](../operator-manual/agents.md#disabling-native-execution).
+
+An agent that exits at startup with `native execution is disabled (disableNative) and no container
+runtime is available` has no capabilities left: install a container runtime or drop the setting.
+
 ### Run fails immediately on Kubernetes: "native: true jobs are host-only"
 
 **Symptom**

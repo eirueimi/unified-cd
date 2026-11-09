@@ -121,6 +121,11 @@ type AgentConfig struct {
 	// agent.DefaultFinallyBudget (10m). Env: UNIFIED_AGENT_FINALLY_TIMEOUT.
 	FinallyTimeout time.Duration `yaml:"finallyTimeout"`
 
+	// DisableNative stops the agent from advertising or running native (host
+	// process, no isolation) jobs. Default false: native allowed. Env:
+	// UNIFIED_AGENT_DISABLE_NATIVE (true|false).
+	DisableNative bool `yaml:"disableNative"`
+
 	PauseImage  string `yaml:"pauseImage"`
 	RunnerImage string `yaml:"runnerImage"`
 
@@ -252,6 +257,11 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 			eff.MaxDetachedConcurrent = n
 		}
 	}
+	if v := os.Getenv("UNIFIED_AGENT_DISABLE_NATIVE"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			eff.DisableNative = b
+		}
+	}
 	if v := os.Getenv("UNIFIED_AGENT_FINALLY_TIMEOUT"); v != "" {
 		// Unparseable is ignored rather than fatal, matching every other
 		// duration/numeric env override above: the agent falls back to the
@@ -313,6 +323,9 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.MaxDetachedConcurrent != 0 {
 		eff.MaxDetachedConcurrent = file.MaxDetachedConcurrent
+	}
+	if file.DisableNative {
+		eff.DisableNative = true
 	}
 	if file.CleanWorkspace {
 		eff.CleanWorkspace = true

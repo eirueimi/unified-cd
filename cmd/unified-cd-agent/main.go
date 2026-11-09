@@ -108,6 +108,7 @@ func main() {
 	}
 	maxConcurrent := flag.Int("max-concurrent", maxConcurrentDefault, "maximum number of runs that can execute concurrently")
 	maxDetachedConcurrent := flag.Int("max-detached-concurrent", eff.MaxDetachedConcurrent, "max concurrent detached (spec.detached) runs, separate from --max-concurrent; 0/unset=default 16, negative=off (env: UNIFIED_AGENT_MAX_DETACHED)")
+	disableNative := flag.Bool("disable-native", eff.DisableNative, "disable native (host process, no isolation) execution: the agent does not advertise the native capability and fails any native step that still reaches it. Default false (env: UNIFIED_AGENT_DISABLE_NATIVE, config: disableNative)")
 	cleanWorkspace := flag.Bool("clean-workspace", eff.CleanWorkspace, "no longer has any effect: an ordinary workspace is always emptied before and after every run, and a volume used as the workspace is never wiped by this flag (only a job's own spec.cleanWorkspace or podTemplate.cleanWorkspace wipes it); kept so existing agent configs still start")
 	workspaceDir := flag.String("workspace-dir", eff.WorkspaceDir, "base directory for run workspaces (default: current directory at agent startup) (env: UNIFIED_AGENT_WORKSPACE_DIR)")
 	drainTimeout := flag.Duration("drain-timeout", eff.DrainTimeout, "maximum drain wait time after SIGTERM (0=wait indefinitely). Applies to running steps; post-hooks such as cache saves are never cut short by THIS timeout, but they are bounded by --finally-timeout (default 10m) like every other post-DAG cleanup phase")
@@ -219,6 +220,7 @@ func main() {
 	// Labels and Client are filled in once the identity is resolved.
 	a := agent.NewWithLabels("", labels, nil)
 	a.RuntimePref = *containerRuntime
+	a.DisableNative = *disableNative
 	a.PauseImage = *pauseImage
 	a.RunnerImage = *runnerImage
 	a.ToolsDir = toolsDir
