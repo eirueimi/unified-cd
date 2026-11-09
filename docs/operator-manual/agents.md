@@ -690,12 +690,17 @@ steps. macOS hosts run isolated jobs via docker or podman.
 `docker-compose.yaml` and `deployments/docker/docker-compose.yaml`) run a
 Docker-in-Docker (`dind`, `privileged: true`) sidecar so the host agent can
 execute isolated jobs, not just `native: true` ones. The agent reaches the
-dind daemon via `DOCKER_HOST=tcp://dind:2375` and shares the `ucd-workspaces`
+dind daemon via `DOCKER_HOST` and shares the `ucd-workspaces`
 volume with dind at the same path (`UNIFIED_AGENT_WORKSPACE_DIR=/ucd-workspaces`)
 so a job container's workspace bind mount — resolved by the dind daemon —
-sees the files the agent wrote. The dind daemon listens on plain TCP 2375 on
-the compose network; this is for local/dev use, so do not expose it beyond
-the compose network.
+sees the files the agent wrote. In the repo-root dev stack the dind daemon
+listens on plain TCP 2375 on the compose network; this is for local/dev use, so
+do not expose it beyond the compose network. The production stack
+(`deployments/docker/`) instead runs dind with mutual TLS on 2376
+(`DOCKER_HOST=tcp://dind:2376`, `DOCKER_TLS_VERIFY=1`, client certificates from
+a read-only `dind-certs` volume) and publishes no dind port to the host. dind
+is still `privileged`, so anything that can reach the daemon can take over the
+dind container.
 
 **Agent flags/config for the claim pod:**
 
