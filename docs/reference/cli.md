@@ -986,7 +986,8 @@ A caller with only `agent.enroll` (an [enrollment-only PAT](../operator-manual/a
 `enrollment create` prints the exact `unified-cd-agent --server ... --id ...
 --enrollment-token-file ...` (or, without `--output-file`, `--enrollment-token
 <value>`) command to run on the target host once the token is in place —
-there is no separate install step. An enrolled agent's labels come from
+there is no separate install step. The agent refuses a non-loopback `http://`
+`--server`; add `--allow-insecure-http` to that command if the controller has no TLS. An enrolled agent's labels come from
 `--label` on `enrollment create` and are fixed for that agent's lifetime; the
 agent process's own `--labels` flag is ignored for every agent. Capabilities
 are not set at enrollment: the agent auto-detects and self-reports them

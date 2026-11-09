@@ -1,6 +1,7 @@
 package objectstore
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -183,4 +184,64 @@ func TestBrokerCredentials_RereadsTheTokenFileOnEachFetch(t *testing.T) {
 	_, err = cfg.Creds.Get()
 	require.NoError(t, err)
 	assert.Equal(t, "token-v2", stub.lastToken, "the kubelet-rotated token must reach the next fetch")
+}
+
+func withNoBrokerSleep(t *testing.T) *[]time.Duration {
+	t.Helper()
+	var slept []time.Duration
+	prev := brokerSleep
+	brokerSleep = func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }
+	t.Cleanup(func() { brokerSleep = prev })
+	return &slept
+}
+
+func TestBrokerConfig_RetriesThrottledResponsesHonouringRetryAfter(t *testing.T) {
+	slept := withNoBrokerSleep(t)
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls <= 2 {
+			w.Header().Set("Retry-After", "2")
+			http.Error(w, "rate limit", http.StatusTooManyRequests)
+			return
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(api.StoreCredentialsResponse{Endpoint: "s3:9000", Bucket: "b", AccessKey: "k", SecretKey: "s"}))
+	}))
+	defer srv.Close()
+	tokenFile := writeTokenFile(t, t.TempDir(), "tok")
+
+	cfg, err := BrokerConfig(t.Context(), srv.URL, tokenFile, "")
+	require.NoError(t, err)
+	assert.Equal(t, "b", cfg.Bucket)
+	assert.Equal(t, 3, calls)
+	assert.Equal(t, []time.Duration{2 * time.Second, 2 * time.Second}, *slept)
+}
+
+func TestBrokerConfig_GivesUpOnPersistentThrottling(t *testing.T) {
+	slept := withNoBrokerSleep(t)
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "rate limit", http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	tokenFile := writeTokenFile(t, t.TempDir(), "tok")
+
+	_, err := BrokerConfig(t.Context(), srv.URL, tokenFile, "")
+	require.Error(t, err)
+	assert.Equal(t, brokerRetryAttempts, calls)
+	assert.Len(t, *slept, brokerRetryAttempts-1)
+	for _, d := range *slept {
+		assert.LessOrEqual(t, d, brokerMaxRetryDelay)
+	}
+}
+
+func TestBrokerConfig_DoesNotRetryOtherFailures(t *testing.T) {
+	withNoBrokerSleep(t)
+	stub := &brokerStub{status: http.StatusForbidden}
+	srv := httptest.NewServer(stub.handler(t))
+	defer srv.Close()
+	_, err := BrokerConfig(t.Context(), srv.URL, writeTokenFile(t, t.TempDir(), "tok"), "")
+	require.Error(t, err)
+	assert.Equal(t, 1, stub.calls)
 }

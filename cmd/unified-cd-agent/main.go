@@ -85,7 +85,8 @@ func main() {
 	// Handled by the pre-scan above; registered so it appears in -h output
 	// and doesn't trip "flag provided but not defined".
 	_ = flag.Bool("version", false, "print the agent version and exit")
-	server := flag.String("server", eff.Server, "master base URL")
+	server := flag.String("server", eff.Server, "master base URL (https://, or http:// only for loopback or with --allow-insecure-http)")
+	allowInsecureHTTP := flag.Bool("allow-insecure-http", eff.AllowInsecureHTTP, "allow an http:// controller URL for a non-loopback host; credentials then cross the network unencrypted (env: UNIFIED_ALLOW_INSECURE_HTTP)")
 	credentialFile := flag.String("credential-file", eff.CredentialFile, "path to persistent VM refresh credentials (env: UNIFIED_AGENT_CREDENTIAL_FILE)")
 	enrollmentTokenFile := flag.String("enrollment-token-file", eff.EnrollmentTokenFile, "path to one-time enrollment token (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)")
 	enrollmentToken := flag.String("enrollment-token", eff.EnrollmentToken, "one-time enrollment token value; use - to read from stdin (env: UNIFIED_AGENT_ENROLLMENT_TOKEN)")
@@ -159,6 +160,10 @@ func main() {
 
 	if *server == "" {
 		slog.Error("--server is required")
+		os.Exit(1)
+	}
+	if err := config.ValidateAgentServer(*server, *allowInsecureHTTP); err != nil {
+		slog.Error("invalid --server", "error", err)
 		os.Exit(1)
 	}
 	if err := agent.RequireShell(); err != nil {

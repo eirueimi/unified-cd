@@ -140,6 +140,7 @@ services:
     command:
       - "--server"
       - "http://new:8080"
+      - "--allow-insecure-http"
       - "--id"
       - "agenthead"
       - "--credential-file"

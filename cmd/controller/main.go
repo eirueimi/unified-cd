@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -211,6 +212,25 @@ func main() {
 	insecureCookies := flag.Bool("insecure-cookies", eff.InsecureCookies, "do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)")
 	storeCredentialRequireRunBinding := flag.Bool("store-credential-require-run-binding", eff.StoreCredentialRequireRunBinding, "reject a store-credentials request when no run->pod binding is known yet, instead of allowing it; leave false during a rolling upgrade or while any host agent may call this endpoint (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING)")
 	allowDefaultToken := flag.Bool("allow-default-token", eff.AllowDefaultToken, "allow starting with the publicly documented default admin token; trial use only (env: UNIFIED_ALLOW_DEFAULT_TOKEN)")
+	trustedProxies := flag.String("trusted-proxies", strings.Join(eff.TrustedProxies, ","), "comma-separated CIDRs/IPs of reverse proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the client IP; empty ignores those headers (env: UNIFIED_TRUSTED_PROXIES)")
+	maxRequestBodyBytes := flag.Int64("max-request-body-bytes", func() int64 {
+		if eff.MaxRequestBodyBytes > 0 {
+			return eff.MaxRequestBodyBytes
+		}
+		return 1 << 20
+	}(), "max size in bytes of an API request body; larger bodies are rejected with 413. Webhook ingress (--webhook-max-body-bytes) and artifact upload have their own limits (env: UNIFIED_MAX_REQUEST_BODY_BYTES)")
+	storeCredBurst := flag.Int("store-credential-rate-burst", func() int {
+		if eff.StoreCredentialRateLimit.Burst > 0 {
+			return eff.StoreCredentialRateLimit.Burst
+		}
+		return 200
+	}(), "burst size of the per-client-address rate limit on POST /api/v1/store-credentials (env: UNIFIED_STORE_CREDENTIAL_RATE_BURST)")
+	storeCredPerSecond := flag.Float64("store-credential-rate-per-second", func() float64 {
+		if eff.StoreCredentialRateLimit.PerSecond > 0 {
+			return eff.StoreCredentialRateLimit.PerSecond
+		}
+		return 20
+	}(), "sustained requests per second per client address on POST /api/v1/store-credentials (env: UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
 	auditRetentionDays := flag.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
 	runRetentionDays := flag.Int("run-retention-days", runRetentionDaysDefault(), "days to keep terminal runs incl. their logs, log archives, and artifacts; 0 = keep forever (env: UNIFIED_RUN_RETENTION_DAYS)")
@@ -245,6 +265,11 @@ func main() {
 	}
 	if webhookMaxBodyBytesEnvWarning != "" {
 		slog.Warn(webhookMaxBodyBytesEnvWarning)
+	}
+	trustedProxyPrefixes, err := config.ParseTrustedProxies(config.SplitCSV(*trustedProxies))
+	if err != nil {
+		slog.Error("invalid --trusted-proxies", "error", err)
+		os.Exit(1)
 	}
 	if *dsn == "" {
 		slog.Error("dsn is required (--dsn, UNIFIED_DB_DSN, or config file)")
@@ -426,7 +451,7 @@ func main() {
 		}
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, StoreCredentialS3: storeCredentialS3, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, RequireRunBinding: *storeCredentialRequireRunBinding}, st)
+	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, StoreCredentialS3: storeCredentialS3, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StoreCredentialRateBurst: *storeCredBurst, StoreCredentialRatePerSecond: *storeCredPerSecond, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, RequireRunBinding: *storeCredentialRequireRunBinding}, st)
 	// Stops the shared log-notify listener goroutine (started lazily on the
 	// first SSE viewer — see (*controller.Server).subscribeLogNotify) if it
 	// was ever started. A no-op otherwise. Deferred here rather than left to

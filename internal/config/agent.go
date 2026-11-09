@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -78,7 +80,12 @@ func discoverAgentCredentialFile(root string) (string, error) {
 // AgentConfig holds all configuration for the agent binary.
 // Populated from a YAML file via LoadAgent; zero-value fields mean "not set".
 type AgentConfig struct {
-	Server              string `yaml:"server"`
+	Server string `yaml:"server"`
+	// AllowInsecureHTTP permits an http:// controller URL for a non-loopback
+	// host. By default the agent refuses it because the enrollment token and
+	// the refresh/access credentials would cross the network in cleartext.
+	// Env: UNIFIED_ALLOW_INSECURE_HTTP.
+	AllowInsecureHTTP   bool   `yaml:"allowInsecureHTTP"`
 	CredentialFile      string `yaml:"credentialFile"`
 	EnrollmentTokenFile string `yaml:"enrollmentTokenFile"`
 	// EnrollmentToken is a one-time secret and is intentionally not a YAML
@@ -208,6 +215,7 @@ func LoadAgent(path string) (*AgentConfig, error) {
 func AgentEffective(filePath string) (*AgentConfig, error) {
 	eff := &AgentConfig{
 		Server:              os.Getenv("UNIFIED_SERVER"),
+		AllowInsecureHTTP:   envBool("UNIFIED_ALLOW_INSECURE_HTTP"),
 		CredentialFile:      os.Getenv("UNIFIED_AGENT_CREDENTIAL_FILE"),
 		EnrollmentTokenFile: os.Getenv("UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE"),
 		EnrollmentToken:     os.Getenv("UNIFIED_AGENT_ENROLLMENT_TOKEN"),
@@ -271,6 +279,9 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.Server != "" {
 		eff.Server = file.Server
+	}
+	if file.AllowInsecureHTTP {
+		eff.AllowInsecureHTTP = true
 	}
 	if file.CredentialFile != "" {
 		eff.CredentialFile = file.CredentialFile
@@ -349,4 +360,37 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 // LabelsString returns Labels as a comma-separated string for use as a flag default.
 func (c *AgentConfig) LabelsString() string {
 	return strings.Join(c.Labels, ",")
+}
+
+// ValidateAgentServer checks the controller URL a host agent was given. https
+// is always accepted; http is accepted only for a loopback host or when
+// allowInsecureHTTP is set, because the enrollment token and the agent's
+// credentials are sent to this URL.
+func ValidateAgentServer(server string, allowInsecureHTTP bool) error {
+	u, err := url.Parse(server)
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
+		return fmt.Errorf("server must be an absolute URL, got %q", server)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if allowInsecureHTTP || IsLoopbackHost(u.Hostname()) {
+			return nil
+		}
+		return fmt.Errorf("server %q uses plain http, which would send agent credentials unencrypted; use https:// or pass --allow-insecure-http (env UNIFIED_ALLOW_INSECURE_HTTP, config allowInsecureHTTP) to accept the risk", server)
+	}
+	return fmt.Errorf("server must use https:// (or http:// with --allow-insecure-http), got scheme %q", u.Scheme)
+}
+
+// IsLoopbackHost reports whether host (as url.URL.Hostname returns it) names
+// the local machine: "localhost" (any case, optional trailing dot) or a
+// loopback IP address. Shared by the host and Kubernetes agents.
+func IsLoopbackHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -241,21 +242,27 @@ func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *htt
 // shown. The credential file is intentionally omitted: the agent defaults it
 // to $HOME/.unified-cd/<id>/credential.json.
 func nextAgentCommands(server, agentID, tokenFile, tokenValue string) string {
+	// The host agent refuses a non-loopback http:// controller URL unless told
+	// otherwise, so the printed command must carry the opt-in to be runnable.
+	insecure := ""
+	if u, err := url.Parse(server); err == nil && u.Scheme == "http" && !config.IsLoopbackHost(u.Hostname()) {
+		insecure = " \\\n    --allow-insecure-http"
+	}
 	var b strings.Builder
 	b.WriteString("\n")
 	switch {
 	case tokenFile != "":
 		b.WriteString("Next, on the agent host, run the agent:\n")
-		fmt.Fprintf(&b, "  unified-cd-agent \\\n    --server %s \\\n    --id %s \\\n    --enrollment-token-file %s\n",
-			server, agentID, tokenFile)
+		fmt.Fprintf(&b, "  unified-cd-agent \\\n    --server %s%s \\\n    --id %s \\\n    --enrollment-token-file %s\n",
+			server, insecure, agentID, tokenFile)
 	case tokenValue != "":
 		b.WriteString("Next, on the agent host, run the agent (the token is visible in shell history/ps — prefer --output-file for shared hosts):\n")
-		fmt.Fprintf(&b, "  unified-cd-agent \\\n    --server %s \\\n    --id %s \\\n    --enrollment-token %s\n",
-			server, agentID, tokenValue)
+		fmt.Fprintf(&b, "  unified-cd-agent \\\n    --server %s%s \\\n    --id %s \\\n    --enrollment-token %s\n",
+			server, insecure, agentID, tokenValue)
 	default:
 		b.WriteString("Save this token to a private file on the agent host, then run the agent:\n")
-		fmt.Fprintf(&b, "  unified-cd-agent \\\n    --server %s \\\n    --id %s \\\n    --enrollment-token-file <path-to-token-file>\n",
-			server, agentID)
+		fmt.Fprintf(&b, "  unified-cd-agent \\\n    --server %s%s \\\n    --id %s \\\n    --enrollment-token-file <path-to-token-file>\n",
+			server, insecure, agentID)
 	}
 	fmt.Fprintf(&b, "\nThe credential file defaults to $HOME/.unified-cd/%s/credential.json.\n", agentID)
 	return b.String()

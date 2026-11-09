@@ -250,6 +250,8 @@ services:
       GOCACHE: /gocache
       GOMODCACHE: /gomodcache
       UNIFIED_SERVER: http://controller:8080
+      # The controller is reached over the compose network, not TLS: opt in to http.
+      UNIFIED_ALLOW_INSECURE_HTTP: "true"
       UNIFIED_AGENT_CREDENTIAL_FILE: /var/lib/unified-cd-agent/credentials.json
       UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE: /var/lib/unified-cd-agent/enrollment.token
       UNIFIED_AGENT_ID: docker-agent-1
