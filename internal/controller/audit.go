@@ -188,8 +188,12 @@ func auditLogMiddleware(st interface {
 }) func(http.Handler) http.Handler {
 	insert := func(r *http.Request, e store.AuditEntry) {
 		e.Actor = "unknown"
-		if p, ok := principalFromContext(r.Context()); ok && p.Name != "" {
-			e.Actor = p.Name
+		if p, ok := principalFromContext(r.Context()); ok {
+			if p.Name != "" {
+				e.Actor = p.Name
+			}
+			e.ActorID = p.AuditActorID()
+			e.ActorSub = p.Sub
 		}
 		e.Method = r.Method
 		e.Path = r.URL.Path
