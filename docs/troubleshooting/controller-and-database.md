@@ -426,3 +426,15 @@ whose objects are missing; later ones may be missing too.
 
 **If the error says `schema_migrations is dirty` instead:**
 Either a previous migration attempt crashed midway, leaving the dirty flag set, or another replica's migration is currently in flight (this can happen transiently during a mixed-version rolling deploy). Restart the controller first; if the error persists across restarts, it is the crashed-migration case, not an in-flight one — inspect which statements of the named version actually applied to the schema, repair them manually to a consistent state, then clear the flag with golang-migrate's `force` command or `UPDATE schema_migrations SET dirty = false` once the schema matches the version number. Then restart the controller.
+
+## AppSource or `git://` template fails with `SSH host key verification failed`
+
+**Symptom:** an AppSource shows `Failed` with a last error, or a run's `git://` template resolution fails, containing:
+
+```
+SSH host key verification failed: the server's host key does not match the pinned or previously trusted key
+```
+
+**Cause:** the controller verifies SSH host keys. Either the GitCredential's `spec.knownHosts` does not list the key the server presents, or (with no `knownHosts`) the server's key differs from the one the controller trusted on first use (`--git-known-hosts-file`). This is also what a man-in-the-middle looks like, so confirm the new fingerprint with the Git host before accepting it.
+
+**Fix:** if the key legitimately changed, update `spec.knownHosts` on the GitCredential (`ssh-keyscan -t ed25519 <host>`), or remove the stale line for the host from the controller's known_hosts file and let it trust the new key on next contact.

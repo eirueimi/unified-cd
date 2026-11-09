@@ -232,6 +232,10 @@
           "description": "hostname to use these credentials for (e.g. github.com)",
           "type": "string"
         },
+        "knownHosts": {
+          "description": "KnownHosts optionally pins the SSH host keys (OpenSSH known_hosts lines) of host; sshKey type only.\nWhen set, ssh runs with StrictHostKeyChecking=yes against exactly these keys; when empty the controller\nuses trust-on-first-use and rejects a host key that later changes.",
+          "type": "string"
+        },
         "secretRef": {
           "description": "name of the StoredSecret that holds the value",
           "type": "string"

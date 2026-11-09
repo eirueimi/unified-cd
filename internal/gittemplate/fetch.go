@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +27,16 @@ func gitErr(err error) error {
 }
 
 // Fetcher retrieves a file from a git repository using the system git binary.
-type Fetcher struct{}
+type Fetcher struct {
+	// KnownHosts, when non-nil, returns the pinned OpenSSH known_hosts lines
+	// configured for host (the GitCredential knownHosts field). A non-empty
+	// result makes ssh use StrictHostKeyChecking=yes against exactly those keys.
+	KnownHosts func(ctx context.Context, host string) (string, error)
+	// KnownHostsFile is the persistent known_hosts file used for trust-on-first-use
+	// when no keys are pinned for a host. When empty, TOFU state lives in a
+	// per-operation temporary file and is therefore lost after each fetch.
+	KnownHostsFile string
+}
 
 // NewFetcher returns a new Fetcher.
 func NewFetcher() *Fetcher { return &Fetcher{} }
@@ -68,7 +78,7 @@ func (f *Fetcher) fetchWithURL(ctx context.Context, repoURL, filePath, ref strin
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
+			return fmt.Errorf("git %s: %w\n%s%s", strings.Join(args, " "), err, out, hostKeyHint(out))
 		}
 		return nil
 	}
@@ -90,22 +100,12 @@ func (f *Fetcher) fetchWithURL(ctx context.Context, repoURL, filePath, ref strin
 }
 
 func (f *Fetcher) fetchSSH(ctx context.Context, uri URI, sshKey string) ([]byte, error) {
-	keyDir, err := os.MkdirTemp("", "gitkey-")
+	sshCmd, cleanup, err := f.sshSetup(ctx, uri.Host, sshKey)
 	if err != nil {
-		return nil, fmt.Errorf("create ssh key dir: %w", err)
+		return nil, err
 	}
-	if err := os.Chmod(keyDir, 0o700); err != nil {
-		os.RemoveAll(keyDir)
-		return nil, fmt.Errorf("chmod ssh key dir: %w", err)
-	}
-	defer os.RemoveAll(keyDir)
+	defer cleanup()
 
-	keyPath := keyDir + "/id"
-	if err := os.WriteFile(keyPath, []byte(sshKey), 0o600); err != nil {
-		return nil, fmt.Errorf("write ssh key: %w", err)
-	}
-
-	sshCmd := fmt.Sprintf("ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null", keyPath)
 	repoURL := fmt.Sprintf("git@%s:%s/%s.git", uri.Host, uri.Owner, uri.Repo)
 
 	dir, err := os.MkdirTemp("", "gittemplate-")
@@ -123,7 +123,7 @@ func (f *Fetcher) fetchSSH(ctx context.Context, uri URI, sshKey string) ([]byte,
 		)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
+			return fmt.Errorf("git %s: %w\n%s%s", strings.Join(args, " "), err, out, hostKeyHint(out))
 		}
 		return nil
 	}
@@ -212,12 +212,11 @@ func (f *Fetcher) ResolveCommitSHA(ctx context.Context, repoURL, ref, token, ssh
 	}
 	var env []string
 	if sshKey != "" {
-		keyDir, cleanup, err := writeTempSSHKey(sshKey)
+		sshCmd, cleanup, err := f.sshSetup(ctx, sshHostFromURL(repoURL), sshKey)
 		if err != nil {
 			return "", err
 		}
 		defer cleanup()
-		sshCmd := fmt.Sprintf("ssh -i %s/id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null", keyDir)
 		env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND="+sshCmd)
 	} else {
 		if token != "" {
@@ -234,7 +233,7 @@ func (f *Fetcher) ResolveCommitSHA(ctx context.Context, repoURL, ref, token, ssh
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git ls-remote %s %s: %w", repoURL, ref, gitErr(err))
+		return "", fmt.Errorf("git ls-remote %s %s: %w%s", repoURL, ref, gitErr(err), hostKeyHintErr(err))
 	}
 	return parseLsRemoteOutput(string(out), ref)
 }
@@ -243,12 +242,11 @@ func (f *Fetcher) ResolveCommitSHA(ctx context.Context, repoURL, ref, token, ssh
 func (f *Fetcher) FetchDir(ctx context.Context, repoURL, ref, path, token, sshKey string) (map[string][]byte, error) {
 	var extraEnv []string
 	if sshKey != "" {
-		keyDir, cleanup, err := writeTempSSHKey(sshKey)
+		sshCmd, cleanup, err := f.sshSetup(ctx, sshHostFromURL(repoURL), sshKey)
 		if err != nil {
 			return nil, err
 		}
 		defer cleanup()
-		sshCmd := fmt.Sprintf("ssh -i %s/id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null", keyDir)
 		extraEnv = []string{"GIT_SSH_COMMAND=" + sshCmd}
 	} else if token != "" {
 		repoURL = insertPlaceholderUser(repoURL)
@@ -280,7 +278,7 @@ func (f *Fetcher) fetchDirWithURL(ctx context.Context, repoURL, ref, path string
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
+			return fmt.Errorf("git %s: %w\n%s%s", strings.Join(args, " "), err, out, hostKeyHint(out))
 		}
 		return nil
 	}
@@ -325,21 +323,113 @@ func (f *Fetcher) fetchDirWithURL(ctx context.Context, repoURL, ref, path string
 	return files, nil
 }
 
-// writeTempSSHKey writes an SSH private key to a temporary directory and returns a cleanup function.
-func writeTempSSHKey(sshKey string) (string, func(), error) {
+// sshSetup writes the SSH private key (and the pinned known_hosts keys for host,
+// when configured) into a private temporary directory and returns the
+// GIT_SSH_COMMAND value that verifies the server's host key, plus a cleanup
+// function. host is the hostname the credential was matched on.
+//
+// Host key policy:
+//   - pinned keys configured for host: StrictHostKeyChecking=yes against exactly
+//     those keys; any other key is rejected.
+//   - otherwise: trust-on-first-use (StrictHostKeyChecking=accept-new) against the
+//     persistent KnownHostsFile, so a key that later changes is rejected.
+func (f *Fetcher) sshSetup(ctx context.Context, host, sshKey string) (string, func(), error) {
 	keyDir, err := os.MkdirTemp("", "gitkey-")
 	if err != nil {
 		return "", nil, fmt.Errorf("create ssh key dir: %w", err)
 	}
+	cleanup := func() { os.RemoveAll(keyDir) }
 	if err := os.Chmod(keyDir, 0o700); err != nil {
-		os.RemoveAll(keyDir)
-		return "", nil, err
+		cleanup()
+		return "", nil, fmt.Errorf("chmod ssh key dir: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(keyDir, "id"), []byte(sshKey), 0o600); err != nil {
-		os.RemoveAll(keyDir)
-		return "", nil, err
+	keyPath := filepath.Join(keyDir, "id")
+	if err := os.WriteFile(keyPath, []byte(sshKey), 0o600); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("write ssh key: %w", err)
 	}
-	return keyDir, func() { os.RemoveAll(keyDir) }, nil
+
+	var pinned string
+	if f.KnownHosts != nil && host != "" {
+		pinned, err = f.KnownHosts(ctx, host)
+		if err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("look up known hosts for %q: %w", host, err)
+		}
+	}
+	if strings.TrimSpace(pinned) != "" {
+		khPath := filepath.Join(keyDir, "known_hosts")
+		if err := os.WriteFile(khPath, []byte(strings.TrimSpace(pinned)+"\n"), 0o600); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("write known_hosts: %w", err)
+		}
+		return buildSSHCommand(keyPath, khPath, true), cleanup, nil
+	}
+
+	khPath := f.KnownHostsFile
+	if khPath == "" {
+		khPath = filepath.Join(keyDir, "known_hosts")
+	} else if err := os.MkdirAll(filepath.Dir(khPath), 0o700); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("create known_hosts dir: %w", err)
+	}
+	return buildSSHCommand(keyPath, khPath, false), cleanup, nil
+}
+
+// buildSSHCommand builds the GIT_SSH_COMMAND value. strict selects
+// StrictHostKeyChecking=yes (pinned keys) over accept-new (trust on first use).
+// The system-wide known_hosts is ignored so the result depends only on the
+// configured keys.
+func buildSSHCommand(keyPath, knownHostsPath string, strict bool) string {
+	mode := "accept-new"
+	if strict {
+		mode = "yes"
+	}
+	return fmt.Sprintf("ssh -i %s -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=%s -o UserKnownHostsFile=%s -o GlobalKnownHostsFile=/dev/null",
+		shellQuote(filepath.ToSlash(keyPath)), mode, shellQuote(filepath.ToSlash(knownHostsPath)))
+}
+
+// shellQuote single-quotes s for the POSIX shell git uses to run GIT_SSH_COMMAND.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// sshHostFromURL extracts the hostname from an ssh:// URL or scp-like
+// (user@host:path) repository address. It returns "" when none can be found.
+func sshHostFromURL(repoURL string) string {
+	if strings.Contains(repoURL, "://") {
+		if u, err := url.Parse(repoURL); err == nil {
+			return u.Hostname()
+		}
+		return ""
+	}
+	rest := repoURL
+	if at := strings.LastIndex(rest, "@"); at >= 0 {
+		rest = rest[at+1:]
+	}
+	if colon := strings.Index(rest, ":"); colon > 0 {
+		return strings.Trim(rest[:colon], "[]")
+	}
+	return ""
+}
+
+// hostKeyHint returns an operator-oriented explanation when ssh's output shows a
+// host key verification failure, so a changed key is not mistaken for a
+// transient network error.
+func hostKeyHint(out []byte) string {
+	msg := string(out)
+	if strings.Contains(msg, "Host key verification failed") || strings.Contains(msg, "REMOTE HOST IDENTIFICATION HAS CHANGED") {
+		return "\nSSH host key verification failed: the server's host key does not match the pinned or previously trusted key; if the key legitimately changed, update the GitCredential knownHosts (or remove the stale entry from the controller's known_hosts file)"
+	}
+	return ""
+}
+
+func hostKeyHintErr(err error) string {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return hostKeyHint(ee.Stderr)
+	}
+	return ""
 }
 
 // parseLsRemoteOutput extracts the first commit SHA from the output of git ls-remote.

@@ -54,8 +54,11 @@ func newListGitCredentialsCmd(resolve func() (Config, error)) *cobra.Command {
 				return nil
 			}
 			for _, gc := range list {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\thost=%s type=%s secretRef=%s\n",
-					gc.Name, gc.Host, gc.CredType, gc.SecretRef)
+				line := fmt.Sprintf("%s\thost=%s type=%s secretRef=%s", gc.Name, gc.Host, gc.CredType, gc.SecretRef)
+				if gc.KnownHosts != "" {
+					line += " knownHosts=pinned"
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), line)
 			}
 			return nil
 		},

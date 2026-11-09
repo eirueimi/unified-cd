@@ -207,13 +207,14 @@ type AppSource struct {
 
 // GitCredential holds per-host Git credentials.
 type GitCredential struct {
-	ID        string
-	Name      string
-	Host      string
-	CredType  string // "token" | "sshKey"
-	SecretRef string // name of an existing StoredSecret
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID         string
+	Name       string
+	Host       string
+	CredType   string // "token" | "sshKey"
+	SecretRef  string // name of an existing StoredSecret
+	KnownHosts string // optional pinned OpenSSH known_hosts lines (sshKey type only)
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // PendingRun holds the minimum information about a Run needed for git:// URI resolution.
@@ -580,7 +581,7 @@ type Store interface {
 	TouchSession(ctx context.Context, id string) error
 
 	// GitCredentials
-	UpsertGitCredential(ctx context.Context, name, host, credType, secretRef string) error
+	UpsertGitCredential(ctx context.Context, name, host, credType, secretRef, knownHosts string) error
 	GetGitCredentialByHost(ctx context.Context, host string) (*GitCredential, error)
 	ListGitCredentials(ctx context.Context) ([]GitCredential, error)
 	DeleteGitCredential(ctx context.Context, name string) error

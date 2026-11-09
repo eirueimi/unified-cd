@@ -218,6 +218,7 @@ func main() {
 	matrixMax := flag.Int("matrix-max-combinations", envIntOr("UNIFIED_MATRIX_MAX_COMBINATIONS", 64, &matrixMaxEnvWarning), "max combinations a matrix step may expand to (env: UNIFIED_MATRIX_MAX_COMBINATIONS)")
 	var webhookMaxBodyBytesEnvWarning string
 	webhookMaxBodyBytes := flag.Int("webhook-max-body-bytes", envIntOr("UNIFIED_WEBHOOK_MAX_BODY_BYTES", 1<<20, &webhookMaxBodyBytesEnvWarning), "max webhook ingress request body size in bytes; larger bodies are rejected with 413 instead of being truncated (env: UNIFIED_WEBHOOK_MAX_BODY_BYTES)")
+	gitKnownHostsFlag := flag.String("git-known-hosts-file", os.Getenv("UNIFIED_GIT_KNOWN_HOSTS_FILE"), "persistent SSH known_hosts file for trust-on-first-use of git SSH host keys when a GitCredential has no knownHosts; defaults to <data-dir>/.ssh/known_hosts, else a temp dir (env: UNIFIED_GIT_KNOWN_HOSTS_FILE)")
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
 
@@ -541,17 +542,18 @@ func main() {
 		slog.Info("log trim disabled (DB log rows kept forever)")
 	}
 	go controller.RunLogTrim(ctx, backgroundSt, obj, time.Hour, *logTrimDays)
+	knownHostsFile := gitKnownHostsPath(*gitKnownHostsFlag, *dataDir)
 	go func() {
 		var gitCache *gittemplate.Cache
 		if obj != nil {
 			gitCache = gittemplate.NewCache(obj)
 		}
-		fetcher := gittemplate.NewFetcher()
+		fetcher := newGitFetcher(backgroundSt, knownHostsFile)
 		resolver := gittemplate.NewResolver(fetcher, gitCache)
 		controller.RunGitResolver(ctx, backgroundSt, resolver, km, 200*time.Millisecond, gitResolveDeadlineDefault())
 	}()
 	go func() {
-		fetcher := gittemplate.NewFetcher()
+		fetcher := newGitFetcher(backgroundSt, knownHostsFile)
 		controller.RunAppSourceReconciler(ctx, backgroundSt, fetcher, km, 30*time.Second)
 	}()
 

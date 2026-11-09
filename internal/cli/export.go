@@ -188,6 +188,9 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 			continue
 		}
 		spec := map[string]any{"host": gc.Host, "type": gc.CredType, "secretRef": gc.SecretRef}
+		if gc.KnownHosts != "" {
+			spec["knownHosts"] = gc.KnownHosts
+		}
 		doc := exportDoc{APIVersion: "unified-cd/v1", Kind: "GitCredential", Metadata: exportMetadata{Name: gc.Name}, Spec: spec}
 		if err := writeExportDoc(filepath.Join(outDir, exportKindDir["GitCredential"], gc.Name+".yaml"), doc); err != nil {
 			return err
