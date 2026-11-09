@@ -370,7 +370,7 @@ func (s *Server) handleAgentEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordAgentAuth("one-time-token", "success", "ok")
-	s.auditAgentCredential(r, "agent.enrollment.exchange", identity.AgentID, http.StatusOK)
+	s.auditAgentCredentialAs(r, identity.AgentID, "agent.enrollment.exchange", identity.AgentID, http.StatusOK)
 	writeJSON(w, http.StatusOK, agentTokenResponse(identity, access.Plaintext, refresh.Plaintext, now))
 }
 
@@ -445,7 +445,7 @@ func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	s.recordAgentAuth("kubernetes", "success", "ok")
-	s.auditAgentCredential(r, "agent.enrollment.exchange", policy.Name, http.StatusOK)
+	s.auditAgentCredentialAs(r, agentIdentity.AgentID, "agent.enrollment.exchange", policy.Name, http.StatusOK)
 	writeJSON(w, http.StatusOK, api.AgentTokenResponse{AgentID: agentIdentity.AgentID, AccessToken: access.Plaintext, AccessExpiresAt: now.Add(policy.AccessTokenTTL), Labels: agentIdentity.AuthorizedLabels, Capabilities: agentIdentity.AuthorizedCapabilities})
 }
 
@@ -505,7 +505,7 @@ func (s *Server) handleAgentRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordAgentAuth("refresh", "success", "ok")
-	s.auditAgentCredential(r, "agent.refresh", identity.AgentID, http.StatusOK)
+	s.auditAgentCredentialAs(r, identity.AgentID, "agent.refresh", identity.AgentID, http.StatusOK)
 	writeJSON(w, http.StatusOK, agentTokenResponse(identity, access.Plaintext, refresh.Plaintext, now))
 }
 
@@ -588,6 +588,12 @@ func (s *Server) recordAgentAuth(provider, result, reason string) {
 }
 
 func (s *Server) auditAgentCredential(r *http.Request, action, resource string, status int) {
+	s.auditAgentCredentialAs(r, "", action, resource, status)
+}
+
+// auditAgentCredentialAs is auditAgentCredential for a call whose agent
+// identity is known; the row then carries the stable actor id "agent:<id>".
+func (s *Server) auditAgentCredentialAs(r *http.Request, agentID, action, resource string, status int) {
 	if s.store == nil {
 		return
 	}
@@ -599,7 +605,11 @@ func (s *Server) auditAgentCredential(r *http.Request, action, resource string, 
 	if r != nil {
 		path = r.URL.Path
 	}
-	if err := s.store.InsertAuditLog(ctx, store.AuditEntry{Actor: "agent", Method: http.MethodPost, Path: path, Action: action, Resource: resource, Status: status}); err != nil {
+	actorID := ""
+	if agentID != "" {
+		actorID = "agent:" + agentID
+	}
+	if err := s.store.InsertAuditLog(ctx, store.AuditEntry{Actor: "agent", ActorID: actorID, Method: http.MethodPost, Path: path, Action: action, Resource: resource, Status: status}); err != nil {
 		slog.Warn("agent credential audit failed", "action", action, "error", err)
 	}
 }

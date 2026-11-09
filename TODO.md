@@ -16,6 +16,13 @@ No active items.
 - **Evidence:** `reuse` is read only by `internal/k8sagent/agent.go:449` and `internal/k8sagent/podbuilder.go:335` (plus apply-time checks in `internal/dsl/volumes.go:125`). `pod.Start` runs before `RunClaim` and its cancel poller (`internal/agent/agent.go:955`); scope containers start the same way (`internal/agent/scope.go:94`); no host start-timeout knob exists in `docs/reference/configuration.md`. k8s side: `PodStartTimeoutDuration` (`internal/k8sagent/config.go`), `startRunCancelWatch` (`internal/k8sagent/backend.go`), `runPodGC` (`internal/k8sagent/podgc.go`). Host orphans are documented as unswept in `docs/operator-manual/agents.md` ("Crash-orphaned claim containers").
 - **Done when:** A design spec covers all four parts (part 1 may be declined) and is implemented: (1) optional, start-up latency only: the host honours `podTemplate.reuse` with the same observable semantics as k8s (workspace emptied, other state kept; `reuse` with `spec.volumes` stays rejected at apply), or the item records a decision not to; (2) a host start timeout equal to the k8s default is configurable by flag/config and documented in `docs/reference/configuration.md`, run cancel during start abandons the claim without a second `FinishRun`, and `:latest`/untagged images are pulled like kubelet; (3) a labelled startup sweep removes a crashed agent's claim containers; (4) tests prove each, and the "Crash-orphaned claim containers" and `reuse` docs describe the new behaviour.
 
+### 56. Scope the object-store credential that store-credentials hands to job Pods
+
+- **Status:** Open (needs a design)
+- **Impact:** `/api/v1/store-credentials` returns the controller's own bucket-wide, non-expiring S3 key to any Pod that presents a projected token from an allowed namespace and ServiceAccount. Whoever obtains it can read and overwrite every run's artifacts and caches. `RequireRunBinding` only narrows which Pod may ask; it does not narrow what the Pod receives, and turning it on by default risks failed uploads during Pod start-up and rolling upgrades.
+- **Evidence:** `internal/controller/api_store_credentials.go` (the passthrough comment above `writeJSON`); `RequireRunBinding` defaults to false in `internal/config/controller.go`. Garage, the bundled store, has no STS and only bucket-scoped keys, so a narrower key cannot be minted there.
+- **Done when:** A design is agreed and implemented in which a job Pod can reach only its own run's objects (for example artifact and cache transfer proxied through the controller or the agent, or per-run scoped credentials on stores that support them), with the bundled store covered, a migration path for existing installs, and `docs/operator-manual/kubernetes-integration.md` updated.
+
 ## Medium
 
 ### 46. Cache and scope-pod configuration gaps between host and k8s agents
@@ -82,3 +89,10 @@ No active items.
 - **Impact:** The enroll handler decodes the JSON body without a size limit, so an unauthenticated caller can make the controller read an arbitrarily large body. The per-IP rate limit bounds the request count, not the size. This predates cloud enrollment and is shared with the Kubernetes exchange.
 - **Evidence:** `handleAgentEnroll` in `internal/controller/api_agent_enrollment.go` passes `r.Body` straight to `json.NewDecoder`; no `http.MaxBytesReader` wraps it.
 - **Done when:** The body is wrapped in `http.MaxBytesReader` with a limit well above a signed AWS request (for example 64 KiB) before decoding, an oversized body gets `413`, and a test covers it for both the Kubernetes and cloud paths.
+
+### 55. Host key verification in the git-checkout and rsync-deploy templates
+
+- **Status:** Open
+- **Impact:** `templates/git-checkout.yaml` and `templates/rsync-deploy.yaml` run on agents with `StrictHostKeyChecking=no` and `UserKnownHostsFile=/dev/null`, so any host can impersonate the git or deploy server for jobs that use them. The controller-side fetchers verify host keys (GitCredential `knownHosts`); these templates do not.
+- **Evidence:** `templates/git-checkout.yaml` (the `GIT_SSH_COMMAND` export) and `templates/rsync-deploy.yaml` (the `-e "ssh ..."` option).
+- **Done when:** Both templates take a `known_hosts` input (or secret) and default to strict checking against it, with an explicit opt-out for the old behaviour, the template tests and `templates/README.md` updated, and a new tag cut because external references are pinned.

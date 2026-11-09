@@ -27,11 +27,21 @@ func (s *Server) handleUpsertGitCredential(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "credType must be 'token' or 'sshKey'", http.StatusBadRequest)
 		return
 	}
+	if req.KnownHosts != "" {
+		if req.CredType != "sshKey" {
+			http.Error(w, "knownHosts is only valid for credType 'sshKey'", http.StatusBadRequest)
+			return
+		}
+		if err := dsl.ValidateKnownHosts(req.KnownHosts); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 	if err := s.guardManagedResource(r.Context(), "GitCredential", req.Name); err != nil {
 		writeGuardError(w, err)
 		return
 	}
-	if err := s.store.UpsertGitCredential(r.Context(), req.Name, req.Host, req.CredType, req.SecretRef); err != nil {
+	if err := s.store.UpsertGitCredential(r.Context(), req.Name, req.Host, req.CredType, req.SecretRef, req.KnownHosts); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -48,7 +58,7 @@ func (s *Server) handleListGitCredentials(w http.ResponseWriter, r *http.Request
 	for _, gc := range list {
 		result = append(result, api.GitCredentialMeta{
 			ID: gc.ID, Name: gc.Name, Host: gc.Host,
-			CredType: gc.CredType, SecretRef: gc.SecretRef, CreatedAt: gc.CreatedAt,
+			CredType: gc.CredType, SecretRef: gc.SecretRef, KnownHosts: gc.KnownHosts, CreatedAt: gc.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, result)

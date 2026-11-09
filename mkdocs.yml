@@ -145,6 +145,8 @@ nav:
           - "AppSource URL Credentials": operator-manual/migrations/2026-10-29-appsource-url-credentials.md
           - "Kustomize Overlays Replaced by a Helm Chart": operator-manual/migrations/2026-10-30-helm-chart.md
           - "Host Agent Symlinks in Artifacts and Cache": operator-manual/migrations/2026-10-30-host-agent-symlinks.md
+          - "Parameter Pattern Full Match": operator-manual/migrations/2026-11-09-param-pattern-full-match.md
+          - "Hardened Production Compose": operator-manual/migrations/2026-11-09-production-compose-hardening.md
           - "Trusted Proxies for Client Addresses": operator-manual/migrations/2026-11-09-trusted-proxies.md
           - "Host Agents Require https": operator-manual/migrations/2026-11-09-agent-require-https.md
   - Reference:

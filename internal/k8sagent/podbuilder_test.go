@@ -802,3 +802,84 @@ func TestBuildPod_DeclaredJobIsNotDuplicated(t *testing.T) {
 	assert.Equal(t, "golang:1.24", pod.Spec.Containers[0].Image)
 	assert.Equal(t, "mysql", pod.Spec.Containers[1].Name)
 }
+
+// A job Pod that does not say otherwise must not get the namespace's default
+// ServiceAccount token automounted: jobs cannot pick a ServiceAccount, so the
+// token is an API credential they are not entitled to.
+func TestBuildPod_AutomountServiceAccountTokenDefaultsFalse(t *testing.T) {
+	inline := &dsl.PodTemplate{Spec: map[string]any{
+		"containers": []any{map[string]any{"name": "job", "image": "golang:1.24-alpine"}},
+	}}
+	for name, tmpl := range map[string]*dsl.PodTemplate{"fallback": nil, "inline": inline} {
+		t.Run(name, func(t *testing.T) {
+			pod, err := BuildPod("run1", "ns", nil, tmpl, "job-image:latest", SidecarSpec{}, testShimImage, nil)
+			require.NoError(t, err)
+			require.NotNil(t, pod.Spec.AutomountServiceAccountToken)
+			assert.False(t, *pod.Spec.AutomountServiceAccountToken)
+		})
+	}
+}
+
+func TestBuildPod_AutomountServiceAccountTokenExplicitValueKept(t *testing.T) {
+	spec := map[string]any{
+		"automountServiceAccountToken": false,
+		"containers":                   []any{map[string]any{"name": "job", "image": "golang:1.24-alpine"}},
+	}
+	pod, err := BuildPod("run1", "ns", nil, &dsl.PodTemplate{Spec: spec}, "job-image:latest", SidecarSpec{}, testShimImage, nil)
+	require.NoError(t, err)
+	require.NotNil(t, pod.Spec.AutomountServiceAccountToken)
+	assert.False(t, *pod.Spec.AutomountServiceAccountToken)
+
+	// An operator-written agent template may opt in explicitly (job-supplied
+	// true is refused by the pod policy before BuildPod); that is kept.
+	agentTmpls := map[string]AgentPodTemplate{"t": {Spec: map[string]any{
+		"automountServiceAccountToken": true,
+		"containers":                   []any{map[string]any{"name": "job", "image": "golang:1.24-alpine"}},
+	}}}
+	pod, err = BuildPod("run1", "ns", agentTmpls, &dsl.PodTemplate{Name: "t"}, "job-image:latest", SidecarSpec{}, testShimImage, nil)
+	require.NoError(t, err)
+	require.NotNil(t, pod.Spec.AutomountServiceAccountToken)
+	assert.True(t, *pod.Spec.AutomountServiceAccountToken)
+}
+
+// Disabling the automount must not take the sidecar's store-credential token
+// with it: that one is an explicit projected volume, not the automounted one.
+func TestBuildPod_BrokerTokenSurvivesAutomountDisabled(t *testing.T) {
+	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
+		SidecarSpec{Image: "sidecar:latest", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "https://controller.example"}, testShimImage, nil)
+	require.NoError(t, err)
+	require.NotNil(t, pod.Spec.AutomountServiceAccountToken)
+	assert.False(t, *pod.Spec.AutomountServiceAccountToken)
+
+	var found bool
+	for _, v := range pod.Spec.Volumes {
+		if v.Name != sidecarBrokerTokenVolumeName {
+			continue
+		}
+		require.NotNil(t, v.Projected)
+		require.Len(t, v.Projected.Sources, 1)
+		require.NotNil(t, v.Projected.Sources[0].ServiceAccountToken)
+		assert.Equal(t, api.KubernetesStoreCredentialAudience, v.Projected.Sources[0].ServiceAccountToken.Audience)
+		found = true
+	}
+	assert.True(t, found, "the broker token projected volume must still be present")
+	sc := findContainer(pod, artifactSidecarName)
+	require.NotNil(t, sc)
+	assert.NotNil(t, sc.VolumeMounts)
+}
+
+// A Pod that names a ServiceAccount (operator agent template, or an inline
+// spec the policy allowed) keeps Kubernetes' default automount behaviour.
+func TestBuildPod_AutomountDefaultKeptWhenServiceAccountNamed(t *testing.T) {
+	for _, field := range []string{"serviceAccountName", "serviceAccount"} {
+		t.Run(field, func(t *testing.T) {
+			spec := map[string]any{
+				field:        "deployer",
+				"containers": []any{map[string]any{"name": "job", "image": "golang:1.24-alpine"}},
+			}
+			pod, err := BuildPod("run1", "ns", nil, &dsl.PodTemplate{Spec: spec}, "job-image:latest", SidecarSpec{}, testShimImage, nil)
+			require.NoError(t, err)
+			assert.Nil(t, pod.Spec.AutomountServiceAccountToken)
+		})
+	}
+}

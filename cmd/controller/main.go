@@ -211,6 +211,7 @@ func main() {
 	stderrPlain := flag.Bool("log-stderr-plain", eff.StderrPlain, "render step stderr in the run log the same color as stdout instead of red (env: UNIFIED_LOG_STDERR_PLAIN)")
 	insecureCookies := flag.Bool("insecure-cookies", eff.InsecureCookies, "do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)")
 	storeCredentialRequireRunBinding := flag.Bool("store-credential-require-run-binding", eff.StoreCredentialRequireRunBinding, "reject a store-credentials request when no run->pod binding is known yet, instead of allowing it; leave false during a rolling upgrade or while any host agent may call this endpoint (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING)")
+	allowDefaultToken := flag.Bool("allow-default-token", eff.AllowDefaultToken, "allow starting with the publicly documented default admin token; trial use only (env: UNIFIED_ALLOW_DEFAULT_TOKEN)")
 	trustedProxies := flag.String("trusted-proxies", strings.Join(eff.TrustedProxies, ","), "comma-separated CIDRs/IPs of reverse proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the client IP; empty ignores those headers (env: UNIFIED_TRUSTED_PROXIES)")
 	maxRequestBodyBytes := flag.Int64("max-request-body-bytes", func() int64 {
 		if eff.MaxRequestBodyBytes > 0 {
@@ -238,6 +239,9 @@ func main() {
 	matrixMax := flag.Int("matrix-max-combinations", envIntOr("UNIFIED_MATRIX_MAX_COMBINATIONS", 64, &matrixMaxEnvWarning), "max combinations a matrix step may expand to (env: UNIFIED_MATRIX_MAX_COMBINATIONS)")
 	var webhookMaxBodyBytesEnvWarning string
 	webhookMaxBodyBytes := flag.Int("webhook-max-body-bytes", envIntOr("UNIFIED_WEBHOOK_MAX_BODY_BYTES", 1<<20, &webhookMaxBodyBytesEnvWarning), "max webhook ingress request body size in bytes; larger bodies are rejected with 413 instead of being truncated (env: UNIFIED_WEBHOOK_MAX_BODY_BYTES)")
+	gitTimeout := flag.Duration("git-timeout", gitTimeoutDefault(), "maximum time for one controller-side git operation (AppSource fetch, ls-remote, git:// template fetch) before its process tree is killed (env: UNIFIED_GIT_TIMEOUT)")
+	gitMaxRepoBytes := flag.Int64("git-max-repo-bytes", gitMaxRepoBytesDefault(), "abort a controller-side git fetch whose repository exceeds this many bytes; 0 = no limit (default 1 GiB, env: UNIFIED_GIT_MAX_REPO_BYTES)")
+	gitKnownHostsFlag := flag.String("git-known-hosts-file", os.Getenv("UNIFIED_GIT_KNOWN_HOSTS_FILE"), "persistent SSH known_hosts file for trust-on-first-use of git SSH host keys when a GitCredential has no knownHosts; defaults to <data-dir>/.ssh/known_hosts, else a temp dir (env: UNIFIED_GIT_KNOWN_HOSTS_FILE)")
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
 
@@ -274,6 +278,10 @@ func main() {
 	ssoConfigured := config.OIDCConfigured(eff.OIDC)
 	if *token == "" && !ssoConfigured {
 		slog.Error("token is required when SSO is not configured (--token, UNIFIED_TOKEN, config file, or UNIFIED_OIDC_ISSUER/UNIFIED_OIDC_CLIENT_ID)")
+		os.Exit(1)
+	}
+	if err := config.CheckAdminToken(*token, eff.KeySource.DevMode, *allowDefaultToken); err != nil {
+		slog.Error("refusing to start", "error", err)
 		os.Exit(1)
 	}
 
@@ -566,17 +574,22 @@ func main() {
 		slog.Info("log trim disabled (DB log rows kept forever)")
 	}
 	go controller.RunLogTrim(ctx, backgroundSt, obj, time.Hour, *logTrimDays)
+	knownHostsFile := gitKnownHostsPath(*gitKnownHostsFlag, *dataDir)
+	if err := gittemplate.ValidateKnownHostsFile(knownHostsFile); err != nil {
+		slog.Error("invalid SSH known_hosts location", "path", knownHostsFile, "error", err)
+		os.Exit(1)
+	}
 	go func() {
 		var gitCache *gittemplate.Cache
 		if obj != nil {
 			gitCache = gittemplate.NewCache(obj)
 		}
-		fetcher := gittemplate.NewFetcher()
+		fetcher := newGitFetcher(backgroundSt, knownHostsFile, *gitTimeout, *gitMaxRepoBytes)
 		resolver := gittemplate.NewResolver(fetcher, gitCache)
 		controller.RunGitResolver(ctx, backgroundSt, resolver, km, 200*time.Millisecond, gitResolveDeadlineDefault())
 	}()
 	go func() {
-		fetcher := gittemplate.NewFetcher()
+		fetcher := newGitFetcher(backgroundSt, knownHostsFile, *gitTimeout, *gitMaxRepoBytes)
 		controller.RunAppSourceReconciler(ctx, backgroundSt, fetcher, km, 30*time.Second)
 	}()
 

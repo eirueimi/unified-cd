@@ -99,6 +99,9 @@ services:
       # (UNIFIED_CONTROLLER_KEY_FILE takes precedence over UNIFIED_DEV_MODE, so
       # the latter can stay set.)
       UNIFIED_DEV_MODE: "${UNIFIED_DEV_MODE:-1}"
+      # This dev stack ships the default admin token; the controller refuses
+      # it unless dev mode or this opt-in is set.
+      UNIFIED_ALLOW_DEFAULT_TOKEN: "${UNIFIED_ALLOW_DEFAULT_TOKEN:-1}"
       UNIFIED_CONTROLLER_KEY_FILE: "${UNIFIED_CONTROLLER_KEY_FILE:-/app/secrets/kek}"
       UNIFIED_S3_ENDPOINT: garage:3900
       UNIFIED_S3_BUCKET: unified-cd-logs

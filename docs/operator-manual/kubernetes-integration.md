@@ -371,7 +371,7 @@ spec:
     - name: restore-modules
       cache:
         path: .gomodcache
-        key: go-mod-{{ hashFile "go.sum" }}
+        key: go-mod-v1   # hashFile is not available on the Kubernetes agent
     - name: build
       run: GOMODCACHE="$UNIFIED_WORKSPACE/.gomodcache" go build ./...
 ```
@@ -879,7 +879,11 @@ The default policy is meant to be a subset of Pod Security `baseline` for job co
 unified-cd categories `baseline` does not cover (ServiceAccounts, Secrets, image pull Secrets,
 PVCs, `nodeName`, the field allowlists). It does not go beyond `baseline` on container hardening:
 `allowPrivilegeEscalation: true` and `runAsUser: 0` pass. Set the `restricted` level on the
-namespace if you want those refused.
+namespace if you want those refused. The agent does not inject a default container
+`securityContext` (`allowPrivilegeEscalation: false`, `seccompProfile: RuntimeDefault`) either:
+`baseline` permits both settings as they are, and forcing `allowPrivilegeEscalation: false` would
+break jobs whose images use `sudo` or setuid binaries. Jobs that want the hardening can set it in
+their own `podTemplate` containers, and operators can put it in agent templates.
 
 **The effective ServiceAccount.** For an inline spec it is `serviceAccountName`, else
 `serviceAccount`, else `default`. For an override it is the **agent template's** account, because a
@@ -1041,12 +1045,23 @@ namespace (`pod-security.kubernetes.io/enforce: privileged`) or, better, give th
 separate agent with its own namespace. See [Run fails: violates PodSecurity
 "baseline:latest"](../troubleshooting/steps-and-execution.md#run-fails-k8s-failed-to-create-pod-violates-podsecurity-baselinelatest).
 
-**Recommended: switch off the `default` ServiceAccount's token.** A Pod that names no
-`serviceAccountName` runs as the namespace's `default` ServiceAccount, and Kubernetes mounts that
-account's token unless the account or the Pod opts out. The policy does not force
-`automountServiceAccountToken: false` onto job Pods, because jobs that rely on the `default`
-account's token would break silently; it checks only what a job *chooses*. If your jobs do not need
-that token, opt the account out in the job namespace:
+**Job Pods do not get a ServiceAccount token.** A Pod that names no `serviceAccountName` runs as
+the namespace's `default` ServiceAccount, and Kubernetes would mount that account's token. Jobs
+cannot choose a ServiceAccount, so that token gives them nothing they are entitled to and is only
+an API credential inside job code. The agent therefore sets `automountServiceAccountToken: false`
+on every Pod it builds that names no ServiceAccount (neither `serviceAccountName` nor
+`serviceAccount`) and does not set the field: job Pods and the scope Pods created for `runsIn.image`.
+A Pod that names a ServiceAccount (an operator-written agent template, or an inline spec allowed by
+`allowServiceAccounts`) keeps Kubernetes' default, and an explicit value is always kept. A job's own
+`automountServiceAccountToken: true` is still refused by the policy. Idle pooled Pods built before
+the upgrade keep the token until they are removed. The artifact sidecar is
+unaffected: its store-credential token is an explicit projected volume mounted only into the
+sidecar. A job that calls the Kubernetes API with the `default` account's token no longer works;
+give it credentials another way (an allowed Secret, or `allowServiceAccounts` plus an agent
+template that sets the field).
+
+**Recommended: also switch off the `default` ServiceAccount's token.** As defence in depth for
+Pods the agent does not build, opt the account out in the job namespace:
 
 ```yaml
 apiVersion: v1

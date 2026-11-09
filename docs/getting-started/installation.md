@@ -15,16 +15,24 @@ Images are published to [GitHub Container Registry](https://github.com/eirueimi/
 A ready-to-run stack using these published images (controller + PostgreSQL + Garage + a Docker agent) lives at [`deployments/docker/docker-compose.yaml`](https://github.com/eirueimi/unified-cd/blob/main/deployments/docker/docker-compose.yaml). Unlike the repo-root `docker-compose.yaml` (source build with hot reload, for development), this one pulls the release images:
 
 ```bash
-cp .env.example .env    # set UNIFIED_TOKEN
-# Generate a persistent secret-encryption key (or skip this and keep the
-# default UNIFIED_DEV_MODE=1 for a throwaway key — secrets won't survive a restart):
-unified-cli keygen --out ./kek
-# In .env set UNIFIED_CONTROLLER_KEY_FILE=/run/secrets/kek, then add this volume
-# mount under the controller service in deployments/docker/docker-compose.yaml:
-#   volumes:
-#     - ./kek:/run/secrets/kek:ro
-docker compose --env-file .env -f deployments/docker/docker-compose.yaml up -d
+cp deployments/docker/.env.example deployments/docker/.env    # fill in every <placeholder>; each has a generator command
+# Generate the persistent secret-encryption key (KEK) and back it up:
+unified-cli keygen --out deployments/docker/kek
+docker compose -f deployments/docker/docker-compose.yaml up -d
 ```
+
+This stack ships no default secrets. Compose refuses to start until
+`UNIFIED_TOKEN`, `POSTGRES_PASSWORD`, `GARAGE_RPC_SECRET`, `GARAGE_S3_ACCESS_KEY`,
+`GARAGE_S3_SECRET_KEY` and `UNIFIED_KEK_FILE` are set, and dev mode is off, so
+the KEK comes from the key file rather than an ephemeral in-memory key. The
+Docker-in-Docker sidecar that runs isolated jobs listens on 2376 with mutual
+TLS only; its port is not published to the host, and the agent receives the
+client certificate through a read-only volume. `dind` still runs `privileged`
+because Docker-in-Docker requires it, so treat the compose host as the trust
+boundary. The controller publishes 8080 over plain HTTP: put a TLS reverse
+proxy in front of it, and publish `127.0.0.1:8080:8080` instead of
+`8080:8080` if the proxy runs on the same host. Upgrading an earlier version of
+this stack: see [Hardened Production Compose](../operator-manual/migrations/2026-11-09-production-compose-hardening.md).
 
 Pin a release by setting `UNIFIED_CD_VERSION` (e.g. `v0.0.3`) in `.env`. The default is `latest`; the controller image for both `latest` and `v0.11.0` was verified to start from this Compose file with PostgreSQL and Garage and report `healthy` (the health check uses the BusyBox `wget` in the Alpine-based image).
 

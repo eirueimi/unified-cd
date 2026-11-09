@@ -2942,25 +2942,26 @@ func (p *Postgres) TouchSession(ctx context.Context, id string) error {
 	return err
 }
 
-func (p *Postgres) UpsertGitCredential(ctx context.Context, name, host, credType, secretRef string) error {
+func (p *Postgres) UpsertGitCredential(ctx context.Context, name, host, credType, secretRef, knownHosts string) error {
 	_, err := p.pool.Exec(ctx, `
-		INSERT INTO git_credentials(name, host, cred_type, secret_ref)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO git_credentials(name, host, cred_type, secret_ref, known_hosts)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (name) DO UPDATE
 		SET host = EXCLUDED.host,
 		    cred_type = EXCLUDED.cred_type,
 		    secret_ref = EXCLUDED.secret_ref,
+		    known_hosts = EXCLUDED.known_hosts,
 		    updated_at = NOW()`,
-		name, host, credType, secretRef)
+		name, host, credType, secretRef, knownHosts)
 	return err
 }
 
 func (p *Postgres) GetGitCredentialByHost(ctx context.Context, host string) (*GitCredential, error) {
 	var gc GitCredential
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, name, host, cred_type, secret_ref, created_at, updated_at
+		`SELECT id, name, host, cred_type, secret_ref, known_hosts, created_at, updated_at
 		 FROM git_credentials WHERE host = $1 ORDER BY updated_at DESC LIMIT 1`,
-		host).Scan(&gc.ID, &gc.Name, &gc.Host, &gc.CredType, &gc.SecretRef, &gc.CreatedAt, &gc.UpdatedAt)
+		host).Scan(&gc.ID, &gc.Name, &gc.Host, &gc.CredType, &gc.SecretRef, &gc.KnownHosts, &gc.CreatedAt, &gc.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -2972,7 +2973,7 @@ func (p *Postgres) GetGitCredentialByHost(ctx context.Context, host string) (*Gi
 
 func (p *Postgres) ListGitCredentials(ctx context.Context) ([]GitCredential, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, name, host, cred_type, secret_ref, created_at, updated_at
+		`SELECT id, name, host, cred_type, secret_ref, known_hosts, created_at, updated_at
 		 FROM git_credentials ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -2981,7 +2982,7 @@ func (p *Postgres) ListGitCredentials(ctx context.Context) ([]GitCredential, err
 	var list []GitCredential
 	for rows.Next() {
 		var gc GitCredential
-		if err := rows.Scan(&gc.ID, &gc.Name, &gc.Host, &gc.CredType, &gc.SecretRef, &gc.CreatedAt, &gc.UpdatedAt); err != nil {
+		if err := rows.Scan(&gc.ID, &gc.Name, &gc.Host, &gc.CredType, &gc.SecretRef, &gc.KnownHosts, &gc.CreatedAt, &gc.UpdatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, gc)
@@ -2995,12 +2996,13 @@ func (p *Postgres) DeleteGitCredential(ctx context.Context, name string) error {
 }
 
 // InsertAuditLog records a single state-changing API operation. Empty
-// Permission, Scope and GrantedBy are stored as NULL.
+// Permission, Scope, GrantedBy, ActorID and ActorSub are stored as NULL.
 func (p *Postgres) InsertAuditLog(ctx context.Context, e AuditEntry) error {
 	const q = `
-		INSERT INTO audit_logs(actor, method, path, action, resource, status, permission, scope, granted_by)
-		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''))`
-	_, err := p.pool.Exec(ctx, q, e.Actor, e.Method, e.Path, e.Action, e.Resource, e.Status, e.Permission, e.Scope, e.GrantedBy)
+		INSERT INTO audit_logs(actor, method, path, action, resource, status, permission, scope, granted_by, actor_id, actor_sub)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''))`
+	_, err := p.pool.Exec(ctx, q, e.Actor, e.Method, e.Path, e.Action, e.Resource, e.Status, e.Permission, e.Scope, e.GrantedBy,
+		e.ActorID, e.ActorSub)
 	return err
 }
 
@@ -3008,7 +3010,8 @@ func (p *Postgres) InsertAuditLog(ctx context.Context, e AuditEntry) error {
 func (p *Postgres) ListAuditLogs(ctx context.Context, limit, offset int) ([]api.AuditLog, error) {
 	const q = `
 		SELECT id, occurred_at, actor, method, path, action, resource, status,
-		       COALESCE(permission, ''), COALESCE(scope, ''), COALESCE(granted_by, '')
+		       COALESCE(permission, ''), COALESCE(scope, ''), COALESCE(granted_by, ''),
+		       COALESCE(actor_id, ''), COALESCE(actor_sub, '')
 		FROM audit_logs
 		ORDER BY occurred_at DESC, id DESC
 		LIMIT $1 OFFSET $2`
@@ -3021,7 +3024,7 @@ func (p *Postgres) ListAuditLogs(ctx context.Context, limit, offset int) ([]api.
 	for rows.Next() {
 		var a api.AuditLog
 		if err := rows.Scan(&a.ID, &a.OccurredAt, &a.Actor, &a.Method, &a.Path, &a.Action, &a.Resource, &a.Status,
-			&a.Permission, &a.Scope, &a.GrantedBy); err != nil {
+			&a.Permission, &a.Scope, &a.GrantedBy, &a.ActorID, &a.ActorSub); err != nil {
 			return nil, err
 		}
 		list = append(list, a)

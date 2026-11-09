@@ -139,11 +139,15 @@ type NewEnrollPAT struct {
 }
 
 // AuditEntry is one audit_logs row. Permission, Scope and GrantedBy describe
-// the authorization decision and are stored as NULL when empty.
+// the authorization decision and are stored as NULL when empty. Actor is a
+// display name only (PAT names are not unique); ActorID is the stable identity
+// ("pat:<id>", "oidc:<sub>", "break-glass", "agent:<id>") and ActorSub the OIDC
+// subject behind it. ActorID and ActorSub are stored as NULL when empty.
 type AuditEntry struct {
 	Actor, Method, Path, Action, Resource string
 	Status                                int
 	Permission, Scope, GrantedBy          string
+	ActorID, ActorSub                     string
 }
 
 // WebhookReceiver holds the configuration of a webhook receiver.
@@ -207,13 +211,14 @@ type AppSource struct {
 
 // GitCredential holds per-host Git credentials.
 type GitCredential struct {
-	ID        string
-	Name      string
-	Host      string
-	CredType  string // "token" | "sshKey"
-	SecretRef string // name of an existing StoredSecret
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID         string
+	Name       string
+	Host       string
+	CredType   string // "token" | "sshKey"
+	SecretRef  string // name of an existing StoredSecret
+	KnownHosts string // optional pinned OpenSSH known_hosts lines (sshKey type only)
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // PendingRun holds the minimum information about a Run needed for git:// URI resolution.
@@ -580,7 +585,7 @@ type Store interface {
 	TouchSession(ctx context.Context, id string) error
 
 	// GitCredentials
-	UpsertGitCredential(ctx context.Context, name, host, credType, secretRef string) error
+	UpsertGitCredential(ctx context.Context, name, host, credType, secretRef, knownHosts string) error
 	GetGitCredentialByHost(ctx context.Context, host string) (*GitCredential, error)
 	ListGitCredentials(ctx context.Context) ([]GitCredential, error)
 	DeleteGitCredential(ctx context.Context, name string) error

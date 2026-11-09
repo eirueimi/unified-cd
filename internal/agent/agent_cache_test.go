@@ -130,3 +130,31 @@ func TestExecuteCacheStep_EmptyExpandedKeySkipsCache(t *testing.T) {
 	require.NoError(t, err, "an empty expanded key is warn+skip, not a step failure")
 	assert.Empty(t, postHooks, "no save should be registered when the key expands to empty")
 }
+
+// TestExecuteCacheStep_HashFileHashesWorkspaceNotProcessCwd guards the cache
+// key's hashFile against resolving relative to the agent process's cwd: the key
+// must reflect the job workspace's go.sum, so a restore under that key hits.
+func TestExecuteCacheStep_HashFileHashesWorkspaceNotProcessCwd(t *testing.T) {
+	ctx := context.Background()
+	a := newCacheTestAgent(t)
+
+	workDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.sum"), []byte("module-hashes"), 0o644))
+	hash, err := dsl.ExpandStepTemplate(`{{ hashFile "go.sum" }}`, dsl.TemplateData{}, workDir)
+	require.NoError(t, err)
+	require.NotEmpty(t, hash)
+
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), []byte("cached"), 0o644))
+	require.NoError(t, cache.Save(ctx, a.CacheStore, "test-job", src, "go-"+hash, 7))
+
+	sctx := &safeStepCtx{data: dsl.TemplateData{}}
+	step := cacheClaimStep(&dsl.CacheStep{Path: "restored", Key: `go-{{ hashFile "go.sum" }}`})
+	var postHooksMu sync.Mutex
+	var postHooks []deferredHook
+	require.NoError(t, executeCacheStep(ctx, a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "test-job", workDir, nil), ScopeHandle{}))
+
+	got, err := os.ReadFile(filepath.Join(workDir, "restored", "f.txt"))
+	require.NoError(t, err, "key must hash the workspace go.sum so the seeded cache is hit")
+	assert.Equal(t, "cached", string(got))
+}

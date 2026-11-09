@@ -798,7 +798,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					}
 				}
 			} else {
-				expandedRun, tplErr := dsl.ExpandTemplate(step.Run, tplData)
+				expandedRun, tplErr := dsl.ExpandStepTemplate(step.Run, tplData, "")
 				if tplErr != nil {
 					slog.Error("template expansion failed", "step", step.Name, "error", tplErr)
 					expandedRun = step.Run
@@ -838,7 +838,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				// its doc comment; StepEnv does not filter extraEnv itself.
 				extraEnv = append(extraEnv, varsExtraEnv(c.Vars)...)
 				for k, v := range step.Env {
-					expanded, _ := dsl.ExpandTemplate(v, tplData)
+					expanded, _ := dsl.ExpandStepTemplate(v, tplData, "")
 					extraEnv = append(extraEnv, k+"="+expanded)
 				}
 
@@ -982,7 +982,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 						Foreach: tplData.Foreach,
 					}
 					for outKey, outTpl := range step.Outputs {
-						val, err := dsl.ExpandTemplate(outTpl, outputCtx)
+						val, err := dsl.ExpandStepTemplate(outTpl, outputCtx, "")
 						if err != nil {
 							slog.Warn("output template evaluation failed", "step", step.Name, "key", outKey, "error", err)
 							continue
@@ -1479,7 +1479,7 @@ func executeDownloadArtifact(ctx context.Context, client *Client, agentID string
 	targetRunID := runID
 	if da.RunID != "" {
 		restricted := dsl.TemplateData{Params: tplData.Params, Vars: tplData.Vars, Steps: tplData.Steps, Matrix: tplData.Matrix, Foreach: tplData.Foreach}
-		expanded, err := dsl.ExpandTemplate(da.RunID, restricted)
+		expanded, err := dsl.ExpandStepTemplate(da.RunID, restricted, "")
 		if err != nil {
 			return failStep(fmt.Errorf("runId template: %w", err))
 		}
@@ -1538,12 +1538,15 @@ func executeCacheStep(
 
 	cs := step.Cache
 	tplData := sctx.snapshot()
+	// hashFile in key/path/restoreKeys reads the job workspace; only a backend
+	// whose workspace is a host directory can offer it (not scoped steps, not pods).
+	wsRoot := hostWorkspaceRoot(b, scope)
 
-	key, err := dsl.ExpandTemplate(cs.Key, tplData)
+	key, err := dsl.ExpandStepTemplate(cs.Key, tplData, wsRoot)
 	if err != nil {
 		return fmt.Errorf("cache key template: %w", err)
 	}
-	cachePath, err := dsl.ExpandTemplate(cs.Path, tplData)
+	cachePath, err := dsl.ExpandStepTemplate(cs.Path, tplData, wsRoot)
 	if err != nil {
 		return fmt.Errorf("cache path template: %w", err)
 	}
@@ -1582,7 +1585,7 @@ func executeCacheStep(
 	}
 	var restoreKeys []string
 	for _, rk := range cs.RestoreKeys {
-		expanded, _ := dsl.ExpandTemplate(rk, tplData)
+		expanded, _ := dsl.ExpandStepTemplate(rk, tplData, wsRoot)
 		if expanded != "" {
 			restoreKeys = append(restoreKeys, expanded)
 		}
@@ -1633,4 +1636,20 @@ func executeCacheStep(
 		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
 	})
 	return nil
+}
+
+// hostWorkspaceProvider is implemented by backends whose job workspace is a
+// directory this process can read.
+type hostWorkspaceProvider interface {
+	HostWorkspaceRoot(scope ScopeHandle) string
+}
+
+// hostWorkspaceRoot returns the host directory holding the job workspace for
+// scope, or "" when this process cannot read it (k8s pod workspace, scope
+// containers).
+func hostWorkspaceRoot(b ExecBackend, scope ScopeHandle) string {
+	if p, ok := b.(hostWorkspaceProvider); ok {
+		return p.HostWorkspaceRoot(scope)
+	}
+	return ""
 }
