@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -262,38 +263,44 @@ func TestPostgres_ConsumeAgentEnrollmentRejectsIncompatibleIdentity(t *testing.T
 func TestPostgres_ExternalIdentityConcurrentReissueIsStable(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	const issuers = 8
+	// Many subjects, each hit by several simultaneous first-time issuers, so
+	// the create-vs-create interleaving happens on every run rather than
+	// occasionally.
+	const subjects, issuers = 10, 8
 	start := make(chan struct{})
-	identities := make(chan *AgentIdentity, issuers)
-	errs := make(chan error, issuers)
+	type result struct {
+		subject  int
+		identity *AgentIdentity
+		err      error
+	}
+	results := make(chan result, subjects*issuers)
 	var wg sync.WaitGroup
-	for range issuers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			identity, err := pg.IssueExternalAgentAccess(ctx,
-				testAgentCredentialIssue("k8s:cluster:concurrent", "kubernetes", "cluster/concurrent-pod-uid", nil))
-			identities <- identity
-			errs <- err
-		}()
+	for subject := range subjects {
+		for range issuers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				identity, err := pg.IssueExternalAgentAccess(ctx, testAgentCredentialIssue(
+					fmt.Sprintf("k8s:cluster:concurrent-%d", subject), "kubernetes", fmt.Sprintf("cluster/concurrent-pod-uid-%d", subject), nil))
+				results <- result{subject, identity, err}
+			}()
+		}
 	}
 	close(start)
 	wg.Wait()
-	close(identities)
-	close(errs)
+	close(results)
 
-	for err := range errs {
-		require.NoError(t, err)
-	}
-	var identityID string
-	for identity := range identities {
-		require.NotNil(t, identity)
-		if identityID == "" {
-			identityID = identity.ID
+	identityIDs := map[int]string{}
+	for res := range results {
+		require.NoError(t, res.err)
+		require.NotNil(t, res.identity)
+		if identityIDs[res.subject] == "" {
+			identityIDs[res.subject] = res.identity.ID
 		}
-		assert.Equal(t, identityID, identity.ID)
+		assert.Equal(t, identityIDs[res.subject], res.identity.ID)
 	}
+	assert.Len(t, identityIDs, subjects)
 }
 
 func TestPostgres_ExternalIdentityAcceptsEmptyAuthorization(t *testing.T) {
