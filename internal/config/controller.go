@@ -160,11 +160,29 @@ type ControllerConfig struct {
 	// default) ignores those headers and uses the TCP peer address as the
 	// client IP (env: UNIFIED_TRUSTED_PROXIES, comma-separated).
 	TrustedProxies []string `yaml:"trustedProxies"`
+	// StoreCredentialRateLimit bounds POST /api/v1/store-credentials per client
+	// address. Zero fields mean the defaults (burst 200, 20 requests/second).
+	// Env: UNIFIED_STORE_CREDENTIAL_RATE_BURST, UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND.
+	StoreCredentialRateLimit StoreCredentialRateLimitConfig `yaml:"storeCredentialRateLimit"`
 	// MaxRequestBodyBytes caps the body of an API request (agent log routes,
 	// webhook ingress and artifact upload have their own limits); a larger
 	// body gets 413. 0 means the built-in default, 1 MiB
 	// (env: UNIFIED_MAX_REQUEST_BODY_BYTES).
 	MaxRequestBodyBytes int64 `yaml:"maxRequestBodyBytes"`
+}
+
+// StoreCredentialRateLimitConfig is the per-client-address token bucket for the
+// store-credentials broker endpoint.
+type StoreCredentialRateLimitConfig struct {
+	Burst     int     `yaml:"burst"`
+	PerSecond float64 `yaml:"perSecond"`
+}
+
+func (c StoreCredentialRateLimitConfig) validate() error {
+	if c.Burst < 0 || c.PerSecond < 0 {
+		return fmt.Errorf("storeCredentialRateLimit burst and perSecond must not be negative")
+	}
+	return nil
 }
 
 // ParseTrustedProxies parses a list of CIDRs and bare IPs (a bare IP means a
@@ -253,6 +271,20 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		TrustedProxies:                   SplitCSV(os.Getenv("UNIFIED_TRUSTED_PROXIES")),
 		AgentAuth:                        &ControllerAgentAuthConfig{},
 	}
+	if v := strings.TrimSpace(os.Getenv("UNIFIED_STORE_CREDENTIAL_RATE_BURST")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("UNIFIED_STORE_CREDENTIAL_RATE_BURST must be a positive integer, got %q", v)
+		}
+		eff.StoreCredentialRateLimit.Burst = n
+	}
+	if v := strings.TrimSpace(os.Getenv("UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND")); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND must be a positive number, got %q", v)
+		}
+		eff.StoreCredentialRateLimit.PerSecond = n
+	}
 	if v := strings.TrimSpace(os.Getenv("UNIFIED_MAX_REQUEST_BODY_BYTES")); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n <= 0 {
@@ -329,6 +361,15 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.StoreCredentialRequireRunBinding {
 		eff.StoreCredentialRequireRunBinding = true
+	}
+	if err := file.StoreCredentialRateLimit.validate(); err != nil {
+		return nil, err
+	}
+	if file.StoreCredentialRateLimit.Burst > 0 {
+		eff.StoreCredentialRateLimit.Burst = file.StoreCredentialRateLimit.Burst
+	}
+	if file.StoreCredentialRateLimit.PerSecond > 0 {
+		eff.StoreCredentialRateLimit.PerSecond = file.StoreCredentialRateLimit.PerSecond
 	}
 	if file.MaxRequestBodyBytes < 0 {
 		return nil, fmt.Errorf("maxRequestBodyBytes must not be negative")

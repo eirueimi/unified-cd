@@ -483,6 +483,30 @@ func TestControllerEffectiveTrustedProxies(t *testing.T) {
 	require.Equal(t, []string{"172.16.0.0/12"}, eff.TrustedProxies, "config file overrides env")
 }
 
+func TestControllerEffectiveStoreCredentialRateLimit(t *testing.T) {
+	eff, err := config.ControllerEffective("")
+	require.NoError(t, err)
+	require.Zero(t, eff.StoreCredentialRateLimit.Burst)
+
+	t.Setenv("UNIFIED_STORE_CREDENTIAL_RATE_BURST", "50")
+	t.Setenv("UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND", "2.5")
+	eff, err = config.ControllerEffective("")
+	require.NoError(t, err)
+	require.Equal(t, 50, eff.StoreCredentialRateLimit.Burst)
+	require.Equal(t, 2.5, eff.StoreCredentialRateLimit.PerSecond)
+
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("storeCredentialRateLimit:\n  burst: 7\n  perSecond: 3\n"), 0o600))
+	eff, err = config.ControllerEffective(path)
+	require.NoError(t, err)
+	require.Equal(t, 7, eff.StoreCredentialRateLimit.Burst)
+	require.Equal(t, 3.0, eff.StoreCredentialRateLimit.PerSecond)
+
+	t.Setenv("UNIFIED_STORE_CREDENTIAL_RATE_BURST", "0")
+	_, err = config.ControllerEffective("")
+	require.Error(t, err)
+}
+
 func TestControllerEffectiveMaxRequestBodyBytes(t *testing.T) {
 	eff, err := config.ControllerEffective("")
 	require.NoError(t, err)

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +24,51 @@ import (
 // context alone — an unresponsive controller must not hang an artifact
 // upload indefinitely.
 const brokerRequestTimeout = 30 * time.Second
+
+const (
+	// brokerRetryAttempts bounds how many times a throttled (429) exchange is
+	// attempted. Many sidecars can share one source address (Ingress, load
+	// balancer, SNAT) and so one controller-side rate-limit bucket; a short
+	// bounded wait lets a burst of them drain instead of failing the step.
+	brokerRetryAttempts = 6
+	// brokerMaxRetryDelay caps any single wait, including a larger Retry-After.
+	brokerMaxRetryDelay = 10 * time.Second
+)
+
+// brokerSleep waits between throttled attempts; a variable so tests can run
+// without real delays.
+var brokerSleep = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// throttledError marks a 429 from the controller, carrying its Retry-After.
+type throttledError struct {
+	err        error
+	retryAfter time.Duration
+}
+
+func (e *throttledError) Error() string { return e.err.Error() }
+func (e *throttledError) Unwrap() error { return e.err }
+
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	if when, err := http.ParseTime(v); err == nil {
+		if d := time.Until(when); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
 
 // BrokerConfig fetches an S3Config from the controller's
 // POST /api/v1/store-credentials broker endpoint (see
@@ -183,7 +230,27 @@ func (p *brokerProvider) retrieve(ctx context.Context) (credentials.Value, error
 // call, not cached — the kubelet refreshes the file in place, and a stale
 // in-memory copy would eventually be a token the API server has already
 // rotated past) and exchanges it for store credentials.
+//
+// A 429 is retried a bounded number of times, honouring Retry-After.
 func (p *brokerProvider) fetch(ctx context.Context) (api.StoreCredentialsResponse, error) {
+	for attempt := 0; ; attempt++ {
+		resp, err := p.fetchOnce(ctx)
+		var throttled *throttledError
+		if err == nil || !errors.As(err, &throttled) || attempt == brokerRetryAttempts-1 {
+			return resp, err
+		}
+		delay := throttled.retryAfter
+		if delay <= 0 {
+			delay = 200 * time.Millisecond << attempt
+		}
+		delay = min(delay, brokerMaxRetryDelay)
+		if err := brokerSleep(ctx, delay); err != nil {
+			return api.StoreCredentialsResponse{}, err
+		}
+	}
+}
+
+func (p *brokerProvider) fetchOnce(ctx context.Context) (api.StoreCredentialsResponse, error) {
 	tokenBytes, err := os.ReadFile(p.tokenFile)
 	if err != nil {
 		return api.StoreCredentialsResponse{}, fmt.Errorf("read broker token file %s: %w", p.tokenFile, err)
@@ -212,7 +279,11 @@ func (p *brokerProvider) fetch(ctx context.Context) (api.StoreCredentialsRespons
 	if httpResp.StatusCode != http.StatusOK {
 		limited := io.LimitReader(httpResp.Body, 4096)
 		msg, _ := io.ReadAll(limited)
-		return api.StoreCredentialsResponse{}, fmt.Errorf("store credentials request failed: %s: %s", httpResp.Status, strings.TrimSpace(string(msg)))
+		failure := fmt.Errorf("store credentials request failed: %s: %s", httpResp.Status, strings.TrimSpace(string(msg)))
+		if httpResp.StatusCode == http.StatusTooManyRequests {
+			return api.StoreCredentialsResponse{}, &throttledError{err: failure, retryAfter: parseRetryAfter(httpResp.Header.Get("Retry-After"))}
+		}
+		return api.StoreCredentialsResponse{}, failure
 	}
 	var resp api.StoreCredentialsResponse
 	if err := json.NewDecoder(io.LimitReader(httpResp.Body, 1<<20)).Decode(&resp); err != nil {

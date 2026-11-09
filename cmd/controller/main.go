@@ -218,6 +218,18 @@ func main() {
 		}
 		return 1 << 20
 	}(), "max size in bytes of an API request body; larger bodies are rejected with 413. Webhook ingress (--webhook-max-body-bytes) and artifact upload have their own limits (env: UNIFIED_MAX_REQUEST_BODY_BYTES)")
+	storeCredBurst := flag.Int("store-credential-rate-burst", func() int {
+		if eff.StoreCredentialRateLimit.Burst > 0 {
+			return eff.StoreCredentialRateLimit.Burst
+		}
+		return 200
+	}(), "burst size of the per-client-address rate limit on POST /api/v1/store-credentials (env: UNIFIED_STORE_CREDENTIAL_RATE_BURST)")
+	storeCredPerSecond := flag.Float64("store-credential-rate-per-second", func() float64 {
+		if eff.StoreCredentialRateLimit.PerSecond > 0 {
+			return eff.StoreCredentialRateLimit.PerSecond
+		}
+		return 20
+	}(), "sustained requests per second per client address on POST /api/v1/store-credentials (env: UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
 	auditRetentionDays := flag.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
 	runRetentionDays := flag.Int("run-retention-days", runRetentionDaysDefault(), "days to keep terminal runs incl. their logs, log archives, and artifacts; 0 = keep forever (env: UNIFIED_RUN_RETENTION_DAYS)")
@@ -431,7 +443,7 @@ func main() {
 		}
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, StoreCredentialS3: storeCredentialS3, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, RequireRunBinding: *storeCredentialRequireRunBinding}, st)
+	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, StoreCredentialS3: storeCredentialS3, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StoreCredentialRateBurst: *storeCredBurst, StoreCredentialRatePerSecond: *storeCredPerSecond, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, RequireRunBinding: *storeCredentialRequireRunBinding}, st)
 	// Stops the shared log-notify listener goroutine (started lazily on the
 	// first SSE viewer — see (*controller.Server).subscribeLogNotify) if it
 	// was ever started. A no-op otherwise. Deferred here rather than left to

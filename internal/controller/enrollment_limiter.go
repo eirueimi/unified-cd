@@ -73,3 +73,19 @@ func normalizedRemoteIP(remoteAddr string) string {
 	}
 	return remoteAddr
 }
+
+const (
+	defaultStoreCredentialBurst     = 200
+	defaultStoreCredentialPerSecond = 20.0
+)
+
+func newStoreCredentialLimiter(cfg Config) *enrollmentLimiter {
+	burst, perSecond := cfg.StoreCredentialRateBurst, cfg.StoreCredentialRatePerSecond
+	if burst <= 0 {
+		burst = defaultStoreCredentialBurst
+	}
+	if perSecond <= 0 {
+		perSecond = defaultStoreCredentialPerSecond
+	}
+	return newRateLimiter(nil, time.Duration(float64(time.Second)/perSecond), burst)
+}

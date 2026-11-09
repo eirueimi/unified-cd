@@ -66,10 +66,8 @@ func TestRequestBodyLimit_DefaultIsOneMiB(t *testing.T) {
 
 func TestRequestBodyLimit_ExemptAndSpecialRoutes(t *testing.T) {
 	read := func(method, path string, size int) int {
-		var status = http.StatusOK
 		h := requestBodyLimit(1024)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if _, err := io.Copy(io.Discard, r.Body); err != nil {
-				status = http.StatusBadRequest
 				w.WriteHeader(http.StatusBadRequest)
 			}
 		}))
@@ -77,7 +75,6 @@ func TestRequestBodyLimit_ExemptAndSpecialRoutes(t *testing.T) {
 		req.ContentLength = -1
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
-		_ = status
 		return rec.Code
 	}
 	assert.Equal(t, http.StatusOK, read(http.MethodPut, "/api/v1/runs/r1/artifacts/out", 1<<20), "artifact upload streams without the JSON cap")
@@ -89,7 +86,7 @@ func TestRequestBodyLimit_ExemptAndSpecialRoutes(t *testing.T) {
 }
 
 func TestStoreCredentials_RateLimitedPerClientAddress(t *testing.T) {
-	s := NewServer(Config{}, nil)
+	s := NewServer(Config{StoreCredentialRateBurst: 20, StoreCredentialRatePerSecond: 1}, nil)
 	post := func(remote string) int {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/store-credentials", strings.NewReader(`{}`))
 		req.RemoteAddr = remote
@@ -102,4 +99,17 @@ func TestStoreCredentials_RateLimitedPerClientAddress(t *testing.T) {
 	}
 	assert.Equal(t, http.StatusTooManyRequests, post("192.0.2.1:1001"))
 	assert.Equal(t, http.StatusBadRequest, post("192.0.2.2:1000"), "another client address has its own budget")
+}
+
+// Many job sidecars can reach the controller through one Ingress/LB/SNAT
+// address; the default budget must absorb a large parallel job's burst.
+func TestStoreCredentials_DefaultBudgetAbsorbsManySidecarsBehindOneAddress(t *testing.T) {
+	s := NewServer(Config{}, nil)
+	for i := 0; i < 190; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/store-credentials", strings.NewReader(`{}`))
+		req.RemoteAddr = "198.51.100.10:4000"
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, "request %d must not be throttled", i)
+	}
 }

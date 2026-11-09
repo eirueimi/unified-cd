@@ -52,7 +52,7 @@ enabled.
 | Endpoint | Key | Limit |
 |---|---|---|
 | `POST /api/v1/agents/enroll`, `POST /api/v1/agents/token/refresh` | provider, client address, policy | burst 5, then one request per 6 seconds |
-| `POST /api/v1/store-credentials` | client address | burst 20, then one request per second |
+| `POST /api/v1/store-credentials` | client address | burst 200, then 20 requests per second (configurable) |
 
 A rejected request gets `429 Too Many Requests`. The counters are per controller replica and are
 kept in memory (4096 keys, least recently used evicted first).
@@ -60,6 +60,17 @@ kept in memory (4096 keys, least recently used evicted first).
 `/api/v1/store-credentials` is unauthenticated (the projected ServiceAccount token in the body is
 the credential and is checked with a Kubernetes TokenReview), so the limit protects the cluster API
 from being hammered through it. A job's sidecar asks once per artifact or cache step.
+
+**Shared client address.** Job sidecars that reach the controller through an Ingress, a load
+balancer or SNAT all arrive from the same address (with `trustedProxies` unset, the proxy's) and
+share one bucket. A large parallel job (for example a 64-way matrix with cache and artifact steps)
+issues a few hundred requests in seconds, which is why the defaults are generous. Tune them with
+`storeCredentialRateLimit` (`burst`, `perSecond`), `UNIFIED_STORE_CREDENTIAL_RATE_BURST` /
+`UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND`, or `--store-credential-rate-burst` /
+`--store-credential-rate-per-second`. The limit is per controller replica. The sidecar also
+retries a `429` up to 6 times with a bounded wait that honours `Retry-After`, so a brief overrun
+delays the step instead of failing it. Sidecars that use the in-cluster Service URL arrive from
+their own Pod IPs and do not share a bucket.
 
 ## Request body limits
 

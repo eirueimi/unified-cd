@@ -51,6 +51,14 @@ type Config struct {
 	// governed separately — see requestBodyLimit.
 	MaxRequestBodyBytes int64
 
+	// StoreCredentialRateBurst and StoreCredentialRatePerSecond bound
+	// POST /api/v1/store-credentials per client address. 0 means the defaults
+	// (200 and 20). Many job sidecars can share one source address behind an
+	// Ingress, load balancer or SNAT, so the defaults are generous; the
+	// sidecar retries a 429.
+	StoreCredentialRateBurst     int
+	StoreCredentialRatePerSecond float64
+
 	// StderrPlain, when true, tells the web UI (via /api/v1/ui-config) to render
 	// step stderr in the run log the same color as stdout instead of red.
 	StderrPlain bool
@@ -194,7 +202,7 @@ type Server struct {
 
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
-	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), storeCredentialLimiter: newRateLimiter(nil, time.Second, 20), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters, storeCredentialS3: cfg.StoreCredentialS3}
+	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), storeCredentialLimiter: newStoreCredentialLimiter(cfg), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters, storeCredentialS3: cfg.StoreCredentialS3}
 	s.cloudEnrollmentVerifiers = defaultCloudEnrollmentVerifiers()
 	for provider, verifier := range cfg.CloudEnrollmentVerifiers {
 		s.cloudEnrollmentVerifiers[provider] = verifier
