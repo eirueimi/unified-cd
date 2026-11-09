@@ -17,13 +17,16 @@ listed in the new `trustedProxies` setting, which is empty by default.
 If a reverse proxy, Ingress controller or load balancer is in front of the controller, add its
 address range:
 
-- Config file: `trustedProxies: ["10.244.0.0/16"]`
-- Environment: `UNIFIED_TRUSTED_PROXIES=10.244.0.0/16`
-- Flag: `--trusted-proxies 10.244.0.0/16`
-- Helm: `--set 'controller.trustedProxies[0]=10.244.0.0/16'`
+- Config file: `trustedProxies: ["10.244.3.17/32"]`
+- Environment: `UNIFIED_TRUSTED_PROXIES=10.244.3.17`
+- Flag: `--trusted-proxies 10.244.3.17`
+- Helm: `--set 'controller.trustedProxies[0]=10.244.3.17/32'`
 
-Use the range the proxy connects **from** (the Ingress controller pod CIDR, or the node range when
-traffic is source-NATed). An invalid entry stops the controller at startup with
+Use the addresses the proxy connects **from** (the Ingress controller Pods, the load balancer, or
+the node range when traffic is source-NATed) and nothing broader. Do **not** use the cluster pod
+CIDR: it trusts every Pod, including job Pods running untrusted code. The proxy must append
+`X-Forwarded-For` and overwrite or strip `X-Real-IP`. Consider a NetworkPolicy so only the Ingress
+and your agents can reach the controller port. An invalid entry stops the controller at startup with
 `invalid --trusted-proxies`. See [Reverse Proxy, Client IPs and Request Limits](../reverse-proxy.md).
 
 The audit log does not record client addresses, so no audit data changes.

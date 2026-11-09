@@ -50,8 +50,12 @@ controller:
   # attributed to its TCP peer: behind an Ingress that means all clients share
   # the Ingress controller's address, and the per-client enrollment and
   # store-credentials rate limits then count them together. Set this to the
-  # Ingress controller's pod CIDR (or the node/LB range that reaches the
-  # controller), e.g. ["10.244.0.0/16"]. Never include client-reachable ranges.
+  # addresses of the Ingress controller Pods (or the load balancer / node range
+  # that reaches the controller) and nothing broader, e.g. ["10.244.3.17/32"].
+  # Do NOT use the cluster pod CIDR: that trusts every Pod, including job Pods
+  # running untrusted code, which could then forge X-Forwarded-For. Consider a
+  # NetworkPolicy so only the Ingress namespace and agents reach the controller.
+  # The proxy must append X-Forwarded-For and overwrite/strip X-Real-IP.
   trustedProxies: []
   service:
     # Service type for the controller (HTTP only; terminate TLS at an Ingress).

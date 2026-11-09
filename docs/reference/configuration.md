@@ -109,7 +109,7 @@ maxRequestBodyBytes: 1048576          # max API request body (default 1 MiB); la
 storeCredentialRateLimit:             # per client address, per controller replica
   burst: 200
   perSecond: 20
-trustedProxies: []                    # CIDRs/IPs of reverse proxies trusted to set X-Forwarded-For / X-Real-IP, e.g. ["10.244.0.0/16"]
+trustedProxies: []                    # CIDRs/IPs of reverse proxies trusted to set X-Forwarded-For / X-Real-IP, e.g. ["10.244.3.17/32"] (never the whole pod CIDR)
 
 # Log level is a flag/env, not a config-file field: --log-level / UNIFIED_LOG_LEVEL
 

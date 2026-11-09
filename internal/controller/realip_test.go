@@ -47,6 +47,9 @@ func TestTrustedProxyRealIP(t *testing.T) {
 		{"trusted peer, X-Real-IP only", trusted, "10.1.2.3:80", map[string]string{"X-Real-IP": "198.51.100.8"}, "198.51.100.8"},
 		{"trusted peer, no headers keeps peer", trusted, "10.1.2.3:80", nil, "10.1.2.3:80"},
 		{"trusted peer, malformed XFF hop is not skipped", trusted, "10.1.2.3:80", map[string]string{"X-Forwarded-For": "1.2.3.4, garbage"}, "10.1.2.3:80"},
+		{"XFF hop with a port", trusted, "10.1.2.3:80", map[string]string{"X-Forwarded-For": "198.51.100.7:5555"}, "198.51.100.7"},
+		{"XFF hop with bracketed v6 and port", trusted, "10.1.2.3:80", map[string]string{"X-Forwarded-For": "[2001:4860::1]:443"}, "2001:4860::1"},
+		{"XFF hop with bare bracketed v6", trusted, "10.1.2.3:80", map[string]string{"X-Forwarded-For": "[2001:4860::1]"}, "2001:4860::1"},
 		{"trusted IPv6 peer", trusted, "[2001:db8::1]:443", map[string]string{"X-Forwarded-For": "198.51.100.7"}, "198.51.100.7"},
 		{"IPv4-mapped peer matches IPv4 prefix", trusted, "[::ffff:10.1.2.3]:80", map[string]string{"X-Forwarded-For": "198.51.100.7"}, "198.51.100.7"},
 	}

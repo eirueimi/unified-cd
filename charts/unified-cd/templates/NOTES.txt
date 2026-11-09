@@ -28,7 +28,9 @@ unified-cd controller installed in namespace {{ .Release.Namespace }}.
 NOTE: controller.trustedProxies is empty, so the controller ignores
 X-Forwarded-For / X-Real-IP and sees every client as the Ingress controller's
 address (per-client rate limits and the access log are then not per client).
-Set controller.trustedProxies to your Ingress controller's pod CIDR.
+Set controller.trustedProxies to the Ingress controller's Pod addresses (or the
+load balancer range), not the whole cluster pod CIDR: that would trust every
+job Pod. A NetworkPolicy limiting who can reach the controller port is advised.
 {{- end }}
 {{- else }}
 No Ingress is configured. Reach the controller with:

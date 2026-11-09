@@ -195,6 +195,14 @@ func ParseTrustedProxies(entries []string) ([]netip.Prefix, error) {
 			return nil, fmt.Errorf("trustedProxies must not contain an empty entry")
 		}
 		if p, err := netip.ParsePrefix(e); err == nil {
+			if p.Addr().Is4In6() {
+				// Peers are unmapped before matching, so a mapped prefix must be
+				// expressed in IPv4 form or it would silently never match.
+				if p.Bits() < 96 {
+					return nil, fmt.Errorf("trustedProxies entry %q is an IPv4-mapped prefix shorter than /96; write it as an IPv4 CIDR", e)
+				}
+				p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+			}
 			out = append(out, p.Masked())
 			continue
 		}

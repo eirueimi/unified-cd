@@ -464,7 +464,10 @@ func TestParseTrustedProxies(t *testing.T) {
 	}
 	require.Equal(t, []string{"10.0.0.0/8", "192.0.2.7/32", "2001:db8::/32", "198.51.100.1/32"}, s)
 
-	for _, bad := range []string{"", "nonsense", "10.0.0.0/33"} {
+	mapped, err := config.ParseTrustedProxies([]string{"::ffff:10.0.0.0/104"})
+	require.NoError(t, err)
+	require.Equal(t, "10.0.0.0/8", mapped[0].String())
+	for _, bad := range []string{"", "nonsense", "10.0.0.0/33", "::ffff:10.0.0.0/64"} {
 		_, err := config.ParseTrustedProxies([]string{bad})
 		require.Error(t, err, bad)
 	}

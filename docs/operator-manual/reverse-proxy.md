@@ -18,16 +18,16 @@ rate-limit bucket. Tell the controller which peers are your proxies with `truste
 ```yaml
 # controller config file
 trustedProxies:
-  - 10.244.0.0/16      # the Ingress controller's pod CIDR
-  - 192.0.2.10         # a bare IP means a single host
+  - 10.244.3.17        # one Ingress controller Pod (a bare IP means a single host)
+  - 192.0.2.0/28       # a load balancer's address range
 ```
 
 | Form | Value |
 |---|---|
 | Config file | `trustedProxies: [CIDR, ...]` |
-| Environment | `UNIFIED_TRUSTED_PROXIES=10.244.0.0/16,192.0.2.10` (comma-separated) |
-| Flag | `--trusted-proxies 10.244.0.0/16,192.0.2.10` |
-| Helm | `controller.trustedProxies: ["10.244.0.0/16"]` |
+| Environment | `UNIFIED_TRUSTED_PROXIES=10.244.3.17,192.0.2.0/28` (comma-separated) |
+| Flag | `--trusted-proxies 10.244.3.17,192.0.2.0/28` |
+| Helm | `controller.trustedProxies: ["10.244.3.17/32"]` |
 
 When the TCP peer is inside a trusted prefix the controller reads `X-Forwarded-For` from the
 **right**: it skips every hop that is itself a trusted proxy and takes the first address that is
@@ -35,17 +35,32 @@ not (anything further left was supplied by the client and is never used). If the
 `X-Forwarded-For`, it falls back to `X-Real-IP`. A malformed hop stops the walk and the peer
 address is kept. When the peer is **not** trusted, both headers are ignored.
 
-Only list addresses that clients cannot reach the controller from directly. Listing a range that
-includes clients (for example `0.0.0.0/0`) turns the spoofing protection back off. Make sure the
-proxy sets or appends `X-Forwarded-For` itself (nginx: `proxy_set_header X-Forwarded-For
-$proxy_add_x_forwarded_for;`; the Kubernetes ingress-nginx controller does this by default).
+Only list the addresses of the proxies themselves. Anything inside a listed prefix can choose the
+client address it is attributed to, so listing a range that includes clients (for example
+`0.0.0.0/0`) turns the spoofing protection back off.
+
+**What the proxy must do.** The controller believes what a trusted peer sends, so the proxy has
+to produce clean headers: it must **append** the peer address it saw to `X-Forwarded-For` (nginx:
+`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`; ingress-nginx does this by
+default) and it must **overwrite or strip** `X-Real-IP` (nginx: `proxy_set_header X-Real-IP
+$remote_addr;`). A proxy that forwards a client-supplied `X-Real-IP` or an unmodified
+`X-Forwarded-For` untouched lets the client choose its address. Hops may be written as `ip`,
+`ip:port` or `[v6]:port`.
 
 ### Kubernetes (Helm)
 
-Set `controller.trustedProxies` to the CIDR the Ingress controller's pods run in (or, with
-`externalTrafficPolicy: Cluster`, the node range, since the source address is rewritten by
-kube-proxy). With the value empty the chart prints a note after install when an Ingress is
-enabled.
+Set `controller.trustedProxies` to the addresses of the **Ingress controller Pods** (or of the
+load balancer that reaches the controller), as narrowly as you can: a dedicated ingress node
+pool's CIDR, a `/32` per Pod, or the LB's range. With `externalTrafficPolicy: Cluster` the
+source address is rewritten by kube-proxy to a node address, so list the node range that does
+that.
+
+**Do not trust the cluster pod CIDR** (for example `10.244.0.0/16`): trusting the whole cluster pod CIDR trusts every Pod in it, including job Pods that run untrusted CI code. Any of them
+can call the controller Service directly with a forged `X-Forwarded-For`, which brings back the
+rate-limit bypass `trustedProxies` exists to close. If Ingress Pod IPs are not stable enough to
+list, trust a narrow range and add a NetworkPolicy that allows only the Ingress controller's
+namespace (and your agents) to reach the controller port. With the value empty the chart prints a
+note after install when an Ingress is enabled.
 
 ## Rate limits
 

@@ -57,10 +57,20 @@ func forwardedClient(r *http.Request, trusted []netip.Prefix) (netip.Addr, bool)
 	return netip.Addr{}, false
 }
 
+// parseAddr accepts a bare IP, an ip:port or [v6]:port pair, and a bracketed
+// bare IPv6 address (the forms proxies write into X-Forwarded-For).
 func parseAddr(s string) (netip.Addr, bool) {
 	addr, err := netip.ParseAddr(s)
 	if err != nil {
-		return netip.Addr{}, false
+		if ap, apErr := netip.ParseAddrPort(s); apErr == nil {
+			addr = ap.Addr()
+		} else if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+			if addr, err = netip.ParseAddr(s[1 : len(s)-1]); err != nil {
+				return netip.Addr{}, false
+			}
+		} else {
+			return netip.Addr{}, false
+		}
 	}
 	return addr.Unmap().WithZone(""), true
 }
