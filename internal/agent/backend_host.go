@@ -227,7 +227,7 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 		var skipped int
 		var err error
 		if root, ok := b.confineRootOf(path); ok {
-			hit, skipped, err = cache.RestoreInWritten(ctx, b.a.CacheStore, b.jobName, root, path, key, restoreKeys, exclude, &written)
+			hit, skipped, err = cache.RestoreInWritten(ctx, b.a.CacheStore, b.jobName, absOrSelf(root), absOrSelf(path), key, restoreKeys, exclude, &written)
 		} else {
 			hit, skipped, err = cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, exclude, &written)
 		}
@@ -330,7 +330,7 @@ func (b *hostBackend) DownloadArtifact(ctx context.Context, scope ScopeHandle, r
 		exclude := b.excludeVolumes(ctx, "artifact download", destDir)
 		var derr error
 		if root, ok := b.confineRootOf(destDir); ok {
-			derr = b.a.Client.DownloadArtifactIn(ctx, runID, name, root, destDir, exclude, &written)
+			derr = b.a.Client.DownloadArtifactIn(ctx, runID, name, absOrSelf(root), absOrSelf(destDir), exclude, &written)
 		} else {
 			derr = b.a.Client.DownloadArtifactWritten(ctx, runID, name, destDir, exclude, &written)
 		}
@@ -381,6 +381,20 @@ func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) (string, 
 		mapped = confined
 	}
 	return mapped, nil
+}
+
+// absOrSelf makes p absolute against the cwd (the frame the agent's paths are
+// in), leaving "" and unresolvable paths alone. The confined archivers read a
+// relative path as relative to their root, so a cwd-relative workspace path
+// must not reach them as is.
+func absOrSelf(p string) string {
+	if p == "" {
+		return p
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }
 
 // confineRoot reports the directory an isolated claim's artifact or cache path
@@ -659,6 +673,7 @@ func (b *hostBackend) chownAgentWrite(ctx context.Context, w *artifact.Written) 
 func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved string, op func(root, path string, exclude []string) error) error {
 	exclude := b.excludeVolumes(ctx, kind, resolved)
 	root, _ := b.confineRootOf(resolved) // "" for a native claim: not confined
+	root, resolved = absOrSelf(root), absOrSelf(resolved)
 	err := op(root, resolved, exclude)
 	if err == nil || !errors.Is(err, fs.ErrPermission) || b.pod == nil {
 		return err
@@ -713,7 +728,7 @@ func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved strin
 	} else if fi.Mode()&fs.ModeSymlink != 0 {
 		return fmt.Errorf("%w (root copy: refusing %q, which is a symbolic link)", err, src)
 	}
-	return op(stage, dst, copyExclude)
+	return op(absOrSelf(stage), absOrSelf(dst), copyExclude)
 }
 
 // stagingDir makes a private scratch directory under the workspace base. The

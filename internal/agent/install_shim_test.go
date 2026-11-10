@@ -84,10 +84,12 @@ func TestResolveWorkspaceDir_DefaultsToCurrentDirectory(t *testing.T) {
 	assert.True(t, filepath.IsAbs(got))
 }
 
-func TestResolveWorkspaceDir_PreservesExplicitRelativePath(t *testing.T) {
+func TestResolveWorkspaceDir_MakesExplicitRelativePathAbsolute(t *testing.T) {
 	got, err := ResolveWorkspaceDir(filepath.Join("relative", "workspace"))
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join("relative", "workspace"), got)
+	want, err := filepath.Abs(filepath.Join("relative", "workspace"))
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
 }
 
 func TestResolveWorkspaceDir_ExpandsHome(t *testing.T) {

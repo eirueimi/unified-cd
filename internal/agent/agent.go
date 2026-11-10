@@ -1141,7 +1141,17 @@ func ResolveWorkspaceDir(workspaceDir string) (string, error) {
 		}
 		return cwd, nil
 	}
-	return expandHome(workspaceDir)
+	p, err := expandHome(workspaceDir)
+	if err != nil {
+		return "", err
+	}
+	// Absolute, so every path derived from it (workspace, staging copies,
+	// confined transfer roots) means the same thing whatever the cwd.
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace-dir %q: %w", workspaceDir, err)
+	}
+	return abs, nil
 }
 
 // expandHome expands a leading "~/" using os.UserHomeDir().

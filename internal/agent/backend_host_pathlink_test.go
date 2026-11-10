@@ -121,3 +121,52 @@ func TestHostBackend_Transfer_OpenIsConfinedEvenWithoutTheUpFrontCheck(t *testin
 	require.NoError(t, rerr)
 	assert.Len(t, entries, 1, "nothing may be written outside the workspace")
 }
+
+func TestResolveWorkspaceDir_IsAbsolute(t *testing.T) {
+	got, err := ResolveWorkspaceDir("rel/ws")
+	require.NoError(t, err)
+	assert.True(t, filepath.IsAbs(got), got)
+}
+
+// A relative --workspace-dir must not change where the confined transfers read
+// and write: the upload/cache paths are cwd-relative, the confined archivers
+// read relative paths as root-relative.
+func TestHostBackend_Transfers_WithARelativeWorkspaceDir(t *testing.T) {
+	ctx := context.Background()
+	t.Chdir(t.TempDir())
+	a, _ := newSymlinkAgent(t)
+	a.WorkspaceDir = "ws"
+	// Deliberately cwd-relative: defence in depth behind ResolveWorkspaceDir
+	// making the base absolute.
+	workDir := filepath.Join("ws", "working0", "job")
+	absWork, err := filepath.Abs(workDir)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	m := newClaimPodManager(&podFakeRT{}, workDir, "/workspace", "pause:img", "runner:img", "/host/tools")
+	require.NoError(t, m.Start(ctx, nil))
+	b := newHostBackend(a, "r1", "job", workDir, m)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "build"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "build", "out.txt"), []byte("hello"), 0o644))
+
+	p, err := b.ResolveArtifactPath(ScopeHandle{}, "build")
+	require.NoError(t, err)
+	require.NoError(t, b.UploadArtifact(ctx, ScopeHandle{}, "r1", "art", p))
+	require.NoError(t, b.CacheSave(ctx, ScopeHandle{}, "k", p, 1))
+
+	dl, err := b.ResolveArtifactPath(ScopeHandle{}, "dl")
+	require.NoError(t, err)
+	require.NoError(t, b.DownloadArtifact(ctx, ScopeHandle{}, "r1", "art", dl))
+	got, err := os.ReadFile(filepath.Join(absWork, "dl", "out.txt"))
+	require.NoError(t, err, "the download must land at the resolved destination")
+	assert.Equal(t, "hello", string(got))
+
+	rs, err := b.ResolveCachePath(ScopeHandle{}, "restored")
+	require.NoError(t, err)
+	hit, err := b.CacheRestore(ctx, ScopeHandle{}, "k", nil, rs)
+	require.NoError(t, err)
+	require.True(t, hit)
+	got, err = os.ReadFile(filepath.Join(absWork, "restored", "out.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(got))
+}
