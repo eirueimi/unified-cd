@@ -155,9 +155,9 @@ func TestExpandTemplate_MultilineGrep(t *testing.T) {
 func TestHashFile_ReturnsHexHash(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "lock.json"), []byte(`{"version":1}`), 0o644))
-	t.Chdir(dir)
+	t.Chdir(t.TempDir()) // process cwd must not matter
 
-	result, err := ExpandTemplate(`{{ hashFile "lock.json" }}`, TemplateData{})
+	result, err := ExpandStepTemplate(`{{ hashFile "lock.json" }}`, TemplateData{}, dir)
 	require.NoError(t, err)
 	assert.Len(t, result, 64) // SHA-256 hex = 64 chars
 }
@@ -166,23 +166,104 @@ func TestHashFile_ChangesOnFileModify(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "lock.json")
 	require.NoError(t, os.WriteFile(f, []byte("v1"), 0o644))
-	t.Chdir(dir)
+	t.Chdir(t.TempDir())
 
-	h1, err := ExpandTemplate(`{{ hashFile "lock.json" }}`, TemplateData{})
+	h1, err := ExpandStepTemplate(`{{ hashFile "lock.json" }}`, TemplateData{}, dir)
 	require.NoError(t, err)
 
 	require.NoError(t, os.WriteFile(f, []byte("v2"), 0o644))
-	h2, err := ExpandTemplate(`{{ hashFile "lock.json" }}`, TemplateData{})
+	h2, err := ExpandStepTemplate(`{{ hashFile "lock.json" }}`, TemplateData{}, dir)
 	require.NoError(t, err)
 
 	assert.NotEqual(t, h1, h2)
 }
 
 func TestHashFile_NoMatchReturnsEmpty(t *testing.T) {
-	t.Chdir(t.TempDir())
-	result, err := ExpandTemplate(`{{ hashFile "nonexistent.json" }}`, TemplateData{})
+	result, err := ExpandStepTemplate(`{{ hashFile "nonexistent.json" }}`, TemplateData{}, t.TempDir())
 	require.NoError(t, err)
 	assert.Equal(t, "", result)
+}
+
+func TestHashFile_ControllerSideExpansionRefuses(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "lock.json"), []byte("x"), 0o644))
+	t.Chdir(dir)
+
+	const tpl = `{{ hashFile "lock.json" }}`
+	_, err := ExpandTemplate(tpl, TemplateData{})
+	require.ErrorContains(t, err, "hashFile is only available in step-time templates")
+
+	_, err = ExpandAgentSelector([]string{tpl}, nil)
+	require.ErrorContains(t, err, "hashFile is only available in step-time templates")
+
+	_, err = ExpandConcurrency(&Concurrency{Mutex: tpl}, nil)
+	require.ErrorContains(t, err, "hashFile is only available in step-time templates")
+
+	_, err = ExpandConcurrency(&Concurrency{Semaphores: []Semaphore{{Pool: tpl, Capacity: 1}}}, nil)
+	require.ErrorContains(t, err, "hashFile is only available in step-time templates")
+
+	_, err = ExpandVolumes([]VolumeMount{{Name: StringOrSlice{tpl}}}, nil)
+	require.ErrorContains(t, err, "hashFile is only available in step-time templates")
+
+	_, err = ExpandWebhookTemplate(tpl, WebhookTemplateData{})
+	require.ErrorContains(t, err, "hashFile is only available in step-time templates")
+}
+
+func TestHashFile_StepTimeRejectsEscapesAndNonRegularFiles(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o755))
+
+	for _, glob := range []string{"/etc/passwd", "../x", "sub/../../x", "/dev/zero"} {
+		_, err := ExpandStepTemplate(`{{ hashFile "`+glob+`" }}`, TemplateData{}, dir)
+		require.Error(t, err, glob)
+	}
+	_, err := ExpandStepTemplate(`{{ hashFile "sub" }}`, TemplateData{}, dir)
+	require.ErrorContains(t, err, "not a regular file")
+}
+
+func TestHashFile_UncleanPatternsMatchLikeClean(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "a"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.sum"), []byte("root"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a", "go.sum"), []byte("sub"), 0o644))
+	hash := func(g string) string {
+		out, err := ExpandStepTemplate(`{{ hashFile "`+g+`" }}`, TemplateData{}, dir)
+		require.NoError(t, err, g)
+		return out
+	}
+	root := hash("go.sum")
+	require.NotEmpty(t, root)
+	assert.Equal(t, root, hash("./go.sum"))
+	assert.Equal(t, root, hash("./././go.sum"))
+	sub := hash("a/go.sum")
+	require.NotEmpty(t, sub)
+	assert.NotEqual(t, root, sub)
+	assert.Equal(t, sub, hash("a//go.sum"))
+	assert.Equal(t, sub, hash("a/./go.sum"))
+	assert.Equal(t, sub, hash("./a/go.sum"))
+	// A directory (even spelled "a/" or ".") is not a regular file.
+	_, err := ExpandStepTemplate(`{{ hashFile "a/" }}`, TemplateData{}, dir)
+	require.ErrorContains(t, err, "not a regular file")
+	_, err = ExpandStepTemplate(`{{ hashFile "." }}`, TemplateData{}, dir)
+	require.ErrorContains(t, err, "not a regular file")
+}
+
+func TestHashFile_NoWorkspaceFails(t *testing.T) {
+	_, err := ExpandStepTemplate(`{{ hashFile "go.sum" }}`, TemplateData{}, "")
+	require.ErrorContains(t, err, "not readable")
+}
+
+func TestHashFile_SymlinkCannotEscapeWorkspace(t *testing.T) {
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret"), []byte("s"), 0o644))
+	dir := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, g := range []string{"link/secret", "link/*", "./link/secret"} {
+		_, err := ExpandStepTemplate(`{{ hashFile "`+g+`" }}`, TemplateData{}, dir)
+		require.ErrorContains(t, err, "symlink", g)
+	}
 }
 
 func TestExpandConcurrency_ExpandsOrLockInButNotName(t *testing.T) {

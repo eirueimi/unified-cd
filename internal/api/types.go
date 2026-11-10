@@ -562,20 +562,22 @@ type PostStep struct {
 
 // UpsertGitCredentialRequest is the request for registering or updating a GitCredential.
 type UpsertGitCredentialRequest struct {
-	Name      string `json:"name"`
-	Host      string `json:"host"`
-	CredType  string `json:"credType"`  // "token" | "sshKey"
-	SecretRef string `json:"secretRef"` // name of an existing secret
+	Name       string `json:"name"`
+	Host       string `json:"host"`
+	CredType   string `json:"credType"`             // "token" | "sshKey"
+	SecretRef  string `json:"secretRef"`            // name of an existing secret
+	KnownHosts string `json:"knownHosts,omitempty"` // optional pinned OpenSSH known_hosts lines (sshKey only)
 }
 
 // GitCredentialMeta is the metadata for a GitCredential (for API responses).
 type GitCredentialMeta struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Host      string    `json:"host"`
-	CredType  string    `json:"credType"`
-	SecretRef string    `json:"secretRef"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Host       string    `json:"host"`
+	CredType   string    `json:"credType"`
+	SecretRef  string    `json:"secretRef"`
+	KnownHosts string    `json:"knownHosts,omitempty"`
+	CreatedAt  time.Time `json:"createdAt"`
 }
 
 // ---- approvals ----
@@ -629,6 +631,12 @@ type AuditLog struct {
 	Permission string    `json:"permission,omitempty"`
 	Scope      string    `json:"scope,omitempty"`
 	GrantedBy  string    `json:"grantedBy,omitempty"`
+	// ActorID is the stable identity of the caller ("pat:<id>", "oidc:<sub>",
+	// "break-glass", "agent:<id>"). Actor is only a display name and is not
+	// unique; empty for rows written before ActorID was recorded.
+	ActorID string `json:"actorId,omitempty"`
+	// ActorSub is the OIDC subject behind the actor, when there is one.
+	ActorSub string `json:"actorSub,omitempty"`
 }
 
 // ---- appsource ----

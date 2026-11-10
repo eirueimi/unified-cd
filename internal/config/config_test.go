@@ -454,3 +454,125 @@ func TestControllerOIDCScopes_RejectsWhitespaceEntry(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "oidc.scopes")
 }
+
+func TestParseTrustedProxies(t *testing.T) {
+	got, err := config.ParseTrustedProxies([]string{"10.0.0.0/8", "192.0.2.7", " 2001:db8::/32 ", "::ffff:198.51.100.1"})
+	require.NoError(t, err)
+	var s []string
+	for _, p := range got {
+		s = append(s, p.String())
+	}
+	require.Equal(t, []string{"10.0.0.0/8", "192.0.2.7/32", "2001:db8::/32", "198.51.100.1/32"}, s)
+
+	mapped, err := config.ParseTrustedProxies([]string{"::ffff:10.0.0.0/104"})
+	require.NoError(t, err)
+	require.Equal(t, "10.0.0.0/8", mapped[0].String())
+	for _, bad := range []string{"", "nonsense", "10.0.0.0/33", "::ffff:10.0.0.0/64"} {
+		_, err := config.ParseTrustedProxies([]string{bad})
+		require.Error(t, err, bad)
+	}
+}
+
+func TestControllerEffectiveTrustedProxies(t *testing.T) {
+	t.Setenv("UNIFIED_TRUSTED_PROXIES", "10.0.0.0/8, 192.0.2.1")
+	eff, err := config.ControllerEffective("")
+	require.NoError(t, err)
+	require.Equal(t, []string{"10.0.0.0/8", "192.0.2.1"}, eff.TrustedProxies)
+
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("trustedProxies: [172.16.0.0/12]\n"), 0o600))
+	eff, err = config.ControllerEffective(path)
+	require.NoError(t, err)
+	require.Equal(t, []string{"172.16.0.0/12"}, eff.TrustedProxies, "config file overrides env")
+}
+
+func TestControllerEffectiveStoreCredentialRateLimit(t *testing.T) {
+	eff, err := config.ControllerEffective("")
+	require.NoError(t, err)
+	require.Zero(t, eff.StoreCredentialRateLimit.Burst)
+
+	t.Setenv("UNIFIED_STORE_CREDENTIAL_RATE_BURST", "50")
+	t.Setenv("UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND", "2.5")
+	eff, err = config.ControllerEffective("")
+	require.NoError(t, err)
+	require.Equal(t, 50, eff.StoreCredentialRateLimit.Burst)
+	require.Equal(t, 2.5, eff.StoreCredentialRateLimit.PerSecond)
+
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("storeCredentialRateLimit:\n  burst: 7\n  perSecond: 3\n"), 0o600))
+	eff, err = config.ControllerEffective(path)
+	require.NoError(t, err)
+	require.Equal(t, 7, eff.StoreCredentialRateLimit.Burst)
+	require.Equal(t, 3.0, eff.StoreCredentialRateLimit.PerSecond)
+
+	t.Setenv("UNIFIED_STORE_CREDENTIAL_RATE_BURST", "0")
+	_, err = config.ControllerEffective("")
+	require.Error(t, err)
+}
+
+func TestControllerEffectiveMaxRequestBodyBytes(t *testing.T) {
+	eff, err := config.ControllerEffective("")
+	require.NoError(t, err)
+	require.Zero(t, eff.MaxRequestBodyBytes, "unset means the controller's built-in default")
+
+	t.Setenv("UNIFIED_MAX_REQUEST_BODY_BYTES", "2048")
+	eff, err = config.ControllerEffective("")
+	require.NoError(t, err)
+	require.EqualValues(t, 2048, eff.MaxRequestBodyBytes)
+
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("maxRequestBodyBytes: 4096\n"), 0o600))
+	eff, err = config.ControllerEffective(path)
+	require.NoError(t, err)
+	require.EqualValues(t, 4096, eff.MaxRequestBodyBytes, "config file overrides env")
+
+	t.Setenv("UNIFIED_MAX_REQUEST_BODY_BYTES", "-1")
+	_, err = config.ControllerEffective("")
+	require.Error(t, err)
+}
+
+func TestValidateAgentServer(t *testing.T) {
+	for _, tc := range []struct {
+		server string
+		allow  bool
+		ok     bool
+	}{
+		{"https://cd.example.com", false, true},
+		{"http://localhost:8080", false, true},
+		{"http://127.0.0.1:8080", false, true},
+		{"http://[::1]:8080", false, true},
+		{"http://LOCALHOST:8080", false, true},
+		{"http://localhost.:8080", false, true},
+		{"http://controller:8080", false, false},
+		{"http://cd.example.com", false, false},
+		{"http://controller:8080", true, true},
+		{"ftp://cd.example.com", true, false},
+		{"cd.example.com:8080", true, false},
+		{"", true, false},
+	} {
+		err := config.ValidateAgentServer(tc.server, tc.allow)
+		if tc.ok {
+			require.NoError(t, err, tc.server)
+		} else {
+			require.Error(t, err, tc.server)
+		}
+	}
+}
+
+func TestAgentEffectiveAllowInsecureHTTP(t *testing.T) {
+	eff, err := config.AgentEffective("")
+	require.NoError(t, err)
+	require.False(t, eff.AllowInsecureHTTP)
+
+	t.Setenv("UNIFIED_ALLOW_INSECURE_HTTP", "true")
+	eff, err = config.AgentEffective("")
+	require.NoError(t, err)
+	require.True(t, eff.AllowInsecureHTTP)
+
+	t.Setenv("UNIFIED_ALLOW_INSECURE_HTTP", "")
+	path := filepath.Join(t.TempDir(), "a.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("server: http://controller:8080\nallowInsecureHTTP: true\n"), 0o600))
+	eff, err = config.AgentEffective(path)
+	require.NoError(t, err)
+	require.True(t, eff.AllowInsecureHTTP)
+}

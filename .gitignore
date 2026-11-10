@@ -47,3 +47,4 @@ test/edgecase/k8s/.w4-2-restricted.kubeconfig
 # Install bundles, built from manifests/*/ by scripts/build-manifests.sh and
 # published as release assets. Nothing generated here is committed.
 /dist/
+/deployments/docker/kek

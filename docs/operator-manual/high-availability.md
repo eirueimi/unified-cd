@@ -239,6 +239,8 @@ in the database any more.
 As described above, auth state lives in the DB or JWT, and SSE is propagated to all replicas via NOTIFY.
 
 - Use `/readyz` (see below) as the LB routing health check target.
+- Set `trustedProxies` on the controllers to the LB's address range so per-client rate limits and the
+  access log see the real client address (see [Reverse Proxy](reverse-proxy.md)).
 - SSE is a long-lived connection; set the LB idle timeout generously (e.g. several minutes or more)
   and ensure buffering is disabled (the controller sends `X-Accel-Buffering: no`).
 

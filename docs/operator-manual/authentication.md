@@ -111,8 +111,11 @@ who holds `token.manage` (as noted above, deleting it is ineffective while the e
 A token created with `UNIFIED_TOKEN` has no owner: it is role-only, `--role` defaults to `admin`
 and `--permission` is not available (see [PAT owners and ceilings](#pat-owners-and-ceilings)).
 
-> **Production note**: The default value `dev-token-change-me` in `docker-compose.yaml` is
-> committed in plaintext. Change it for any non-local deployment.
+> **Production note**: The default value `dev-token-change-me` in the repo-root `docker-compose.yaml`
+> is committed in plaintext. The controller refuses to start with that value unless
+> `UNIFIED_DEV_MODE=1` or `UNIFIED_ALLOW_DEFAULT_TOKEN=1` is set (the dev compose sets both).
+> Use a long random `UNIFIED_TOKEN` (`openssl rand -hex 32`) for any non-local deployment;
+> the production compose in `deployments/docker/` has no default and requires you to set it.
 
 ## PAT owners and ceilings
 

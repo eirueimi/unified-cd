@@ -344,6 +344,13 @@ func (p *Postgres) IssueExternalAgentAccess(ctx context.Context, issue AgentCred
 	}
 	issue.AuthorizedLabels = nonNilStrings(issue.AuthorizedLabels)
 	issue.AuthorizedCapabilities = nonNilStrings(issue.AuthorizedCapabilities)
+	// Serialize issuers of the same subject. Without this, concurrent first-time
+	// exchanges (for example client retries) all see no identity and race to
+	// create it; the loser fails on the agent_id unique constraint, which the
+	// ON CONFLICT clause on the subject index does not cover.
+	if err := lockExternalAgentSubject(ctx, tx, issue.EnrollmentMethod, issue.ExternalSubject); err != nil {
+		return nil, fmt.Errorf("issue external agent access: lock subject: %w", err)
+	}
 	identity, err := getAgentIdentityByExternalSubject(ctx, tx, issue.EnrollmentMethod, issue.ExternalSubject, true)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("issue external agent access: get identity: %w", err)
@@ -672,6 +679,14 @@ func insertExternalAgentIdentity(ctx context.Context, tx pgx.Tx, identity AgentI
 		return created, err
 	}
 	return getAgentIdentityByExternalSubject(ctx, tx, identity.EnrollmentMethod, identity.ExternalSubject, true)
+}
+
+// lockExternalAgentSubject takes a transaction-scoped advisory lock keyed on the
+// external subject so that only one transaction at a time can look up and
+// create the identity for it. The lock is released on commit or rollback.
+func lockExternalAgentSubject(ctx context.Context, tx pgx.Tx, method, subject string) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('agent_identity_subject:' || $1::text || ':' || $2::text, 0))`, method, subject)
+	return err
 }
 
 func insertAgentCredential(ctx context.Context, tx pgx.Tx, identityID string, credential NewAgentCredential) error {

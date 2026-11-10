@@ -329,3 +329,37 @@ func TestValidateWebhookPayloadMappedParams_ErrorMentionsChoicesAsAnOption(t *te
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "choices:")
 }
+
+func TestResolveParams_PatternMustMatchWholeValue(t *testing.T) {
+	// An unanchored pattern must not accept a value that merely contains a match.
+	inputs := []dsl.Input{{Name: "ref", Type: "string", Pattern: `[a-z]+`}}
+
+	_, err := resolveParams(inputs, map[string]string{"ref": "abc; rm -rf /"})
+	require.Error(t, err, "partial match must be rejected")
+	assert.Contains(t, err.Error(), `"[a-z]+"`, "error must show the user's original pattern")
+
+	got, err := resolveParams(inputs, map[string]string{"ref": "abc"})
+	require.NoError(t, err)
+	assert.Equal(t, "abc", got["ref"])
+}
+
+func TestResolveParams_AlternationMatchesWholeValueOnly(t *testing.T) {
+	inputs := []dsl.Input{{Name: "env", Type: "string", Pattern: `a|b`}}
+
+	for _, ok := range []string{"a", "b"} {
+		_, err := resolveParams(inputs, map[string]string{"env": ok})
+		require.NoError(t, err, ok)
+	}
+	for _, bad := range []string{"ab", "xa", "bx", "a;b"} {
+		_, err := resolveParams(inputs, map[string]string{"env": bad})
+		require.Error(t, err, bad)
+	}
+}
+
+func TestResolveParams_AnchoredPatternUnchanged(t *testing.T) {
+	inputs := []dsl.Input{{Name: "ref", Type: "string", Pattern: `^[a-z]+$`}}
+	_, err := resolveParams(inputs, map[string]string{"ref": "abc"})
+	require.NoError(t, err)
+	_, err = resolveParams(inputs, map[string]string{"ref": "abc1"})
+	require.Error(t, err)
+}

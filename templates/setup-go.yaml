@@ -50,16 +50,42 @@ spec:
         mkdir -p "$(pwd)/.gomodcache" "$(pwd)/.gocache"
         echo "[setup-go] GOMODCACHE=$(go env GOMODCACHE) GOCACHE=$(go env GOCACHE)"
 
+    # The cache keys are derived from a hash of go.sum computed here, inside
+    # working_dir, rather than with the hashFile template function: hashFile is
+    # not available on the Kubernetes agent (the workspace lives in the pod).
+    # A missing go.sum yields the fixed hash "none".
+    - name: hash_lockfile
+      env:
+        WORKING_DIR: "{{ .Params.working_dir }}"
+        LOCKFILE: go.sum
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+        cd "$WORKING_DIR"
+        h=none
+        if [ -f "$LOCKFILE" ]; then
+          if command -v sha256sum >/dev/null 2>&1; then
+            h=$(sha256sum "$LOCKFILE" | cut -d' ' -f1)
+          elif command -v shasum >/dev/null 2>&1; then
+            h=$(shasum -a 256 "$LOCKFILE" | cut -d' ' -f1)
+          else
+            h=$(cksum "$LOCKFILE" | cut -d' ' -f1,2 | tr ' ' '-')
+          fi
+        fi
+        echo "$h"
+      outputs:
+        lockhash: "{{ .Stdout | trim }}"
+
     - name: restore_mod_cache
       cache:
         path: "{{ .Params.working_dir }}/.gomodcache"
-        key: "go-mod-{{ hashFile \"go.sum\" }}"
+        key: "go-mod-{{ .Steps.hash_lockfile.Outputs.lockhash }}"
         restoreKeys:
           - "go-mod-"
 
     - name: restore_build_cache
       cache:
         path: "{{ .Params.working_dir }}/.gocache"
-        key: "go-build-{{ hashFile \"go.sum\" }}"
+        key: "go-build-{{ .Steps.hash_lockfile.Outputs.lockhash }}"
         restoreKeys:
           - "go-build-"

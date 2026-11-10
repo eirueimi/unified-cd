@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,26 @@ type Config struct {
 	// mapping, so truncation would corrupt auth checks and drop fields
 	// instead of failing loudly.
 	WebhookMaxBodyBytes int64
+
+	// TrustedProxies are the prefixes of reverse proxies whose
+	// X-Forwarded-For / X-Real-IP headers are believed when they are the TCP
+	// peer. Empty (the default) ignores those headers entirely so a client
+	// cannot choose the address that rate limits and logs attribute to it.
+	TrustedProxies []netip.Prefix
+
+	// MaxRequestBodyBytes caps the body of an API request; a larger body is
+	// rejected with 413. 0 means the default (1 MiB). Webhook ingress
+	// (WebhookMaxBodyBytes), agent log routes and the artifact upload are
+	// governed separately — see requestBodyLimit.
+	MaxRequestBodyBytes int64
+
+	// StoreCredentialRateBurst and StoreCredentialRatePerSecond bound
+	// POST /api/v1/store-credentials per client address. 0 means the defaults
+	// (200 and 20). Many job sidecars can share one source address behind an
+	// Ingress, load balancer or SNAT, so the defaults are generous; the
+	// sidecar retries a 429.
+	StoreCredentialRateBurst     int
+	StoreCredentialRatePerSecond float64
 
 	// StderrPlain, when true, tells the web UI (via /api/v1/ui-config) to render
 	// step stderr in the run log the same color as stdout instead of red.
@@ -148,6 +169,7 @@ type Server struct {
 	metrics                       *metrics.Metrics        // nil = middleware no-ops and /metrics returns 404.
 	claimedBy                     *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
 	enrollmentLimiter             *enrollmentLimiter
+	storeCredentialLimiter        *enrollmentLimiter
 	credentialTouches             *credentialTouchLimiter
 	kubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
 	cloudEnrollmentVerifiers      map[string]CloudEnrollmentVerifier
@@ -180,7 +202,7 @@ type Server struct {
 
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
-	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters, storeCredentialS3: cfg.StoreCredentialS3}
+	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), storeCredentialLimiter: newStoreCredentialLimiter(cfg), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters, storeCredentialS3: cfg.StoreCredentialS3}
 	s.cloudEnrollmentVerifiers = defaultCloudEnrollmentVerifiers()
 	for provider, verifier := range cfg.CloudEnrollmentVerifiers {
 		s.cloudEnrollmentVerifiers[provider] = verifier
@@ -414,9 +436,11 @@ func (s *Server) registerAgentIdentityRoutes() {
 
 func (s *Server) routes() {
 	s.r.Use(middleware.Recoverer)
-	s.r.Use(middleware.RealIP)
+	s.r.Use(trustedProxyRealIP(s.cfg.TrustedProxies))
 	s.r.Use(accessLogMiddleware)
 	s.r.Use(s.metricsMiddleware)
+	// After access log and metrics so a 413 is logged and counted.
+	s.r.Use(requestBodyLimit(s.cfg.MaxRequestBodyBytes))
 	s.r.Use(securityHeadersMiddleware)
 	// Router-wide (not just /api/v1): the auth POST routes (e.g.
 	// /api/v1/auth/logout) are registered directly on s.r outside the

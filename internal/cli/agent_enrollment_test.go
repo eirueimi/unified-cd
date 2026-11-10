@@ -346,3 +346,11 @@ func TestAgentEnrollmentPolicyCreateKubernetesDefaultsAndRequirements(t *testing
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bogus")
 }
+
+func TestNextAgentCommandsAddsInsecureOptInForRemoteHTTP(t *testing.T) {
+	remote := nextAgentCommands("http://controller.internal:8080", "a1", "/tmp/tok", "")
+	assert.Contains(t, remote, "--allow-insecure-http")
+	for _, server := range []string{"https://cd.example.com", "http://localhost:8080", "http://127.0.0.1:8080"} {
+		assert.NotContains(t, nextAgentCommands(server, "a1", "/tmp/tok", ""), "--allow-insecure-http", server)
+	}
+}

@@ -25,7 +25,15 @@ unified-cd-controller [FLAGS]
   --audit-retention-days  int      Days to keep audit_logs rows; 0 = keep forever (default: 90, env: UNIFIED_AUDIT_RETENTION_DAYS)
   --run-retention-days    int      Days to keep terminal (Succeeded/Failed/Cancelled) runs; 0 = keep forever (default: 0, env: UNIFIED_RUN_RETENTION_DAYS)
   --log-trim-days         int      Days after a run's logs are archived before its DB log rows are deleted; 0 = never trim (default: 0, env: UNIFIED_LOG_TRIM_DAYS)
+  --allow-default-token   bool     Allow starting with the publicly documented default admin token; trial use only (env: UNIFIED_ALLOW_DEFAULT_TOKEN)
   --insecure-cookies      bool     Do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)
+  --git-known-hosts-file   string   Persistent SSH known_hosts file for trust-on-first-use of git SSH host keys (default: <data-dir>/.ssh/known_hosts, else a temp dir; env: UNIFIED_GIT_KNOWN_HOSTS_FILE)
+  --git-timeout           duration Maximum time for one controller-side git operation before its process tree is killed (default: 5m, env: UNIFIED_GIT_TIMEOUT)
+  --git-max-repo-bytes    int      Abort a controller-side git fetch whose repository exceeds this many bytes; 0 = no limit (default: 1073741824, env: UNIFIED_GIT_MAX_REPO_BYTES)
+  --max-request-body-bytes int     Max size of an API request body; larger bodies get 413. Default 1048576 (1 MiB). Webhook ingress, agent log routes (16 MiB) and artifact upload have their own limits (env: UNIFIED_MAX_REQUEST_BODY_BYTES)
+  --store-credential-rate-burst int        Burst size of the per-client-address rate limit on POST /api/v1/store-credentials (default 200, env: UNIFIED_STORE_CREDENTIAL_RATE_BURST)
+  --store-credential-rate-per-second float Sustained requests per second per client address on POST /api/v1/store-credentials (default 20, env: UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND)
+  --trusted-proxies       string   Comma-separated CIDRs/IPs of reverse proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the client address; empty ignores those headers (env: UNIFIED_TRUSTED_PROXIES)
 ```
 
 ### Controller Environment Variables
@@ -37,7 +45,8 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_DB_BACKGROUND_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for scheduler, reaper, archiver, retention, and reconciler queries. Positive integer; default `32`. |
 | `UNIFIED_DB_LOCK_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for session-level advisory locks. Positive integer; default `16`. |
 | `UNIFIED_DB_LISTEN_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for SSE `LISTEN` sessions. Positive integer; default `128`. |
-| `UNIFIED_TOKEN` | Yes (without SSO) | Static admin bearer token. Auto-synced to DB as a PAT named `env:UNIFIED_TOKEN`. Required when OIDC is not configured. |
+| `UNIFIED_TOKEN` | Yes (without SSO) | Static admin bearer token. Auto-synced to DB as a PAT named `env:UNIFIED_TOKEN`. Required when OIDC is not configured. The controller refuses to start when this equals the published default token (the one in the quickstarts and `.env.example`) unless `UNIFIED_DEV_MODE=1` or `UNIFIED_ALLOW_DEFAULT_TOKEN=1` is set. |
+| `UNIFIED_ALLOW_DEFAULT_TOKEN` | No | `1` lets the controller start with the published default admin token. For throwaway trials only (the Helm trial Secret and the repo-root dev compose set it). Never use in production. |
 | `UNIFIED_CONTROLLER_KEY_FILE` | Required | Path to a file containing a 32-byte hex master key (`unified-cli keygen --out /etc/unified-cd/kek`). Mutually exclusive with `UNIFIED_KMS_URI`. **All replicas must be given the same file in HA setups.** |
 | `UNIFIED_KMS_URI` | Optional | External KMS: `hashivault://[<mount>/]<key>` (default mount `transit`). The controller wraps DEKs with Vault/OpenBao Transit and never holds the key itself. |
 | `UNIFIED_VAULT_ADDR` | With KMS | Vault/OpenBao address. |
@@ -47,6 +56,9 @@ unified-cd-controller [FLAGS]
 | `VAULT_TOKEN` | With `token` | Fallback when no token file is set. |
 | `UNIFIED_DEV_MODE` | Optional | `1` generates an ephemeral key. Secrets are unreadable after a restart. Never use in production. |
 | `UNIFIED_GIT_RESOLVE_DEADLINE` | No | How long a run's `git://` template resolution may keep failing (network/credentials) before the run is Failed instead of waiting as Pending. Go duration, default `1h`. Deterministic resolution errors (e.g. a nonexistent ref) still fail the run immediately. There is no CLI flag; unset/invalid/non-positive values use the default. The run is failed at its *next resolution attempt* after the deadline elapses, which the per-run failure backoff may delay by up to an additional 1 hour. |
+| `UNIFIED_GIT_KNOWN_HOSTS_FILE` | No | Persistent known_hosts file used for SSH trust-on-first-use when a GitCredential has no `knownHosts` pinned (see [GitCredential](../user-guide/resources/git-credential.md#ssh-host-key-verification)). Default `<data-dir>/.ssh/known_hosts` when `--data-dir` is set, otherwise a private per-process temporary directory (TOFU state is then lost on every restart). The directory must be owned by the controller's user and not group- or other-writable on Unix. Mount persistent storage here, or pin `knownHosts`. |
+| `UNIFIED_GIT_TIMEOUT` | No | Maximum time one controller-side git operation (an AppSource `ls-remote` or fetch, or a `git://` template fetch) may take. When it elapses the git process tree is killed, the error is recorded (an AppSource's `lastError`) and the controller moves on to the next AppSource. Go duration, default `5m`; invalid or non-positive values use the default. Flag: `--git-timeout`. |
+| `UNIFIED_GIT_MAX_REPO_BYTES` | No | Aborts a controller-side git fetch whose scratch repository grows past this many bytes (measured while fetching). Default `1073741824` (1 GiB); `0` disables the limit. Flag: `--git-max-repo-bytes`. |
 | `UNIFIED_LOG_LEVEL` | No | Log level: `debug`, `info` (default), `warn`, `error` |
 | `UNIFIED_S3_ENDPOINT` | No | S3-compatible object store endpoint (e.g. `garage.internal:3900`). Without S3, log archival and artifacts are disabled. |
 | `UNIFIED_S3_BUCKET` | No | S3 bucket name |
@@ -60,6 +72,11 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_OIDC_ISSUER_INTERNAL` | No (SSO only) | Internal issuer URL for Docker/container scenarios where the public issuer URL is not reachable inside the container |
 | `UNIFIED_OIDC_EXTERNAL_URL` | No (SSO only) | External base URL for OIDC callbacks, e.g. `https://unified-cd.example.com`. Required when the controller is behind a reverse proxy with a different external URL. |
 | `UNIFIED_INSECURE_COOKIES` | No | When `true`, omits the `Secure` attribute from session cookies. Only for plain-HTTP deployments (see [Authentication](../operator-manual/authentication.md)); leave unset (default `false`) whenever TLS is terminated anywhere in front of the controller. |
+| `UNIFIED_TRUSTED_PROXIES` | No | Comma-separated CIDRs or IPs of the reverse proxies in front of the controller. Only a request whose TCP peer is in this list has its `X-Forwarded-For` / `X-Real-IP` honoured for the client address (rate limits, access log). Default empty: those headers are ignored. See [Reverse Proxy](../operator-manual/reverse-proxy.md). |
+| `UNIFIED_MAX_REQUEST_BODY_BYTES` | No | Maximum size, in bytes, of an API request body (default `1048576`, 1 MiB). A larger body is rejected with `413`. Applies to every route except webhook ingress (`UNIFIED_WEBHOOK_MAX_BODY_BYTES`), artifact upload and agent log routes. See [Reverse Proxy and Request Limits](../operator-manual/reverse-proxy.md). |
+| `UNIFIED_WEBHOOK_MAX_BODY_BYTES` | No | Maximum size, in bytes, of a webhook ingress request body (default `1048576`); larger bodies get `413`. |
+| `UNIFIED_STORE_CREDENTIAL_RATE_BURST` | No | Burst size of the per-client-address rate limit on `POST /api/v1/store-credentials` (default `200`). Raise it when very many job sidecars share one source address. |
+| `UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND` | No | Sustained requests per second per client address on `POST /api/v1/store-credentials` (default `20`). |
 | `UNIFIED_OIDC_CLIENT_ID` | No (SSO only) | OIDC client ID for browser SSO (confidential client) |
 | `UNIFIED_OIDC_CLIENT_SECRET` | No (SSO only) | OIDC client secret |
 | `UNIFIED_OIDC_DEVICE_CLIENT_ID` | No (SSO only) | OIDC public client ID for CLI device flow. Falls back to `UNIFIED_OIDC_CLIENT_ID` if unset. |
@@ -96,6 +113,11 @@ webDir: /srv/unified-cd/web         # static web assets; unset => /ui/* returns 
 uiProxyTarget: http://localhost:5173 # dev only: proxy /ui/* to a Vite dev server
 stderrPlain: false                   # true => run-log stderr is the same color as stdout
 insecureCookies: false                # true => drop Secure attribute on session cookies (plain-HTTP deployments only)
+maxRequestBodyBytes: 1048576          # max API request body (default 1 MiB); larger => 413
+storeCredentialRateLimit:             # per client address, per controller replica
+  burst: 200
+  perSecond: 20
+trustedProxies: []                    # CIDRs/IPs of reverse proxies trusted to set X-Forwarded-For / X-Real-IP, e.g. ["10.244.3.17/32"] (never the whole pod CIDR)
 
 # Log level is a flag/env, not a config-file field: --log-level / UNIFIED_LOG_LEVEL
 
@@ -180,7 +202,8 @@ Group keys are compared to the values of `oidc.rolesClaim`; user keys to the tok
 unified-cd-agent [FLAGS]
 
   -f                      string    Config file path (default: unified-agent.yaml if exists)
-  --server                string    Controller URL (env: UNIFIED_SERVER)
+  --server                string    Controller URL. Must be https://, or http:// only for a loopback host unless --allow-insecure-http is set (env: UNIFIED_SERVER)
+  --allow-insecure-http   bool      Accept an http:// controller URL for a non-loopback host. The enrollment token and the agent's credentials then cross the network unencrypted; use only on a trusted network such as a compose or VM-local bridge (env: UNIFIED_ALLOW_INSECURE_HTTP)
   --credential-file       string    Protected VM refresh-credential file (default: $HOME/.unified-cd/<agent-id>/credential.json; env: UNIFIED_AGENT_CREDENTIAL_FILE)
   --enrollment-token-file string    One-time VM enrollment-token file (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)
   --enrollment-provider   string    Enroll with a cloud instance identity instead of a token: aws, gcp or azure. Requires --enrollment-policy and --enrollment-audience; cannot be combined with --enrollment-token, --enrollment-token-file, --credential-file or --id (env: UNIFIED_AGENT_ENROLLMENT_PROVIDER)
@@ -221,7 +244,8 @@ for how to pin the runner by digest.
 
 | Variable | Description |
 |---|---|
-| `UNIFIED_SERVER` | Controller URL |
+| `UNIFIED_SERVER` | Controller URL (`https://`, or `http://` for loopback only unless `UNIFIED_ALLOW_INSECURE_HTTP` is set) |
+| `UNIFIED_ALLOW_INSECURE_HTTP` | When `true`, accept an `http://` controller URL for a non-loopback host (env equivalent of `--allow-insecure-http`). Default `false`: the agent refuses to start. |
 | `UNIFIED_AGENT_CREDENTIAL_FILE` | Protected persistent VM refresh-credential file. Required for secure VM mode. |
 | `UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE` | One-time VM enrollment credential file. Required only until initial enrollment succeeds. |
 | `UNIFIED_AGENT_ENROLLMENT_PROVIDER` | Cloud instance-identity enrollment provider: `aws`, `gcp` or `azure` (env equivalent of `--enrollment-provider`). Mutually exclusive with the token, credential-file and ID settings. |
@@ -260,6 +284,7 @@ Additionally, every step receives the following environment variables automatica
 ```yaml
 # unified-agent.yaml
 server: https://unified-cd-controller.example.com
+# allowInsecureHTTP: true   # accept http:// for a non-loopback host (credentials are sent unencrypted)
 id: worker-01
 credentialFile: /var/lib/unified-cd-agent/credentials.json
 enrollmentTokenFile: /var/lib/unified-cd-agent/enrollment.token
@@ -702,8 +727,8 @@ CLI flags  >  config file  >  environment variables
 ```
 
 Examples:
-- `--server http://override.example.com` overrides `UNIFIED_SERVER`
-- `UNIFIED_SERVER=http://env.example.com` overrides the `server:` value in the config file
+- `--server https://override.example.com` overrides `UNIFIED_SERVER`
+- `UNIFIED_SERVER=https://env.example.com` overrides the `server:` value in the config file
 - The config file value is the lowest-priority fallback
 
 ---

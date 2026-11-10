@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -154,6 +155,68 @@ type ControllerConfig struct {
 	// binding (see controller.Config.RequireRunBinding's doc comment for
 	// the full reasoning). Default false (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING).
 	StoreCredentialRequireRunBinding bool `yaml:"storeCredentialRequireRunBinding"`
+	// AllowDefaultToken lets the controller start with the publicly documented
+	// default admin token (env: UNIFIED_ALLOW_DEFAULT_TOKEN). See CheckAdminToken.
+	AllowDefaultToken bool `yaml:"allowDefaultToken"`
+	// TrustedProxies lists the CIDRs (or bare IPs) of reverse proxies whose
+	// X-Forwarded-For / X-Real-IP headers the controller believes. Empty (the
+	// default) ignores those headers and uses the TCP peer address as the
+	// client IP (env: UNIFIED_TRUSTED_PROXIES, comma-separated).
+	TrustedProxies []string `yaml:"trustedProxies"`
+	// StoreCredentialRateLimit bounds POST /api/v1/store-credentials per client
+	// address. Zero fields mean the defaults (burst 200, 20 requests/second).
+	// Env: UNIFIED_STORE_CREDENTIAL_RATE_BURST, UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND.
+	StoreCredentialRateLimit StoreCredentialRateLimitConfig `yaml:"storeCredentialRateLimit"`
+	// MaxRequestBodyBytes caps the body of an API request (agent log routes,
+	// webhook ingress and artifact upload have their own limits); a larger
+	// body gets 413. 0 means the built-in default, 1 MiB
+	// (env: UNIFIED_MAX_REQUEST_BODY_BYTES).
+	MaxRequestBodyBytes int64 `yaml:"maxRequestBodyBytes"`
+}
+
+// StoreCredentialRateLimitConfig is the per-client-address token bucket for the
+// store-credentials broker endpoint.
+type StoreCredentialRateLimitConfig struct {
+	Burst     int     `yaml:"burst"`
+	PerSecond float64 `yaml:"perSecond"`
+}
+
+func (c StoreCredentialRateLimitConfig) validate() error {
+	if c.Burst < 0 || c.PerSecond < 0 {
+		return fmt.Errorf("storeCredentialRateLimit burst and perSecond must not be negative")
+	}
+	return nil
+}
+
+// ParseTrustedProxies parses a list of CIDRs and bare IPs (a bare IP means a
+// single-host prefix) into prefixes. Blank entries are rejected.
+func ParseTrustedProxies(entries []string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			return nil, fmt.Errorf("trustedProxies must not contain an empty entry")
+		}
+		if p, err := netip.ParsePrefix(e); err == nil {
+			if p.Addr().Is4In6() {
+				// Peers are unmapped before matching, so a mapped prefix must be
+				// expressed in IPv4 form or it would silently never match.
+				if p.Bits() < 96 {
+					return nil, fmt.Errorf("trustedProxies entry %q is an IPv4-mapped prefix shorter than /96; write it as an IPv4 CIDR", e)
+				}
+				p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+			}
+			out = append(out, p.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(e)
+		if err != nil {
+			return nil, fmt.Errorf("trustedProxies entry %q is not a CIDR or IP address", e)
+		}
+		addr = addr.Unmap()
+		out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return out, nil
 }
 
 // envBool parses a boolean environment variable (strconv.ParseBool semantics);
@@ -215,8 +278,31 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		UIProxyTarget:                    os.Getenv("UNIFIED_UI_PROXY_TARGET"),
 		StderrPlain:                      envBool("UNIFIED_LOG_STDERR_PLAIN"),
 		InsecureCookies:                  envBool("UNIFIED_INSECURE_COOKIES"),
+		AllowDefaultToken:                envBool("UNIFIED_ALLOW_DEFAULT_TOKEN"),
 		StoreCredentialRequireRunBinding: envBool("UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING"),
+		TrustedProxies:                   SplitCSV(os.Getenv("UNIFIED_TRUSTED_PROXIES")),
 		AgentAuth:                        &ControllerAgentAuthConfig{},
+	}
+	if v := strings.TrimSpace(os.Getenv("UNIFIED_STORE_CREDENTIAL_RATE_BURST")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("UNIFIED_STORE_CREDENTIAL_RATE_BURST must be a positive integer, got %q", v)
+		}
+		eff.StoreCredentialRateLimit.Burst = n
+	}
+	if v := strings.TrimSpace(os.Getenv("UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND")); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND must be a positive number, got %q", v)
+		}
+		eff.StoreCredentialRateLimit.PerSecond = n
+	}
+	if v := strings.TrimSpace(os.Getenv("UNIFIED_MAX_REQUEST_BODY_BYTES")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("UNIFIED_MAX_REQUEST_BODY_BYTES must be a positive integer, got %q", v)
+		}
+		eff.MaxRequestBodyBytes = n
 	}
 	// OIDC from env vars
 	oidcIssuer := os.Getenv("UNIFIED_OIDC_ISSUER")
@@ -231,7 +317,7 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 			DeviceClientID: os.Getenv("UNIFIED_OIDC_DEVICE_CLIENT_ID"),
 			RolesClaim:     os.Getenv("UNIFIED_OIDC_ROLES_CLAIM"),
 			DefaultRole:    os.Getenv("UNIFIED_OIDC_DEFAULT_ROLE"),
-			Scopes:         splitCSV(os.Getenv("UNIFIED_OIDC_SCOPES")),
+			Scopes:         SplitCSV(os.Getenv("UNIFIED_OIDC_SCOPES")),
 		}
 		if err := validateOIDCScopes(eff.OIDC.Scopes); err != nil {
 			return nil, err
@@ -282,11 +368,32 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	if file.StderrPlain {
 		eff.StderrPlain = true
 	}
+	if file.AllowDefaultToken {
+		eff.AllowDefaultToken = true
+	}
 	if file.InsecureCookies {
 		eff.InsecureCookies = true
 	}
 	if file.StoreCredentialRequireRunBinding {
 		eff.StoreCredentialRequireRunBinding = true
+	}
+	if err := file.StoreCredentialRateLimit.validate(); err != nil {
+		return nil, err
+	}
+	if file.StoreCredentialRateLimit.Burst > 0 {
+		eff.StoreCredentialRateLimit.Burst = file.StoreCredentialRateLimit.Burst
+	}
+	if file.StoreCredentialRateLimit.PerSecond > 0 {
+		eff.StoreCredentialRateLimit.PerSecond = file.StoreCredentialRateLimit.PerSecond
+	}
+	if file.MaxRequestBodyBytes < 0 {
+		return nil, fmt.Errorf("maxRequestBodyBytes must not be negative")
+	}
+	if file.MaxRequestBodyBytes > 0 {
+		eff.MaxRequestBodyBytes = file.MaxRequestBodyBytes
+	}
+	if len(file.TrustedProxies) > 0 {
+		eff.TrustedProxies = file.TrustedProxies
 	}
 	if file.OIDC != nil {
 		if eff.OIDC == nil {
@@ -403,9 +510,9 @@ func validateControllerAgentAuth(cfg *ControllerAgentAuthConfig) error {
 	return nil
 }
 
-// splitCSV splits a comma-separated list, trimming spaces and dropping empties.
+// SplitCSV splits a comma-separated list, trimming spaces and dropping empties.
 // It returns nil when nothing remains.
-func splitCSV(v string) []string {
+func SplitCSV(v string) []string {
 	var out []string
 	for _, p := range strings.Split(v, ",") {
 		if p = strings.TrimSpace(p); p != "" {

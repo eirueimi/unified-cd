@@ -71,6 +71,13 @@ unified-cli agent enrollment create --agent-id agent-1 --label kind:linux --quie
 Only one of the file and inline/env/stdin forms may be set at a time; the
 agent exits with an error if both are given.
 
+The `--server` URL must be `https://`. A plain `http://` URL is accepted only for a loopback
+host (`localhost`, `127.0.0.1`, `::1`) unless you pass `--allow-insecure-http` (env
+`UNIFIED_ALLOW_INSECURE_HTTP`, config `allowInsecureHTTP: true`); without it the agent exits with
+`invalid --server ... uses plain http`. The opt-in is meant for a trusted network such as a
+compose bridge, because the enrollment token and the agent's credentials are sent to this URL.
+See [Migrating: host agents require https](migrations/2026-11-09-agent-require-https.md).
+
 Supplying a **new** enrollment token to an agent that is already enrolled
 (has a valid persisted credential) re-enrolls it: the token is exchanged
 again, and any authorized labels attached to that token take effect. If the
@@ -718,12 +725,17 @@ steps. macOS hosts run isolated jobs via docker or podman.
 `docker-compose.yaml` and `deployments/docker/docker-compose.yaml`) run a
 Docker-in-Docker (`dind`, `privileged: true`) sidecar so the host agent can
 execute isolated jobs, not just `native: true` ones. The agent reaches the
-dind daemon via `DOCKER_HOST=tcp://dind:2375` and shares the `ucd-workspaces`
+dind daemon via `DOCKER_HOST` and shares the `ucd-workspaces`
 volume with dind at the same path (`UNIFIED_AGENT_WORKSPACE_DIR=/ucd-workspaces`)
 so a job container's workspace bind mount — resolved by the dind daemon —
-sees the files the agent wrote. The dind daemon listens on plain TCP 2375 on
-the compose network; this is for local/dev use, so do not expose it beyond
-the compose network.
+sees the files the agent wrote. In the repo-root dev stack the dind daemon
+listens on plain TCP 2375 on the compose network; this is for local/dev use, so
+do not expose it beyond the compose network. The production stack
+(`deployments/docker/`) instead runs dind with mutual TLS on 2376
+(`DOCKER_HOST=tcp://dind:2376`, `DOCKER_TLS_VERIFY=1`, client certificates from
+a read-only `dind-client-certs` volume holding only the client certificates) and publishes no dind port to the host. dind
+is still `privileged`, so anything that can reach the daemon can take over the
+dind container.
 
 **Agent flags/config for the claim pod:**
 

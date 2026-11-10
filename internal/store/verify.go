@@ -58,6 +58,8 @@ var schemaSentinels = []sentinel{
 	// Table-level sentinel only: it cannot detect a skipped CHECK constraint
 	// change, which is what this migration actually does.
 	{version: 26, migration: "026_enrollment_policy_providers", table: "agent_enrollment_policies"},
+	{version: 27, migration: "027_audit_actor_identity", table: "audit_logs", column: "actor_id"},
+	{version: 28, migration: "028_git_credential_known_hosts", table: "git_credentials", column: "known_hosts"},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel

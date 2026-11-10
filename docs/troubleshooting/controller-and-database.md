@@ -54,6 +54,16 @@ The controller logs `oidc.roleMap["my-org:devs"]: unknown role "develper" is ign
 
 A `roleMap` value that is not `admin`, `developer` or `viewer` never matches. Without an `oidc.permissions` block this is only a warning (refusing to start would break existing setups); with the block it is a startup error. Fix the spelling. Only `roleMap` is checked: an unknown `userMap` role denies that user.
 
+## Controller refuses to start: `the admin token (UNIFIED_TOKEN) is set to the publicly documented default value`
+
+**Symptom**
+
+The controller exits immediately with `refusing to start` and an error beginning `the admin token (UNIFIED_TOKEN) is set to the publicly documented default value`.
+
+**Cause and fix**
+
+`UNIFIED_TOKEN` (or `--token`, or `token` in the config file) equals the default admin token printed in the quickstarts and `.env.example`. Anyone who has read the docs knows it. Set `UNIFIED_TOKEN` to a long random value, for example `openssl rand -hex 32`, and restart. For a throwaway trial or local development you can instead set `UNIFIED_DEV_MODE=1` or `UNIFIED_ALLOW_DEFAULT_TOKEN=1` (flag: `--allow-default-token`). The Helm trial install and the repo-root development compose already set the opt-in.
+
 ## Startup warning: `UNIFIED_TOKEN is set while SSO is configured`
 
 **Symptom**
@@ -426,3 +436,23 @@ whose objects are missing; later ones may be missing too.
 
 **If the error says `schema_migrations is dirty` instead:**
 Either a previous migration attempt crashed midway, leaving the dirty flag set, or another replica's migration is currently in flight (this can happen transiently during a mixed-version rolling deploy). Restart the controller first; if the error persists across restarts, it is the crashed-migration case, not an in-flight one — inspect which statements of the named version actually applied to the schema, repair them manually to a consistent state, then clear the flag with golang-migrate's `force` command or `UPDATE schema_migrations SET dirty = false` once the schema matches the version number. Then restart the controller.
+
+## AppSource or `git://` template fails with `SSH host key verification failed`
+
+**Symptom:** an AppSource shows `Failed` with a last error, or a run's `git://` template resolution fails, containing:
+
+```
+SSH host key verification failed: the server's host key does not match the pinned or previously trusted key
+```
+
+**Cause:** the controller verifies SSH host keys. Either the GitCredential's `spec.knownHosts` does not list the key the server presents, or (with no `knownHosts`) the server's key differs from the one the controller trusted on first use (`--git-known-hosts-file`). This is also what a man-in-the-middle looks like, so confirm the new fingerprint with the Git host before accepting it.
+
+**Fix:** if the key legitimately changed, update `spec.knownHosts` on the GitCredential (`ssh-keyscan -t ed25519 <host>`), or remove the stale line for the host from the controller's known_hosts file and let it trust the new key on next contact.
+
+## AppSource fails with `git operation timed out` or `repository exceeds the size limit`
+
+**Symptom:** an AppSource is `Failed` and its `lastError` (or a `git://` template resolution error) contains `git operation timed out after 5m0s` or `repository exceeds the size limit (limit 1073741824 bytes ...)`.
+
+**Cause:** the controller bounds every git operation it runs. A slow or hung remote (network stall, a prompt waiting on a firewall, an unreachable host) hits the timeout and the git process tree is killed so it cannot block other AppSources. A repository larger than the size limit is aborted while it is still downloading.
+
+**Fix:** check connectivity to the repository from the controller host. For a legitimately slow or large repository raise `UNIFIED_GIT_TIMEOUT` (Go duration) or `UNIFIED_GIT_MAX_REPO_BYTES` (`0` disables the size limit), or point the AppSource at a smaller repository or path. See the [configuration reference](../reference/configuration.md#controller-environment-variables).

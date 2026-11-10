@@ -27,7 +27,9 @@ Garage on PersistentVolumeClaims with fixed development credentials. The chart
 refuses to render an Ingress while these credentials are in use
 (`ingress.enabled with the bundled trial credentials would expose
 dev-token-change-me ...`). A Secret you create by hand with development values
-cannot be detected, so do not expose one either.
+cannot be detected, so do not expose one either. The trial Secret also sets
+`UNIFIED_ALLOW_DEFAULT_TOKEN=1`, because the controller otherwise refuses to
+start with the published default admin token; your own Secret must not set it.
 
 ### Production
 
@@ -89,6 +91,16 @@ Secrets, and HTTPS in front of the controller.
    KEK Job. Missing Secrets surface as Pod start failures (the chart does not
    use `lookup`). `agent.server`, when set, must be an `https://` URL; with the
    default empty value the agent uses the in-cluster Service over plain HTTP.
+
+   Behind an Ingress, also set `controller.trustedProxies` to the Ingress
+   controller's Pod addresses or the load balancer range, as narrowly as possible
+   (for example `--set 'controller.trustedProxies[0]=10.244.3.17/32'`). Do not
+   use the cluster pod CIDR: it trusts every Pod, including job Pods running
+   untrusted code, which could forge `X-Forwarded-For`; restrict who can reach the
+   controller port with a NetworkPolicy. Without it the controller ignores `X-Forwarded-For` / `X-Real-IP` and treats
+   every client as the Ingress controller, so the per-client rate limits on
+   agent enrollment and token refresh count all clients together. See
+   [Reverse proxy and request limits](../../docs/operator-manual/reverse-proxy.md).
 
    The Ingress does not create certificates. For cert-manager, add its
    annotation through `ingress.annotations`.

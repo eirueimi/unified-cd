@@ -297,7 +297,7 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 | `default` | any | no |  |
 | `description` | string | no |  |
 | `name` | string | yes |  |
-| `pattern` | string | no | Pattern is a regular expression every supplied value must match (defaults are checked too, so a bad default cannot slip through). Param values are interpolated into step shell text, so a param fed from an untrusted source — a webhook payload especially — is a command-injection vector unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$ |
+| `pattern` | string | no | Pattern is a regular expression every supplied value must match in full (applied as ^(?:pattern)$, so a partial match is rejected; defaults are checked too, so a bad default cannot slip through). Param values are interpolated into step shell text, so a param fed from an untrusted source — a webhook payload especially — is a command-injection vector unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$ |
 | `required` | boolean | no |  |
 | `type` | `string` \| `bool` \| `int` \| `array` | yes |  |
 | `unvalidated` | boolean | no | Unvalidated explicitly opts this input out of the pattern requirement for payload-mapped params. Use only when the value is genuinely free-form and never reaches a shell. |
@@ -596,7 +596,7 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 | `default` | any | no |  |
 | `description` | string | no |  |
 | `name` | string | yes |  |
-| `pattern` | string | no | Pattern is a regular expression every supplied value must match (defaults are checked too, so a bad default cannot slip through). Param values are interpolated into step shell text, so a param fed from an untrusted source — a webhook payload especially — is a command-injection vector unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$ |
+| `pattern` | string | no | Pattern is a regular expression every supplied value must match in full (applied as ^(?:pattern)$, so a partial match is rejected; defaults are checked too, so a bad default cannot slip through). Param values are interpolated into step shell text, so a param fed from an untrusted source — a webhook payload especially — is a command-injection vector unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$ |
 | `required` | boolean | no |  |
 | `type` | `string` \| `bool` \| `int` \| `array` | yes |  |
 | `unvalidated` | boolean | no | Unvalidated explicitly opts this input out of the pattern requirement for payload-mapped params. Use only when the value is genuinely free-form and never reaches a shell. |
@@ -763,6 +763,7 @@ GitCredentialSpec is the spec section of GitCredential.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `host` | string | yes | hostname to use these credentials for (e.g. github.com) |
+| `knownHosts` | string | no | KnownHosts optionally pins the SSH host keys (OpenSSH known_hosts lines) of host; sshKey type only. When set, ssh runs with StrictHostKeyChecking=yes against exactly these keys; when empty the controller uses trust-on-first-use and rejects a host key that later changes. |
 | `secretRef` | string | yes | name of the StoredSecret that holds the value |
 | `type` | `token` \| `sshKey` | yes | authentication type |
 

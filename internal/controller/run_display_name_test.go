@@ -65,3 +65,11 @@ func TestExpandRunDisplayName_AllWhitespaceExpansionIsNoDisplayName(t *testing.T
 	require.NoError(t, err)
 	require.Equal(t, "", got)
 }
+
+func TestExpandRunDisplayName_HashFileRefused(t *testing.T) {
+	// The controller must never read files on behalf of a job definition.
+	for _, glob := range []string{"/etc/passwd", "/dev/zero", "go.mod"} {
+		_, err := expandRunDisplayName(`build {{ hashFile "`+glob+`" }}`, nil)
+		require.ErrorContains(t, err, "hashFile is only available in step-time templates", glob)
+	}
+}

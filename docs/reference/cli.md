@@ -824,15 +824,18 @@ unified-cli audit list [--limit int]
   --limit  int   Max number of entries to show (server default: 100)
 ```
 
-Prints a table of time, actor, action, resource, status, permission, and
-grantedBy, newest first. `permission` is the permission that was checked and
-`grantedBy` the grant that allowed it; both show `-` when not recorded, and
-`grantedBy` is `-` on a denied request.
+Prints a table of time, actor, action, resource, status, permission,
+grantedBy, and actorId, newest first. `permission` is the permission that was
+checked and `grantedBy` the grant that allowed it; both show `-` when not
+recorded, and `grantedBy` is `-` on a denied request. `actor` is only a display
+name (PAT names are not unique); `actorId` (`pat:<id>`, `oidc:<sub>`,
+`break-glass`, `agent:<id>`) is the stable identity and is `-` for rows written
+before it was recorded. See [Audit log](../operator-manual/audit.md#actor-identity).
 
 ```bash
 unified-cli audit list --limit 5
-# => 2026-07-04T09:12:00Z   alice   token.create   token/ci-bot    200   token.create   role:admin (pat)
-# => 2026-07-04T09:10:41Z   bob     run.cancel     run/run-abc123  200   run.cancel     role:developer (pat)
+# => 2026-07-04T09:12:00Z   alice   token.create   token/ci-bot    200   token.create   role:admin (pat)      pat:3b1e7c52-...
+# => 2026-07-04T09:10:41Z   bob     run.cancel     run/run-abc123  200   run.cancel     role:developer (pat)  pat:9d04f6a1-...
 ```
 
 ---
@@ -983,7 +986,8 @@ A caller with only `agent.enroll` (an [enrollment-only PAT](../operator-manual/a
 `enrollment create` prints the exact `unified-cd-agent --server ... --id ...
 --enrollment-token-file ...` (or, without `--output-file`, `--enrollment-token
 <value>`) command to run on the target host once the token is in place —
-there is no separate install step. An enrolled agent's labels come from
+there is no separate install step. The agent refuses a non-loopback `http://`
+`--server`; add `--allow-insecure-http` to that command if the controller has no TLS. An enrolled agent's labels come from
 `--label` on `enrollment create` and are fixed for that agent's lifetime; the
 agent process's own `--labels` flag is ignored for every agent. Capabilities
 are not set at enrollment: the agent auto-detects and self-reports them
