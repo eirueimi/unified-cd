@@ -147,6 +147,11 @@ type Agent struct {
 	// (normal and detached): the gate state is agent-wide.
 	wsGate workspaceGate
 
+	// DisableNative turns off host-process (native) execution: the agent does not
+	// advertise the native capability and fails any native step that still
+	// reaches it. Default false (native allowed).
+	DisableNative bool
+
 	// RuntimePref selects the container runtime for runsIn.image steps
 	// (docker|podman|nerdctl|wslc|container); empty = auto-detect.
 	RuntimePref string
@@ -262,8 +267,12 @@ func (a *Agent) containerRuntime() (crt.ContainerRuntime, error) {
 	return a.resolvedRuntime, a.runtimeErr
 }
 
+// nativeDisabledMsg is the run failure for a native job that reaches an agent
+// started with native execution disabled.
+const nativeDisabledMsg = "native execution is disabled on this agent (disableNative / --disable-native); route the job to an agent that allows native execution, or remove native: true so it runs isolated"
+
 // agentCapabilities reports what this standard agent can execute: always
-// native (host process), plus container when a container runtime is present,
+// native (host process; Agent.capabilities drops it under DisableNative), plus container when a container runtime is present,
 // plus securitycontext when the startup probe showed that runtime honours a
 // claim's securityContext (secCtx; meaningless without a runtime).
 func agentCapabilities(runtimeAvailable, secCtx bool) []string {
@@ -283,9 +292,24 @@ func agentCapabilities(runtimeAvailable, secCtx bool) []string {
 func (a *Agent) capabilities() []string {
 	_, rtErr := a.containerRuntime()
 	if rtErr != nil {
-		return agentCapabilities(false, false)
+		return a.filterNative(agentCapabilities(false, false))
 	}
-	return agentCapabilities(true, a.securityContextProbe().OK)
+	return a.filterNative(agentCapabilities(true, a.securityContextProbe().OK))
+}
+
+// filterNative drops the native capability when DisableNative is set, so the
+// controller never routes a native job to this agent.
+func (a *Agent) filterNative(caps []string) []string {
+	if !a.DisableNative {
+		return caps
+	}
+	out := make([]string, 0, len(caps))
+	for _, c := range caps {
+		if c != dsl.CapNative {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // Capabilities returns the capability set this agent advertises. The result is
@@ -348,6 +372,13 @@ func (a *Agent) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	caps := a.capabilities()
+	if len(caps) == 0 {
+		// An empty set would be omitted from the registration and the controller
+		// would then treat the agent as a legacy host agent (native + container),
+		// defeating DisableNative. Refuse to start instead.
+		return errors.New("native execution is disabled (disableNative) and no container runtime is available: the agent would have no capabilities; install a container runtime or allow native execution")
+	}
 	req := api.AgentRegisterRequest{
 		AgentID:      a.ID,
 		Hostname:     host,
@@ -355,7 +386,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		Labels:       a.Labels,
 		Version:      Version,
 		Env:          collectEnv(a.ExposeEnv),
-		Capabilities: a.capabilities(),
+		Capabilities: caps,
 		// The controller routes runs on this list and keeps no volume state
 		// of its own, so it is whatever the operator declared.
 		Volumes: a.Volumes.Names(),
@@ -718,6 +749,13 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			defer activeWorkDirs.Remove(workDir)
 			defer activeRuns.Remove(resp.RunID)
 
+			// Refuse before anything touches the host: reserving volumes and preparing
+			// the workspace (which can wipe a root volume) must not run for a claim
+			// this agent will not execute. executeRun re-checks as defence in depth.
+			if resp.Native && a.DisableNative {
+				a.failRun(runCtx, resp.RunID, nativeDisabledMsg)
+				return
+			}
 			mode := "isolated"
 			if resp.Native {
 				mode = "native"
@@ -872,6 +910,13 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 
 	failClaim := func(msg string, err error) {
 		a.failRun(ctx, c.RunID, fmt.Sprintf("%s: %v", msg, err))
+	}
+
+	// Defence in depth: a disabled-native agent does not advertise the capability,
+	// but a claim can still arrive (stale routing, an older controller).
+	if c.Native && a.DisableNative {
+		a.failRun(ctx, c.RunID, nativeDisabledMsg)
+		return
 	}
 
 	// workDir is where the run works, already resolved by runLoop: the volume's
@@ -1096,7 +1141,17 @@ func ResolveWorkspaceDir(workspaceDir string) (string, error) {
 		}
 		return cwd, nil
 	}
-	return expandHome(workspaceDir)
+	p, err := expandHome(workspaceDir)
+	if err != nil {
+		return "", err
+	}
+	// Absolute, so every path derived from it (workspace, staging copies,
+	// confined transfer roots) means the same thing whatever the cwd.
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace-dir %q: %w", workspaceDir, err)
+	}
+	return abs, nil
 }
 
 // expandHome expands a leading "~/" using os.UserHomeDir().

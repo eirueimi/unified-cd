@@ -25,3 +25,21 @@ func TestAgentEffective_MaxDetachedFromEnv(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 5, eff.MaxDetachedConcurrent)
 }
+
+func TestAgentEffective_DisableNative(t *testing.T) {
+	eff, err := AgentEffective("")
+	require.NoError(t, err)
+	assert.False(t, eff.DisableNative, "default keeps native execution allowed")
+
+	t.Setenv("UNIFIED_AGENT_DISABLE_NATIVE", "true")
+	eff, err = AgentEffective("")
+	require.NoError(t, err)
+	assert.True(t, eff.DisableNative)
+
+	p := filepath.Join(t.TempDir(), "agent.yaml")
+	require.NoError(t, os.WriteFile(p, []byte("disableNative: true\n"), 0o600))
+	t.Setenv("UNIFIED_AGENT_DISABLE_NATIVE", "")
+	eff, err = AgentEffective(p)
+	require.NoError(t, err)
+	assert.True(t, eff.DisableNative)
+}

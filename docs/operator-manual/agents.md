@@ -423,7 +423,7 @@ author:
 
 | Capability | Meaning | Reported by |
 |---|---|---|
-| `native` | Can run a step as a plain host process | Standard agent (always) |
+| `native` | Can run a step as a plain host process | Standard agent (always, unless native execution is disabled with `--disable-native`; see [Disabling native execution](#disabling-native-execution)) |
 | `container` | Can run a step inside an isolated container | Standard agent (when a container runtime — docker/podman/nerdctl — is detected), Kubernetes agent (always) |
 | `pod` | Can build a Kubernetes Pod | Kubernetes agent (always) |
 | `securitycontext` | Can honour a job's `securityContext` (`runAsUser`, `fsGroup`, ...) the way Kubernetes does | Standard agent, only when its startup probe passes (see [Job isolation notes](../reference/configuration.md#job-isolation-notes)). The controller adds it to every agent that advertises `pod`; the Kubernetes agent does not report it itself. |
@@ -432,6 +432,9 @@ The standard agent reports `["native"]`, or `["native", "container"]` once it
 detects a container runtime at startup, plus `securitycontext` when its startup
 probe shows that runtime honours a `securityContext`. The Kubernetes agent reports
 `["pod", "container"]`.
+
+With `--disable-native` the standard agent leaves `native` out of that list (see
+[Disabling native execution](#disabling-native-execution)).
 
 The controller also **normalizes** every capability set it stores: `pod` implies
 `securitycontext`. A Kubernetes agent, whether from before `securitycontext` existed or
@@ -602,6 +605,31 @@ selector**, the run stays `Queued` indefinitely rather than failing — see
 [Job stays Queued / unschedulable
 warning](../troubleshooting/runs-and-scheduling.md#job-stays-queued-unschedulable-warning) in the
 Troubleshooting guide for how the Web UI surfaces this and how to fix it.
+
+### Disabling native execution
+
+A `native: true` job runs as a plain process on the agent host with the agent's own
+privileges and no isolation. To keep a host agent from ever doing that, disable native
+execution:
+
+| Setting | Value |
+|---|---|
+| Flag | `--disable-native` |
+| Environment | `UNIFIED_AGENT_DISABLE_NATIVE=true` |
+| Config key | `disableNative: true` |
+
+The default is off: native execution stays allowed, so existing agents are unchanged. When it
+is on, the agent:
+
+- **does not advertise `native`**, so the controller never routes a `native: true` job to it.
+  It still advertises `container` when a runtime is detected, and isolated jobs run as usual.
+  A `native: true` job with no other agent that advertises `native` stays `Queued`
+  ([unschedulable warning](../troubleshooting/runs-and-scheduling.md#job-stays-queued-unschedulable-warning)).
+- **fails any native run that still reaches it** (for example from stale routing) with
+  `native execution is disabled on this agent (disableNative / --disable-native); ...`.
+- **refuses to start** with `native execution is disabled (disableNative) and no container
+  runtime is available: the agent would have no capabilities` when no container runtime is
+  usable, because it could then run nothing.
 
 ---
 

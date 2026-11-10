@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/eirueimi/unified-cd/internal/imageref"
 )
 
 // appleContainer drives Apple's native `container` CLI on macOS. Its surface
@@ -24,9 +26,6 @@ func (a *appleContainer) Available() bool {
 
 func (a *appleContainer) runArgs(spec RunSpec) []string {
 	args := []string{"run", "--rm"}
-	for _, e := range spec.Env {
-		args = append(args, "-e", e)
-	}
 	args = append(args, spec.Image)
 	shell := spec.Shell
 	if len(shell) == 0 {
@@ -38,11 +37,23 @@ func (a *appleContainer) runArgs(spec RunSpec) []string {
 }
 
 func (a *appleContainer) Pull(ctx context.Context, image string) error {
+	if err := imageref.Validate(image); err != nil {
+		return err
+	}
 	return execCommand(ctx, "container", "pull", image).Run()
 }
 
 func (a *appleContainer) Run(ctx context.Context, spec RunSpec, stdout, stderr io.Writer) (int, error) {
-	cmd := execCommand(ctx, "container", a.runArgs(spec)...)
+	if err := imageref.Validate(spec.Image); err != nil {
+		return -1, err
+	}
+	prep, cleanup, eerr := prepareAppleEnv(spec.Env)
+	defer cleanup()
+	if eerr != nil {
+		return -1, eerr
+	}
+	cmd := execCommand(ctx, "container", prep.withEnv(a.runArgs(spec))...)
+	cmd.Env = prep.childEnv
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err := cmd.Run()
@@ -65,6 +76,9 @@ func (a *appleContainer) Run(ctx context.Context, spec RunSpec, stdout, stderr i
 // spec.Entrypoint/spec.Args semantics (nil/empty = image's default
 // entrypoint/CMD).
 func (a *appleContainer) createArgs(spec CreateSpec) ([]string, error) {
+	if err := imageref.Validate(spec.Image); err != nil {
+		return nil, err
+	}
 	if spec.User != "" || len(spec.GroupAdd) > 0 || len(spec.CapDrop) > 0 || len(spec.CapAdd) > 0 ||
 		spec.NoNewPrivileges || spec.ReadOnlyRootfs {
 		return nil, fmt.Errorf("apple container: user, groups, capabilities, no-new-privileges and read-only rootfs are not supported (securityContext requires docker/podman/nerdctl)")
@@ -93,9 +107,6 @@ func (a *appleContainer) createArgs(spec CreateSpec) ([]string, error) {
 		}
 		args = append(args, "-v", v)
 	}
-	for _, e := range spec.Env {
-		args = append(args, "-e", e)
-	}
 	if len(spec.Entrypoint) > 0 && !noEmptyEntrypointClear["container"] {
 		args = append(args, "--entrypoint", "")
 	} else if len(spec.Entrypoint) > 0 {
@@ -116,7 +127,14 @@ func (a *appleContainer) Create(ctx context.Context, spec CreateSpec) (Container
 	if err != nil {
 		return ContainerHandle{}, err
 	}
-	out, err := execCommand(ctx, "container", args...).Output()
+	prep, cleanup, err := prepareAppleEnv(spec.Env)
+	defer cleanup()
+	if err != nil {
+		return ContainerHandle{}, err
+	}
+	createCmd := execCommand(ctx, "container", prep.withEnv(args)...)
+	createCmd.Env = prep.childEnv
+	out, err := createCmd.Output()
 	if err != nil {
 		return ContainerHandle{}, fmt.Errorf("container run -d: %w", err)
 	}
@@ -129,9 +147,6 @@ func (a *appleContainer) Create(ctx context.Context, spec CreateSpec) (Container
 
 func (a *appleContainer) Exec(ctx context.Context, h ContainerHandle, spec ExecSpec, stdout, stderr io.Writer) (int, error) {
 	args := []string{"exec"}
-	for _, e := range spec.Env {
-		args = append(args, "-e", e)
-	}
 	shell := spec.Shell
 	if len(shell) == 0 {
 		shell = []string{"sh", "-c"}
@@ -139,7 +154,13 @@ func (a *appleContainer) Exec(ctx context.Context, h ContainerHandle, spec ExecS
 	args = append(args, h.ID)
 	args = append(args, shell...)
 	args = append(args, spec.Script)
-	cmd := execCommand(ctx, "container", args...)
+	prep, cleanup, eerr := prepareAppleEnv(spec.Env)
+	defer cleanup()
+	if eerr != nil {
+		return -1, eerr
+	}
+	cmd := execCommand(ctx, "container", prep.withEnv(args)...)
+	cmd.Env = prep.childEnv
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err := cmd.Run()

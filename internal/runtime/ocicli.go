@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/eirueimi/unified-cd/internal/imageref"
 )
 
 // execCommand is indirected for testability.
@@ -65,10 +67,16 @@ func (r *ociCLI) runArgs(spec RunSpec) []string {
 }
 
 func (r *ociCLI) Pull(ctx context.Context, image string) error {
+	if err := imageref.Validate(image); err != nil {
+		return err
+	}
 	return execCommand(ctx, r.bin, "pull", image).Run()
 }
 
 func (r *ociCLI) Run(ctx context.Context, spec RunSpec, stdout, stderr io.Writer) (int, error) {
+	if err := imageref.Validate(spec.Image); err != nil {
+		return -1, err
+	}
 	prep, cleanup, perr := prepareCLIEnv(spec.Env)
 	defer cleanup()
 	if perr != nil {
@@ -104,6 +112,9 @@ func (r *ociCLI) Run(ctx context.Context, spec RunSpec, stdout, stderr io.Writer
 // delimited, so a path containing either character returns an error instead
 // of producing a mount Docker/podman would parse wrong.
 func (r *ociCLI) createArgs(spec CreateSpec) ([]string, error) {
+	if err := imageref.Validate(spec.Image); err != nil {
+		return nil, err
+	}
 	args := []string{"run", "-d"}
 	if spec.CPULimit != "" {
 		args = append(args, "--cpus", spec.CPULimit)
@@ -265,6 +276,9 @@ func (r *ociCLI) ExitCode(ctx context.Context, h ContainerHandle) (int, error) {
 // ImageUser returns the image's Config.User. If the image is not present
 // locally (any inspect failure) it is pulled and the inspect retried once.
 func (r *ociCLI) ImageUser(ctx context.Context, image string) (string, error) {
+	if err := imageref.Validate(image); err != nil {
+		return "", err
+	}
 	inspect := func() (string, error) {
 		var stderr bytes.Buffer
 		cmd := execCommand(ctx, r.bin, "image", "inspect", "--format", "{{.Config.User}}", image)

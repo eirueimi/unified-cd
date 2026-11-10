@@ -208,7 +208,14 @@ Passing secrets as environment variables is the safest approach. Putting secrets
 command arguments can expose them in process listings.
 The host agent does not put resolved `env:` values on the `docker`/`podman` command line
 (it passes only the variable names and supplies the values through the CLI process
-environment), so they are not visible in the host's process list.
+environment), so they are not visible in the host's process list. With the Apple `container`
+runtime the values are written to an owner-only (0600) temporary `--env-file` that is removed
+as soon as the command finishes. A value that contains a newline (a PEM key, a kubeconfig)
+cannot be stored in that line-based file, so it is passed as `-e NAME` and supplied through the
+`container` process environment instead; this needs an Apple `container` release that resolves a
+bare `-e NAME` from its environment (on an older release the variable is empty or unset inside the container). Such a value under a name the CLI itself reads (`PATH`,
+`HOME`, `CONTAINER_*`, ...) cannot be passed safely and fails the step with
+`env "NAME" collides with a container CLI variable and its value contains a newline, which cannot be passed safely`.
 
 ```yaml
 steps:

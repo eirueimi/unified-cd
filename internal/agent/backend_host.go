@@ -222,7 +222,15 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
 		var written artifact.Written
-		hit, skipped, err := cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, b.excludeVolumes(ctx, "cache restore", path), &written)
+		exclude := b.excludeVolumes(ctx, "cache restore", path)
+		var hit bool
+		var skipped int
+		var err error
+		if root, ok := b.confineRootOf(path); ok {
+			hit, skipped, err = cache.RestoreInWritten(ctx, b.a.CacheStore, b.jobName, absOrSelf(root), absOrSelf(path), key, restoreKeys, exclude, &written)
+		} else {
+			hit, skipped, err = cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, exclude, &written)
+		}
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			return false, err
 		}
@@ -278,7 +286,10 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return b.readWithFallback(ctx, "cache save", path, func(p string, exclude []string) error {
+		return b.readWithFallback(ctx, "cache save", path, func(root, p string, exclude []string) error {
+			if root != "" {
+				return cache.SaveIn(ctx, b.a.CacheStore, b.jobName, root, p, key, ttlDays, exclude)
+			}
 			return cache.SaveExcluding(ctx, b.a.CacheStore, b.jobName, p, key, ttlDays, exclude)
 		})
 	}
@@ -295,7 +306,10 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 func (b *hostBackend) UploadArtifact(ctx context.Context, scope ScopeHandle, runID, name, path string) error {
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return b.readWithFallback(ctx, "artifact", path, func(p string, exclude []string) error {
+		return b.readWithFallback(ctx, "artifact", path, func(root, p string, exclude []string) error {
+			if root != "" {
+				return b.a.Client.UploadArtifactIn(ctx, runID, name, root, p, exclude)
+			}
 			return b.a.Client.UploadArtifactExcluding(ctx, runID, name, p, exclude)
 		})
 	}
@@ -313,7 +327,14 @@ func (b *hostBackend) DownloadArtifact(ctx context.Context, scope ScopeHandle, r
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
 		var written artifact.Written
-		if err := b.a.Client.DownloadArtifactWritten(ctx, runID, name, destDir, b.excludeVolumes(ctx, "artifact download", destDir), &written); err != nil {
+		exclude := b.excludeVolumes(ctx, "artifact download", destDir)
+		var derr error
+		if root, ok := b.confineRootOf(destDir); ok {
+			derr = b.a.Client.DownloadArtifactIn(ctx, runID, name, absOrSelf(root), absOrSelf(destDir), exclude, &written)
+		} else {
+			derr = b.a.Client.DownloadArtifactWritten(ctx, runID, name, destDir, exclude, &written)
+		}
+		if err := derr; err != nil {
 			return err
 		}
 		return b.chownAgentWrite(ctx, &written)
@@ -346,9 +367,65 @@ func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) (string, 
 	if err != nil {
 		return "", err
 	}
-	// The host directory at a volume's mount path is an empty mountpoint (or, for
-	// a native claim, a link); the files are in the volume itself.
-	return resolveInVolumeMount(b.workDir, resolved, b.volumeRefs), nil
+	vol, mapped := matchVolumeMount(b.workDir, resolved, b.volumeRefs)
+	if root, ok := b.confineRoot(vol); ok {
+		// Isolated claim: the job controls this tree from inside the claim pod, so
+		// the path must not lead out of the workspace (or of the volume it maps
+		// into) through a symlink. A native claim has no boundary to protect: the
+		// job already runs as the agent user, and may deliberately link a
+		// directory outside the workspace.
+		confined, err := ConfineSymlinksOS(root, mapped)
+		if err != nil {
+			return "", err
+		}
+		mapped = confined
+	}
+	return mapped, nil
+}
+
+// absOrSelf makes p absolute against the cwd (the frame the agent's paths are
+// in), leaving "" and unresolvable paths alone. The confined archivers read a
+// relative path as relative to their root, so a cwd-relative workspace path
+// must not reach them as is.
+func absOrSelf(p string) string {
+	if p == "" {
+		return p
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
+// confineRoot reports the directory an isolated claim's artifact or cache path
+// is confined to: the volume it maps into, else the workspace. vol is the
+// matching volume mount (nil for none). ok is false for a native claim.
+func (b *hostBackend) confineRoot(vol *volumeMountRef) (string, bool) {
+	if b.pod == nil {
+		return "", false
+	}
+	if vol != nil {
+		return vol.HostPath, true
+	}
+	return b.workDir, true
+}
+
+// confineRootOf is confineRoot for an already-resolved host path: the volume
+// host directory it lies in (the deepest), else the workspace.
+func (b *hostBackend) confineRootOf(p string) (string, bool) {
+	if b.pod == nil {
+		return "", false
+	}
+	var best *volumeMountRef
+	for i := range b.volumeRefs {
+		r := &b.volumeRefs[i]
+		if rel, err := filepath.Rel(r.HostPath, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if best == nil || len(r.HostPath) > len(best.HostPath) {
+				best = r
+			}
+		}
+	}
+	return b.confineRoot(best)
 }
 
 // mountedVolumes lists the claim's volumes mounted inside the workspace, each at
@@ -602,9 +679,11 @@ func (b *hostBackend) chownAgentWrite(ctx context.Context, w *artifact.Written) 
 // copy is staged under the workspace base, not the OS temp directory. The copy
 // can be MORE than the pod-level user could read on Kubernetes, which the docs
 // state (design Q7).
-func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved string, op func(path string, exclude []string) error) error {
+func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved string, op func(root, path string, exclude []string) error) error {
 	exclude := b.excludeVolumes(ctx, kind, resolved)
-	err := op(resolved, exclude)
+	root, _ := b.confineRootOf(resolved) // "" for a native claim: not confined
+	root, resolved = absOrSelf(root), absOrSelf(resolved)
+	err := op(root, resolved, exclude)
 	if err == nil || !errors.Is(err, fs.ErrPermission) || b.pod == nil {
 		return err
 	}
@@ -648,7 +727,17 @@ func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved strin
 		rel := strings.TrimPrefix(ce, src+"/")
 		copyExclude = append(copyExclude, filepath.Join(dst, filepath.FromSlash(rel)))
 	}
-	return op(dst, copyExclude)
+	// The copy is job-controlled until it lands here: docker cp copies a symlink
+	// source as a link, so a job that swaps the directory for a link between the
+	// failed read and the copy would make the host archive whatever it points at.
+	// Refuse a link as the top-level entry, and confine the read to the staging
+	// directory so no link below it is followed out either.
+	if fi, lerr := os.Lstat(dst); lerr != nil {
+		return fmt.Errorf("%w (root copy: %v)", err, lerr)
+	} else if fi.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("%w (root copy: refusing %q, which is a symbolic link)", err, src)
+	}
+	return op(absOrSelf(stage), absOrSelf(dst), copyExclude)
 }
 
 // stagingDir makes a private scratch directory under the workspace base. The

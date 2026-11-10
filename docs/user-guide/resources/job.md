@@ -123,6 +123,12 @@ definition, matching Kubernetes: `podTemplate.spec.containers[].resources.
 limits`. The standard agent applies CPU/memory limits from there the same way
 k8s does.
 
+`runsIn.image` is validated at apply time: it must be non-empty, must not start
+with `-` (a container CLI would parse it as an option), and must not contain
+whitespace or control characters. Registry, `host:port`, tag and `@sha256`
+digest forms are accepted. The host agent re-checks the same rule before it
+invokes docker/podman/`container`.
+
 The **uses-level** `runsIn.image` (an isolated "scope" spanning an entire
 inlined `uses:` template) has its own `resources` field — `runsIn.resources`
 — covered in the next section. It is wired to both backends, but it is not a

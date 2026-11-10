@@ -178,6 +178,18 @@ func RestoreWritten(ctx context.Context, store objectstore.ObjectStore, jobName,
 	return hit, skippedLinks, err
 }
 
+// RestoreInWritten is RestoreIn that also records what it extracted in w (nil
+// records nothing), creating path under root when it is missing. It is what the
+// host agent runs for an isolated claim.
+func RestoreInWritten(ctx context.Context, store objectstore.ObjectStore, jobName, root, path, key string, restoreKeys []string, exclude []string, w *artifact.Written) (hit bool, skippedLinks int, err error) {
+	hit, err = restore(ctx, store, jobName, key, restoreKeys, func(r io.Reader) error {
+		n, err := artifact.ExtractTarZstdDirIn(r, root, path, exclude, false, w)
+		skippedLinks = n
+		return err
+	})
+	return hit, skippedLinks, err
+}
+
 // RestoreIn is RestoreExcluding confined to root: path must lie at or below
 // root and nothing is written through a symlink that leads outside root (see
 // artifact.ExtractTarZstdIn). Symlink and hardlink entries in the archive are

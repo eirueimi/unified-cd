@@ -693,15 +693,24 @@ func relativeVolumeMounts(mounts []dsl.VolumeMount, m *VolumeManager, containerR
 // nested under it), the deepest wins, as it does inside the container. A path
 // inside none is returned unchanged.
 func resolveInVolumeMount(workDir, resolved string, refs []volumeMountRef) string {
-	if len(refs) == 0 {
+	best, mapped := matchVolumeMount(workDir, resolved, refs)
+	if best == nil {
 		return resolved
+	}
+	return mapped
+}
+
+// matchVolumeMount is resolveInVolumeMount that also returns the mount the path
+// is inside (nil when none, and then mapped is resolved).
+func matchVolumeMount(workDir, resolved string, refs []volumeMountRef) (best *volumeMountRef, mapped string) {
+	if len(refs) == 0 {
+		return nil, resolved
 	}
 	rel, err := filepath.Rel(workDir, resolved)
 	if err != nil {
-		return resolved
+		return nil, resolved
 	}
 	rel = path.Clean(filepath.ToSlash(rel))
-	var best *volumeMountRef
 	for i := range refs {
 		r := &refs[i]
 		if rel != r.Rel && !strings.HasPrefix(rel, r.Rel+"/") {
@@ -712,10 +721,10 @@ func resolveInVolumeMount(workDir, resolved string, refs []volumeMountRef) strin
 		}
 	}
 	if best == nil {
-		return resolved
+		return nil, resolved
 	}
 	rest := strings.TrimPrefix(strings.TrimPrefix(rel, best.Rel), "/")
-	return filepath.Join(best.HostPath, filepath.FromSlash(rest))
+	return best, filepath.Join(best.HostPath, filepath.FromSlash(rest))
 }
 
 // isolatedVolumeMounts maps mounts onto the container backend. rootHost is the

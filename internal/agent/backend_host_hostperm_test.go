@@ -137,7 +137,8 @@ func TestHostBackend_CacheRestore_ChownsOnAHitOnly(t *testing.T) {
 	require.False(t, hit)
 	assert.Empty(t, chownExecs(f), "a miss writes nothing, so there is nothing to re-own")
 
-	src := t.TempDir()
+	src := filepath.Join(workDir, "cache-src")
+	require.NoError(t, os.MkdirAll(src, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(src, "dep"), []byte("d"), 0o644))
 	require.NoError(t, b.CacheSave(ctx, ScopeHandle{}, "k", src, 1))
 
@@ -169,7 +170,7 @@ func TestHostBackend_ReadFallback_RetriesThroughCopyOutOnPermissionError(t *test
 	src := filepath.Join(workDir, "build")
 
 	var paths []string
-	err := b.readWithFallback(context.Background(), "artifact", src, func(p string, _ []string) error {
+	err := b.readWithFallback(context.Background(), "artifact", src, func(_, p string, _ []string) error {
 		paths = append(paths, p)
 		if len(paths) == 1 {
 			return &fs.PathError{Op: "open", Path: p, Err: fs.ErrPermission}
@@ -208,7 +209,7 @@ func TestHostBackend_ReadFallback_NeverCopiesAVolumeOut(t *testing.T) {
 	var got []string
 	var copied string
 	calls := 0
-	err := b.readWithFallback(context.Background(), "artifact", workDir, func(p string, ex []string) error {
+	err := b.readWithFallback(context.Background(), "artifact", workDir, func(_, p string, ex []string) error {
 		calls++
 		if calls == 1 {
 			return fs.ErrPermission
@@ -235,7 +236,7 @@ func TestHostBackend_ReadFallback_RecursesToSkipANestedVolume(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "deep", "keep"), []byte("k"), 0o644))
 
 	calls := 0
-	require.NoError(t, b.readWithFallback(context.Background(), "artifact", workDir, func(string, []string) error {
+	require.NoError(t, b.readWithFallback(context.Background(), "artifact", workDir, func(string, string, []string) error {
 		calls++
 		if calls == 1 {
 			return fs.ErrPermission
@@ -254,7 +255,7 @@ func TestHostBackend_ReadFallback_RefusesWhenItCannotCopyAroundAVolume(t *testin
 	b.volumeRefs = []volumeMountRef{{Volume: "v", MountPath: "build/data", Rel: "build/data", HostPath: t.TempDir()}}
 	// workDir/build does not exist on the host: standing in for a directory the
 	// agent's own user cannot list.
-	err := b.readWithFallback(context.Background(), "artifact", filepath.Join(workDir, "build"), func(p string, _ []string) error {
+	err := b.readWithFallback(context.Background(), "artifact", filepath.Join(workDir, "build"), func(_, p string, _ []string) error {
 		return &fs.PathError{Op: "open", Path: p, Err: fs.ErrPermission}
 	})
 	require.Error(t, err)
@@ -275,7 +276,7 @@ func TestHostBackend_ReadFallback_StagesUnderTheWorkspaceBase(t *testing.T) {
 
 	var staged string
 	calls := 0
-	require.NoError(t, b.readWithFallback(context.Background(), "artifact", src, func(p string, _ []string) error {
+	require.NoError(t, b.readWithFallback(context.Background(), "artifact", src, func(_, p string, _ []string) error {
 		calls++
 		if calls == 1 {
 			return fs.ErrPermission
@@ -295,14 +296,14 @@ func TestHostBackend_ReadFallback_OtherErrorsAreReturnedUntouched(t *testing.T) 
 	f := &copyOutRT{}
 	b, workDir := podBackend(t, downloadAgent(t), f, permPT(nil, nil))
 	boom := errors.New("boom")
-	err := b.readWithFallback(context.Background(), "artifact", workDir, func(string, []string) error { return boom })
+	err := b.readWithFallback(context.Background(), "artifact", workDir, func(string, string, []string) error { return boom })
 	assert.ErrorIs(t, err, boom)
 	assert.Empty(t, f.copyOuts)
 }
 
 func TestHostBackend_ReadFallback_NativeClaimHasNoPauseToCopyFrom(t *testing.T) {
 	b := newHostBackend(downloadAgent(t), "r1", "test-job", t.TempDir(), nil)
-	err := b.readWithFallback(context.Background(), "artifact", b.workDir, func(string, []string) error { return fs.ErrPermission })
+	err := b.readWithFallback(context.Background(), "artifact", b.workDir, func(string, string, []string) error { return fs.ErrPermission })
 	assert.ErrorIs(t, err, fs.ErrPermission)
 }
 
@@ -343,7 +344,8 @@ func TestHostBackend_CacheRestore_DoesNotReownThePreExistingJobFiles(t *testing.
 	ctx := context.Background()
 	f := &podFakeRT{}
 	b, workDir := podBackend(t, downloadAgent(t), f, permPT(map[string]any{"runAsUser": 1000}, nil))
-	src := t.TempDir()
+	src := filepath.Join(workDir, "cache-src")
+	require.NoError(t, os.MkdirAll(src, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(src, "dep"), []byte("d"), 0o644))
 	require.NoError(t, b.CacheSave(ctx, ScopeHandle{}, "k", src, 1))
 
@@ -365,4 +367,55 @@ func TestHostBackend_Download_ChownIsBatched(t *testing.T) {
 	}
 	require.NoError(t, b.pod.ChownAsAgentWrite(context.Background(), paths))
 	assert.Len(t, chownExecs(f), 3)
+}
+
+// symlinkCopyOutRT plants a symbolic link at the copy destination, as docker cp
+// does when a job swaps the source directory for a link after the failed read.
+type symlinkCopyOutRT struct {
+	podFakeRT
+	target string
+}
+
+func (f *symlinkCopyOutRT) CopyOut(_ context.Context, _ crt.ContainerHandle, _, hostPath string) error {
+	return os.Symlink(f.target, hostPath)
+}
+
+// A symlink as the top-level entry of the staging copy is refused, never read:
+// the retry must not archive what a job-planted link points at.
+func TestHostBackend_ReadFallback_RefusesASymlinkedStagingCopy(t *testing.T) {
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret"), []byte("s"), 0o600))
+	f := &symlinkCopyOutRT{target: outside}
+	b, workDir := podBackend(t, downloadAgent(t), f, permPT(nil, nil))
+	if err := os.Symlink(outside, filepath.Join(t.TempDir(), "probe")); err != nil {
+		t.Skipf("cannot create symlinks here: %v", err)
+	}
+
+	calls := 0
+	err := b.readWithFallback(context.Background(), "artifact", filepath.Join(workDir, "build"), func(_, p string, _ []string) error {
+		calls++
+		return &fs.PathError{Op: "open", Path: p, Err: fs.ErrPermission}
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symbolic link")
+	assert.Equal(t, 1, calls, "the staging copy must not be read")
+}
+
+// The retry on the staging copy is confined to the staging directory.
+func TestHostBackend_ReadFallback_RetryIsConfinedToTheStagingDir(t *testing.T) {
+	f := &copyOutRT{}
+	b, workDir := podBackend(t, downloadAgent(t), f, permPT(nil, nil))
+	var roots []string
+	_ = b.readWithFallback(context.Background(), "artifact", filepath.Join(workDir, "build"), func(root, p string, _ []string) error {
+		roots = append(roots, root)
+		if len(roots) == 1 {
+			return &fs.PathError{Op: "open", Path: p, Err: fs.ErrPermission}
+		}
+		assert.NotEmpty(t, root)
+		assert.Equal(t, root, filepath.Dir(p), "the copy lives directly in the staging directory the read is confined to")
+		return nil
+	})
+	require.Len(t, roots, 2)
+	assert.Equal(t, workDir, roots[0])
+	assert.NotEqual(t, workDir, roots[1])
 }
