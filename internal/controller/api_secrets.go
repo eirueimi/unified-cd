@@ -1,15 +1,18 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 )
@@ -130,8 +133,38 @@ func (s *Server) handleAgentSecretsFetch(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	result := map[string]string{}
+	// The private key of a GitHub App credential is a StoredSecret, but it
+	// never leaves the controller: refuse it before anything is resolved.
+	keyRefs, err := s.gitHubAppKeyRefs(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	for _, name := range req.Names {
+		if cred, ok := keyRefs[name]; ok {
+			http.Error(w, fmt.Sprintf("secret %q is the private key of GitHub App credential %q and is never delivered to jobs", name, cred), http.StatusForbidden)
+			return
+		}
+	}
+	result := map[string]string{}
+	jobs := &jobTokenHandOut{s: s, r: r, agentID: agentID, runID: req.RunID}
+	for _, name := range req.Names {
+		// A githubApp GitCredential with jobAccess is answered with a job
+		// token. It wins over a StoredSecret of the same name, which the
+		// name-collision rules otherwise prevent.
+		gc, err := s.store.GetGitCredential(r.Context(), name)
+		if err != nil {
+			http.Error(w, "gitcredential "+name+": "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if gc != nil && gc.CredType == "githubApp" && gc.JobAccess != nil {
+			token, ok := jobs.issue(w, gc)
+			if !ok {
+				return
+			}
+			result[name] = token
+			continue
+		}
 		stored, err := s.store.GetSecret(r.Context(), name)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -155,6 +188,9 @@ func (s *Server) handleAgentSecretsFetch(w http.ResponseWriter, r *http.Request)
 		}
 		result[name] = string(plaintext)
 	}
+	// Hand-outs are audited and counted once the response carries them; a
+	// token issued for a fetch that then failed was not delivered.
+	jobs.recordDelivered()
 	writeJSON(w, http.StatusOK, api.AgentFetchSecretsResponse{Secrets: result})
 }
 
@@ -181,4 +217,85 @@ func logSecretDecryptFailure(site, id string, err error) {
 		return
 	}
 	slog.Warn("secret decrypt failed", "site", site, "id", id, "error", err)
+}
+
+// gitHubAppKeyRefs maps the secretRef (private key) of every githubApp
+// GitCredential to the credential's name.
+func (s *Server) gitHubAppKeyRefs(ctx context.Context) (map[string]string, error) {
+	creds, err := s.store.ListGitCredentials(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list git credentials: %w", err)
+	}
+	refs := map[string]string{}
+	for _, gc := range creds {
+		if gc.CredType == "githubApp" && gc.SecretRef != "" {
+			refs[gc.SecretRef] = gc.Name
+		}
+	}
+	return refs, nil
+}
+
+// jobTokenHandOut issues the GitHub App job tokens of one agent secrets
+// fetch. Every refusal and failure is audited and counted when it happens;
+// hand-outs are audited and counted by recordDelivered.
+type jobTokenHandOut struct {
+	s       *Server
+	r       *http.Request
+	agentID string
+	runID   string
+
+	jobName   string // the run's qualified job name, loaded on first use
+	delivered []jobTokenAudit
+}
+
+type jobTokenAudit struct {
+	credential string
+	details    map[string]any
+}
+
+// issue returns the job token of gc, or writes the error response and
+// returns false. jobAccess is the credential as it is now, not as it was
+// when the run was created.
+func (h *jobTokenHandOut) issue(w http.ResponseWriter, gc *store.GitCredential) (string, bool) {
+	details := map[string]any{
+		"runId":        h.runID,
+		"repositories": gc.JobAccess.Repositories,
+		"permissions":  gc.JobAccess.Permissions,
+	}
+	fail := func(status int, result, reason, msg string) (string, bool) {
+		details["reason"] = reason
+		h.s.metrics.GitCredentialToken(gc.Name, "job", result)
+		h.s.auditAgentEvent(h.r, h.agentID, auditActionGitCredentialTokenIssue, gc.Name, status, details)
+		http.Error(w, msg, status)
+		return "", false
+	}
+	if h.s.gitCreds == nil {
+		return fail(http.StatusInternalServerError, "error", "not_configured", "git token issuing is not configured")
+	}
+	if h.jobName == "" {
+		run, err := h.s.store.GetRun(h.r.Context(), h.runID)
+		if err != nil {
+			return fail(http.StatusInternalServerError, "error", "run", fmt.Sprintf("gitcredential %q: load run %s: %v", gc.Name, h.runID, err))
+		}
+		h.jobName = run.JobName
+	}
+	details["jobName"] = h.jobName
+	if !jobAccessCovers(gc.JobAccess.Folders, h.jobName) {
+		return fail(http.StatusForbidden, "denied", "folder", fmt.Sprintf("gitcredential %q: job %q is not covered by jobAccess.folders", gc.Name, h.jobName))
+	}
+	tok, err := h.s.gitCreds.JobToken(h.r.Context(), gc)
+	if err != nil {
+		return fail(http.StatusBadGateway, "error", "issue", fmt.Sprintf("gitcredential %q: %v", gc.Name, err))
+	}
+	details["expiresAt"] = tok.ExpiresAt.UTC().Format(time.RFC3339)
+	h.delivered = append(h.delivered, jobTokenAudit{credential: gc.Name, details: details})
+	return tok.Value, true
+}
+
+// recordDelivered audits and counts the tokens the response carries.
+func (h *jobTokenHandOut) recordDelivered() {
+	for _, d := range h.delivered {
+		h.s.metrics.GitCredentialToken(d.credential, "job", "ok")
+		h.s.auditAgentEvent(h.r, h.agentID, auditActionGitCredentialTokenIssue, d.credential, http.StatusOK, d.details)
+	}
 }

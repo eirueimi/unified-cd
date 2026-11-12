@@ -14,6 +14,11 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
+// auditActionGitCredentialTokenIssue is the action of the row the agent
+// secrets fetch writes for each GitHub App job token it hands out or refuses
+// (agent routes are outside auditLogMiddleware).
+const auditActionGitCredentialTokenIssue = "gitcredential.token_issue"
+
 // auditActionKey classifies a route (method + chi route pattern) into a short
 // action label like "job.apply" or "secret.set", plus how to resolve the
 // resource name for the audit log row. Only state-changing (POST/PUT/DELETE)
