@@ -2942,50 +2942,88 @@ func (p *Postgres) TouchSession(ctx context.Context, id string) error {
 	return err
 }
 
-func (p *Postgres) UpsertGitCredential(ctx context.Context, name, host, credType, secretRef, knownHosts string) error {
-	_, err := p.pool.Exec(ctx, `
-		INSERT INTO git_credentials(name, host, cred_type, secret_ref, known_hosts)
-		VALUES ($1, $2, $3, $4, $5)
+// gitCredentialConfig is the JSON stored in git_credentials.config.
+type gitCredentialConfig struct {
+	GitHubApp *api.GitHubAppConfig `json:"githubApp,omitempty"`
+	JobAccess *api.GitJobAccess    `json:"jobAccess,omitempty"`
+}
+
+const gitCredentialColumns = `id, name, host, cred_type, secret_ref, known_hosts, controller_use, config, created_at, updated_at`
+
+// scanGitCredential scans a row selected with gitCredentialColumns.
+func scanGitCredential(row pgx.Row) (*GitCredential, error) {
+	var gc GitCredential
+	var cfgJSON []byte
+	if err := row.Scan(&gc.ID, &gc.Name, &gc.Host, &gc.CredType, &gc.SecretRef, &gc.KnownHosts, &gc.ControllerUse, &cfgJSON, &gc.CreatedAt, &gc.UpdatedAt); err != nil {
+		return nil, err
+	}
+	var cfg gitCredentialConfig
+	if len(cfgJSON) > 0 {
+		if err := json.Unmarshal(cfgJSON, &cfg); err != nil {
+			return nil, fmt.Errorf("decode git credential config %q: %w", gc.Name, err)
+		}
+	}
+	gc.GitHubApp = cfg.GitHubApp
+	gc.JobAccess = cfg.JobAccess
+	return &gc, nil
+}
+
+func (p *Postgres) UpsertGitCredential(ctx context.Context, gc GitCredential) error {
+	cfgJSON, err := json.Marshal(gitCredentialConfig{GitHubApp: gc.GitHubApp, JobAccess: gc.JobAccess})
+	if err != nil {
+		return err
+	}
+	_, err = p.pool.Exec(ctx, `
+		INSERT INTO git_credentials(name, host, cred_type, secret_ref, known_hosts, controller_use, config)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
 		ON CONFLICT (name) DO UPDATE
 		SET host = EXCLUDED.host,
 		    cred_type = EXCLUDED.cred_type,
 		    secret_ref = EXCLUDED.secret_ref,
 		    known_hosts = EXCLUDED.known_hosts,
+		    controller_use = EXCLUDED.controller_use,
+		    config = EXCLUDED.config,
 		    updated_at = NOW()`,
-		name, host, credType, secretRef, knownHosts)
+		gc.Name, gc.Host, gc.CredType, gc.SecretRef, gc.KnownHosts, gc.ControllerUse, string(cfgJSON))
 	return err
 }
 
-func (p *Postgres) GetGitCredentialByHost(ctx context.Context, host string) (*GitCredential, error) {
-	var gc GitCredential
-	err := p.pool.QueryRow(ctx,
-		`SELECT id, name, host, cred_type, secret_ref, known_hosts, created_at, updated_at
-		 FROM git_credentials WHERE host = $1 ORDER BY updated_at DESC LIMIT 1`,
-		host).Scan(&gc.ID, &gc.Name, &gc.Host, &gc.CredType, &gc.SecretRef, &gc.KnownHosts, &gc.CreatedAt, &gc.UpdatedAt)
+// GetGitCredential returns the named credential, or (nil, nil) when absent.
+func (p *Postgres) GetGitCredential(ctx context.Context, name string) (*GitCredential, error) {
+	gc, err := scanGitCredential(p.pool.QueryRow(ctx,
+		`SELECT `+gitCredentialColumns+` FROM git_credentials WHERE name = $1`, name))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, err
+	return gc, err
+}
+
+// GetGitCredentialByHost returns the most recently updated controller-usable
+// credential (controller_use = true) for host, or (nil, nil) when none exists.
+func (p *Postgres) GetGitCredentialByHost(ctx context.Context, host string) (*GitCredential, error) {
+	gc, err := scanGitCredential(p.pool.QueryRow(ctx,
+		`SELECT `+gitCredentialColumns+`
+		 FROM git_credentials WHERE host = $1 AND controller_use ORDER BY updated_at DESC LIMIT 1`, host))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
 	}
-	return &gc, nil
+	return gc, err
 }
 
 func (p *Postgres) ListGitCredentials(ctx context.Context) ([]GitCredential, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, name, host, cred_type, secret_ref, known_hosts, created_at, updated_at
-		 FROM git_credentials ORDER BY name`)
+		`SELECT `+gitCredentialColumns+` FROM git_credentials ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var list []GitCredential
 	for rows.Next() {
-		var gc GitCredential
-		if err := rows.Scan(&gc.ID, &gc.Name, &gc.Host, &gc.CredType, &gc.SecretRef, &gc.KnownHosts, &gc.CreatedAt, &gc.UpdatedAt); err != nil {
+		gc, err := scanGitCredential(rows)
+		if err != nil {
 			return nil, err
 		}
-		list = append(list, gc)
+		list = append(list, *gc)
 	}
 	return list, rows.Err()
 }
@@ -2996,13 +3034,22 @@ func (p *Postgres) DeleteGitCredential(ctx context.Context, name string) error {
 }
 
 // InsertAuditLog records a single state-changing API operation. Empty
-// Permission, Scope, GrantedBy, ActorID and ActorSub are stored as NULL.
+// Permission, Scope, GrantedBy, ActorID and ActorSub are stored as NULL, as is
+// Details when nil or empty.
 func (p *Postgres) InsertAuditLog(ctx context.Context, e AuditEntry) error {
 	const q = `
-		INSERT INTO audit_logs(actor, method, path, action, resource, status, permission, scope, granted_by, actor_id, actor_sub)
-		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''))`
+		INSERT INTO audit_logs(actor, method, path, action, resource, status, permission, scope, granted_by, actor_id, actor_sub, details)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), $12::jsonb)`
+	var details any // nil binds as SQL NULL
+	if len(e.Details) > 0 {
+		b, err := json.Marshal(e.Details)
+		if err != nil {
+			return fmt.Errorf("encode audit details: %w", err)
+		}
+		details = string(b)
+	}
 	_, err := p.pool.Exec(ctx, q, e.Actor, e.Method, e.Path, e.Action, e.Resource, e.Status, e.Permission, e.Scope, e.GrantedBy,
-		e.ActorID, e.ActorSub)
+		e.ActorID, e.ActorSub, details)
 	return err
 }
 
@@ -3011,7 +3058,7 @@ func (p *Postgres) ListAuditLogs(ctx context.Context, limit, offset int) ([]api.
 	const q = `
 		SELECT id, occurred_at, actor, method, path, action, resource, status,
 		       COALESCE(permission, ''), COALESCE(scope, ''), COALESCE(granted_by, ''),
-		       COALESCE(actor_id, ''), COALESCE(actor_sub, '')
+		       COALESCE(actor_id, ''), COALESCE(actor_sub, ''), details
 		FROM audit_logs
 		ORDER BY occurred_at DESC, id DESC
 		LIMIT $1 OFFSET $2`
@@ -3023,9 +3070,13 @@ func (p *Postgres) ListAuditLogs(ctx context.Context, limit, offset int) ([]api.
 	list := make([]api.AuditLog, 0)
 	for rows.Next() {
 		var a api.AuditLog
+		var details []byte
 		if err := rows.Scan(&a.ID, &a.OccurredAt, &a.Actor, &a.Method, &a.Path, &a.Action, &a.Resource, &a.Status,
-			&a.Permission, &a.Scope, &a.GrantedBy, &a.ActorID, &a.ActorSub); err != nil {
+			&a.Permission, &a.Scope, &a.GrantedBy, &a.ActorID, &a.ActorSub, &details); err != nil {
 			return nil, err
+		}
+		if len(details) > 0 {
+			a.Details = json.RawMessage(details)
 		}
 		list = append(list, a)
 	}
@@ -3047,7 +3098,7 @@ func (p *Postgres) DeleteAuditLogsOlderThan(ctx context.Context, before time.Tim
 // whose resolution has been transiently failing (see failureBackoff).
 func (p *Postgres) ListPendingRuns(ctx context.Context, limit int, excluded []string) ([]PendingRun, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, spec, created_at FROM runs
+		`SELECT id, job_name, spec, created_at FROM runs
 		 WHERE status = 'Pending' AND id != ALL($2::uuid[])
 		 ORDER BY created_at LIMIT $1`,
 		limit, excluded)
@@ -3058,7 +3109,7 @@ func (p *Postgres) ListPendingRuns(ctx context.Context, limit int, excluded []st
 	var list []PendingRun
 	for rows.Next() {
 		var r PendingRun
-		if err := rows.Scan(&r.ID, &r.Spec, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.JobName, &r.Spec, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, r)

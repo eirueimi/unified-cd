@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -637,6 +638,25 @@ type AuditLog struct {
 	ActorID string `json:"actorId,omitempty"`
 	// ActorSub is the OIDC subject behind the actor, when there is one.
 	ActorSub string `json:"actorSub,omitempty"`
+	// Details is optional structured context for the event (for example the
+	// repositories a git token was minted for); absent when none was recorded.
+	Details json.RawMessage `json:"details,omitempty"`
+}
+
+// GitHubAppConfig identifies a GitHub App registration used by a githubApp
+// GitCredential.
+type GitHubAppConfig struct {
+	AppID          int64  `json:"appId"`
+	InstallationID int64  `json:"installationId,omitempty"`
+	APIURL         string `json:"apiURL,omitempty"`
+}
+
+// GitJobAccess is the policy bounding what a job-side token minted from a
+// GitCredential may reach.
+type GitJobAccess struct {
+	Folders      []string          `json:"folders"`
+	Repositories []string          `json:"repositories"`
+	Permissions  map[string]string `json:"permissions"`
 }
 
 // ---- appsource ----

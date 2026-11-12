@@ -60,6 +60,7 @@ var schemaSentinels = []sentinel{
 	{version: 26, migration: "026_enrollment_policy_providers", table: "agent_enrollment_policies"},
 	{version: 27, migration: "027_audit_actor_identity", table: "audit_logs", column: "actor_id"},
 	{version: 28, migration: "028_git_credential_known_hosts", table: "git_credentials", column: "known_hosts"},
+	{version: 29, migration: "029_github_app_credentials", table: "git_credentials", column: "config"},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel

@@ -90,7 +90,7 @@ func applyResource(ctx context.Context, st store.Store, kind, dir string, doc []
 		if err != nil {
 			return "", err
 		}
-		if err := st.UpsertGitCredential(ctx, gc.Metadata.Name, gc.Spec.Host, gc.Spec.Type, gc.Spec.SecretRef, gc.Spec.KnownHosts); err != nil {
+		if err := st.UpsertGitCredential(ctx, store.GitCredential{Name: gc.Metadata.Name, Host: gc.Spec.Host, CredType: gc.Spec.Type, SecretRef: gc.Spec.SecretRef, KnownHosts: gc.Spec.KnownHosts, ControllerUse: true}); err != nil {
 			return "", fmt.Errorf("%w: %v", errStoreWrite, err)
 		}
 		return gc.Metadata.Name, nil

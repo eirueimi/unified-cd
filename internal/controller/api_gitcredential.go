@@ -6,6 +6,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -41,7 +42,7 @@ func (s *Server) handleUpsertGitCredential(w http.ResponseWriter, r *http.Reques
 		writeGuardError(w, err)
 		return
 	}
-	if err := s.store.UpsertGitCredential(r.Context(), req.Name, req.Host, req.CredType, req.SecretRef, req.KnownHosts); err != nil {
+	if err := s.store.UpsertGitCredential(r.Context(), store.GitCredential{Name: req.Name, Host: req.Host, CredType: req.CredType, SecretRef: req.SecretRef, KnownHosts: req.KnownHosts, ControllerUse: true}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
