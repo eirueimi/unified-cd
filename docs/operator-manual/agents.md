@@ -423,7 +423,7 @@ author:
 
 | Capability | Meaning | Reported by |
 |---|---|---|
-| `native` | Can run a step as a plain host process | Standard agent (always, unless native execution is disabled with `--disable-native`; see [Disabling native execution](#disabling-native-execution)) |
+| `native` | Can run a step as a plain host process | Standard agent (when a native shell is found at startup, unless native execution is disabled with `--disable-native`; see [Disabling native execution](#disabling-native-execution) and [Native shell not found](#native-shell-not-found)) |
 | `container` | Can run a step inside an isolated container | Standard agent (when a container runtime — docker/podman/nerdctl — is detected), Kubernetes agent (always) |
 | `pod` | Can build a Kubernetes Pod | Kubernetes agent (always) |
 | `securitycontext` | Can honour a job's `securityContext` (`runAsUser`, `fsGroup`, ...) the way Kubernetes does | Standard agent, only when its startup probe passes (see [Job isolation notes](../reference/configuration.md#job-isolation-notes)). The controller adds it to every agent that advertises `pod`; the Kubernetes agent does not report it itself. |
@@ -433,8 +433,10 @@ detects a container runtime at startup, plus `securitycontext` when its startup
 probe shows that runtime honours a `securityContext`. The Kubernetes agent reports
 `["pod", "container"]`.
 
-With `--disable-native` the standard agent leaves `native` out of that list (see
-[Disabling native execution](#disabling-native-execution)).
+With `--disable-native`, or when the agent finds no native shell at startup, the
+standard agent leaves `native` out of that list (see
+[Disabling native execution](#disabling-native-execution) and
+[Native shell not found](#native-shell-not-found)).
 
 The controller also **normalizes** every capability set it stores: `pod` implies
 `securitycontext`. A Kubernetes agent, whether from before `securitycontext` existed or
@@ -631,12 +633,17 @@ is on, the agent:
   runtime is available: the agent would have no capabilities` when no container runtime is
   usable, because it could then run nothing.
 
+An agent that finds no native shell at startup behaves the same way without being asked to; see
+[Native shell not found](#native-shell-not-found).
+
 ---
 
 ## Windows Agents
 
-On Windows hosts, `step.run` is executed via [Git Bash](https://git-scm.com/download/win)
-(Windows does not have a native POSIX shell).
+On Windows hosts, the steps of a `native: true` job run via [Git Bash](https://git-scm.com/download/win)
+(Windows does not have a native POSIX shell). Git Bash is optional: isolated jobs run in Linux
+containers through the `ucd-sh` shim and never use it. An agent without Git Bash starts anyway and
+simply does not advertise `native` (see [Native shell not found](#native-shell-not-found)).
 
 Each host step runs inside its own Windows Job Object (`KILL_ON_JOB_CLOSE`), so cancelling a
 step kills the whole process tree, including grandchildren the shell spawned. The step's
@@ -646,17 +653,38 @@ kills the process without running it and the step fails with
 `step not started: could not confine process to a Job Object: ...`; there is no fallback that
 would leave descendants unkillable on cancellation.
 
-### Git Bash not found
+### Native shell not found
 
-At agent startup, the PATH and known install locations (e.g. `C:\Program Files\Git\bin\bash.exe`)
-are searched. If Git Bash is not found, **the agent exits with an error at startup**
-(previously the failure was only discovered at the first step execution).
+At startup every standard agent looks for the shell that `native: true` steps use:
+
+- **Windows:** Git for Windows at its known install locations (e.g.
+  `C:\Program Files\Git\bin\bash.exe`), then a `bash` on `PATH`. The WSL launcher
+  `%SystemRoot%\System32\bash.exe` is never accepted.
+- **Linux and macOS:** `bash` on `PATH`.
+
+The path found is the one used to run native steps; the agent never execs a bare `bash`.
+
+If no shell is found the agent **does not exit**. It logs a warning and leaves `native` out of its
+capabilities, exactly like [`--disable-native`](#disabling-native-execution), so the controller
+never routes a `native: true` job to it. Isolated jobs keep working when a container runtime is
+available.
 
 ```
-shell check failed error="git bash not found — install Git for Windows (https://git-scm.com/download/win) or add bash.exe to PATH"
+WARN no native shell: this agent will not run native (host process) jobs; install Git for Windows (https://git-scm.com/download/win) or put a Git Bash bash.exe on PATH and restart the agent to enable them agentId=build-01
 ```
 
-Fix: Install [Git for Windows](https://git-scm.com/download/win) or add `bash.exe` to your PATH.
+If the agent has no native shell **and** no container runtime it would have no capabilities, so it
+refuses to start:
+
+```
+no native shell (bash) and no container runtime are available: the agent would have no capabilities; install Git for Windows (https://git-scm.com/download/win) or put a Git Bash bash.exe on PATH, or install a container runtime
+```
+
+Detection runs once per agent process: install Git for Windows (or bash) and restart the agent to
+enable native jobs. A `native: true` job that still reaches an agent without a shell (stale routing)
+fails with `native execution is unavailable on this agent: no native shell (bash) was found at startup; ...`.
+A `native: true` job with no other agent that advertises `native` stays `Queued`
+([unschedulable warning](../troubleshooting/runs-and-scheduling.md#job-stays-queued-unschedulable-warning)).
 
 ### UNIFIED_AGENT_OS environment variable
 
@@ -782,10 +810,10 @@ agent has a real host filesystem, so it takes a simpler path:
    install ucd-sh shim failed error="ucd-sh shim is not embedded in this agent binary (0 bytes): the committed internal/shim/embedded/ucd-sh-<arch> is missing or empty — run `go generate ./internal/shim/embedded/` and rebuild before starting the agent"
    ```
 
-This check runs alongside — but independently of — the Windows Git Bash
-`RequireShell` check (see [Windows Agents](#windows-agents)): both are
-startup-time hard-fails so a misconfigured agent never silently degrades
-into a confusing per-step failure. **Native steps are unaffected**: a
+This check is a startup-time hard-fail so a misconfigured agent never silently
+degrades into a confusing per-step failure. (A missing native shell is not a
+hard-fail by itself: see [Native shell not found](#native-shell-not-found).)
+**Native steps are unaffected**: a
 `native: true` job's steps still run as plain host processes under host
 `bash -lc` (or an explicit `shell:`), never touching `/.ucd` or the shim —
 see [Job Reference: `native: true`](../user-guide/writing-jobs/isolation-and-containers.md#native-true-host-process-jobs).

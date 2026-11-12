@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,16 +18,54 @@ import (
 	"github.com/eirueimi/unified-cd/internal/secrets"
 )
 
-// findShell returns the shell executable used for step execution.
-// On Windows it searches for git bash; on all other platforms it returns "bash".
+// errNoNativeShell is returned for a native step on an agent that found no
+// shell at startup. Such an agent does not advertise the native capability, so
+// this is defence in depth against stale routing.
+var errNoNativeShell = errors.New("no native shell available on this agent: " + nativeShellHint())
+
+// nativeShellHint tells the operator what to install for native steps.
+func nativeShellHint() string {
+	if runtime.GOOS == "windows" {
+		return "install Git for Windows (https://git-scm.com/download/win) or put a Git Bash bash.exe on PATH"
+	}
+	return "install bash and put it on PATH"
+}
+
+var (
+	nativeShellOnce sync.Once
+	nativeShellPath string
+)
+
+// NativeShellPath returns the shell used for native (host process) steps,
+// resolved once per process, or "" when none was found. The agent calls it at
+// startup to decide whether to advertise the native capability; step execution
+// then uses the same path, so a bare "bash" is never exec'd (on Windows that
+// can resolve to the WSL launcher).
+func NativeShellPath() string {
+	nativeShellOnce.Do(func() {
+		if p, ok := locateNativeShell(runtime.GOOS, exec.LookPath, fileExists, os.UserHomeDir); ok {
+			nativeShellPath = p
+		}
+	})
+	return nativeShellPath
+}
+
+// findShell returns the shell executable used for step execution, or "" when
+// none was found at startup. It never falls back to a bare "bash".
 func findShell() string {
-	if runtime.GOOS != "windows" {
-		return "bash"
+	return NativeShellPath()
+}
+
+// locateNativeShell finds the native step shell: git bash on Windows, bash on
+// PATH everywhere else. lookPath/exists/homeDir are injected for testability.
+func locateNativeShell(goos string, lookPath func(string) (string, error), exists func(string) bool, homeDir func() (string, error)) (string, bool) {
+	if goos == "windows" {
+		return locateGitBash(lookPath, exists, homeDir)
 	}
-	if path, ok := locateGitBash(exec.LookPath, fileExists, os.UserHomeDir); ok {
-		return path
+	if path, err := lookPath("bash"); err == nil {
+		return path, true
 	}
-	return "bash"
+	return "", false
 }
 
 func fileExists(path string) bool {
@@ -69,25 +108,6 @@ func isWSLLauncher(path string) bool {
 	return strings.HasSuffix(normalized, `\system32\bash.exe`)
 }
 
-// requireShellFor returns an error when goos is "windows" and git bash cannot be found.
-// On all other platforms it always returns nil (bash is assumed to be available from the OS).
-// lookPath/exists/homeDir are injected for testability.
-func requireShellFor(goos string, lookPath func(string) (string, error), exists func(string) bool, homeDir func() (string, error)) error {
-	if goos != "windows" {
-		return nil
-	}
-	if _, ok := locateGitBash(lookPath, exists, homeDir); ok {
-		return nil
-	}
-	return fmt.Errorf("git bash not found — install Git for Windows (https://git-scm.com/download/win) or add bash.exe to PATH")
-}
-
-// RequireShell returns an error if git bash cannot be found on Windows.
-// Call it once at agent startup to surface the failure early rather than only at the first step execution.
-func RequireShell() error {
-	return requireShellFor(runtime.GOOS, exec.LookPath, fileExists, os.UserHomeDir)
-}
-
 // buildBashStepCmd builds the *exec.Cmd for running a native step's script with
 // bash. On Windows the script travels via the __UCD_STEP_SCRIPT environment
 // variable and the argv is a fixed, backslash-free loader (eval "$__UCD_STEP_SCRIPT"):
@@ -120,6 +140,9 @@ func buildBashStepCmd(script string, baseEnv []string) *exec.Cmd {
 // made visible to the step. If workDir is non-empty, the command runs with
 // that directory as the working directory.
 func RunStep(ctx context.Context, script string, stdout, stderr io.Writer, extraEnv []string, exposeEnv []string, workDir string) (int, error) {
+	if findShell() == "" {
+		return -1, errNoNativeShell
+	}
 	// Env is set inside buildBashStepCmd (never nil): a nil cmd.Env makes
 	// os/exec inherit the agent's whole environment, which is exactly the leak
 	// StepEnv exists to prevent.
