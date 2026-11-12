@@ -223,6 +223,47 @@ controller use, from the repository being fetched.
   `github-token`. The builder adds the param; the default stays
   `github-token`.
 
+## Several organizations in one job (helper template)
+
+An installation token covers one installation, which is one organization, so
+a job that fetches private repositories of two organizations (for example
+`go mod tidy` with modules from `acme` and `widget`) needs two GitCredentials
+and must route each organization to its own token.
+
+Decided by the user: route with a git credential helper that reads the token
+from an environment variable. Do not put tokens in URLs (`insteadOf` with
+`https://x-access-token:<token>@...`): that writes the token to a config
+file (on a native job, the agent user's `~/.gitconfig`, shared across runs),
+passes it in the argv of `git-remote-https` (visible to other processes), and
+can surface it in error output written to artifacts or caches.
+
+A new template (name is the builder's call, for example `git-auth-run`):
+
+- Params: a list of GitCredential names, and the command to run.
+- For each credential it sets an environment variable with the token
+  (`{{ index .Secrets <name> }}`) and adds, through `GIT_CONFIG_COUNT` /
+  `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` (git 2.31+), so nothing is
+  written to disk:
+  - `credential.useHttpPath=true`
+  - `credential.https://<host>/<owner>.helper=` a shell function that prints
+    `username=x-access-token` and `password=$<VAR>`
+  The owner comes from the credential's `jobAccess.repositories` (single
+  owner, see Resource shape). The template receives it as a param next to
+  each credential name, because templates cannot read GitCredentials.
+- Then it runs the command in the same step, so the variables exist only in
+  that step. unified-cd has no mechanism to carry environment variables from
+  one step to the next, and an isolated job's `$HOME` is fresh per run, so a
+  configure-once step would not reach later steps.
+- The builder confirms with a real git that a path-scoped
+  `credential.<url>.helper` with `useHttpPath` selects the right helper per
+  organization, and that `go` (which runs git) picks it up, in a test.
+
+Prior art, for the docs: the `gh` CLI's `gh auth setup-git` registers
+`gh auth git-credential` as a helper that reads `GH_TOKEN`; it is per host,
+so one token for all of github.com, and does not split organizations. Git
+Credential Manager is aimed at interactive sign-in and stores credentials in
+the OS keychain; neither mints App tokens.
+
 ## Audit and metrics
 
 - `audit_logs` has no details column today. Migration 029 adds one (for
@@ -280,6 +321,7 @@ controller use, from the repository being fetched.
   param on `github-commit-status.yaml`
 - A migration note only if a behaviour of existing setups changes (none is
   expected; `controllerUse` defaults to today's behaviour)
+- `templates/README.md` entry for the helper template
 - `TODO.md` (Open items)
 
 ## Open items (not in this version)
