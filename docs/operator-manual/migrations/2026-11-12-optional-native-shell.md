@@ -17,7 +17,7 @@ Nothing for agents that have a shell. If you relied on the Windows agent failing
 missing Git Bash, watch for the `no native shell` warning in the agent log or check that `native` is
 in the agent's capabilities instead. A `native: true` job whose only candidate agents lack a shell
 stays `Queued` (see the [unschedulable
-warning](../troubleshooting/runs-and-scheduling.md#job-stays-queued-unschedulable-warning)).
+warning](../../troubleshooting/runs-and-scheduling.md#job-stays-queued-unschedulable-warning)).
 Install Git for Windows (or bash) and restart the agent to enable native jobs.
 
 See [Native shell not found](../agents.md#native-shell-not-found).
