@@ -5,6 +5,10 @@
 #   unified-cd secret set github-token ghp_xxxx
 #   Required permission: repo:status
 #
+# token_secret (default github-token) names the secret to use. The name of a
+# GitHub App GitCredential with jobAccess works too: the token is then a
+# short-lived installation token (needs the "statuses: write" permission).
+#
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/github-commit-status.yaml@v1
 apiVersion: unified-cd/v1
@@ -42,10 +46,14 @@ spec:
         type: string
         default: ""
         description: "Details link URL (e.g. the run's detail page URL)"
+      - name: token_secret
+        type: string
+        default: "github-token"
+        description: "Name of the secret (or GitHub App GitCredential) holding the token"
   steps:
     - name: update_status
       env:
-        GITHUB_TOKEN: "{{ .Secrets.github-token }}"
+        GITHUB_TOKEN: "{{ index .Secrets .Params.token_secret }}"
         OWNER: "{{ .Params.owner }}"
         REPO: "{{ .Params.repo }}"
         SHA: "{{ .Params.sha }}"

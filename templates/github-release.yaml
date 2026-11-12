@@ -5,6 +5,9 @@
 #   unified-cd secret set github-token ghp_xxxx
 #   Required permission: contents:write
 #
+# token_secret may also name a GitHub App GitCredential with jobAccess
+# (short-lived installation token).
+#
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/github-release.yaml@v1
 apiVersion: unified-cd/v1

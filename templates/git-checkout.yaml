@@ -1,3 +1,6 @@
+# Clone/checkout a Git repository. For HTTPS, token_secret may name a secret
+# or a GitHub App GitCredential with jobAccess (short-lived installation token).
+#
 apiVersion: unified-cd/v1
 kind: JobTemplate
 metadata:
