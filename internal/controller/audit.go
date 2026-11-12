@@ -106,16 +106,16 @@ func auditResourceFromParam(r *http.Request, param string) string {
 // also reads the request body: its handler responds 204 No Content with no
 // body, so a "response" source would always resolve to an empty resource.
 var auditBodyNameSource = map[string]string{
-	"job.apply":               "response",
-	"run.trigger":             "response",
-	"secret.set":              "request",
-	"gitcredential.upsert":    "request",
-	"token.create":            "response",
-	"webhook.apply":           "response",
-	"vars.apply":              "response",
-	"schedule.apply":          "response",
-	"appsource.apply":         "response",
-	"agent.policy.create":     "request",
+	"job.apply":            "response",
+	"run.trigger":          "response",
+	"secret.set":           "request",
+	"gitcredential.upsert": "request",
+	"token.create":         "response",
+	"webhook.apply":        "response",
+	"vars.apply":           "response",
+	"schedule.apply":       "response",
+	"appsource.apply":      "response",
+	"agent.policy.create":  "request",
 }
 
 const auditBodyPeekLimit = 1 << 16 // 64 KiB is plenty for the small JSON envelopes these handlers use.

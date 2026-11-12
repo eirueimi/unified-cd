@@ -152,7 +152,9 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 	switch kindProbe.Kind {
 	case "GitCredential":
 		var kindMeta struct {
-			Metadata struct{ Name string `yaml:"name"` } `yaml:"metadata"`
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
 		}
 		_ = yaml.Unmarshal(b, &kindMeta)
 		fmt.Fprintf(cmd.OutOrStdout(), "gitcredential applied: %s\n", kindMeta.Metadata.Name)
