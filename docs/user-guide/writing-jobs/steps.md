@@ -38,7 +38,8 @@ steps:
   image. See [Shell (`shell:`)](#shell-shell) to override it.
 - **`native: true` jobs:** the script runs as a host process under host
   `bash -lc` (Git Bash on Windows) by default, unless overridden with
-  `shell:`.
+  `shell:`. An agent with no such bash does not advertise `native`, so these
+  jobs are only routed to agents that have one.
 - Exit code non-zero fails the step.
 - Environment variable `UNIFIED_AGENT_OS` (`linux` / `darwin` / `windows`) is always injected.
 - Multi-line `run: |` scripts are executed **without** `set -e`: a failing

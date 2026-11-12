@@ -991,7 +991,7 @@ there is no separate install step. The agent refuses a non-loopback `http://`
 `--label` on `enrollment create` and are fixed for that agent's lifetime; the
 agent process's own `--labels` flag is ignored for every agent. Capabilities
 are not set at enrollment: the agent auto-detects and self-reports them
-(`native` always, plus `container` when it can reach a container runtime) on
+(`native` when a native shell is found and not disabled, plus `container` when it can reach a container runtime) on
 every registration — see [Capabilities and routing](../operator-manual/agents.md#capabilities-and-routing).
 
 By default (no `--output-file`), `enrollment create` prints the token to

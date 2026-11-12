@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -201,14 +200,6 @@ func TestRunStepCapture_CredentialsNotInheritedByChild(t *testing.T) {
 		"positive control: an ExposeEnv-allowlisted variable must still reach the child")
 }
 
-func TestFindShell_NonWindows(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("non-Windows test")
-	}
-	shell := findShell()
-	assert.Equal(t, "bash", shell)
-}
-
 func alwaysFailLookPath(string) (string, error) { return "", os.ErrNotExist }
 func alwaysFailExists(string) bool              { return false }
 func noHomeDir() (string, error)                { return "", os.ErrNotExist }
@@ -312,22 +303,6 @@ func statSize(t *testing.T, path string) int64 {
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	return info.Size()
-}
-
-func TestRequireShellFor_NonWindows_AlwaysNil(t *testing.T) {
-	err := requireShellFor("linux", alwaysFailLookPath, alwaysFailExists, noHomeDir)
-	assert.NoError(t, err)
-}
-
-func TestRequireShellFor_WindowsFound_Nil(t *testing.T) {
-	lookPath := func(string) (string, error) { return `C:\Git\bin\bash.exe`, nil }
-	err := requireShellFor("windows", lookPath, alwaysFailExists, noHomeDir)
-	assert.NoError(t, err)
-}
-
-func TestRequireShellFor_WindowsNotFound_Error(t *testing.T) {
-	err := requireShellFor("windows", alwaysFailLookPath, alwaysFailExists, noHomeDir)
-	assert.Error(t, err)
 }
 
 func TestLogPusherPendingAccumulation(t *testing.T) {

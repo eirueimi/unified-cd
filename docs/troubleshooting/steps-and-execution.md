@@ -71,6 +71,20 @@ execution. See [Disabling native execution](../operator-manual/agents.md#disabli
 An agent that exits at startup with `native execution is disabled (disableNative) and no container
 runtime is available` has no capabilities left: install a container runtime or drop the setting.
 
+### Agent log: "no native shell", or a native run fails with "no native shell (bash) was found"
+
+```text
+WARN no native shell: this agent will not run native (host process) jobs; ...
+native execution is unavailable on this agent: no native shell (bash) was found at startup; ...
+```
+
+At startup the agent looks for Git Bash (Windows) or `bash` on `PATH` (Linux/macOS). When none is
+found it keeps running, drops `native` from its capabilities and serves isolated jobs only, so
+`native: true` jobs queue until an agent with a shell exists. Install Git for Windows (or bash) and
+restart the agent. The Windows WSL launcher (`System32\bash.exe`) does not count. If the agent
+exits with `no native shell (bash) and no container runtime are available`, it has nothing to run:
+install either one. See [Native shell not found](../operator-manual/agents.md#native-shell-not-found).
+
 ### Run fails immediately on Kubernetes: "native: true jobs are host-only"
 
 **Symptom**
