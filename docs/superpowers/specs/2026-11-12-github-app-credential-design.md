@@ -337,3 +337,38 @@ the OS keychain; neither mints App tokens.
 - Package and type names, cache structure, metric names.
 - `config` jsonb versus dedicated columns.
 - Exact error wording, within the rules above.
+
+## Rulings made while planning
+
+Recorded by the controller session; the plan implements them.
+
+- The `uses:` template cache is partitioned by credential, and its keys move
+  to a new prefix, so a run that `jobAccess` does not allow never reads a
+  template cached by an allowed run.
+- The agent secrets fetch refuses any name that is the `secretRef` of a
+  `githubApp` credential, so a job cannot read the private key as a secret.
+- The token cache key includes the credential's App ID, installation ID, API
+  URL, key reference and the normalized request, so narrowing `jobAccess`
+  takes effect on the next hand-out.
+- Installation lookup without a concrete repository uses
+  `/orgs/{owner}/installation`, then `/users/{owner}/installation`.
+- Pattern expansion lists repositories with a listing-only token
+  (`metadata: read`) that is never cached or handed out. No match is an
+  error; the request is never sent with an empty list. More than 500 matches
+  is an error.
+- `uses:` needs `contents` of at least `read` in `jobAccess.permissions`;
+  otherwise the fetch is anonymous.
+- `jobAccess.folders` must be non-empty.
+- Default API URL: `https://api.github.com` for `github.com`, otherwise
+  `https://<host>/api/v3`; `apiURL` must be https.
+- The helper template has four fixed credential/owner slots, and it clears
+  inherited helpers for each owner before adding its own.
+- The helper test proves per-organization helper selection with git over a
+  TLS test server; that `go` picks it up follows from `go` running git with
+  the same environment, which the docs state.
+- `gittemplate.Credential` gains `Username` so `githubApp` can send
+  `x-access-token`.
+- If a StoredSecret and a `jobAccess` credential end up with one name (only
+  through a race), the credential wins in the fetch.
+- An AppSource with an SSH `repoURL` and a `githubApp` credential is an error
+  that asks for an https `repoURL`.
