@@ -47,6 +47,7 @@ labels:
 # disableNative: true stops this agent from running native: true jobs (plain host processes with no
 # isolation). It does not advertise the native capability, so such jobs are routed elsewhere, and it
 # fails any native run that still arrives. The agent refuses to start with no container runtime.
+# (An agent that finds no bash / Git Bash at startup does the same automatically, without this setting.)
 # Default false. Flag: --disable-native; env: UNIFIED_AGENT_DISABLE_NATIVE.
 # disableNative: false
 

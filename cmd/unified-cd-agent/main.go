@@ -167,10 +167,6 @@ func main() {
 		slog.Error("invalid --server", "error", err)
 		os.Exit(1)
 	}
-	if err := agent.RequireShell(); err != nil {
-		slog.Error("shell check failed", "error", err)
-		os.Exit(1)
-	}
 	resolvedWorkspaceDir, err := agent.ResolveWorkspaceDir(*workspaceDir)
 	if err != nil {
 		slog.Error("resolve workspace directory", "error", err)
@@ -226,6 +222,9 @@ func main() {
 	a := agent.NewWithLabels("", labels, nil)
 	a.RuntimePref = *containerRuntime
 	a.DisableNative = *disableNative
+	// A missing native shell is not fatal: the agent drops the native capability
+	// (like --disable-native) and still runs isolated jobs.
+	a.NoNativeShell = agent.NativeShellPath() == ""
 	a.PauseImage = *pauseImage
 	a.RunnerImage = *runnerImage
 	a.ToolsDir = toolsDir

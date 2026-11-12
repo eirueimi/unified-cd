@@ -149,6 +149,7 @@ nav:
           - "Hardened Production Compose": operator-manual/migrations/2026-11-09-production-compose-hardening.md
           - "Trusted Proxies for Client Addresses": operator-manual/migrations/2026-11-09-trusted-proxies.md
           - "Host Agents Require https": operator-manual/migrations/2026-11-09-agent-require-https.md
+          - "Host Agents Start Without a Native Shell": operator-manual/migrations/2026-11-12-optional-native-shell.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md
