@@ -371,3 +371,27 @@ func (f *credRecordingFetcher) Fetch(_ context.Context, _ gittemplate.URI, cred 
 	}
 	return f.yaml, nil
 }
+
+// A token or sshKey credential stored (bypassing the save-time check) with the
+// secretRef of a githubApp credential is refused at use time: the App private
+// key never leaves the controller as a password or SSH key.
+func TestGitCredResolver_StaticCredentialRefusesGitHubAppKey(t *testing.T) {
+	e := newGitCredEnv(t)
+	ctx := context.Background()
+	e.putGitHubApp(t, nil)
+	for _, typ := range []string{"token", "sshKey"} {
+		require.NoError(t, e.st.UpsertGitCredential(ctx, store.GitCredential{
+			Name: "exfil", Host: "attacker.example", CredType: typ, SecretRef: "gh-app-key", ControllerUse: true,
+		}))
+		cred, err := e.creds.ForUses(ctx, gittemplate.CredentialRequest{Host: "attacker.example", Owner: "acme", Repo: "ci", JobName: "build"})
+		require.Error(t, err)
+		assert.Equal(t, gittemplate.Credential{}, cred)
+		assert.Contains(t, err.Error(), `GitCredential "exfil" for host "attacker.example": secretRef "gh-app-key" is the private key of GitHub App credential "gh-app" and is never used as a token or SSH key`)
+		assert.NotContains(t, err.Error(), string(e.keyPEM))
+		assert.NotContains(t, err.Error(), "PRIVATE KEY-----")
+
+		_, err = e.creds.ForAppSource(ctx, "https://attacker.example/acme/app.git")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "is never used as a token or SSH key")
+	}
+}

@@ -194,3 +194,40 @@ func TestAPI_GitCredentialNameCollidesWithSecret(t *testing.T) {
 	})
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 }
+
+func TestAPI_GitCredential_TokenCannotUseGitHubAppKey(t *testing.T) {
+	s, _ := newTestServerWithKM(t)
+	mustSetSecret(t, s, "github-app-key", "-----BEGIN RSA PRIVATE KEY-----\nTOPSECRETKEYMATERIAL\n-----END RSA PRIVATE KEY-----")
+	rec := postGitCredential(t, s, gitHubAppRequest("gh-app-release"))
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	for _, typ := range []string{"token", "sshKey"} {
+		rec = postGitCredential(t, s, api.UpsertGitCredentialRequest{
+			Name: "exfil-" + map[string]string{"token": "token", "sshKey": "ssh"}[typ], Host: "attacker.example", CredType: typ, SecretRef: "github-app-key",
+		})
+		require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+		assert.Contains(t, rec.Body.String(), `secretRef "github-app-key" is the private key of GitHub App credential "gh-app-release"; a token or sshKey GitCredential cannot use it`)
+		assert.NotContains(t, rec.Body.String(), "TOPSECRETKEYMATERIAL")
+	}
+	_, list := listGitCredentials(t, s)
+	require.Len(t, list, 1)
+}
+
+func TestAPI_GitCredential_GitHubAppCannotUseTokenSecret(t *testing.T) {
+	s, _ := newTestServerWithKM(t)
+	mustSetSecret(t, s, "github-app-key", "ghp_secretpat")
+	rec := postGitCredential(t, s, api.UpsertGitCredentialRequest{
+		Name: "plain", Host: "github.com", CredType: "token", SecretRef: "github-app-key",
+	})
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	rec = postGitCredential(t, s, gitHubAppRequest("gh-app-release"))
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `secretRef "github-app-key" is already used by token GitCredential "plain"; a GitHub App private key cannot be shared with a token or sshKey GitCredential`)
+	assert.NotContains(t, rec.Body.String(), "ghp_secretpat")
+
+	// Re-saving the same credential with a new type is not a clash with itself.
+	req := gitHubAppRequest("plain")
+	rec = postGitCredential(t, s, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+}

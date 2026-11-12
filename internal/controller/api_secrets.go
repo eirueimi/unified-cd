@@ -142,6 +142,11 @@ func (s *Server) handleAgentSecretsFetch(w http.ResponseWriter, r *http.Request)
 	}
 	for _, name := range req.Names {
 		if cred, ok := keyRefs[name]; ok {
+			// Audited: this is the attempt an operator most wants to see. The
+			// row names the secret, never its value.
+			s.auditAgentEvent(r, agentID, auditActionGitCredentialTokenIssue, cred, http.StatusForbidden, map[string]any{
+				"runId": req.RunID, "secretRef": name, "reason": "private_key",
+			})
 			http.Error(w, fmt.Sprintf("secret %q is the private key of GitHub App credential %q and is never delivered to jobs", name, cred), http.StatusForbidden)
 			return
 		}

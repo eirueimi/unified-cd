@@ -102,6 +102,28 @@ func TestParseRepositoryPatterns(t *testing.T) {
 
 	_, _, err = ParseRepositoryPatterns(nil)
 	require.Error(t, err)
+
+	// "owner/*" already covers every repository; mixing it with other
+	// patterns is rejected here, at apply time, not at every job fetch.
+	_, _, err = ParseRepositoryPatterns([]string{"acme/*", "acme/app"})
+	require.EqualError(t, err, `repositories ["acme/*" "acme/app"] mixes "owner/*" with other patterns; use "owner/*" alone for every repository of the installation`)
+	_, _, err = ParseRepositoryPatterns([]string{"acme/app", "acme/*"})
+	require.Error(t, err)
+}
+
+func TestGitCredentialValidate_StarMixedWithNames(t *testing.T) {
+	gc := &GitCredential{
+		APIVersion: SupportedAPIVersion, Kind: "GitCredential", Metadata: Metadata{Name: "gh-app"},
+		Spec: GitCredentialSpec{
+			Host: "github.com", Type: "githubApp", SecretRef: "k",
+			GitHubApp: &GitHubAppSpec{AppID: 1},
+			JobAccess: &GitJobAccessSpec{
+				Folders: []string{"team-a"}, Repositories: []string{"acme/*", "acme/app"},
+				Permissions: map[string]string{"contents": "read"},
+			},
+		},
+	}
+	require.EqualError(t, gc.Validate(), `spec.jobAccess.repositories ["acme/*" "acme/app"] mixes "owner/*" with other patterns; use "owner/*" alone for every repository of the installation`)
 }
 
 func TestMatchRepositoryName(t *testing.T) {

@@ -182,6 +182,19 @@ func (g *GitCredentialResolver) staticCredential(ctx context.Context, gc *store.
 	default:
 		return gittemplate.Credential{}, nil
 	}
+	// The private key of a GitHub App credential never leaves the controller:
+	// a token or sshKey credential naming it would hand it to git as a
+	// password or SSH key. Saving such a pairing is rejected; this guards rows
+	// written before that check or by a concurrent save.
+	creds, err := g.st.ListGitCredentials(ctx)
+	if err != nil {
+		return gittemplate.Credential{}, fmt.Errorf("GitCredential %q for host %q: list git credentials: %w", gc.Name, gc.Host, err)
+	}
+	for _, other := range creds {
+		if other.CredType == "githubApp" && other.SecretRef == gc.SecretRef {
+			return gittemplate.Credential{}, fmt.Errorf("GitCredential %q for host %q: secretRef %q is the private key of GitHub App credential %q and is never used as a token or SSH key", gc.Name, gc.Host, gc.SecretRef, other.Name)
+		}
+	}
 	plaintext, err := g.decryptSecret(ctx, gc.SecretRef)
 	if err != nil {
 		return gittemplate.Credential{}, fmt.Errorf("GitCredential %q for host %q: %w", gc.Name, gc.Host, err)

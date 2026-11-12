@@ -48,7 +48,7 @@ func newListGitCredentialsCmd(resolve func() (Config, error)) *cobra.Command {
 			if resp.StatusCode != http.StatusOK {
 				return fmt.Errorf("server: %s", string(body))
 			}
-			var list []api.GitCredentialMeta
+			var list []gitCredentialListItem
 			if err := json.Unmarshal(body, &list); err != nil {
 				return err
 			}
@@ -68,7 +68,7 @@ func newListGitCredentialsCmd(resolve func() (Config, error)) *cobra.Command {
 						line += " apiURL=" + app.APIURL
 					}
 				}
-				line += fmt.Sprintf(" controllerUse=%t", gc.ControllerUse)
+				line += fmt.Sprintf(" controllerUse=%t", gc.controllerUse())
 				if ja := gc.JobAccess; ja != nil {
 					perms := make([]string, 0, len(ja.Permissions))
 					for k, v := range ja.Permissions {
@@ -86,6 +86,20 @@ func newListGitCredentialsCmd(resolve func() (Config, error)) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// gitCredentialListItem decodes one entry of the gitcredentials list response on the CLI side.
+// It shadows api.GitCredentialMeta.ControllerUse with a pointer: a controller older than the
+// githubApp feature sends no controllerUse key, and that must read as true (the old behaviour),
+// not as false, or an export would turn controller use off for every credential.
+type gitCredentialListItem struct {
+	api.GitCredentialMeta
+	ControllerUse *bool `json:"controllerUse"`
+}
+
+// controllerUse reports the effective value; an absent key means true.
+func (g gitCredentialListItem) controllerUse() bool {
+	return g.ControllerUse == nil || *g.ControllerUse
 }
 
 func newDeleteGitCredentialCmd(resolve func() (Config, error)) *cobra.Command {

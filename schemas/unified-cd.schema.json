@@ -310,7 +310,7 @@
           "type": "object"
         },
         "repositories": {
-          "description": "Repositories lists the repositories a job token may reach, as \"owner/name\", \"owner/*\" or\n\"owner/prefix*\". All entries must share one owner.",
+          "description": "Repositories lists the repositories a job token may reach, as \"owner/name\", \"owner/*\" or\n\"owner/prefix*\". All entries must share one owner, and \"owner/*\" must stand alone.",
           "items": {
             "type": "string"
           },

@@ -64,10 +64,18 @@ func gitCredentialFromDSL(gc *dsl.GitCredential) (store.GitCredential, error) {
 	return out, nil
 }
 
-// checkSecretNamespaceCollision rejects a GitCredential with jobAccess whose
-// name is already taken by a StoredSecret (the two share the secrets
-// namespace). A failure other than a collision is returned unwrapped.
+// checkSecretNamespaceCollision rejects a GitCredential that clashes with
+// what is already stored, as an errNameCollision (409):
+//   - a GitCredential with jobAccess whose name is already taken by a
+//     StoredSecret (the two share the secrets namespace);
+//   - a GitHub App private key shared with a token or sshKey credential (see
+//     checkGitHubAppKeyPairing).
+//
+// A failure other than a collision is returned unwrapped.
 func checkSecretNamespaceCollision(ctx context.Context, st store.Store, gc store.GitCredential) error {
+	if err := checkGitHubAppKeyPairing(ctx, st, gc); err != nil {
+		return err
+	}
 	if gc.JobAccess == nil {
 		return nil
 	}
@@ -79,6 +87,38 @@ func checkSecretNamespaceCollision(ctx context.Context, st store.Store, gc store
 		return nil
 	}
 	return err
+}
+
+// checkGitHubAppKeyPairing rejects a secretRef shared between a githubApp
+// credential and a token or sshKey credential, in either direction. A token or
+// sshKey credential hands its secret's plaintext to git as a password or SSH
+// key, so pointing one at a GitHub App private key would send the key off the
+// controller. A stored credential of the same name is the one being replaced
+// and is not a clash.
+func checkGitHubAppKeyPairing(ctx context.Context, st store.Store, gc store.GitCredential) error {
+	if gc.SecretRef == "" {
+		return nil
+	}
+	isStatic := func(t string) bool { return t == "token" || t == "sshKey" }
+	if gc.CredType != "githubApp" && !isStatic(gc.CredType) {
+		return nil
+	}
+	creds, err := st.ListGitCredentials(ctx)
+	if err != nil {
+		return fmt.Errorf("list git credentials: %w", err)
+	}
+	for _, other := range creds {
+		if other.Name == gc.Name || other.SecretRef != gc.SecretRef {
+			continue
+		}
+		if isStatic(gc.CredType) && other.CredType == "githubApp" {
+			return nameCollisionError{fmt.Sprintf("secretRef %q is the private key of GitHub App credential %q; a token or sshKey GitCredential cannot use it", gc.SecretRef, other.Name)}
+		}
+		if gc.CredType == "githubApp" && isStatic(other.CredType) {
+			return nameCollisionError{fmt.Sprintf("secretRef %q is already used by %s GitCredential %q; a GitHub App private key cannot be shared with a token or sshKey GitCredential", gc.SecretRef, other.CredType, other.Name)}
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleUpsertGitCredential(w http.ResponseWriter, r *http.Request) {

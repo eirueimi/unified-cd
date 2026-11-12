@@ -156,3 +156,45 @@ func TestGitCredentialList_ShowsGitHubAppFields(t *testing.T) {
 	assert.Contains(t, out.String(), "type=githubApp appId=123456 installationId=7890123 controllerUse=true jobAccess=folders:team-a repos:acme/app,acme/infra-* perms:contents=write")
 	assert.Contains(t, out.String(), "installationId=auto apiURL=https://ghe.example.com/api/v3 controllerUse=false")
 }
+
+// legacyGitCredentialListJSON is a gitcredentials list response from a controller older than the
+// githubApp feature: it has no controllerUse key, which must read as true.
+const legacyGitCredentialListJSON = `[{"id":"1","name":"plain","host":"github.com","credType":"token","secretRef":"gh-token","createdAt":"2026-01-01T00:00:00Z"}]`
+
+func TestExport_GitCredentialWithoutControllerUseKeyFromOlderController(t *testing.T) {
+	tr := &captureTransport{responseFor: func(path string) (int, []byte) {
+		if path == "/api/v1/gitcredentials" {
+			return http.StatusOK, []byte(legacyGitCredentialListJSON)
+		}
+		return http.StatusOK, []byte("[]")
+	}}
+	dir := filepath.Join(t.TempDir(), "out")
+	cmd, _ := newTestExportCmd(tr)
+	cmd.SetArgs([]string{"-o", dir})
+	require.NoError(t, cmd.Execute())
+
+	b, err := os.ReadFile(filepath.Join(dir, "gitcredentials", "plain.yaml"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "controllerUse")
+	gc, err := dsl.ParseGitCredential(bytes.NewReader(b))
+	require.NoError(t, err)
+	assert.True(t, gc.Spec.ControllerUseOrDefault())
+}
+
+func TestGitCredentialList_WithoutControllerUseKeyFromOlderController(t *testing.T) {
+	tr := &captureTransport{responseFor: func(string) (int, []byte) {
+		return http.StatusOK, []byte(legacyGitCredentialListJSON)
+	}}
+	prev := http.DefaultClient.Transport
+	http.DefaultClient.Transport = tr
+	t.Cleanup(func() { http.DefaultClient.Transport = prev })
+
+	root := NewRoot()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--config", filepath.Join(t.TempDir(), "c.yaml"), "--server", "http://controller.test", "--token", "tok", "gitcredential", "list"})
+	require.NoError(t, root.Execute())
+
+	assert.Contains(t, out.String(), "plain\thost=github.com secretRef=gh-token type=token controllerUse=true")
+}

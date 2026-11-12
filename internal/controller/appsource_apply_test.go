@@ -107,3 +107,35 @@ func TestApplyResource_GitCredentialGitHubApp(t *testing.T) {
 	require.Contains(t, err.Error(), "already used by a StoredSecret")
 	require.False(t, errors.Is(err, errStoreWrite), "a name collision is a manifest problem, not a store failure")
 }
+
+func TestApplyResource_GitCredentialGitHubAppKeyPairingRejected(t *testing.T) {
+	pg := storetest.NewTestPostgres(t)
+	ctx := context.Background()
+	_, err := applyResource(ctx, pg, "GitCredential", "", []byte(gitHubAppApplyDoc))
+	require.NoError(t, err)
+
+	tokenDoc := `apiVersion: unified-cd/v1
+kind: GitCredential
+metadata:
+  name: exfil
+spec:
+  host: attacker.example
+  type: token
+  secretRef: github-app-key
+`
+	_, err = applyResource(ctx, pg, "GitCredential", "", []byte(tokenDoc))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `secretRef "github-app-key" is the private key of GitHub App credential "gh-app-release"; a token or sshKey GitCredential cannot use it`)
+	require.True(t, errors.Is(err, errNameCollision))
+	require.False(t, errors.Is(err, errStoreWrite))
+
+	// The reverse: a githubApp credential naming a token credential's secret.
+	sshDoc := strings.NewReplacer("name: exfil", "name: deploy", "type: token", "type: sshKey", "secretRef: github-app-key", "secretRef: deploy-key").Replace(tokenDoc)
+	_, err = applyResource(ctx, pg, "GitCredential", "", []byte(sshDoc))
+	require.NoError(t, err)
+	appDoc := strings.NewReplacer("name: gh-app-release", "name: gh-app-2", "secretRef: github-app-key", "secretRef: deploy-key").Replace(gitHubAppApplyDoc)
+	_, err = applyResource(ctx, pg, "GitCredential", "", []byte(appDoc))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `secretRef "deploy-key" is already used by sshKey GitCredential "deploy"; a GitHub App private key cannot be shared with a token or sshKey GitCredential`)
+	require.True(t, errors.Is(err, errNameCollision))
+}

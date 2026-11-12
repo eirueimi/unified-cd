@@ -3,6 +3,7 @@ package dsl
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -28,6 +29,11 @@ func ParseRepositoryPatterns(patterns []string) (owner string, names []string, e
 			return "", nil, fmt.Errorf("repositories must name a single owner, got %q and %q", owner, o)
 		}
 		names = append(names, n)
+	}
+	// "owner/*" covers every repository of the installation and must stand
+	// alone; the token issuer rejects a mixed list, so reject it here too.
+	if slices.Contains(names, "*") && slices.ContainsFunc(names, func(n string) bool { return n != "*" }) {
+		return "", nil, fmt.Errorf("repositories %q mixes \"owner/*\" with other patterns; use \"owner/*\" alone for every repository of the installation", patterns)
 	}
 	return owner, names, nil
 }

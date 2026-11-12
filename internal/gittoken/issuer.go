@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -224,7 +225,7 @@ func (s *appSource) issue(ctx context.Context, api *githubAPI, n normalized) (To
 	repositories := n.repositories
 	if hasPattern {
 		// The listing token is used once here and never cached or returned.
-		listing, err := s.createToken(ctx, api, appJWT, installationID, nil, map[string]string{"metadata": "read"})
+		listing, err := s.createToken(ctx, api, appJWT, n.owner, installationID, nil, map[string]string{"metadata": "read"})
 		if err != nil {
 			return Token{}, err
 		}
@@ -239,22 +240,41 @@ func (s *appSource) issue(ctx context.Context, api *githubAPI, n normalized) (To
 			return Token{}, fmt.Errorf("github app %q: %d repositories match; GitHub accepts at most %d repositories per token", app.Name, len(repositories), maxRepositories)
 		}
 	}
-	return s.createToken(ctx, api, appJWT, installationID, repositories, n.permissions)
+	return s.createToken(ctx, api, appJWT, n.owner, installationID, repositories, n.permissions)
 }
 
-func (s *appSource) createToken(ctx context.Context, api *githubAPI, appJWT string, installationID int64, repositories []string, permissions map[string]string) (Token, error) {
+func (s *appSource) createToken(ctx context.Context, api *githubAPI, appJWT, owner string, installationID int64, repositories []string, permissions map[string]string) (Token, error) {
 	tok, err := api.createToken(ctx, appJWT, installationID, repositories, permissions)
 	if hook := s.issuer.OnRequest; hook != nil {
 		hook(s.app.Name, err)
 	}
+	var ae *apiError
+	if s.app.InstallationID == 0 && errors.As(err, &ae) && ae.status == http.StatusNotFound {
+		// The looked-up installation is gone (the App was uninstalled, or
+		// reinstalled under a new ID): forget it so the next attempt looks
+		// it up again instead of failing until the cache entry expires.
+		s.issuer.forgetInstallation(api, s.app, owner)
+	}
 	return tok, err
 }
 
+// installationKey is the installation cache key of owner. It includes the App
+// ID because two Apps installed on the same owner have different
+// installations.
+func installationKey(api *githubAPI, app GitHubApp, owner string) string {
+	return api.base.String() + "|" + strconv.FormatInt(app.AppID, 10) + "|" + owner
+}
+
+// forgetInstallation drops the cached installation ID of owner.
+func (i *Issuer) forgetInstallation(api *githubAPI, app GitHubApp, owner string) {
+	i.mu.Lock()
+	delete(i.installations, installationKey(api, app, owner))
+	i.mu.Unlock()
+}
+
 // installation returns the cached installation ID for owner or looks it up.
-// The cache key includes the App ID because two Apps installed on the same
-// owner have different installations.
 func (i *Issuer) installation(ctx context.Context, api *githubAPI, app GitHubApp, appJWT, owner string, concrete []string) (int64, error) {
-	key := api.base.String() + "|" + strconv.FormatInt(app.AppID, 10) + "|" + owner
+	key := installationKey(api, app, owner)
 	i.mu.Lock()
 	cached, ok := i.installations[key]
 	i.mu.Unlock()

@@ -178,7 +178,7 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 		exported++
 	}
 
-	var creds []api.GitCredentialMeta
+	var creds []gitCredentialListItem
 	if err := getJSON(cfg, httpClient, "/api/v1/gitcredentials", &creds); err != nil {
 		return fmt.Errorf("list gitcredentials: %w", err)
 	}
@@ -191,7 +191,7 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 		if gc.KnownHosts != "" {
 			spec["knownHosts"] = gc.KnownHosts
 		}
-		if !gc.ControllerUse {
+		if !gc.controllerUse() {
 			spec["controllerUse"] = false
 		}
 		if gc.GitHubApp != nil {

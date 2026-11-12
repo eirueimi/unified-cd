@@ -195,3 +195,27 @@ func TestIssuer_ConcreteNamesDedupedCaseInsensitively(t *testing.T) {
 	}
 	assert.Len(t, e.fake.AccessTokenRequests(), 1, "one cache key")
 }
+
+// A reinstalled App has a new installation ID. Token creation against the
+// cached (old) ID answers 404; that evicts the cached owner -> installation
+// entry so the next attempt looks the installation up again.
+func TestIssuer_InstallationEvictedOnCreateToken404(t *testing.T) {
+	e := newEnv(t)
+	app := e.app
+	app.InstallationID = 0 // look the installation up by owner
+	e.token(t, app, gittoken.JobMinRemaining, gittoken.TokenRequest{Owner: "acme", Repositories: []string{"app"}})
+	assert.Equal(t, 1, countPath(e.fake.Paths(), "/repos/acme/app/installation"))
+
+	e.fake.SetInstallationID(4242)
+	_, err := e.issuer.Source(app, gittoken.JobMinRemaining).Token(context.Background(),
+		gittoken.TokenRequest{Owner: "acme", Repositories: []string{"app"}, Permissions: map[string]string{"contents": "write"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "404")
+
+	tok := e.token(t, app, gittoken.JobMinRemaining,
+		gittoken.TokenRequest{Owner: "acme", Repositories: []string{"app"}, Permissions: map[string]string{"contents": "write"}})
+	assert.NotEmpty(t, tok.Value)
+	assert.Equal(t, 2, countPath(e.fake.Paths(), "/repos/acme/app/installation"))
+	reqs := e.fake.AccessTokenRequests()
+	assert.Equal(t, int64(4242), reqs[len(reqs)-1].InstallationID)
+}

@@ -232,6 +232,17 @@ func TestAgentSecretsFetch_PrivateKeyNeverDelivered(t *testing.T) {
 	assert.Equal(t, `secret "github-app-key" is the private key of GitHub App credential "gh-app-release" and is never delivered to jobs`, strings.TrimSpace(rr.Body.String()))
 	assert.NotContains(t, rr.Body.String(), "BEGIN")
 	assert.Empty(t, fetchGitHub(t, srv).fake.Paths())
+
+	// The refused request is audited, without any key material.
+	rows := tokenIssueAudits(t, srv)
+	require.Len(t, rows, 1)
+	assert.Equal(t, http.StatusForbidden, rows[0].Status)
+	assert.Equal(t, "gh-app-release", rows[0].Resource)
+	assert.Equal(t, map[string]any{"runId": runID, "secretRef": "github-app-key", "reason": "private_key"}, auditDetails(t, rows[0]))
+	raw, err := json.Marshal(rows[0])
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "BEGIN")
+	assert.NotContains(t, string(raw), "PRIVATE KEY")
 }
 
 func TestAgentSecretsFetch_GitHubIssueFailure(t *testing.T) {

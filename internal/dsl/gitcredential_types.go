@@ -49,7 +49,7 @@ type GitJobAccessSpec struct {
 	// Folders lists the job folders allowed to use this credential ("*" allows every job).
 	Folders []string `yaml:"folders"`
 	// Repositories lists the repositories a job token may reach, as "owner/name", "owner/*" or
-	// "owner/prefix*". All entries must share one owner.
+	// "owner/prefix*". All entries must share one owner, and "owner/*" must stand alone.
 	Repositories []string `yaml:"repositories"`
 	// Permissions maps GitHub App permission names (for example contents, pull_requests) to the highest
 	// level a job may request: read, write or admin.

@@ -102,6 +102,20 @@ func NewFakeGitHub(t testing.TB, pub *rsa.PublicKey) *FakeGitHub {
 	return f
 }
 
+// SetInstallationID changes the installation ID after requests have been
+// served, as a reinstalled App would. It is safe to call between requests.
+func (f *FakeGitHub) SetInstallationID(id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.InstallationID = id
+}
+
+func (f *FakeGitHub) installationID() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.InstallationID
+}
+
 // Client returns an HTTP client that trusts the fake's TLS certificate.
 func (f *FakeGitHub) Client() *http.Client { return f.server.Client() }
 
@@ -175,7 +189,7 @@ func (f *FakeGitHub) installation(exists func() bool) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "Not Found")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"id": f.InstallationID})
+		writeJSON(w, http.StatusOK, map[string]any{"id": f.installationID()})
 	}
 }
 
@@ -204,7 +218,7 @@ func (f *FakeGitHub) accessTokens(w http.ResponseWriter, r *http.Request) {
 		writeError(w, f.IssueStatus, f.IssueMessage)
 		return
 	}
-	if id != f.InstallationID {
+	if id != f.installationID() {
 		writeError(w, http.StatusNotFound, "Not Found")
 		return
 	}
