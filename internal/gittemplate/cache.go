@@ -13,6 +13,11 @@ import (
 
 // Cache caches fetched git templates in an ObjectStore.
 // Only fixed refs (semver tags, SHAs) are cached; mutable refs (branches) are always fetched.
+//
+// Entries are partitioned by scope: the credential the content was fetched
+// with (Credential.CacheScope; "" = fetched anonymously). A caller only reads
+// entries of the scope it was handed, so content fetched with a credential is
+// never served to a caller that credential's policy does not allow.
 type Cache struct {
 	store objectstore.ObjectStore
 }
@@ -22,14 +27,13 @@ func NewCache(store objectstore.ObjectStore) *Cache {
 	return &Cache{store: store}
 }
 
-// Get returns cached YAML for uri, or (nil, false) on miss.
+// Get returns cached YAML for uri in scope, or (nil, false) on miss.
 // Always returns false for mutable refs.
-func (c *Cache) Get(ctx context.Context, uri URI) ([]byte, bool) {
+func (c *Cache) Get(ctx context.Context, uri URI, scope string) ([]byte, bool) {
 	if !uri.IsFixed() {
 		return nil, false
 	}
-	key := cacheKey(uri)
-	rc, err := c.store.Get(ctx, key)
+	rc, err := c.store.Get(ctx, cacheKey(uri, scope))
 	if err != nil {
 		return nil, false
 	}
@@ -41,18 +45,22 @@ func (c *Cache) Get(ctx context.Context, uri URI) ([]byte, bool) {
 	return data, true
 }
 
-// Put stores YAML for uri. No-op for mutable refs.
-func (c *Cache) Put(ctx context.Context, uri URI, data []byte) {
+// Put stores YAML for uri in scope. No-op for mutable refs.
+func (c *Cache) Put(ctx context.Context, uri URI, scope string, data []byte) {
 	if !uri.IsFixed() {
 		return
 	}
-	key := cacheKey(uri)
-	_ = c.store.Put(ctx, key, bytes.NewReader(data), int64(len(data)))
+	_ = c.store.Put(ctx, cacheKey(uri, scope), bytes.NewReader(data), int64(len(data)))
 }
 
-// cacheKey returns the ObjectStore key for the given URI.
-func cacheKey(uri URI) string {
-	raw := fmt.Sprintf("%s/%s/%s/%s/%s", uri.Host, uri.Owner, uri.Repo, uri.Ref, uri.Path)
+// cacheKeyPrefix is the ObjectStore prefix of template cache entries. The v2
+// prefix leaves legacy unscoped entries ("git_templates/<hash>", which may
+// hold content fetched with a credential) unreachable.
+const cacheKeyPrefix = "git_templates/v2/"
+
+// cacheKey returns the ObjectStore key for uri in scope.
+func cacheKey(uri URI, scope string) string {
+	raw := fmt.Sprintf("%s\x00%s/%s/%s/%s/%s", scope, uri.Host, uri.Owner, uri.Repo, uri.Ref, uri.Path)
 	h := sha256.Sum256([]byte(raw))
-	return "git_templates/" + base64.RawURLEncoding.EncodeToString(h[:])
+	return cacheKeyPrefix + base64.RawURLEncoding.EncodeToString(h[:])
 }

@@ -6,14 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/gittemplate"
-	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
 )
 
@@ -25,13 +23,13 @@ func redactURLCredentials(s string) string { return dsl.RedactURLCredentials(s) 
 
 // AppSourceFetcher is the interface that abstracts Git operations used by the Reconciler.
 type AppSourceFetcher interface {
-	ResolveCommitSHA(ctx context.Context, repoURL, ref, token, sshKey string) (string, error)
-	FetchDir(ctx context.Context, repoURL, ref, path, token, sshKey string) (map[string][]byte, error)
+	ResolveCommitSHA(ctx context.Context, repoURL, ref string, cred gittemplate.Credential) (string, error)
+	FetchDir(ctx context.Context, repoURL, ref, path string, cred gittemplate.Credential) (map[string][]byte, error)
 }
 
 // RunAppSourceReconciler periodically syncs AppSource definitions from Git.
 // Uses a default interval of 30 seconds when tick is 0.
-func RunAppSourceReconciler(ctx context.Context, st store.Store, fetcher AppSourceFetcher, km secrets.KeyManager, tick time.Duration) {
+func RunAppSourceReconciler(ctx context.Context, st store.Store, fetcher AppSourceFetcher, creds *GitCredentialResolver, tick time.Duration) {
 	if tick == 0 {
 		tick = 30 * time.Second
 	}
@@ -42,14 +40,14 @@ func RunAppSourceReconciler(ctx context.Context, st store.Store, fetcher AppSour
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			reconcileAppSources(ctx, st, fetcher, km)
+			reconcileAppSources(ctx, st, fetcher, creds)
 		}
 	}
 }
 
 // reconcileAppSources checks all AppSources and syncs those that need it from Git.
 // Uses an advisory lock to prevent multiple replicas from running concurrently.
-func reconcileAppSources(ctx context.Context, st store.Store, fetcher AppSourceFetcher, km secrets.KeyManager) {
+func reconcileAppSources(ctx context.Context, st store.Store, fetcher AppSourceFetcher, creds *GitCredentialResolver) {
 	release, err := st.AcquireAdvisoryLock(ctx, appSourceReconcilerLockKey)
 	if err != nil {
 		slog.Warn("appsource reconciler: failed to acquire advisory lock", "error", err)
@@ -77,7 +75,7 @@ func reconcileAppSources(ctx context.Context, st store.Store, fetcher AppSourceF
 		if !shouldSync(src, spec, now) {
 			continue
 		}
-		if err := syncAppSource(ctx, st, fetcher, km, src, spec); err != nil {
+		if err := syncAppSource(ctx, st, fetcher, creds, src, spec); err != nil {
 			// Redact any credentials embedded in a repoURL before the error string is
 			// logged or persisted (bug #33), so tokens/passwords never leak.
 			redacted := redactURLCredentials(err.Error())
@@ -103,7 +101,7 @@ func shouldSync(src store.AppSource, spec dsl.AppSourceSpec, now time.Time) bool
 
 // syncAppSource syncs a single AppSource from Git.
 // Skips when the SHA is unchanged from last time. Prunes resources removed from Git when syncPolicy.prune is enabled.
-func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher, km secrets.KeyManager, src store.AppSource, spec dsl.AppSourceSpec) error {
+func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher, creds *GitCredentialResolver, src store.AppSource, spec dsl.AppSourceSpec) error {
 	// Re-validate the git-exec-relevant fields of the spec loaded from the store
 	// before it is used to resolve credentials or build any git argv. Apply-time
 	// validation (AppSource.Validate) is not sufficient on its own: this spec may
@@ -113,12 +111,12 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 		return fmt.Errorf("invalid AppSource spec: %w", err)
 	}
 
-	cred, err := resolveCredential(ctx, st, km, spec.RepoURL)
+	cred, err := creds.ForAppSource(ctx, spec.RepoURL)
 	if err != nil {
 		return fmt.Errorf("failed to resolve credential: %w", err)
 	}
 
-	headSHA, err := fetcher.ResolveCommitSHA(ctx, spec.RepoURL, spec.TargetRevision, cred.Token, cred.SSHKey)
+	headSHA, err := fetcher.ResolveCommitSHA(ctx, spec.RepoURL, spec.TargetRevision, cred)
 	if err != nil {
 		return fmt.Errorf("failed to resolve commit SHA: %w", err)
 	}
@@ -127,7 +125,7 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 		return nil
 	}
 
-	files, err := fetcher.FetchDir(ctx, spec.RepoURL, spec.TargetRevision, spec.Path, cred.Token, cred.SSHKey)
+	files, err := fetcher.FetchDir(ctx, spec.RepoURL, spec.TargetRevision, spec.Path, cred)
 	if err != nil {
 		return fmt.Errorf("failed to fetch directory: %w", err)
 	}
@@ -297,44 +295,4 @@ func finishSync(ctx context.Context, st store.Store, src store.AppSource, spec d
 	}
 
 	return st.UpdateAppSourceSyncState(ctx, src.Name, headSHA, time.Now(), current)
-}
-
-// resolveCredential resolves Git credentials by matching the AppSource's repoURL host
-// against a stored GitCredential. Returns an empty Credential when st or km is nil
-// (e.g. in test environments).
-func resolveCredential(ctx context.Context, st store.Store, km secrets.KeyManager, repoURL string) (gittemplate.Credential, error) {
-	if st == nil || km == nil {
-		return gittemplate.Credential{}, nil
-	}
-	u, err := url.Parse(repoURL)
-	if err != nil {
-		return gittemplate.Credential{}, nil
-	}
-	host := u.Hostname()
-	if host == "" {
-		return gittemplate.Credential{}, nil
-	}
-
-	gc, err := st.GetGitCredentialByHost(ctx, host)
-	if err != nil || gc == nil {
-		return gittemplate.Credential{}, nil
-	}
-
-	stored, err := st.GetSecret(ctx, gc.SecretRef)
-	if err != nil {
-		return gittemplate.Credential{}, fmt.Errorf("failed to get secret %q: %w", gc.SecretRef, err)
-	}
-	plaintext, err := secrets.Decrypt(ctx, km, stored.EncryptedDEK, stored.Ciphertext,
-		secrets.SecretBinding(stored.Name))
-	if err != nil {
-		return gittemplate.Credential{}, fmt.Errorf("failed to decrypt secret for host %q: %w", host, err)
-	}
-	switch gc.CredType {
-	case "token":
-		return gittemplate.Credential{Token: string(plaintext)}, nil
-	case "sshKey":
-		return gittemplate.Credential{SSHKey: string(plaintext)}, nil
-	default:
-		return gittemplate.Credential{}, nil
-	}
 }

@@ -66,6 +66,13 @@ A GitCredential with `jobAccess` shares the secrets namespace, so its `metadata.
 
 When resolving a `git://` URI or AppSource `repoURL`, the controller looks up a GitCredential whose `spec.host` matches the URI's hostname. This allows job definitions to reference private templates without embedding credentials. An AppSource `repoURL` that embeds credentials (`https://user:pass@host/...`) is rejected; a GitCredential is the only way to authenticate an AppSource.
 
+For a `githubApp` credential the controller fetches with a short-lived installation token narrowed to the one repository being fetched and `contents: read`, sent over HTTPS with the user `x-access-token`:
+
+- **AppSource:** always uses the token; `jobAccess` does not apply. The `repoURL` must be `https://<host>/<owner>/<repo>[.git]`; an SSH `repoURL` fails the sync with `GitCredential "<name>" (githubApp) needs an https repoURL`.
+- **`git://` templates (`uses:`):** the token is used only when `jobAccess` covers the run's job folder (`"*"` covers every job, including root-level ones) and the template repository, and `jobAccess.permissions.contents` is at least `read`. Otherwise the template is fetched anonymously: a public template still resolves, and a private one fails with git's error followed by `GitCredential "<name>" does not allow job "<job>" to read <owner>/<repo> through the GitHub App (jobAccess)` (or, without `jobAccess`, `GitCredential "<name>" has no jobAccess, so no job can read <owner>/<repo> through the GitHub App`).
+
+The controller's template cache (fixed refs only) is partitioned by the credential a template was fetched with, so a run fetching anonymously never reads a template cached by a run that the credential allowed.
+
 ### Examples
 
 ```yaml

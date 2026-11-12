@@ -50,16 +50,16 @@ type Fetcher struct {
 // NewFetcher returns a new Fetcher.
 func NewFetcher() *Fetcher { return &Fetcher{} }
 
-// Fetch retrieves the file at uri.Path from the git repository at uri.Ref.
-// token: plaintext HTTPS token, supplied to git via GIT_ASKPASS (never embedded in the
+// fetch retrieves the file at uri.Path from the git repository at uri.Ref.
+// cred.Token: plaintext HTTPS token, supplied to git via GIT_ASKPASS (never embedded in the
 // URL or passed as an argument); leave empty for public repos.
-// sshKey: plaintext SSH private key content; leave empty for HTTPS auth.
-func (f *Fetcher) fetch(ctx context.Context, cancel context.CancelCauseFunc, uri URI, token, sshKey string) ([]byte, error) {
-	if sshKey != "" {
-		return f.fetchSSH(ctx, cancel, uri, sshKey)
+// cred.SSHKey: plaintext SSH private key content; leave empty for HTTPS auth.
+func (f *Fetcher) fetch(ctx context.Context, cancel context.CancelCauseFunc, uri URI, cred Credential) ([]byte, error) {
+	if cred.SSHKey != "" {
+		return f.fetchSSH(ctx, cancel, uri, cred.SSHKey)
 	}
-	repoURL := buildHTTPSURL(uri, token)
-	extraEnv, cleanup, err := authEnv(token)
+	repoURL := buildHTTPSURL(uri, cred)
+	extraEnv, cleanup, err := authEnv(cred.Token)
 	if err != nil {
 		return nil, err
 	}
@@ -167,21 +167,35 @@ func (f *Fetcher) fetchSSH(ctx context.Context, cancel context.CancelCauseFunc, 
 // accepts any username here too, so a fixed placeholder works for both.
 const authPlaceholderUser = "oauth2"
 
+// GitHubAppUser is the HTTP Basic auth username GitHub documents for
+// installation access tokens.
+const GitHubAppUser = "x-access-token"
+
+// authUser returns the HTTP Basic auth username to send with cred.Token,
+// URL-escaped for use as URL userinfo.
+func authUser(cred Credential) string {
+	name := cred.Username
+	if name == "" {
+		name = authPlaceholderUser
+	}
+	return url.User(name).String()
+}
+
 // buildHTTPSURL constructs the clone URL. When a token is present it only embeds the
-// placeholder username, never the token itself; the token is supplied separately via
-// GIT_ASKPASS (see authEnv) so it never appears in the URL, in process arguments, or in
-// error messages built from the URL.
-func buildHTTPSURL(uri URI, token string) string {
-	if token != "" {
-		return fmt.Sprintf("https://%s@%s/%s/%s.git", authPlaceholderUser, uri.Host, uri.Owner, uri.Repo)
+// username (cred.Username, default the placeholder), never the token itself; the token
+// is supplied separately via GIT_ASKPASS (see authEnv) so it never appears in the URL,
+// in process arguments, or in error messages built from the URL.
+func buildHTTPSURL(uri URI, cred Credential) string {
+	if cred.Token != "" {
+		return fmt.Sprintf("https://%s@%s/%s/%s.git", authUser(cred), uri.Host, uri.Owner, uri.Repo)
 	}
 	return fmt.Sprintf("https://%s/%s/%s.git", uri.Host, uri.Owner, uri.Repo)
 }
 
-// insertPlaceholderUser adds the auth placeholder username to a caller-supplied HTTPS
-// URL that doesn't already carry credentials.
-func insertPlaceholderUser(repoURL string) string {
-	return strings.Replace(repoURL, "https://", "https://"+authPlaceholderUser+"@", 1)
+// insertUser adds the auth username for cred to a caller-supplied HTTPS URL that
+// doesn't already carry credentials.
+func insertUser(repoURL string, cred Credential) string {
+	return strings.Replace(repoURL, "https://", "https://"+authUser(cred)+"@", 1)
 }
 
 // authEnv returns the extra environment variables needed for git to authenticate with
@@ -219,24 +233,24 @@ func gitEnv(extraEnv []string) []string {
 	return append(env, extraEnv...)
 }
 
-// ResolveCommitSHA uses git ls-remote to return the commit SHA for the given ref in the repository.
-func (f *Fetcher) resolveCommitSHA(ctx context.Context, repoURL, ref, token, sshKey string) (string, error) {
+// resolveCommitSHA uses git ls-remote to return the commit SHA for the given ref in the repository.
+func (f *Fetcher) resolveCommitSHA(ctx context.Context, repoURL, ref string, cred Credential) (string, error) {
 	if strings.HasPrefix(repoURL, "-") {
 		return "", fmt.Errorf("repo URL %q must not start with '-' (git option injection)", repoURL)
 	}
 	var env []string
-	if sshKey != "" {
-		sshCmd, cleanup, err := f.sshSetup(ctx, sshHostFromURL(repoURL), sshKey)
+	if cred.SSHKey != "" {
+		sshCmd, cleanup, err := f.sshSetup(ctx, sshHostFromURL(repoURL), cred.SSHKey)
 		if err != nil {
 			return "", err
 		}
 		defer cleanup()
 		env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND="+sshCmd)
 	} else {
-		if token != "" {
-			repoURL = insertPlaceholderUser(repoURL)
+		if cred.Token != "" {
+			repoURL = insertUser(repoURL, cred)
 		}
-		extraEnv, cleanup, err := authEnv(token)
+		extraEnv, cleanup, err := authEnv(cred.Token)
 		if err != nil {
 			return "", err
 		}
@@ -252,19 +266,19 @@ func (f *Fetcher) resolveCommitSHA(ctx context.Context, repoURL, ref, token, ssh
 	return parseLsRemoteOutput(string(out), ref)
 }
 
-// FetchDir retrieves all *.yaml / *.yml files under the specified path in the repository.
-func (f *Fetcher) fetchDir(ctx context.Context, cancel context.CancelCauseFunc, repoURL, ref, path, token, sshKey string) (map[string][]byte, error) {
+// fetchDir retrieves all *.yaml / *.yml files under the specified path in the repository.
+func (f *Fetcher) fetchDir(ctx context.Context, cancel context.CancelCauseFunc, repoURL, ref, path string, cred Credential) (map[string][]byte, error) {
 	var extraEnv []string
-	if sshKey != "" {
-		sshCmd, cleanup, err := f.sshSetup(ctx, sshHostFromURL(repoURL), sshKey)
+	if cred.SSHKey != "" {
+		sshCmd, cleanup, err := f.sshSetup(ctx, sshHostFromURL(repoURL), cred.SSHKey)
 		if err != nil {
 			return nil, err
 		}
 		defer cleanup()
 		extraEnv = []string{"GIT_SSH_COMMAND=" + sshCmd}
-	} else if token != "" {
-		repoURL = insertPlaceholderUser(repoURL)
-		tokenEnv, cleanup, err := authEnv(token)
+	} else if cred.Token != "" {
+		repoURL = insertUser(repoURL, cred)
+		tokenEnv, cleanup, err := authEnv(cred.Token)
 		if err != nil {
 			return nil, err
 		}
@@ -611,32 +625,32 @@ func (f *Fetcher) watchSize(ctx context.Context, dir string, cancel context.Canc
 }
 
 // Fetch retrieves the file at uri.Path from the git repository at uri.Ref.
-// token: plaintext HTTPS token, supplied to git via GIT_ASKPASS (never embedded in the
+// cred.Token: plaintext HTTPS token, supplied to git via GIT_ASKPASS (never embedded in the
 // URL or passed as an argument); leave empty for public repos.
-// sshKey: plaintext SSH private key content; leave empty for HTTPS auth.
+// cred.SSHKey: plaintext SSH private key content; leave empty for HTTPS auth.
 // The whole operation is bounded by Fetcher.Timeout and Fetcher.MaxRepoBytes.
-func (f *Fetcher) Fetch(ctx context.Context, uri URI, token, sshKey string) ([]byte, error) {
+func (f *Fetcher) Fetch(ctx context.Context, uri URI, cred Credential) ([]byte, error) {
 	ctx, cancel := f.opContext(ctx)
 	defer cancel(nil)
-	data, err := f.fetch(ctx, cancel, uri, token, sshKey)
+	data, err := f.fetch(ctx, cancel, uri, cred)
 	return data, opErr(ctx, f, err)
 }
 
 // ResolveCommitSHA uses git ls-remote to return the commit SHA for the given ref
 // in the repository. Bounded by Fetcher.Timeout.
-func (f *Fetcher) ResolveCommitSHA(ctx context.Context, repoURL, ref, token, sshKey string) (string, error) {
+func (f *Fetcher) ResolveCommitSHA(ctx context.Context, repoURL, ref string, cred Credential) (string, error) {
 	ctx, cancel := f.opContext(ctx)
 	defer cancel(nil)
-	sha, err := f.resolveCommitSHA(ctx, repoURL, ref, token, sshKey)
+	sha, err := f.resolveCommitSHA(ctx, repoURL, ref, cred)
 	return sha, opErr(ctx, f, err)
 }
 
 // FetchDir retrieves all *.yaml / *.yml files under the specified path in the
 // repository. Bounded by Fetcher.Timeout and Fetcher.MaxRepoBytes.
-func (f *Fetcher) FetchDir(ctx context.Context, repoURL, ref, path, token, sshKey string) (map[string][]byte, error) {
+func (f *Fetcher) FetchDir(ctx context.Context, repoURL, ref, path string, cred Credential) (map[string][]byte, error) {
 	ctx, cancel := f.opContext(ctx)
 	defer cancel(nil)
-	files, err := f.fetchDir(ctx, cancel, repoURL, ref, path, token, sshKey)
+	files, err := f.fetchDir(ctx, cancel, repoURL, ref, path, cred)
 	return files, opErr(ctx, f, err)
 }
 

@@ -166,14 +166,14 @@ func TestHostKeyVerification_PinnedKeys(t *testing.T) {
 
 	// Mismatched pinned key: must fail on host key verification.
 	bad := &Fetcher{KnownHosts: func(context.Context, string) (string, error) { return line(newSigner(t)), nil }}
-	_, err := bad.FetchDir(ctx, repoURL, "main", "", "", key)
+	_, err := bad.FetchDir(ctx, repoURL, "main", "", Credential{SSHKey: key})
 	if err == nil || !strings.Contains(err.Error(), "host key verification failed") {
 		t.Fatalf("mismatched pinned key must fail host key verification, got %v", err)
 	}
 
 	// Matching pinned key: verification passes; the fake server then denies auth.
 	good := &Fetcher{KnownHosts: func(context.Context, string) (string, error) { return line(serverKey), nil }}
-	_, err = good.FetchDir(ctx, repoURL, "main", "", "", key)
+	_, err = good.FetchDir(ctx, repoURL, "main", "", Credential{SSHKey: key})
 	if err == nil || strings.Contains(err.Error(), "host key verification failed") {
 		t.Fatalf("matching pinned key must pass host verification (and then fail auth), got %v", err)
 	}
@@ -190,7 +190,7 @@ func TestHostKeyVerification_TOFUDetectsChangedKey(t *testing.T) {
 	defer cancel()
 
 	// First contact: the key is trusted and recorded; auth is then denied.
-	_, err := f.FetchDir(ctx, repoURL, "main", "", "", key)
+	_, err := f.FetchDir(ctx, repoURL, "main", "", Credential{SSHKey: key})
 	if err == nil || strings.Contains(err.Error(), "host key verification failed") {
 		t.Fatalf("first contact must be accepted (then fail auth), got %v", err)
 	}
@@ -202,7 +202,7 @@ func TestHostKeyVerification_TOFUDetectsChangedKey(t *testing.T) {
 	l.Close()
 	l2, _ := fakeSSHServer(t, fmt.Sprintf("127.0.0.1:%d", port), newSigner(t))
 	defer l2.Close()
-	_, err = f.FetchDir(ctx, repoURL, "main", "", "", key)
+	_, err = f.FetchDir(ctx, repoURL, "main", "", Credential{SSHKey: key})
 	if err == nil || !strings.Contains(err.Error(), "host key verification failed") {
 		t.Fatalf("changed host key must fail the fetch, got %v", err)
 	}
@@ -273,14 +273,14 @@ func TestHostKeyVerification_PathsWithSpaces(t *testing.T) {
 	// Pinned, wrong key: must be rejected (not silently accepted).
 	wrong := fmt.Sprintf("[127.0.0.1]:%d %s", port, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(newSigner(t).PublicKey()))))
 	bad := &Fetcher{KnownHosts: func(context.Context, string) (string, error) { return wrong, nil }}
-	if _, err := bad.FetchDir(ctx, repoURL, "main", "", "", key); err == nil || !strings.Contains(err.Error(), "host key verification failed") {
+	if _, err := bad.FetchDir(ctx, repoURL, "main", "", Credential{SSHKey: key}); err == nil || !strings.Contains(err.Error(), "host key verification failed") {
 		t.Fatalf("pinned mismatch under a spaced path must fail verification, got %v", err)
 	}
 
 	// TOFU file under a spaced directory: the key must actually be recorded there.
 	khFile := filepath.Join(spaced, "state", "known_hosts")
 	f := &Fetcher{KnownHostsFile: khFile}
-	if _, err := f.FetchDir(ctx, repoURL, "main", "", "", key); err == nil || strings.Contains(err.Error(), "host key verification failed") {
+	if _, err := f.FetchDir(ctx, repoURL, "main", "", Credential{SSHKey: key}); err == nil || strings.Contains(err.Error(), "host key verification failed") {
 		t.Fatalf("first contact must be accepted then fail auth, got %v", err)
 	}
 	if b, err := os.ReadFile(khFile); err != nil || !strings.Contains(string(b), "ssh-ed25519") {

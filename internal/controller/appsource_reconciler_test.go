@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/gittemplate"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
@@ -21,16 +22,19 @@ type mockAppSourceFetcher struct {
 	resolveErr    error
 	fetchErr      error
 	resolveCalls  int
+	creds         []gittemplate.Credential
 }
 
-func (m *mockAppSourceFetcher) ResolveCommitSHA(_ context.Context, _, _, _, _ string) (string, error) {
+func (m *mockAppSourceFetcher) ResolveCommitSHA(_ context.Context, _, _ string, cred gittemplate.Credential) (string, error) {
+	m.creds = append(m.creds, cred)
 	m.resolveCalls++
 	if m.resolveErr != nil {
 		return "", m.resolveErr
 	}
 	return m.sha, m.shaErr
 }
-func (m *mockAppSourceFetcher) FetchDir(_ context.Context, _, _, _, _, _ string) (map[string][]byte, error) {
+func (m *mockAppSourceFetcher) FetchDir(_ context.Context, _, _, _ string, cred gittemplate.Credential) (map[string][]byte, error) {
+	m.creds = append(m.creds, cred)
 	m.fetchDirCalls++
 	if m.fetchErr != nil {
 		return nil, m.fetchErr
@@ -640,14 +644,14 @@ type perRepoFetcher struct {
 	files map[string][]byte
 }
 
-func (p *perRepoFetcher) ResolveCommitSHA(_ context.Context, repoURL, _, _, _ string) (string, error) {
+func (p *perRepoFetcher) ResolveCommitSHA(_ context.Context, repoURL, _ string, _ gittemplate.Credential) (string, error) {
 	if err := p.errs[repoURL]; err != nil {
 		return "", err
 	}
 	return "abc123", nil
 }
 
-func (p *perRepoFetcher) FetchDir(_ context.Context, _, _, _, _, _ string) (map[string][]byte, error) {
+func (p *perRepoFetcher) FetchDir(_ context.Context, _, _, _ string, _ gittemplate.Credential) (map[string][]byte, error) {
 	return p.files, nil
 }
 
@@ -682,4 +686,39 @@ func TestReconciler_TimedOutRepoDoesNotBlockOthers(t *testing.T) {
 	assert.Equal(t, "abc123", b.LastCommit)
 	_, err = pg.GetJob(ctx, "build")
 	require.NoError(t, err)
+}
+
+func TestReconciler_UsesGitHubAppToken(t *testing.T) {
+	e := newGitCredEnv(t)
+	ctx := context.Background()
+	e.putGitHubApp(t, nil)
+	_, err := e.st.UpsertAppSource(ctx, "app-src", []byte(`{"repoURL":"https://github.com/acme/app.git","targetRevision":"main","path":"jobs/"}`))
+	require.NoError(t, err)
+
+	fetcher := &mockAppSourceFetcher{sha: "abc123", files: map[string][]byte{"jobs/build.yaml": []byte(jobYAML)}}
+	reconcileAppSources(ctx, e.st, fetcher, e.creds)
+
+	require.Len(t, fetcher.creds, 2, "ResolveCommitSHA and FetchDir")
+	for _, c := range fetcher.creds {
+		assert.Equal(t, gittemplate.Credential{Token: "ghs_1", Username: gittemplate.GitHubAppUser, CacheScope: "gh-app"}, c)
+	}
+	_, err = e.st.GetJob(ctx, "build")
+	require.NoError(t, err)
+}
+
+func TestReconciler_GitHubAppSSHRepoURLFails(t *testing.T) {
+	e := newGitCredEnv(t)
+	ctx := context.Background()
+	e.putGitHubApp(t, nil)
+	_, err := e.st.UpsertAppSource(ctx, "ssh-src", []byte(`{"repoURL":"ssh://git@github.com/acme/app.git","targetRevision":"main","path":"jobs/"}`))
+	require.NoError(t, err)
+
+	fetcher := &mockAppSourceFetcher{sha: "abc123"}
+	reconcileAppSources(ctx, e.st, fetcher, e.creds)
+
+	assert.Equal(t, 0, fetcher.resolveCalls)
+	src, err := e.st.GetAppSource(ctx, "ssh-src")
+	require.NoError(t, err)
+	assert.Equal(t, "Failed", src.SyncStatus)
+	assert.Contains(t, src.LastError, `GitCredential "gh-app" (githubApp) needs an https repoURL`)
 }

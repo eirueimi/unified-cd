@@ -18,15 +18,33 @@ const maxUsesDepth = 10
 type Credential struct {
 	Token  string // HTTPS token
 	SSHKey string // SSH private key content
+	// Username is the HTTPS basic-auth user sent with Token; "" = "oauth2".
+	// GitHub App installation tokens use GitHubAppUser.
+	Username string
+	// CacheScope partitions the template cache: content fetched with this
+	// credential is cached and looked up under this scope only. "" = fetched
+	// anonymously. A credential that carries material must set it.
+	CacheScope string
+	// Hint, when non-empty, is appended to a fetch error (for example why a
+	// fetch fell back to anonymous access).
+	Hint string
 }
 
-// CredentialFunc returns credentials for the given host.
+// CredentialRequest identifies what a credential is requested for.
+type CredentialRequest struct {
+	Host, Owner, Repo string
+	// JobName is the qualified name of the run's job; set by the caller of
+	// ResolveSpec (the resolver itself fills Host, Owner and Repo).
+	JobName string
+}
+
+// CredentialFunc returns credentials for the given request.
 // Return zero Credential for public repos (no error).
-type CredentialFunc func(ctx context.Context, host string) (Credential, error)
+type CredentialFunc func(ctx context.Context, req CredentialRequest) (Credential, error)
 
 // FetcherInterface abstracts git fetch for testing.
 type FetcherInterface interface {
-	Fetch(ctx context.Context, uri URI, token, sshKey string) ([]byte, error)
+	Fetch(ctx context.Context, uri URI, cred Credential) ([]byte, error)
 }
 
 // Resolver resolves git:// URIs to their YAML content, with optional caching.
@@ -176,12 +194,15 @@ func (r *Resolver) resolveSteps(
 			return nil, podContribution{}, wrapResolveError(fmt.Errorf("step %q: parse git URI: %w", s.Name, err))
 		}
 
-		cred, err := credFn(ctx, uri.Host)
+		cred, err := credFn(ctx, CredentialRequest{Host: uri.Host, Owner: uri.Owner, Repo: uri.Repo})
 		if err != nil {
 			return nil, podContribution{}, fmt.Errorf("step %q: get credential for %q: %w", s.Name, uri.Host, err)
 		}
 		rawYAML, err := r.fetch(ctx, uri, cred)
 		if err != nil {
+			if cred.Hint != "" {
+				return nil, podContribution{}, fmt.Errorf("step %q: fetch %q: %w; %s", s.Name, rawURI, err, cred.Hint)
+			}
 			return nil, podContribution{}, fmt.Errorf("step %q: fetch %q: %w", s.Name, rawURI, err)
 		}
 
@@ -378,18 +399,22 @@ func checkGlobalNameCollisions(steps, finally []dsl.StepEntry) error {
 	return nil
 }
 
+// fetch returns the template at uri, reading and filling the cache under
+// cred.CacheScope. A credential that carries material but no scope bypasses
+// the cache entirely, so its content can never land in the anonymous scope.
 func (r *Resolver) fetch(ctx context.Context, uri URI, cred Credential) ([]byte, error) {
-	if r.Cache != nil {
-		if data, ok := r.Cache.Get(ctx, uri); ok {
+	cacheable := r.Cache != nil && (cred.CacheScope != "" || (cred.Token == "" && cred.SSHKey == ""))
+	if cacheable {
+		if data, ok := r.Cache.Get(ctx, uri, cred.CacheScope); ok {
 			return data, nil
 		}
 	}
-	data, err := r.Fetcher.Fetch(ctx, uri, cred.Token, cred.SSHKey)
+	data, err := r.Fetcher.Fetch(ctx, uri, cred)
 	if err != nil {
 		return nil, err
 	}
-	if r.Cache != nil {
-		r.Cache.Put(ctx, uri, data)
+	if cacheable {
+		r.Cache.Put(ctx, uri, cred.CacheScope, data)
 	}
 	return data, nil
 }

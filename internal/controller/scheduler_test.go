@@ -163,7 +163,7 @@ func TestResolveGitPendingRuns_DeadlineExceededFailsRun(t *testing.T) {
 // badYAMLFetcher which returns malformed YAML).
 type contentFetcher struct{ yaml []byte }
 
-func (c contentFetcher) Fetch(ctx context.Context, uri gittemplate.URI, token, sshKey string) ([]byte, error) {
+func (c contentFetcher) Fetch(ctx context.Context, uri gittemplate.URI, cred gittemplate.Credential) ([]byte, error) {
 	return c.yaml, nil
 }
 
@@ -289,12 +289,12 @@ func TestResolveGitPendingRuns_OverrideContainerNotFailed(t *testing.T) {
 
 type badYAMLFetcher struct{}
 
-func (badYAMLFetcher) Fetch(ctx context.Context, uri gittemplate.URI, token, sshKey string) ([]byte, error) {
+func (badYAMLFetcher) Fetch(ctx context.Context, uri gittemplate.URI, cred gittemplate.Credential) ([]byte, error) {
 	return []byte("not a job manifest"), nil
 }
 
 type erroringFetcher struct{}
 
-func (erroringFetcher) Fetch(ctx context.Context, uri gittemplate.URI, token, sshKey string) ([]byte, error) {
+func (erroringFetcher) Fetch(ctx context.Context, uri gittemplate.URI, cred gittemplate.Credential) ([]byte, error) {
 	return nil, fmt.Errorf("network unreachable")
 }
