@@ -157,3 +157,41 @@ func TestIssuer_OnRequestHook(t *testing.T) {
 	assert.Equal(t, "gh-app", calls[1].credential)
 	assert.Error(t, calls[1].err)
 }
+
+func TestIssuer_PatternWithNoMatchBesideConcreteNameFails(t *testing.T) {
+	e := newEnv(t)
+	e.fake.Repos = []string{"app", "infra-a"}
+	_, err := e.issuer.Source(e.app, gittoken.JobMinRemaining).Token(context.Background(),
+		gittoken.TokenRequest{Owner: "acme", Repositories: []string{"app", "infra-*", "nomatch-*", "other-*"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `no repository of the installation matches "nomatch-*", "other-*"`)
+	assert.NotContains(t, err.Error(), `"infra-*"`)
+	reqs := e.fake.AccessTokenRequests()
+	require.Len(t, reqs, 1, "only the listing token is requested")
+	assert.Equal(t, map[string]string{"metadata": "read"}, reqs[0].Permissions)
+	assert.False(t, reqs[0].HasRepositoriesKey)
+}
+
+func TestIssuer_StarMixedWithNamesRejected(t *testing.T) {
+	e := newEnv(t)
+	for _, repos := range [][]string{{"*", "app"}, {"app", "*"}, {"*", "infra-*"}} {
+		_, err := e.issuer.Source(e.app, gittoken.JobMinRemaining).Token(context.Background(),
+			gittoken.TokenRequest{Owner: "acme", Repositories: repos})
+		require.Error(t, err, "%q", repos)
+		assert.Contains(t, err.Error(), `mixes "*" with other names`)
+	}
+	assert.Empty(t, e.fake.Paths(), "nothing is sent to GitHub")
+	assert.Equal(t, "ghs_1", e.token(t, e.app, gittoken.JobMinRemaining, gittoken.TokenRequest{Owner: "acme", Repositories: []string{"*", "*"}}).Value)
+}
+
+func TestIssuer_ConcreteNamesDedupedCaseInsensitively(t *testing.T) {
+	e := newEnv(t)
+	tok := e.token(t, e.app, gittoken.JobMinRemaining, gittoken.TokenRequest{Owner: "acme", Repositories: []string{"App", "app", "lib"}})
+	reqs := e.fake.AccessTokenRequests()
+	require.Len(t, reqs, 1)
+	assert.Equal(t, []string{"App", "lib"}, reqs[0].Repositories)
+	for _, repos := range [][]string{{"app", "App", "lib"}, {"lib", "APP", "App", "app"}, {"App", "lib"}} {
+		assert.Equal(t, tok.Value, e.token(t, e.app, gittoken.JobMinRemaining, gittoken.TokenRequest{Owner: "acme", Repositories: repos}).Value, "%q", repos)
+	}
+	assert.Len(t, e.fake.AccessTokenRequests(), 1, "one cache key")
+}

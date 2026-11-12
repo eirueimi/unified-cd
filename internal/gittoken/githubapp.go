@@ -292,8 +292,9 @@ func isPrefixPattern(name string) bool {
 
 // expandRepositories resolves the requested entries against the
 // installation's repositories: concrete names are kept as given, prefix
-// patterns are replaced by the matching names. It fails when the result is
-// empty, so a token is never requested without a repository list by mistake.
+// patterns are replaced by the matching names. Every prefix pattern must
+// match at least one repository, and the result is never empty, so a token
+// is never requested for less (or more) than was asked for.
 func expandRepositories(credential string, requested, installation []string) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
@@ -311,20 +312,29 @@ func expandRepositories(credential string, requested, installation []string) ([]
 			add(r)
 		}
 	}
+	matched := make([]bool, len(patterns))
 	for _, name := range installation {
-		for _, p := range patterns {
+		hit := false
+		for i, p := range patterns {
 			if dsl.MatchRepositoryName(p, name) {
-				add(name)
-				break
+				matched[i], hit = true, true
 			}
 		}
+		if hit {
+			add(name)
+		}
+	}
+	var unmatched []string
+	for i, p := range patterns {
+		if !matched[i] {
+			unmatched = append(unmatched, strconv.Quote(p))
+		}
+	}
+	if len(unmatched) > 0 {
+		return nil, fmt.Errorf("github app %q: no repository of the installation matches %s", credential, strings.Join(unmatched, ", "))
 	}
 	if len(out) == 0 {
-		quoted := make([]string, len(patterns))
-		for i, p := range patterns {
-			quoted[i] = strconv.Quote(p)
-		}
-		return nil, fmt.Errorf("github app %q: no repository of the installation matches %s", credential, strings.Join(quoted, ", "))
+		return nil, fmt.Errorf("github app %q: no repository of the installation matches the request", credential)
 	}
 	return out, nil
 }

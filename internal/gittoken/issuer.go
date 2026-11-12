@@ -81,25 +81,45 @@ type normalized struct {
 	permissions  map[string]string
 }
 
-func normalize(req TokenRequest) normalized {
+// normalize returns req in canonical form. "*" must stand alone: a list
+// that mixes it with other entries is rejected rather than widened to the
+// whole installation. Entries are deduplicated case-insensitively (GitHub
+// repository names are case-insensitive); the cache key lowercases them.
+func normalize(credential string, req TokenRequest) (normalized, error) {
 	n := normalized{owner: strings.ToLower(req.Owner)}
-	if len(req.Repositories) > 0 && !slices.Contains(req.Repositories, "*") {
-		n.repositories = slices.Clone(req.Repositories)
-		slices.Sort(n.repositories)
-		n.repositories = slices.Compact(n.repositories)
+	if slices.Contains(req.Repositories, "*") {
+		for _, r := range req.Repositories {
+			if r != "*" {
+				return normalized{}, fmt.Errorf("github app %q: repositories %q mixes \"*\" with other names; use \"*\" alone for the whole installation", credential, req.Repositories)
+			}
+		}
+	} else if len(req.Repositories) > 0 {
+		repos := slices.Clone(req.Repositories)
+		slices.SortFunc(repos, func(a, b string) int {
+			if c := strings.Compare(strings.ToLower(a), strings.ToLower(b)); c != 0 {
+				return c
+			}
+			return strings.Compare(a, b)
+		})
+		n.repositories = slices.CompactFunc(repos, strings.EqualFold)
 	}
 	if len(req.Permissions) > 0 {
 		n.permissions = req.Permissions
 	}
-	return n
+	return n, nil
 }
 
 // cacheKey is Name + SHA-256 of a canonical JSON of the credential config
 // and the normalized request. encoding/json sorts map keys.
 func cacheKey(app GitHubApp, apiURL string, n normalized) string {
-	repos := n.repositories
-	if repos == nil {
-		repos = []string{"*"}
+	// Repository names are compared case-insensitively by GitHub, so the key
+	// uses lowercased names: ["App"] and ["app"] share one cached token.
+	repos := []string{"*"}
+	if n.repositories != nil {
+		repos = make([]string, len(n.repositories))
+		for i, r := range n.repositories {
+			repos[i] = strings.ToLower(r)
+		}
 	}
 	b, _ := json.Marshal(struct {
 		AppID          int64             `json:"appId"`
@@ -129,7 +149,10 @@ func (s *appSource) Token(ctx context.Context, req TokenRequest) (Token, error) 
 	if err != nil {
 		return Token{}, err
 	}
-	n := normalize(req)
+	n, err := normalize(app.Name, req)
+	if err != nil {
+		return Token{}, err
+	}
 	if len(n.repositories) > maxRepositories {
 		return Token{}, fmt.Errorf("github app %q: %d repositories requested; GitHub accepts at most %d repositories per token", app.Name, len(n.repositories), maxRepositories)
 	}
