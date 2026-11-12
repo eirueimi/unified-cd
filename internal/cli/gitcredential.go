@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/spf13/cobra"
 )
 
 func newGitCredentialCmd(resolve func() (Config, error)) *cobra.Command {
@@ -45,7 +48,7 @@ func newListGitCredentialsCmd(resolve func() (Config, error)) *cobra.Command {
 			if resp.StatusCode != http.StatusOK {
 				return fmt.Errorf("server: %s", string(body))
 			}
-			var list []api.GitCredentialMeta
+			var list []gitCredentialListItem
 			if err := json.Unmarshal(body, &list); err != nil {
 				return err
 			}
@@ -54,7 +57,27 @@ func newListGitCredentialsCmd(resolve func() (Config, error)) *cobra.Command {
 				return nil
 			}
 			for _, gc := range list {
-				line := fmt.Sprintf("%s\thost=%s type=%s secretRef=%s", gc.Name, gc.Host, gc.CredType, gc.SecretRef)
+				line := fmt.Sprintf("%s\thost=%s secretRef=%s type=%s", gc.Name, gc.Host, gc.SecretRef, gc.CredType)
+				if app := gc.GitHubApp; app != nil {
+					inst := "auto"
+					if app.InstallationID != 0 {
+						inst = strconv.FormatInt(app.InstallationID, 10)
+					}
+					line += fmt.Sprintf(" appId=%d installationId=%s", app.AppID, inst)
+					if app.APIURL != "" {
+						line += " apiURL=" + app.APIURL
+					}
+				}
+				line += fmt.Sprintf(" controllerUse=%t", gc.controllerUse())
+				if ja := gc.JobAccess; ja != nil {
+					perms := make([]string, 0, len(ja.Permissions))
+					for k, v := range ja.Permissions {
+						perms = append(perms, k+"="+v)
+					}
+					sort.Strings(perms)
+					line += fmt.Sprintf(" jobAccess=folders:%s repos:%s perms:%s",
+						strings.Join(ja.Folders, ","), strings.Join(ja.Repositories, ","), strings.Join(perms, ","))
+				}
 				if gc.KnownHosts != "" {
 					line += " knownHosts=pinned"
 				}
@@ -63,6 +86,20 @@ func newListGitCredentialsCmd(resolve func() (Config, error)) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// gitCredentialListItem decodes one entry of the gitcredentials list response on the CLI side.
+// It shadows api.GitCredentialMeta.ControllerUse with a pointer: a controller older than the
+// githubApp feature sends no controllerUse key, and that must read as true (the old behaviour),
+// not as false, or an export would turn controller use off for every credential.
+type gitCredentialListItem struct {
+	api.GitCredentialMeta
+	ControllerUse *bool `json:"controllerUse"`
+}
+
+// controllerUse reports the effective value; an absent key means true.
+func (g gitCredentialListItem) controllerUse() bool {
+	return g.ControllerUse == nil || *g.ControllerUse
 }
 
 func newDeleteGitCredentialCmd(resolve func() (Config, error)) *cobra.Command {

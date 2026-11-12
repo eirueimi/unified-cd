@@ -207,7 +207,7 @@ The full documentation is published at **https://eirueimi.github.io/unified-cd/*
 | `Job` | Defines a pipeline: steps, parameters, concurrency rules, agent routing |
 | `Schedule` | Triggers a job on a cron schedule |
 | `WebhookReceiver` | Accepts HTTP webhooks (GitHub, HMAC, or unauthenticated) to trigger a job |
-| `GitCredential` | Stores Git authentication for private repo access |
+| `GitCredential` | Stores Git authentication for private repo access: token, SSH key, or a GitHub App (short-lived installation tokens, optionally handed to jobs by folder via `jobAccess`) |
 | `AppSource` | GitOps sync: automatically applies Job YAML files from a Git repository |
 
 ```yaml

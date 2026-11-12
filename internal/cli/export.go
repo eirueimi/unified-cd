@@ -178,7 +178,7 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 		exported++
 	}
 
-	var creds []api.GitCredentialMeta
+	var creds []gitCredentialListItem
 	if err := getJSON(cfg, httpClient, "/api/v1/gitcredentials", &creds); err != nil {
 		return fmt.Errorf("list gitcredentials: %w", err)
 	}
@@ -190,6 +190,26 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 		spec := map[string]any{"host": gc.Host, "type": gc.CredType, "secretRef": gc.SecretRef}
 		if gc.KnownHosts != "" {
 			spec["knownHosts"] = gc.KnownHosts
+		}
+		if !gc.controllerUse() {
+			spec["controllerUse"] = false
+		}
+		if gc.GitHubApp != nil {
+			app := map[string]any{"appId": gc.GitHubApp.AppID}
+			if gc.GitHubApp.InstallationID != 0 {
+				app["installationId"] = gc.GitHubApp.InstallationID
+			}
+			if gc.GitHubApp.APIURL != "" {
+				app["apiURL"] = gc.GitHubApp.APIURL
+			}
+			spec["githubApp"] = app
+		}
+		if gc.JobAccess != nil {
+			spec["jobAccess"] = map[string]any{
+				"folders":      gc.JobAccess.Folders,
+				"repositories": gc.JobAccess.Repositories,
+				"permissions":  gc.JobAccess.Permissions,
+			}
 		}
 		doc := exportDoc{APIVersion: "unified-cd/v1", Kind: "GitCredential", Metadata: exportMetadata{Name: gc.Name}, Spec: spec}
 		if err := writeExportDoc(filepath.Join(outDir, exportKindDir["GitCredential"], gc.Name+".yaml"), doc); err != nil {

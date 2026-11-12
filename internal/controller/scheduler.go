@@ -14,7 +14,6 @@ import (
 	"github.com/eirueimi/unified-cd/internal/gittemplate"
 	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
-	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
 )
 
@@ -306,12 +305,13 @@ func runCacheCleanupAsLeader(ctx context.Context, st store.Store, obj objectstor
 // For each Pending run with unresolved git:// uses.job URIs, it fetches the
 // referenced YAML and inlines its steps directly into the run's spec.
 // After UpdateRunSpec, the next RunScheduler tick will queue the run normally.
-// Returns immediately if resolver is nil.
+// Returns immediately if resolver is nil. creds supplies uses: credentials
+// (nil = every fetch is anonymous).
 //
 // deadline bounds how long a run may sit Pending while its git-template
 // resolution keeps failing transiently: past it, the run is Failed instead
 // of retried forever (see resolveGitPendingRuns).
-func RunGitResolver(ctx context.Context, st store.Store, resolver *gittemplate.Resolver, km secrets.KeyManager, tick, deadline time.Duration) {
+func RunGitResolver(ctx context.Context, st store.Store, resolver *gittemplate.Resolver, creds *GitCredentialResolver, tick, deadline time.Duration) {
 	if resolver == nil {
 		return
 	}
@@ -329,7 +329,7 @@ func RunGitResolver(ctx context.Context, st store.Store, resolver *gittemplate.R
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			resolveGitPendingRuns(ctx, st, resolver, km, bo, deadline)
+			resolveGitPendingRuns(ctx, st, resolver, creds, bo, deadline)
 		}
 	}
 }
@@ -339,7 +339,7 @@ func RunGitResolver(ctx context.Context, st store.Store, resolver *gittemplate.R
 // candidate (e.g. a persistently unreachable host) doesn't fill every batch;
 // deadline bounds how long a run may keep failing transiently before it is
 // given up on and Failed instead of left Pending forever.
-func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittemplate.Resolver, km secrets.KeyManager, bo *failureBackoff, deadline time.Duration) {
+func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittemplate.Resolver, creds *GitCredentialResolver, bo *failureBackoff, deadline time.Duration) {
 	runs, err := st.ListPendingRuns(ctx, 50, bo.Excluded(time.Now()))
 	if err != nil {
 		slog.Warn("git resolver: list pending runs", "error", err)
@@ -349,31 +349,10 @@ func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittem
 		if !gittemplate.HasGitURIs(r.Spec) {
 			continue
 		}
-		credFn := func(ctx context.Context, host string) (gittemplate.Credential, error) {
-			gc, err := st.GetGitCredentialByHost(ctx, host)
-			if err != nil {
-				return gittemplate.Credential{}, fmt.Errorf("get git credential: %w", err)
-			}
-			if gc == nil {
-				return gittemplate.Credential{}, nil // public repo
-			}
-			stored, err := st.GetSecret(ctx, gc.SecretRef)
-			if err != nil {
-				return gittemplate.Credential{}, fmt.Errorf("get secret %q for host %q: %w", gc.SecretRef, host, err)
-			}
-			plaintext, err := secrets.Decrypt(ctx, km, stored.EncryptedDEK, stored.Ciphertext,
-				secrets.SecretBinding(stored.Name))
-			if err != nil {
-				return gittemplate.Credential{}, fmt.Errorf("decrypt secret for host %q: %w", host, err)
-			}
-			switch gc.CredType {
-			case "token":
-				return gittemplate.Credential{Token: string(plaintext)}, nil
-			case "sshKey":
-				return gittemplate.Credential{SSHKey: string(plaintext)}, nil
-			default:
-				return gittemplate.Credential{}, nil
-			}
+		jobName := r.JobName
+		credFn := func(ctx context.Context, req gittemplate.CredentialRequest) (gittemplate.Credential, error) {
+			req.JobName = jobName
+			return creds.ForUses(ctx, req)
 		}
 		resolved, err := resolver.ResolveSpec(ctx, r.Spec, credFn)
 		if err != nil {

@@ -67,6 +67,20 @@ No active items.
 - **Evidence:** `handleCloudAgentEnroll` in `internal/controller/agent_enrollment_cloud.go` calls `slog.Warn` and `recordAgentAuth` (a metric) on every rejection but `auditAgentCredential` only on success.
 - **Done when:** Rejected exchanges produce an audit entry with the provider, policy name and a coarse reason (never token or proof contents), subject to the existing rate limit so a flood cannot grow the audit table without bound; a test per provider; `docs/operator-manual/agents.md` and `docs/troubleshooting/agents-and-enrollment.md` say where the reason is recorded.
 
+### 57. GitHub App tokens for runs longer than one hour
+
+- **Status:** Open
+- **Impact:** A run receives the credential's cached job token with 50 to 60 minutes left and never gets another one. A step that uses the token after it expires fails with `401`, so a long build, a long-running deploy or a run that waits on an `approval` step cannot rely on a GitHub App credential.
+- **Evidence:** `handleAgentSecretsFetch` (`internal/controller/api_secrets.go`) answers a `githubApp` credential once per fetch; `JobMinRemaining` in `internal/gittoken/gittoken.go` is 50 minutes. A run fetches its secrets once, so the token it holds is never replaced.
+- **Done when:** A run that is still using a GitHub App token after its expiry gets a fresh one (re-fetch on expiry, or a fetch per step), with the hand-out audited each time and a test that a step started after the first token's expiry receives a valid one; `docs/user-guide/resources/git-credential.md` ("Known drawbacks") and `docs/troubleshooting/steps-and-execution.md` drop the one-hour limit.
+
+### 59. Per-job narrowing of GitHub App token repositories and permissions
+
+- **Status:** Open (needs design)
+- **Impact:** Every job covered by `jobAccess.folders` receives a token with the credential's full `jobAccess.repositories` and `jobAccess.permissions`. A job that needs only one repository or `contents: read` still gets the whole reach, so narrower access needs one GitCredential per case.
+- **Evidence:** `GitCredentialResolver.JobToken` (`internal/controller/gitcred_resolver.go`) always sends the credential's full request; there is no job-side declaration of what a job needs (the credential name is used like a secret name, with no `gitTokens`-style block).
+- **Done when:** A design records how a job (or a template parameter) asks for a subset, bounded by `jobAccess` (a job can never widen it), and how the shared token cache keys on the subset; it is then implemented with tests, or the decision not to is recorded; `git-credential.md` and `docs/operator-manual/authorization.md` describe the result.
+
 ## Low
 
 ### 48. Apply-time validation parity and remaining knob differences
@@ -96,3 +110,24 @@ No active items.
 - **Impact:** `templates/git-checkout.yaml` and `templates/rsync-deploy.yaml` run on agents with `StrictHostKeyChecking=no` and `UserKnownHostsFile=/dev/null`, so any host can impersonate the git or deploy server for jobs that use them. The controller-side fetchers verify host keys (GitCredential `knownHosts`); these templates do not.
 - **Evidence:** `templates/git-checkout.yaml` (the `GIT_SSH_COMMAND` export) and `templates/rsync-deploy.yaml` (the `-e "ssh ..."` option).
 - **Done when:** Both templates take a `known_hosts` input (or secret) and default to strict checking against it, with an explicit opt-out for the old behaviour, the template tests and `templates/README.md` updated, and a new tag cut because external references are pinned.
+
+### 58. Revoke GitHub App tokens when a run ends
+
+- **Status:** Open (needs per-run tokens)
+- **Impact:** A token handed to a run stays valid until it expires (up to one hour), even after the run finished or was cancelled, because the token is shared between runs and revoking it would break concurrent runs.
+- **Evidence:** `jobAccess` tokens are cached per credential in `internal/gittoken` and reused across runs; no code calls `DELETE /installation/token`.
+- **Done when:** Tokens are issued per run (which gives up the sharing that keeps issuing to about one call per credential per 10 minutes, so the rate-limit effect is measured and documented) and revoked at run end, with a test that a finished run's token is rejected by a simulated GitHub; `git-credential.md` ("Known drawbacks") says so.
+
+### 60. Private CA support for GitHub Enterprise Server
+
+- **Status:** Open
+- **Impact:** A GitHub App credential for a GHES instance whose certificate is signed by a private CA works only if the CA is already in the controller's system trust store; there is no per-credential or controller flag for a CA bundle.
+- **Evidence:** The token source uses the default transport and the system CA pool (`internal/gittoken/githubapp.go`), like cloud enrollment; `docs/user-guide/resources/git-credential.md` ("GitHub Enterprise Server") states the limit.
+- **Done when:** A documented option (controller flag or per-credential setting) supplies an extra CA bundle for the GitHub App API calls, with a test against a TLS server using a private CA, and the docs and `docs/reference/configuration.md` updated.
+
+### 61. Other token providers for GitCredential (Azure DevOps, workload identity)
+
+- **Status:** Open (needs design)
+- **Impact:** Only GitHub Apps can mint short-lived Git tokens. Azure DevOps, GitLab and cloud workload identity still need long-lived personal access tokens stored as `type: token`.
+- **Evidence:** `TokenSource` in `internal/gittoken` is the extension point and has one implementation (`GitHubApp`); `internal/dsl/gitcredential_parse.go` accepts `token`, `sshKey` and `githubApp` only.
+- **Done when:** A design picks the next provider and its credential shape (for example Entra workload identity for Azure DevOps), implemented behind `TokenSource` with simulated-provider tests, or records the decision not to; `git-credential.md` documents it.

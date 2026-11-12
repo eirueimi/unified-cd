@@ -53,7 +53,7 @@ spec:
 func TestFetcher_ResolveCommitSHA(t *testing.T) {
 	repoDir := makeTestRepo(t)
 	f := gittemplate.NewFetcher()
-	sha, err := f.ResolveCommitSHA(context.Background(), "file://"+repoDir, "main", "", "")
+	sha, err := f.ResolveCommitSHA(context.Background(), "file://"+repoDir, "main", gittemplate.Credential{})
 	require.NoError(t, err)
 	assert.Len(t, sha, 40, "should be a full SHA")
 }
@@ -63,7 +63,7 @@ func TestFetcher_ResolveCommitSHA(t *testing.T) {
 // a bare "exit status 128".
 func TestFetcher_ResolveCommitSHA_ErrorIncludesStderr(t *testing.T) {
 	f := gittemplate.NewFetcher()
-	_, err := f.ResolveCommitSHA(context.Background(), "file:///nonexistent-unified-cd-xyz", "main", "", "")
+	_, err := f.ResolveCommitSHA(context.Background(), "file:///nonexistent-unified-cd-xyz", "main", gittemplate.Credential{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fatal", "error should include git's stderr, got: "+err.Error())
 }
@@ -71,7 +71,7 @@ func TestFetcher_ResolveCommitSHA_ErrorIncludesStderr(t *testing.T) {
 func TestFetcher_FetchDir(t *testing.T) {
 	repoDir := makeTestRepo(t)
 	f := gittemplate.NewFetcher()
-	files, err := f.FetchDir(context.Background(), "file://"+repoDir, "main", "jobs/", "", "")
+	files, err := f.FetchDir(context.Background(), "file://"+repoDir, "main", "jobs/", gittemplate.Credential{})
 	require.NoError(t, err)
 	assert.Len(t, files, 1, "only .yaml files, not README.md")
 	_, found := files["jobs/build.yaml"]

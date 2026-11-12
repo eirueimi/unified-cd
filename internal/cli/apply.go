@@ -95,28 +95,26 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 	var bodyBytes []byte
 	switch kindProbe.Kind {
 	case "GitCredential":
-		var gc struct {
-			Metadata struct {
-				Name string `yaml:"name"`
-			} `yaml:"metadata"`
-			Spec struct {
-				Host       string `yaml:"host"`
-				Type       string `yaml:"type"`
-				SecretRef  string `yaml:"secretRef"`
-				KnownHosts string `yaml:"knownHosts"`
-			} `yaml:"spec"`
-		}
-		if err := yaml.Unmarshal(b, &gc); err != nil {
+		gc, err := dsl.ParseGitCredential(bytes.NewReader(b))
+		if err != nil {
 			return fmt.Errorf("document %d: parse gitcredential yaml: %w", docIndex+1, err)
 		}
+		gcReq := api.UpsertGitCredentialRequest{
+			Name:          gc.Metadata.Name,
+			Host:          gc.Spec.Host,
+			CredType:      gc.Spec.Type,
+			SecretRef:     gc.Spec.SecretRef,
+			KnownHosts:    gc.Spec.KnownHosts,
+			ControllerUse: gc.Spec.ControllerUse,
+		}
+		if a := gc.Spec.GitHubApp; a != nil {
+			gcReq.GitHubApp = &api.GitHubAppConfig{AppID: a.AppID, InstallationID: a.InstallationID, APIURL: a.APIURL}
+		}
+		if ja := gc.Spec.JobAccess; ja != nil {
+			gcReq.JobAccess = &api.GitJobAccess{Folders: ja.Folders, Repositories: ja.Repositories, Permissions: ja.Permissions}
+		}
 		endpoint = cfg.Server + "/api/v1/gitcredentials"
-		bodyBytes, _ = json.Marshal(api.UpsertGitCredentialRequest{
-			Name:       gc.Metadata.Name,
-			Host:       gc.Spec.Host,
-			CredType:   gc.Spec.Type,
-			SecretRef:  gc.Spec.SecretRef,
-			KnownHosts: gc.Spec.KnownHosts,
-		})
+		bodyBytes, _ = json.Marshal(gcReq)
 	case "WebhookReceiver":
 		endpoint = cfg.Server + "/api/v1/webhooks/"
 		bodyBytes, _ = json.Marshal(api.ApplyWebhookRequest{YAML: string(b)})
@@ -154,7 +152,9 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 	switch kindProbe.Kind {
 	case "GitCredential":
 		var kindMeta struct {
-			Metadata struct{ Name string `yaml:"name"` } `yaml:"metadata"`
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
 		}
 		_ = yaml.Unmarshal(b, &kindMeta)
 		fmt.Fprintf(cmd.OutOrStdout(), "gitcredential applied: %s\n", kindMeta.Metadata.Name)

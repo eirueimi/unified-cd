@@ -594,6 +594,15 @@ func (s *Server) auditAgentCredential(r *http.Request, action, resource string, 
 // auditAgentCredentialAs is auditAgentCredential for a call whose agent
 // identity is known; the row then carries the stable actor id "agent:<id>".
 func (s *Server) auditAgentCredentialAs(r *http.Request, agentID, action, resource string, status int) {
+	s.auditAgentEvent(r, agentID, action, resource, status, nil)
+}
+
+// auditAgentEvent writes the audit row of an agent call. Agent routes are
+// outside auditLogMiddleware, so their handlers write rows directly. A
+// non-empty agentID gives the row the stable actor id "agent:<id>"; details
+// is optional structured context (nil stores none) and must never carry a
+// credential value.
+func (s *Server) auditAgentEvent(r *http.Request, agentID, action, resource string, status int, details map[string]any) {
 	if s.store == nil {
 		return
 	}
@@ -609,7 +618,7 @@ func (s *Server) auditAgentCredentialAs(r *http.Request, agentID, action, resour
 	if agentID != "" {
 		actorID = "agent:" + agentID
 	}
-	if err := s.store.InsertAuditLog(ctx, store.AuditEntry{Actor: "agent", ActorID: actorID, Method: http.MethodPost, Path: path, Action: action, Resource: resource, Status: status}); err != nil {
-		slog.Warn("agent credential audit failed", "action", action, "error", err)
+	if err := s.store.InsertAuditLog(ctx, store.AuditEntry{Actor: "agent", ActorID: actorID, Method: http.MethodPost, Path: path, Action: action, Resource: resource, Status: status, Details: details}); err != nil {
+		slog.Warn("agent audit failed", "action", action, "error", err)
 	}
 }

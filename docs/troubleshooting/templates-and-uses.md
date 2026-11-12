@@ -171,3 +171,35 @@ the job references a `git://` template whose host stayed unreachable (or credent
 
 fix the repository URL/credentials and re-trigger the run.
 
+## A private `uses: git://...` template fails with `does not allow job`
+
+**Symptom**
+
+A run fails to resolve a `git://` template with git's error followed by one of:
+
+```
+GitCredential "<name>" does not allow job "<job>" to read <owner>/<repo> through the GitHub App (jobAccess)
+GitCredential "<name>" has no jobAccess, so no job can read <owner>/<repo> through the GitHub App
+```
+
+**Cause**
+
+The host's matching credential is a `githubApp` credential. For `uses:` the controller uses its token only when `jobAccess` covers the run's job folder and the template repository and grants `contents` of at least `read`; otherwise it fetches anonymously (so public templates keep working) and a private template fails in git. A credential without `jobAccess` is never used for `uses:`.
+
+**Fix**
+
+Add the job's folder and the template repository to the credential's `jobAccess` (`folders`, `repositories`) and make sure `permissions` contains `contents: read` or higher. If the controller should not pick this credential for the host at all, set `controllerUse: false` and use a different credential. See [GitCredential](../user-guide/resources/git-credential.md#github-app-credentials).
+
+## `git-auth-run` fails with `git-auth-run: slot N needs both credential_N and owner_N`
+
+**Symptom**
+
+A step using `git-auth-run.yaml` fails immediately with `git-auth-run: slot 2 needs both credential_2 and owner_2` (or another slot number).
+
+**Cause**
+
+Exactly one of `credential_N` and `owner_N` was set. A slot with both empty is ignored; a half-filled slot is refused, because skipping it would silently run git without that organization's token.
+
+**Fix**
+
+Set both parameters of the slot, or clear both. Also check that the secret behind `credential_N` is not empty.

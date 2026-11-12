@@ -42,6 +42,10 @@ recorded, allowed or denied, for the following actions. A **denied read** is rec
 | `agent.policy.create` / `agent.policy.update` / `agent.policy.delete` | enrollment-policy write routes |
 | `agent.identity.enable` / `agent.identity.disable` / `agent.credentials.revoke` | agent identity lifecycle routes |
 
+The agent secrets fetch also writes one row per GitHub App job token it hands out or refuses, and
+one per refused request for an App's private key (`gitcredential.token_issue`, see [GitHub App job tokens](#github-app-job-tokens)); it is the only
+agent route besides credential exchange and refresh that is audited.
+
 Each recorded entry contains:
 
 | Field | Description |
@@ -58,6 +62,7 @@ Each recorded entry contains:
 | `permission` | The permission the request was checked against (for example `run.trigger`); empty when no decision applied |
 | `scope` | The job name for a folder-scopable decision; empty for a global decision and for a refusal before any job was looked at |
 | `grantedBy` | A short description of the first grant that allowed the request; empty on a denial |
+| `details` | Optional structured context (a JSON object). Only `gitcredential.token_issue` rows carry it today, see [GitHub App job tokens](#github-app-job-tokens); absent on every other row |
 
 ### Actor identity
 
@@ -69,7 +74,7 @@ from anything the caller can choose:
 | `break-glass` | The `UNIFIED_TOKEN` bootstrap credential. A PAT that merely carries the bootstrap token's name gets its own `pat:<id>` instead |
 | `pat:<pat id>` | Any other PAT (role-only, owner or enrollment). `<pat id>` is the PAT's primary key; unlike the name it is unique |
 | `oidc:<sub>` | An OIDC bearer token or a browser session; `<sub>` is the subject claim (also in `actorSub`) |
-| `agent:<agent id>` | An agent credential exchange or refresh (`agent.enrollment.exchange`, `agent.refresh`); other agent rows carry no `actorId` |
+| `agent:<agent id>` | An agent credential exchange or refresh (`agent.enrollment.exchange`, `agent.refresh`) or a GitHub App job token hand-out (`gitcredential.token_issue`); other agent rows carry no `actorId` |
 
 Two PATs with the same name therefore produce rows with the same `actor` and different `actorId`
 values. `pats.name` has no `UNIQUE` constraint (existing databases may already hold duplicates), so
@@ -114,6 +119,40 @@ grow `audit_logs` at request rate. Size the database for that and keep
 request body — the `value` field is never inspected, logged, or stored anywhere in the audit
 trail. `secret.delete` uses the URL path parameter, so no body is involved at all.
 
+### GitHub App job tokens
+
+When a run's agent fetches secrets and a requested name is a `githubApp` GitCredential with
+`jobAccess`, the controller answers with an installation token instead of a stored secret and
+writes an audit row directly (agent routes are outside the audit middleware):
+
+| Field | Value |
+|---|---|
+| `action` | `gitcredential.token_issue` |
+| `actor` / `actorId` | `agent` / `agent:<agent id>` |
+| `method` / `path` | `POST` / `/api/v1/agents/<agent id>/secrets/fetch` |
+| `resource` | The GitCredential name (for reason `private_key`, the `githubApp` credential whose private key was requested) |
+| `status` | `200` the token was handed out; `403` the run's job is not covered by `jobAccess.folders`, or the fetch asked for the App's private key; `502` GitHub refused or failed to issue the token; `500` the controller could not issue (token issuing not configured, or the run could not be loaded) |
+| `details` | See below |
+
+`details` keys:
+
+| Key | Present | Value |
+|---|---|---|
+| `runId` | always | The run the agent fetched for |
+| `jobName` | except for reasons `not_configured`, `run` and `private_key` | The run's qualified job name, as checked against `jobAccess.folders` |
+| `repositories` | except for reason `private_key` | The credential's `jobAccess.repositories` patterns (as configured, not expanded) |
+| `permissions` | except for reason `private_key` | The credential's `jobAccess.permissions` map |
+| `expiresAt` | `200` only | The token's expiry (RFC 3339, UTC) |
+| `secretRef` | reason `private_key` only | The requested secret name (the App's `secretRef`); never its value |
+| `reason` | non-`200` only | `folder` (403), `private_key` (403), `issue` (502), `not_configured` or `run` (500) |
+
+A `200` row is written only when the fetch response actually carries the token: if another name in
+the same fetch fails, the request is answered with that error and no `200` row is written for the
+token. The token, the App's private key and the App JWT are never recorded. The jobAccess shown is
+the credential as it was at fetch time, which is also what was checked. A request for the App's
+private key (the credential's `secretRef`) is refused with `403` before any token is issued and
+writes one row with reason `private_key`; the key is never read for it.
+
 ### Failed authentication
 
 A request that is rejected with `401` (no credentials, unknown or expired token, failed session
@@ -139,7 +178,9 @@ The following are deliberately **not** recorded:
 - **Agent-facing endpoints** (`/api/v1/agents/register`, `/heartbeat`, `/claim`, `/steps`,
   `/logs`, `/finish`, `/outputs`, `/secrets/fetch`, agent-created approvals, etc.) — these use
   a per-agent principal, not a human `Principal`, and would otherwise flood
-  the audit log with routine bookkeeping.
+  the audit log with routine bookkeeping. The exceptions are agent credential exchange and
+  refresh, and GitHub App job token hand-outs from `/secrets/fetch`
+  ([GitHub App job tokens](#github-app-job-tokens)); an ordinary stored-secret fetch is not recorded.
 - **Credential plaintext and hashes** — enrollment creation is audited by its
   metadata/action only. Access, refresh, and enrollment credentials are never
   audit fields, response-captured values, or metric labels.
@@ -188,6 +229,9 @@ They are `NULL` for rows written before the upgrade.
 Migration `027_audit_actor_identity` adds the nullable columns `actor_id` and `actor_sub`. They are
 `NULL` for rows written before the upgrade, which therefore cannot be attributed beyond the
 (non-unique) `actor` name. The change is additive: no existing API field or column changed.
+
+Migration `029_github_app_credentials` adds the nullable `details jsonb` column, returned as the
+`details` field of the API. It is `NULL` (and the field absent) for every row that has no details.
 
 ## API
 

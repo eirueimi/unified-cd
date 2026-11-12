@@ -23,12 +23,12 @@ func TestCache_GetPut_FixedRef(t *testing.T) {
 	u := gittemplate.URI{Host: "github.com", Owner: "org", Repo: "repo", Path: "job.yaml", Ref: "v1.0.0"}
 	data := []byte("apiVersion: unified-cd/v1\nkind: Job\n")
 
-	_, ok := c.Get(ctx, u)
+	_, ok := c.Get(ctx, u, "")
 	assert.False(t, ok, "expected cache miss on empty store")
 
-	c.Put(ctx, u, data)
+	c.Put(ctx, u, "", data)
 
-	got, ok := c.Get(ctx, u)
+	got, ok := c.Get(ctx, u, "")
 	require.True(t, ok, "expected cache hit after Put")
 	assert.Equal(t, data, got)
 }
@@ -39,9 +39,9 @@ func TestCache_SkipsMutableRef(t *testing.T) {
 	ctx := context.Background()
 
 	u := gittemplate.URI{Host: "github.com", Owner: "org", Repo: "repo", Path: "job.yaml", Ref: "main"}
-	c.Put(ctx, u, []byte("some content")) // should be no-op for mutable refs
+	c.Put(ctx, u, "", []byte("some content")) // should be no-op for mutable refs
 
-	_, ok := c.Get(ctx, u)
+	_, ok := c.Get(ctx, u, "")
 	assert.False(t, ok, "expected cache miss for mutable ref")
 }
 
@@ -82,7 +82,7 @@ func TestHasGitURIs_IgnoresUnrelatedGitProtocolStrings(t *testing.T) {
 
 // ---- ResolveSpec: basic expansion ----
 
-func noCred(ctx context.Context, host string) (gittemplate.Credential, error) {
+func noCred(ctx context.Context, req gittemplate.CredentialRequest) (gittemplate.Credential, error) {
 	return gittemplate.Credential{}, nil
 }
 
@@ -380,7 +380,7 @@ type stubFetcher struct {
 	calls int
 }
 
-func (s *stubFetcher) Fetch(ctx context.Context, uri gittemplate.URI, token, sshKey string) ([]byte, error) {
+func (s *stubFetcher) Fetch(ctx context.Context, uri gittemplate.URI, cred gittemplate.Credential) ([]byte, error) {
 	s.calls++
 	return s.data, nil
 }
@@ -390,7 +390,7 @@ type mapFetcher struct {
 	byURI map[string][]byte
 }
 
-func (m *mapFetcher) Fetch(ctx context.Context, uri gittemplate.URI, token, sshKey string) ([]byte, error) {
+func (m *mapFetcher) Fetch(ctx context.Context, uri gittemplate.URI, cred gittemplate.Credential) ([]byte, error) {
 	data, ok := m.byURI[uri.Raw]
 	if !ok {
 		return nil, fmt.Errorf("mapFetcher: no fixture for %q", uri.Raw)
@@ -400,7 +400,7 @@ func (m *mapFetcher) Fetch(ctx context.Context, uri gittemplate.URI, token, sshK
 
 type erroringFetcher struct{}
 
-func (erroringFetcher) Fetch(ctx context.Context, uri gittemplate.URI, token, sshKey string) ([]byte, error) {
+func (erroringFetcher) Fetch(ctx context.Context, uri gittemplate.URI, cred gittemplate.Credential) ([]byte, error) {
 	return nil, fmt.Errorf("network unreachable")
 }
 
@@ -410,4 +410,104 @@ func mustMarshalSpec(spec dsl.Spec) []byte {
 		panic(err)
 	}
 	return b
+}
+
+// ---- ResolveSpec: credential requests ----
+
+const simpleTemplateYAML = `apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata:
+  name: t
+spec:
+  steps:
+    - name: run
+      run: echo hi
+`
+
+func TestResolveSpec_CredentialRequestCarriesOwnerRepo(t *testing.T) {
+	specJSON := mustMarshalSpec(dsl.Spec{
+		Steps: []dsl.StepEntry{{Name: "u", Uses: &dsl.UsesStep{Job: "git://github.com/acme/ci-templates/x.yaml@v1"}}},
+	})
+	var got []gittemplate.CredentialRequest
+	credFn := func(_ context.Context, req gittemplate.CredentialRequest) (gittemplate.Credential, error) {
+		got = append(got, req)
+		return gittemplate.Credential{}, nil
+	}
+	resolver := gittemplate.NewResolver(&stubFetcher{data: []byte(simpleTemplateYAML)}, nil)
+	_, err := resolver.ResolveSpec(context.Background(), specJSON, credFn)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, gittemplate.CredentialRequest{Host: "github.com", Owner: "acme", Repo: "ci-templates"}, got[0])
+}
+
+func TestResolveSpec_FetchErrorIncludesHint(t *testing.T) {
+	specJSON := mustMarshalSpec(dsl.Spec{
+		Steps: []dsl.StepEntry{{Name: "u", Uses: &dsl.UsesStep{Job: "git://github.com/acme/ci-templates/x.yaml@v1"}}},
+	})
+	const hint = `GitCredential "gh-app" does not allow job "team-b/x" to read acme/ci-templates through the GitHub App (jobAccess)`
+	credFn := func(_ context.Context, _ gittemplate.CredentialRequest) (gittemplate.Credential, error) {
+		return gittemplate.Credential{Hint: hint}, nil
+	}
+	resolver := gittemplate.NewResolver(erroringFetcher{}, nil)
+	_, err := resolver.ResolveSpec(context.Background(), specJSON, credFn)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "network unreachable")
+	assert.Contains(t, err.Error(), hint)
+	assert.False(t, gittemplate.IsResolveError(err))
+}
+
+// recordingFetcher records the credential of every fetch.
+type recordingFetcher struct {
+	data  []byte
+	creds []gittemplate.Credential
+}
+
+func (r *recordingFetcher) Fetch(_ context.Context, _ gittemplate.URI, cred gittemplate.Credential) ([]byte, error) {
+	r.creds = append(r.creds, cred)
+	return r.data, nil
+}
+
+func TestResolveSpec_CacheScopedByCredential(t *testing.T) {
+	specJSON := mustMarshalSpec(dsl.Spec{
+		Steps: []dsl.StepEntry{{Name: "u", Uses: &dsl.UsesStep{Job: "git://github.com/acme/ci-templates/x.yaml@v1"}}},
+	})
+	cache := gittemplate.NewCache(objectstore.NewLocalObjectStore(t.TempDir()))
+	fetcher := &recordingFetcher{data: []byte(simpleTemplateYAML)}
+	resolver := gittemplate.NewResolver(fetcher, cache)
+	withScope := func(scope string) gittemplate.CredentialFunc {
+		return func(_ context.Context, _ gittemplate.CredentialRequest) (gittemplate.Credential, error) {
+			if scope == "" {
+				return gittemplate.Credential{}, nil
+			}
+			return gittemplate.Credential{Token: "tok", CacheScope: scope}, nil
+		}
+	}
+	_, err := resolver.ResolveSpec(context.Background(), specJSON, withScope("gh-app"))
+	require.NoError(t, err)
+	_, err = resolver.ResolveSpec(context.Background(), specJSON, withScope("gh-app"))
+	require.NoError(t, err)
+	require.Len(t, fetcher.creds, 1, "same scope reuses the cache")
+	assert.Equal(t, "tok", fetcher.creds[0].Token)
+
+	_, err = resolver.ResolveSpec(context.Background(), specJSON, withScope(""))
+	require.NoError(t, err)
+	require.Len(t, fetcher.creds, 2, "an anonymous fetch must not reuse a credential-scoped entry")
+	assert.Equal(t, "", fetcher.creds[1].Token)
+}
+
+func TestResolveSpec_UnscopedCredentialBypassesCache(t *testing.T) {
+	specJSON := mustMarshalSpec(dsl.Spec{
+		Steps: []dsl.StepEntry{{Name: "u", Uses: &dsl.UsesStep{Job: "git://github.com/acme/ci-templates/x.yaml@v1"}}},
+	})
+	cache := gittemplate.NewCache(objectstore.NewLocalObjectStore(t.TempDir()))
+	fetcher := &recordingFetcher{data: []byte(simpleTemplateYAML)}
+	resolver := gittemplate.NewResolver(fetcher, cache)
+	unscoped := func(_ context.Context, _ gittemplate.CredentialRequest) (gittemplate.Credential, error) {
+		return gittemplate.Credential{Token: "tok"}, nil
+	}
+	_, err := resolver.ResolveSpec(context.Background(), specJSON, unscoped)
+	require.NoError(t, err)
+	_, err = resolver.ResolveSpec(context.Background(), specJSON, noCred)
+	require.NoError(t, err)
+	assert.Len(t, fetcher.creds, 2, "content fetched with an unscoped credential must not be cached for anonymous callers")
 }

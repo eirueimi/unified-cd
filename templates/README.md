@@ -44,7 +44,8 @@ deliberately forbids) and is meant to be applied and invoked via `call:` directl
 |---|---|---|---|---|
 | `git-checkout.yaml` | Clone/checkout a Git repository (supports HTTPS/SSH, LFS, sparse checkout, submodules) | git, (git-lfs) | `git:true` | Specified via `token_secret` (e.g. github-token) / `ssh_key_secret` |
 | `slack-notify.yaml` | Notify a Slack Incoming Webhook | curl | - | `slack-webhook-url` |
-| `github-commit-status.yaml` | Update a GitHub commit status | curl | - | `github-token` |
+| `github-commit-status.yaml` | Update a GitHub commit status | curl | - | `token_secret` (default: `github-token`) |
+| `git-auth-run.yaml` | Run a command with git authenticated per GitHub organization (one token per owner, via env vars and a credential helper; nothing written to disk; up to 4 owners) | git 2.31+ | - | `credential_1`..`credential_4` (each paired with `owner_1`..`owner_4`) |
 | `notify-webhook.yaml` | Send a generic JSON POST notification to a webhook | curl | - | Specified via `url_secret` (plain `url` if omitted) |
 | `notify-email.yaml` | Send email notifications via SMTP | curl (SMTP(S)-enabled build) | - | Specified via `smtp_url_secret`, `username_secret`, `password_secret` |
 | `github-pr-comment.yaml` | Post a comment on a GitHub PR/Issue | curl | - | `token_secret` (default: `github-token`) |
@@ -63,6 +64,11 @@ deliberately forbids) and is meant to be applied and invoked via `call:` directl
 | `unity-build.yaml` | Unity batch-mode build (Android/iOS/WebGL, etc.) | Unity Editor | `unity:true` | Specified via `license_*_secret` (optional) |
 | `fastlane-upload.yaml` | Run a fastlane lane (supports App Store Connect API key) | fastlane, bundler, Xcode | `macos:true`, `fastlane:true` | Specified via `asc_*_secret` (optional) |
 | `google-play-upload.yaml` | Upload an AAB to Google Play (fastlane supply) | fastlane | `fastlane:true` | Specified via `service_account_json_secret` |
+
+**GitHub App credentials.** Wherever a template asks for the name of a token secret (`token_secret`, `credential_N`),
+the name of a GitHub App `GitCredential` with `jobAccess` works too: it is referenced exactly like a secret and the
+job receives a short-lived installation token. An installation token covers one organization, so a job that touches
+several organizations uses `git-auth-run.yaml` with one credential per owner.
 
 ## Conventions
 

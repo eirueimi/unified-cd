@@ -867,3 +867,52 @@ have finished `Cancelled`, the cleanup must succeed — a `finally` block whose
 steps all succeed still leaves a cancelled run `Cancelled`. See
 [Approval and Finally](../user-guide/writing-jobs/approval-and-finally.md#finally-block-finally).
 
+## Run fails fetching a GitHub App token: `is not covered by jobAccess.folders`
+
+**Symptom**
+
+A run fails at start with (HTTP 403 from the agent's secrets fetch):
+
+```
+gitcredential "<name>": job "<job>" is not covered by jobAccess.folders
+```
+
+**Cause**
+
+The job references a `githubApp` GitCredential (as `.Secrets.<name>` or through a template parameter such as `token_secret`), but the credential's `jobAccess.folders` does not cover the run's job. `team-a` covers jobs inside `team-a/`, not a job named `team-a`, and a job at the root is covered only by `"*"`. The check uses the credential as it is when the agent fetches, not when the run was created. The denial is recorded in the audit log as `gitcredential.token_issue` with status `403` and `details.reason: folder`.
+
+**Fix**
+
+Add the job's folder (or `"*"`) to `jobAccess.folders` (needs `gitcredential.write`), or move the job into a covered folder. See [GitCredential](../user-guide/resources/git-credential.md#jobaccess-which-jobs-and-how-far).
+
+## Run fails: `is the private key of GitHub App credential`
+
+**Symptom**
+
+A run fails with HTTP 403:
+
+```
+secret "<name>" is the private key of GitHub App credential "<credential>" and is never delivered to jobs
+```
+
+**Cause**
+
+The job asked for the StoredSecret named by a `githubApp` credential's `secretRef`. The App's private key stays on the controller.
+
+**Fix**
+
+Reference the credential by its own name instead (`{{ .Secrets.<credential> }}`), which delivers a short-lived installation token, and give that credential a `jobAccess` that covers the job.
+
+## A GitHub App token stops working partway through a long run
+
+**Symptom**
+
+A step late in a run fails with `401 Bad credentials` from GitHub, with a token that worked earlier.
+
+**Cause**
+
+A run receives the credential's job token with 50 to 60 minutes left and does not get a new one. A run that keeps using it after that fails. Tokens for longer runs are an open item in `TODO.md`.
+
+**Fix**
+
+Split the work so that each run (or each child run started with `call:`) stays under 50 minutes after it fetches its secrets, or do the long work with a token that does not expire. Do not extend the run by retrying the same step: the same expired token is read from the run's environment.

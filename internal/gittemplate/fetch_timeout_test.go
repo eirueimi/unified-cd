@@ -76,7 +76,7 @@ func TestFetchDir_TimeoutKillsProcessTree(t *testing.T) {
 	installFakeGit(t, "hang")
 	f := &Fetcher{Timeout: time.Second}
 	start := time.Now()
-	_, err := f.FetchDir(context.Background(), "file:///nonexistent", "main", "", "", "")
+	_, err := f.FetchDir(context.Background(), "file:///nonexistent", "main", "", Credential{})
 	elapsed := time.Since(start)
 	if err == nil || !errors.Is(err, errGitTimeout) || !strings.Contains(err.Error(), "timed out after 1s") {
 		t.Fatalf("want a timeout error, got %v", err)
@@ -92,7 +92,7 @@ func TestResolveCommitSHA_Timeout(t *testing.T) {
 	installFakeGit(t, "sleep")
 	f := &Fetcher{Timeout: 500 * time.Millisecond}
 	start := time.Now()
-	_, err := f.ResolveCommitSHA(context.Background(), "file:///nonexistent", "main", "", "")
+	_, err := f.ResolveCommitSHA(context.Background(), "file:///nonexistent", "main", Credential{})
 	if err == nil || !errors.Is(err, errGitTimeout) {
 		t.Fatalf("want a timeout error, got %v", err)
 	}
@@ -106,7 +106,7 @@ func TestFetch_TimeoutDefaultAndParentCancel(t *testing.T) {
 	f := &Fetcher{}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	_, err := f.Fetch(ctx, URI{Host: "example.com", Owner: "o", Repo: "r", Ref: "main", Path: "a.yaml"}, "", "")
+	_, err := f.Fetch(ctx, URI{Host: "example.com", Owner: "o", Repo: "r", Ref: "main", Path: "a.yaml"}, Credential{})
 	if err == nil {
 		t.Fatal("want an error")
 	}
@@ -123,7 +123,7 @@ func TestFetchDir_SizeLimit(t *testing.T) {
 	defer func() { sizePollInterval = old }()
 	f := &Fetcher{Timeout: 30 * time.Second, MaxRepoBytes: 1 << 20}
 	start := time.Now()
-	_, err := f.FetchDir(context.Background(), "file:///nonexistent", "main", "", "", "")
+	_, err := f.FetchDir(context.Background(), "file:///nonexistent", "main", "", Credential{})
 	if err == nil || !errors.Is(err, errRepoTooLarge) {
 		t.Fatalf("want a size-limit error, got %v", err)
 	}

@@ -26,8 +26,11 @@ type Metrics struct {
 	httpRequests    *prometheus.CounterVec
 	httpDuration    *prometheus.HistogramVec
 	agentAuthEvents *prometheus.CounterVec
-	collectorErrors prometheus.Counter
-	buildInfo       *prometheus.GaugeVec
+
+	gitCredentialTokens    *prometheus.CounterVec
+	githubAppTokenRequests *prometheus.CounterVec
+	collectorErrors        prometheus.Counter
+	buildInfo              *prometheus.GaugeVec
 
 	bgRuns     *prometheus.CounterVec
 	bgDuration *prometheus.HistogramVec
@@ -76,6 +79,14 @@ func New() *Metrics {
 			Name: "unifiedcd_agent_auth_events_total",
 			Help: "Agent authentication and credential issuance events with bounded labels.",
 		}, []string{"provider", "result", "reason"}),
+		gitCredentialTokens: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "unifiedcd_git_credential_tokens_total",
+			Help: "Git credential tokens handed out, by credential name, purpose (controller, job) and result (ok, denied, error).",
+		}, []string{"credential", "purpose", "result"}),
+		githubAppTokenRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "unifiedcd_github_app_token_requests_total",
+			Help: "GitHub App installation token requests sent to GitHub, by credential name and result (ok, error).",
+		}, []string{"credential", "result"}),
 		collectorErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "unifiedcd_scrape_collector_errors_total",
 			Help: "Errors while collecting DB-backed gauges at scrape time.",
@@ -126,7 +137,7 @@ func New() *Metrics {
 	}
 	m.reg.MustRegister(m.runsCreated, m.runsFinished, m.stepsCompleted,
 		m.stepDuration, m.webhookEvents, m.httpRequests, m.httpDuration,
-		m.agentAuthEvents, m.collectorErrors, m.buildInfo,
+		m.agentAuthEvents, m.gitCredentialTokens, m.githubAppTokenRequests, m.collectorErrors, m.buildInfo,
 		m.bgRuns, m.bgDuration, m.bgItems, m.logLines, m.logBytes, m.queueWait)
 
 	// The Go and process collectors have to be registered explicitly here.
@@ -374,4 +385,44 @@ func NewForController(version string, st ControllerStore, staleAfter time.Durati
 	// omit and no test would notice.
 	SetBackgroundRecorder(m)
 	return m
+}
+
+// GitCredentialToken records one git credential token hand-out. purpose is
+// "controller" (AppSource sync, uses: templates) or "job"; result is "ok",
+// "denied" or "error". Other values fold into "other" / "error". A nil
+// Metrics is a no-op.
+func (m *Metrics) GitCredentialToken(credential, purpose, result string) {
+	if m == nil {
+		return
+	}
+	switch purpose {
+	case "controller", "job":
+	default:
+		purpose = "other"
+	}
+	switch result {
+	case "ok", "denied", "error":
+	default:
+		result = "error"
+	}
+	m.gitCredentialTokens.WithLabelValues(credential, purpose, result).Inc()
+}
+
+// GitCredentialTokenCounterForTest returns the underlying counter for label
+// assertions in tests. Not for production use.
+func (m *Metrics) GitCredentialTokenCounterForTest(credential, purpose, result string) prometheus.Counter {
+	return m.gitCredentialTokens.WithLabelValues(credential, purpose, result)
+}
+
+// GitHubAppTokenRequest records one installation token request sent to
+// GitHub; result is "ok" or "error" (anything else counts as "error"). A nil
+// Metrics is a no-op.
+func (m *Metrics) GitHubAppTokenRequest(credential, result string) {
+	if m == nil {
+		return
+	}
+	if result != "ok" {
+		result = "error"
+	}
+	m.githubAppTokenRequests.WithLabelValues(credential, result).Inc()
 }

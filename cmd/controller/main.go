@@ -16,6 +16,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/controller"
 	"github.com/eirueimi/unified-cd/internal/gittemplate"
+	"github.com/eirueimi/unified-cd/internal/gittoken"
 	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/store"
@@ -461,6 +462,20 @@ func main() {
 	defer srv.Close()
 	srv.SetMetrics(m)
 	srv.SetKeyManager(km)
+	// One GitHub App token issuer per process: the AppSource reconciler, the
+	// uses: resolver and job token hand-outs share its token cache. The
+	// resolver reads credentials through the background pool; job hand-outs
+	// touch the store only on a token cache miss.
+	gitTokenIssuer := gittoken.NewIssuer(nil, nil)
+	gitTokenIssuer.OnRequest = func(credential string, err error) {
+		result := "ok"
+		if err != nil {
+			result = "error"
+		}
+		m.GitHubAppTokenRequest(credential, result)
+	}
+	gitCreds := controller.NewGitCredentialResolver(backgroundSt, km, gitTokenIssuer, m)
+	srv.SetGitCredentialResolver(gitCreds)
 	if obj != nil {
 		srv.SetObjectStore(obj)
 		srv.SetCacheStore(obj)
@@ -586,11 +601,11 @@ func main() {
 		}
 		fetcher := newGitFetcher(backgroundSt, knownHostsFile, *gitTimeout, *gitMaxRepoBytes)
 		resolver := gittemplate.NewResolver(fetcher, gitCache)
-		controller.RunGitResolver(ctx, backgroundSt, resolver, km, 200*time.Millisecond, gitResolveDeadlineDefault())
+		controller.RunGitResolver(ctx, backgroundSt, resolver, gitCreds, 200*time.Millisecond, gitResolveDeadlineDefault())
 	}()
 	go func() {
 		fetcher := newGitFetcher(backgroundSt, knownHostsFile, *gitTimeout, *gitMaxRepoBytes)
-		controller.RunAppSourceReconciler(ctx, backgroundSt, fetcher, km, 30*time.Second)
+		controller.RunAppSourceReconciler(ctx, backgroundSt, fetcher, gitCreds, 30*time.Second)
 	}()
 
 	httpSrv := &http.Server{

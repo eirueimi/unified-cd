@@ -484,8 +484,30 @@ unified-cli gitcredential list
 
 ```bash
 unified-cli gitcredential list
-# => github-bot   host=github.com type=ssh secretRef=deploy-key
+# => github-bot   host=github.com secretRef=deploy-key type=sshKey controllerUse=true
+# => gh-app       host=github.com secretRef=github-app-key type=githubApp appId=123456 installationId=7890123 controllerUse=true jobAccess=folders:team-a repos:acme/app,acme/infra-* perms:contents=write
 ```
+
+Each line shows the host, the secret reference and the credential type. For a
+`githubApp` credential it adds `appId`, `installationId` (`auto` when the
+installation is looked up from the repository owner) and `apiURL` (only when
+set). Every line shows `controllerUse`; `jobAccess` appears only when the
+credential defines it, and `knownHosts=pinned` when SSH host keys are pinned.
+The secret value and the private key are never printed.
+
+`apply -f` validates a `kind: GitCredential` document client-side with the same
+rules as the controller (including `githubApp`, `controllerUse` and
+`jobAccess`) before sending it, and `export` writes the new fields back out.
+The client-side check is strict: unknown keys and a missing or wrong
+`apiVersion` are refused before anything is sent, so a GitCredential YAML that an
+older CLI applied loosely may now need fixing.
+
+Use a CLI that matches the controller for GitCredentials. A CLI older than the
+GitHub App feature drops `controllerUse`, `githubApp` and `jobAccess` on `apply`
+and `export`: re-applying through it resets `controllerUse` to `true`, and its
+export loses those fields. A current CLI talking to an older controller (one
+that sends no `controllerUse`) treats the credential as `controllerUse=true`, as
+that controller does.
 
 ### gitcredential delete
 

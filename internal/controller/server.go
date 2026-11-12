@@ -163,6 +163,7 @@ type Server struct {
 	archLogs                      *archivedLogs           // Serves log reads for trimmed runs; nil when objStore is nil.
 	cacheStore                    objectstore.ObjectStore // nil = skip TTL cleanup
 	km                            secrets.KeyManager      // Secret API returns 501 when nil.
+	gitCreds                      *GitCredentialResolver  // GitHub App job tokens; nil = not configured.
 	oidcCfg                       *OIDCConfig             // OIDC endpoints return 404 when nil.
 	dexProxy                      *httputil.ReverseProxy  // /dex/* returns 404 when nil.
 	uiProxy                       *httputil.ReverseProxy  // /ui/* returns 404 when nil (when WebDir is not set).

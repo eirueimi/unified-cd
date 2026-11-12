@@ -1,0 +1,150 @@
+# Run a command with git authenticated per GitHub organization.
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/git-auth-run.yaml@<ref>).
+#
+# An installation token of a GitHub App covers one organization, so a job that
+# fetches private repositories of several organizations needs one GitCredential
+# (or secret) per organization. Each credential_N is paired with owner_N, the
+# organization that token is for; command then runs in this same step.
+#
+# How it works: the tokens are handed to the command as environment variables
+# (GIT_AUTH_TOKEN_N) and git is configured through GIT_CONFIG_COUNT /
+# GIT_CONFIG_KEY_N / GIT_CONFIG_VALUE_N (git 2.31+) with
+#   credential.useHttpPath=true
+#   credential.https://<host>/<owner>.helper = <helper that prints the token>
+# so git picks the helper by URL path, i.e. per organization. Nothing is written
+# to disk, no token is placed in a URL or argv, and the git config value holds
+# only the variable name. The variables exist only in this step (unified-cd does
+# not carry environment variables from one step to the next).
+#
+# Why not insteadOf URLs (https://x-access-token:<token>@...): that writes the
+# token to a git config file (on a native job, the agent user's ~/.gitconfig,
+# shared across runs), puts it in the argv of git-remote-https where other
+# processes can read it, and can surface it in error output saved to
+# artifacts or caches. See the GitHub App credential design spec, section
+# "Several organizations in one job".
+#
+# Prior art: `gh auth setup-git` registers a helper that reads GH_TOKEN, but it
+# is per host (one token for all of github.com) and cannot split organizations;
+# Git Credential Manager targets interactive sign-in and OS keychains. Neither
+# mints GitHub App tokens.
+#
+# Requires git 2.31+ in the job image. Up to four credential/owner pairs are
+# supported (slot 1 is required); a slot with both credential_N and owner_N empty
+# is ignored, and a slot with only one of them set fails with a "git-auth-run:"
+# error naming the slot.
+#
+# Owner matching follows git's URL matching: the owner is compared as a
+# case-sensitive path prefix, so owner_N must be spelled exactly as it appears in
+# the repository URL (acme and Acme are different owners to git).
+#
+# Example (go mod tidy with modules from two organizations):
+#   - name: tidy
+#     uses:
+#       job: git://github.com/your-org/ci-templates/git-auth-run.yaml@v1
+#       with:
+#         credential_1: acme-app
+#         owner_1: acme
+#         credential_2: widget-app
+#         owner_2: widget
+#         command: "GOPRIVATE=github.com/acme,github.com/widget go mod tidy"
+apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata:
+  name: git-auth-run
+spec:
+  params:
+    inputs:
+      - name: host
+        type: string
+        default: "github.com"
+        description: "Git host the credentials apply to (host or host:port)"
+      - name: command
+        type: string
+        required: true
+        description: "Shell command to run with git authenticated (run via sh -c)"
+      - name: credential_1
+        type: string
+        required: true
+        description: "Name of the GitHub App GitCredential (or secret) for owner_1"
+      - name: owner_1
+        type: string
+        required: true
+        description: "Organization or user whose repositories credential_1 covers"
+      - name: credential_2
+        type: string
+        default: ""
+        description: "Name of the GitHub App GitCredential (or secret) for owner_2"
+      - name: owner_2
+        type: string
+        default: ""
+        description: "Organization or user whose repositories credential_2 covers"
+      - name: credential_3
+        type: string
+        default: ""
+        description: "Name of the GitHub App GitCredential (or secret) for owner_3"
+      - name: owner_3
+        type: string
+        default: ""
+        description: "Organization or user whose repositories credential_3 covers"
+      - name: credential_4
+        type: string
+        default: ""
+        description: "Name of the GitHub App GitCredential (or secret) for owner_4"
+      - name: owner_4
+        type: string
+        default: ""
+        description: "Organization or user whose repositories credential_4 covers"
+  steps:
+    - name: run
+      env:
+        GIT_AUTH_HOST: "{{ .Params.host }}"
+        GIT_AUTH_COMMAND: "{{ .Params.command }}"
+        GIT_AUTH_TOKEN_1: "{{ if .Params.credential_1 }}{{ index .Secrets .Params.credential_1 }}{{ end }}"
+        GIT_AUTH_OWNER_1: "{{ .Params.owner_1 }}"
+        GIT_AUTH_TOKEN_2: "{{ if .Params.credential_2 }}{{ index .Secrets .Params.credential_2 }}{{ end }}"
+        GIT_AUTH_OWNER_2: "{{ .Params.owner_2 }}"
+        GIT_AUTH_TOKEN_3: "{{ if .Params.credential_3 }}{{ index .Secrets .Params.credential_3 }}{{ end }}"
+        GIT_AUTH_OWNER_3: "{{ .Params.owner_3 }}"
+        GIT_AUTH_TOKEN_4: "{{ if .Params.credential_4 }}{{ index .Secrets .Params.credential_4 }}{{ end }}"
+        GIT_AUTH_OWNER_4: "{{ .Params.owner_4 }}"
+      run: |
+        set -eu
+        if [ -z "${GIT_AUTH_COMMAND:-}" ]; then
+          echo "git-auth-run: param 'command' is empty" >&2
+          exit 1
+        fi
+        if [ -z "${GIT_AUTH_OWNER_1:-}" ] || [ -z "${GIT_AUTH_TOKEN_1:-}" ]; then
+          echo "git-auth-run: credential_1 and owner_1 are required" >&2
+          exit 1
+        fi
+
+        for n in 1 2 3 4; do
+          eval "owner=\${GIT_AUTH_OWNER_$n:-}"
+          eval "token=\${GIT_AUTH_TOKEN_$n:-}"
+          if { [ -n "$owner" ] && [ -z "$token" ]; } || { [ -z "$owner" ] && [ -n "$token" ]; }; then
+            echo "git-auth-run: slot $n needs both credential_$n and owner_$n" >&2
+            exit 1
+          fi
+        done
+
+        i=${GIT_CONFIG_COUNT:-0}
+        add_config() {
+          export "GIT_CONFIG_KEY_$i=$1"
+          export "GIT_CONFIG_VALUE_$i=$2"
+          i=$((i + 1))
+        }
+
+        add_config credential.useHttpPath true
+        for n in 1 2 3 4; do
+          eval "owner=\${GIT_AUTH_OWNER_$n:-}"
+          eval "token=\${GIT_AUTH_TOKEN_$n:-}"
+          [ -n "$owner" ] && [ -n "$token" ] || continue
+          # Reset helpers inherited from system/global config for this URL,
+          # then install ours. The value names the variable, never the token.
+          add_config "credential.https://$GIT_AUTH_HOST/$owner.helper" ""
+          add_config "credential.https://$GIT_AUTH_HOST/$owner.helper" \
+            "!f() { echo username=x-access-token; echo \"password=\$GIT_AUTH_TOKEN_$n\"; }; f"
+        done
+        export GIT_CONFIG_COUNT=$i
+
+        exec sh -c "$GIT_AUTH_COMMAND"

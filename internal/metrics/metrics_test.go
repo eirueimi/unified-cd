@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -90,4 +91,30 @@ func TestAgentAuthProviderCloudProviders(t *testing.T) {
 		assert.Equal(t, provider, agentAuthProvider(provider))
 	}
 	assert.Equal(t, "other", agentAuthProvider("oracle"))
+}
+
+func TestGitCredentialTokenCounters(t *testing.T) {
+	m := New()
+	m.GitCredentialToken("gh-app", "controller", "ok")
+	m.GitCredentialToken("gh-app", "job", "denied")
+	m.GitCredentialToken("gh-app", "elsewhere", "weird")
+	m.GitHubAppTokenRequest("gh-app", "ok")
+	m.GitHubAppTokenRequest("gh-app", "failed-somehow")
+
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.gitCredentialTokens.WithLabelValues("gh-app", "controller", "ok")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.gitCredentialTokens.WithLabelValues("gh-app", "job", "denied")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.gitCredentialTokens.WithLabelValues("gh-app", "other", "error")), "unknown purpose/result fold into bounded values")
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.githubAppTokenRequests.WithLabelValues("gh-app", "ok")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.githubAppTokenRequests.WithLabelValues("gh-app", "error")))
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	assert.Contains(t, rec.Body.String(), `unifiedcd_git_credential_tokens_total{credential="gh-app",purpose="controller",result="ok"} 1`)
+	assert.Contains(t, rec.Body.String(), `unifiedcd_github_app_token_requests_total{credential="gh-app",result="ok"} 1`)
+}
+
+func TestGitCredentialTokenNilMetrics(t *testing.T) {
+	var m *Metrics
+	m.GitCredentialToken("gh-app", "controller", "ok")
+	m.GitHubAppTokenRequest("gh-app", "ok")
 }

@@ -10,10 +10,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/gittoken"
+	"github.com/eirueimi/unified-cd/internal/gittoken/gittokentest"
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
@@ -468,4 +473,129 @@ func TestNonSecretExpressionsDoNotWidenClaimOrFetchAuthorization(t *testing.T) {
 			assert.Empty(t, fetchNames)
 		})
 	}
+}
+
+func TestAPI_SetSecretCollidesWithJobAccessCredential(t *testing.T) {
+	s, _ := newTestServerWithKM(t)
+	rec := postGitCredential(t, s, gitHubAppRequest("gh-app-release"))
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	body, _ := json.Marshal(api.SetSecretRequest{Name: "gh-app-release", Value: "v"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `name "gh-app-release" is already used by a GitCredential with jobAccess`)
+
+	// A credential without jobAccess does not block a secret of the same name.
+	rec = postGitCredential(t, s, api.UpsertGitCredentialRequest{
+		Name: "plain", Host: "github.com", CredType: "token", SecretRef: "gh-token",
+	})
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	mustSetSecret(t, s, "plain", "v")
+}
+
+// fetchGitHubEnv is the GitHub side of newSecretsFetchFixtureForJob: a fake
+// GitHub, the App's private key and a settable clock shared by the token
+// issuer and the fake.
+type fetchGitHubEnv struct {
+	fake    *gittokentest.FakeGitHub
+	keyPEM  []byte
+	metrics *metrics.Metrics
+
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (e *fetchGitHubEnv) clock() time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.now
+}
+
+// advance moves the clock forward. Call it only between requests.
+func (e *fetchGitHubEnv) advance(d time.Duration) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.now = e.now.Add(d)
+}
+
+// fetchGitHubEnvs maps a fixture server to its fetchGitHubEnv.
+var fetchGitHubEnvs sync.Map
+
+// fetchGitHub returns the fetchGitHubEnv of a server built by
+// newSecretsFetchFixtureForJob.
+func fetchGitHub(t *testing.T, srv *Server) *fetchGitHubEnv {
+	t.Helper()
+	v, ok := fetchGitHubEnvs.Load(srv)
+	require.True(t, ok, "server was not built by newSecretsFetchFixtureForJob")
+	return v.(*fetchGitHubEnv)
+}
+
+// newSecretsFetchFixtureForJob is newSecretsFetchFixture for a job named
+// jobName, with a GitCredentialResolver wired to a fake GitHub and a settable
+// clock (see fetchGitHub). The App's private key is stored as the secret
+// "github-app-key"; no GitCredential is created (see putJobAppCredential).
+func newSecretsFetchFixtureForJob(t *testing.T, jobName, specYAML string) (srv *Server, pg store.Store, agentID, runID string) {
+	t.Helper()
+	s, st := newTestServerWithKM(t)
+
+	key, keyPEM := gittokentest.GenerateKeyPEM(t, false)
+	env := &fetchGitHubEnv{
+		fake:    gittokentest.NewFakeGitHub(t, &key.PublicKey),
+		keyPEM:  keyPEM,
+		metrics: metrics.New(),
+		now:     time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC),
+	}
+	env.fake.Now = env.clock
+	s.SetMetrics(env.metrics)
+	issuer := gittoken.NewIssuer(env.fake.Client(), env.clock)
+	s.SetGitCredentialResolver(NewGitCredentialResolver(st, s.km, issuer, env.metrics))
+	fetchGitHubEnvs.Store(s, env)
+	t.Cleanup(func() { fetchGitHubEnvs.Delete(s) })
+	mustSetSecret(t, s, "github-app-key", string(keyPEM))
+
+	agentID = "fixture-agent"
+	runID = newClaimedRunForJob(t, st, agentID, jobName, specYAML, nil)
+	return s, st, agentID, runID
+}
+
+// newClaimedRunForJob applies jobName with specYAML, creates a run of it with
+// params resolved into the spec snapshot (as a trigger does) and claims it to
+// agentID.
+func newClaimedRunForJob(t *testing.T, pg store.Store, agentID, jobName, specYAML string, params map[string]string) string {
+	t.Helper()
+	var spec dsl.Spec
+	require.NoError(t, yaml.Unmarshal([]byte(specYAML), &spec))
+	specJSON, err := json.Marshal(spec)
+	require.NoError(t, err)
+	_, err = pg.UpsertJob(t.Context(), jobName, "unified-cd/v1", specJSON)
+	require.NoError(t, err)
+	runSpec := specJSON
+	if params != nil {
+		runSpec, err = prepareRunSpec(specJSON, params)
+		require.NoError(t, err)
+	}
+	run, err := pg.CreateRun(t.Context(), jobName, params, runSpec, nil, nil, "", "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, agentID, run.ID)
+	return run.ID
+}
+
+// putJobAppCredential stores (or replaces) a githubApp GitCredential for
+// github.com whose private key is "github-app-key" and whose API is the
+// fixture's fake GitHub.
+func putJobAppCredential(t *testing.T, srv *Server, name string, jobAccess *api.GitJobAccess) {
+	t.Helper()
+	env := fetchGitHub(t, srv)
+	require.NoError(t, srv.store.UpsertGitCredential(t.Context(), store.GitCredential{
+		Name: name, Host: "github.com", CredType: "githubApp", SecretRef: "github-app-key",
+		ControllerUse: true,
+		GitHubApp: &api.GitHubAppConfig{
+			AppID: 12345, InstallationID: gittokentest.DefaultInstallationID, APIURL: env.fake.URL,
+		},
+		JobAccess: jobAccess,
+	}))
 }

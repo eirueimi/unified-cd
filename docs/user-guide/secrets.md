@@ -202,6 +202,25 @@ spec:
         ./deploy.sh
 ```
 
+### GitHub App credential names in `.Secrets`
+
+The name of a `githubApp` [GitCredential](resources/git-credential.md#github-app-credentials) that has `jobAccess` can be used wherever a secret name is accepted:
+
+```gotemplate
+{{ .Secrets.gh-app-release }}
+{{ index .Secrets "gh-app-release" }}
+{{ index .Secrets .Params.token_secret }}
+```
+
+The static-reference rules above apply unchanged (the name is extracted and validated before the run starts, and the agent can only request names the run's own spec declares). Instead of a stored value, the agent receives a short-lived GitHub installation token that the controller issues when the agent fetches the run's secrets:
+
+- The token is the credential's cached job token, shared between runs. A run gets a token with 50 to 60 minutes of its one-hour lifetime left, so a run that keeps using it longer fails. It is masked in logs like any secret and is never recorded in the audit log.
+- The controller first checks that the run's job is covered by `jobAccess.folders`; otherwise the fetch fails with `403` `gitcredential "<name>": job "<job>" is not covered by jobAccess.folders`.
+- The App's private key (the credential's `secretRef`, an ordinary StoredSecret) is never delivered: requesting it fails with `403` `secret "<name>" is the private key of GitHub App credential "<credential>" and is never delivered to jobs`, and the attempt is audited (reason `private_key`). A `token` or `sshKey` GitCredential cannot name that secret either (see [GitHub App credentials](resources/git-credential.md#github-app-credentials)).
+- Credential names and secret names share **one namespace**. A GitCredential with `jobAccess` must have a name matching `^[A-Za-z_][A-Za-z0-9_-]*$`, and neither side can take the other's name. `unified-cli secret set` on a name already used by such a credential fails with HTTP 409 `name "<name>" is already used by a GitCredential with jobAccess`, and applying a credential whose name is a StoredSecret fails with HTTP 409 `name "<name>" is already used by a StoredSecret; a GitCredential with jobAccess shares the secrets namespace`. If both ever exist (only through a race), the credential wins.
+
+`unified-cli secret list` shows stored secrets only, not credential names.
+
 ### Using env: (recommended)
 
 Passing secrets as environment variables is the safest approach. Putting secrets in
@@ -462,3 +481,6 @@ for what changes when Vault runs in HA.
 | `decrypt` errors in HA setup | Replicas were given different key files, or different `UNIFIED_KMS_URI` values. Give every replica the identical key file (or the same KMS URI). |
 | `secret set` from CI returns `unauthorized` | The token in use does not have admin privileges (agent tokens cannot manage secrets). |
 | `secret not needed by this run` (403, from an agent's secrets-fetch call) | The agent requested a name that the stored run spec does not reference through a supported direct static form. Add `secrets.NAME`, `.Secrets.NAME`, or a canonical literal index to the job's `env:`/`run:`; a lookalike non-secret field such as `.Params.secrets.NAME` does not authorize it. See [How it works](#how-it-works). This is enforced even for an agent that legitimately owns the run; it is not an ownership error. |
+| `gitcredential "<name>": job "<job>" is not covered by jobAccess.folders` (403) | The job asked for a GitHub App credential whose `jobAccess.folders` does not cover it. See [GitHub App credential names in `.Secrets`](#github-app-credential-names-in-secrets) and [Troubleshooting: steps and execution](../troubleshooting/steps-and-execution.md#run-fails-fetching-a-github-app-token-is-not-covered-by-jobaccessfolders). |
+| `secret "<name>" is the private key of GitHub App credential "<credential>" and is never delivered to jobs` (403) | A job asked for the App's private key. Reference the credential name instead. |
+| `name "<name>" is already used by a StoredSecret; a GitCredential with jobAccess shares the secrets namespace` or `name "<name>" is already used by a GitCredential with jobAccess` (409) | A secret and a GitCredential with `jobAccess` cannot share a name. Rename one of them. See [Troubleshooting: controller and database](../troubleshooting/controller-and-database.md#saving-a-gitcredential-or-secret-fails-with-is-already-used-by). |

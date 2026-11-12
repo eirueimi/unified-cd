@@ -456,3 +456,93 @@ SSH host key verification failed: the server's host key does not match the pinne
 **Cause:** the controller bounds every git operation it runs. A slow or hung remote (network stall, a prompt waiting on a firewall, an unreachable host) hits the timeout and the git process tree is killed so it cannot block other AppSources. A repository larger than the size limit is aborted while it is still downloading.
 
 **Fix:** check connectivity to the repository from the controller host. For a legitimately slow or large repository raise `UNIFIED_GIT_TIMEOUT` (Go duration) or `UNIFIED_GIT_MAX_REPO_BYTES` (`0` disables the size limit), or point the AppSource at a smaller repository or path. See the [configuration reference](../reference/configuration.md#controller-environment-variables).
+
+## Saving a GitCredential or secret fails with `is already used by`
+
+**Symptom:** `unified-cd apply`, the API or a GitOps sync answers HTTP 409 with one of:
+
+```
+name "<name>" is already used by a StoredSecret; a GitCredential with jobAccess shares the secrets namespace
+name "<name>" is already used by a GitCredential with jobAccess
+```
+
+**Cause:** a GitCredential with `jobAccess` is handed to jobs through `.Secrets`, so it shares one namespace with StoredSecrets. The first message appears when you upsert such a credential whose `metadata.name` is already a StoredSecret; the second when you set a secret whose name is already a `jobAccess` GitCredential.
+
+**Fix:** pick a different name. For the first case, name the credential differently from the secret that holds its private key (for example `gh-app-release` for the credential and `gh-app-release-key` for the `secretRef`). If the name is already in use by an older secret, delete that secret first with `unified-cli secret delete <name>` once nothing references it.
+
+## AppSource or `git://` template fails with `get git credential` or `no encryption key configured`
+
+**Symptom:** an AppSource shows `Failed`, or a run's `git://` template resolution fails, with a last error containing one of:
+
+```
+failed to resolve credential: get git credential for host "<host>": ...
+get git credential: ...
+GitCredential "<name>" for host "<host>": no encryption key configured
+GitCredential "<name>" for host "<host>": get secret "<secretRef>": ...
+GitCredential "<name>" for host "<host>": decrypt secret "<secretRef>": ...
+```
+
+**Cause:** the controller could not read or decrypt the credential for the host. Earlier releases ignored such an error for `token` and `sshKey` credentials and fetched anonymously, which hid a broken credential until the private repository answered `404` or `authentication failed`. The failure now stops the sync (an AppSource is retried on its next pass; a `git://` template resolution is retried until `UNIFIED_GIT_RESOLVE_DEADLINE`). `no encryption key configured` means a GitCredential exists but the controller has no key manager (no `UNIFIED_CONTROLLER_KEY_FILE` or `UNIFIED_KMS_URI`), so it cannot decrypt `secretRef`.
+
+**Fix:** restore the database or key access that the message names, configure the controller key source, or re-create the StoredSecret named by `secretRef` (`unified-cli secret set <name> ...`). If the repository is public and the credential is not needed, delete the GitCredential.
+
+## AppSource with an `git@host:org/repo` URL now uses its GitCredential
+
+**Symptom:** after an upgrade, an AppSource whose `repoURL` is in scp form (`git@github.com:org/repo.git`) starts authenticating with the `sshKey` GitCredential for that host, or fails with `SSH host key verification failed` or an authentication error where it previously synced anonymously.
+
+**Cause:** the controller used to find a GitCredential only for `scheme://host/...` URLs, so an scp-form `repoURL` ignored the credential for its host. It now extracts the host from `user@host:path` too and uses the matching credential. A `githubApp` credential still needs an `https://` `repoURL` (`GitCredential "<name>" (githubApp) needs an https repoURL`).
+
+**Fix:** if the credential is the right one, no action is needed (pin `spec.knownHosts` to avoid trust on first use). If the AppSource should stay anonymous, set `controllerUse: false` on that credential, or use a host-specific credential for the repositories that need it.
+
+## A GitHub App job token fails with `no repository of the installation matches`
+
+**Symptom:** a run fetching a GitHub App job token fails (HTTP 502 on the agent's secrets fetch) with:
+
+```
+github app "<credential>": no repository of the installation matches <pattern>
+github app "<credential>": no repository of the installation matches the request
+```
+
+**Cause:** only job tokens expand `jobAccess.repositories` patterns, so only they produce this error. A pattern in the credential's `jobAccess.repositories` matches no repository in the App installation's repository list. Typical reasons: the App is installed only on selected repositories, a `owner/prefix*` pattern matches nothing, or the credential points at the wrong installation (`installationId`).
+
+**Fix:** add the repository to the installation (GitHub: the App's installation settings, Repository access), fix the pattern in `jobAccess.repositories`, or correct `githubApp.installationId`. The error never contains a token or the private key.
+
+**Controller fetches (AppSource sync, `uses:`)** name one concrete repository and never expand patterns. When that repository is not in the installation they fail with GitHub's own answer instead, for example:
+
+```
+github app "<credential>": look up installation for "<owner>": HTTP 404: Not Found
+github app "<credential>": create installation token: HTTP 422: <GitHub's message>
+```
+
+The first appears when the installation is looked up (no `installationId`), the second typically when `installationId` is set. The fix is the same: add the repository to the installation, or point the credential at the right installation. A `create installation token: HTTP 404` for a looked-up installation (the App was reinstalled) clears the cached installation, so the next attempt succeeds.
+
+## Saving a GitCredential fails with `mixes "owner/*" with other patterns`
+
+**Symptom:** `unified-cd apply`, the API or a GitOps sync rejects a `githubApp` credential with:
+
+```
+spec.jobAccess.repositories ["acme/*" "acme/app"] mixes "owner/*" with other patterns; use "owner/*" alone for every repository of the installation
+```
+
+**Cause:** `owner/*` already asks for every repository of the installation, so listing it together with other names is ambiguous and is rejected rather than widened.
+
+**Fix:** keep only `owner/*`, or drop it and list the repositories or `owner/prefix*` patterns you need.
+
+## Saving a GitCredential fails with `is the private key of GitHub App credential`
+
+**Symptom:** `unified-cd apply`, the API or a GitOps sync answers HTTP 409 with one of:
+
+```
+secretRef "<secret>" is the private key of GitHub App credential "<credential>"; a token or sshKey GitCredential cannot use it
+secretRef "<secret>" is already used by <token|sshKey> GitCredential "<credential>"; a GitHub App private key cannot be shared with a token or sshKey GitCredential
+```
+
+or an AppSource sync or `git://` template fetch fails with:
+
+```
+GitCredential "<name>" for host "<host>": secretRef "<secret>" is the private key of GitHub App credential "<credential>" and is never used as a token or SSH key
+```
+
+**Cause:** a `token` or `sshKey` credential sends its secret to the git host as a password or SSH key, so it may not name the StoredSecret that holds a GitHub App private key: the key never leaves the controller. The first message appears when you save the `token`/`sshKey` credential, the second when you save the `githubApp` credential, and the third when such a pairing already exists in the store (for example from before this check).
+
+**Fix:** give each credential its own StoredSecret: store the PAT or SSH key under a different name (`unified-cli secret set <new-name>`) and point the `token`/`sshKey` credential's `secretRef` at it, or delete the credential that should not use the key.

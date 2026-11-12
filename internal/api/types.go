@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -564,20 +565,28 @@ type PostStep struct {
 type UpsertGitCredentialRequest struct {
 	Name       string `json:"name"`
 	Host       string `json:"host"`
-	CredType   string `json:"credType"`             // "token" | "sshKey"
+	CredType   string `json:"credType"`             // "token" | "sshKey" | "githubApp"
 	SecretRef  string `json:"secretRef"`            // name of an existing secret
 	KnownHosts string `json:"knownHosts,omitempty"` // optional pinned OpenSSH known_hosts lines (sshKey only)
+	// ControllerUse is optional; nil means true.
+	ControllerUse *bool            `json:"controllerUse,omitempty"`
+	GitHubApp     *GitHubAppConfig `json:"githubApp,omitempty"`
+	JobAccess     *GitJobAccess    `json:"jobAccess,omitempty"`
 }
 
 // GitCredentialMeta is the metadata for a GitCredential (for API responses).
 type GitCredentialMeta struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Host       string    `json:"host"`
-	CredType   string    `json:"credType"`
-	SecretRef  string    `json:"secretRef"`
-	KnownHosts string    `json:"knownHosts,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Host       string `json:"host"`
+	CredType   string `json:"credType"`
+	SecretRef  string `json:"secretRef"`
+	KnownHosts string `json:"knownHosts,omitempty"`
+	// ControllerUse reports whether the controller may use the credential for its own git fetches.
+	ControllerUse bool             `json:"controllerUse"`
+	GitHubApp     *GitHubAppConfig `json:"githubApp,omitempty"`
+	JobAccess     *GitJobAccess    `json:"jobAccess,omitempty"`
+	CreatedAt     time.Time        `json:"createdAt"`
 }
 
 // ---- approvals ----
@@ -637,6 +646,25 @@ type AuditLog struct {
 	ActorID string `json:"actorId,omitempty"`
 	// ActorSub is the OIDC subject behind the actor, when there is one.
 	ActorSub string `json:"actorSub,omitempty"`
+	// Details is optional structured context for the event (for example the
+	// repositories a git token was minted for); absent when none was recorded.
+	Details json.RawMessage `json:"details,omitempty"`
+}
+
+// GitHubAppConfig identifies a GitHub App registration used by a githubApp
+// GitCredential.
+type GitHubAppConfig struct {
+	AppID          int64  `json:"appId"`
+	InstallationID int64  `json:"installationId,omitempty"`
+	APIURL         string `json:"apiURL,omitempty"`
+}
+
+// GitJobAccess is the policy bounding what a job-side token minted from a
+// GitCredential may reach.
+type GitJobAccess struct {
+	Folders      []string          `json:"folders"`
+	Repositories []string          `json:"repositories"`
+	Permissions  map[string]string `json:"permissions"`
 }
 
 // ---- appsource ----

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -69,4 +70,22 @@ func TestPostgres_Audit_DeleteOlderThan(t *testing.T) {
 	list, err := pg.ListAuditLogs(ctx, 100, 0)
 	require.NoError(t, err)
 	assert.Len(t, list, 0)
+}
+
+func TestPostgres_AuditLogDetailsRoundTrip(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	require.NoError(t, pg.InsertAuditLog(ctx, AuditEntry{Actor: "agent", Method: "POST", Path: "/p", Action: "git.token", Status: 200,
+		Details: map[string]any{"runId": "r1", "repositories": []string{"app"}}}))
+	require.NoError(t, pg.InsertAuditLog(ctx, AuditEntry{Actor: "alice", Method: "POST", Path: "/q", Action: "job.apply", Status: 200}))
+
+	list, err := pg.ListAuditLogs(ctx, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	// Newest first: the row without details.
+	assert.Nil(t, list[0].Details)
+	b, err := json.Marshal(list[0])
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), `"details"`)
+	assert.JSONEq(t, `{"runId":"r1","repositories":["app"]}`, string(list[1].Details))
 }

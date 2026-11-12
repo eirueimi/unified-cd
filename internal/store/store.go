@@ -148,6 +148,9 @@ type AuditEntry struct {
 	Status                                int
 	Permission, Scope, GrantedBy          string
 	ActorID, ActorSub                     string
+	// Details is optional structured context stored as JSONB; nil or empty is
+	// stored as SQL NULL.
+	Details map[string]any
 }
 
 // WebhookReceiver holds the configuration of a webhook receiver.
@@ -214,16 +217,22 @@ type GitCredential struct {
 	ID         string
 	Name       string
 	Host       string
-	CredType   string // "token" | "sshKey"
+	CredType   string // "token" | "sshKey" | "githubApp"
 	SecretRef  string // name of an existing StoredSecret
 	KnownHosts string // optional pinned OpenSSH known_hosts lines (sshKey type only)
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// ControllerUse reports whether the controller may use this credential for its
+	// own git fetches (GetGitCredentialByHost only returns such rows).
+	ControllerUse bool
+	GitHubApp     *api.GitHubAppConfig // githubApp type only
+	JobAccess     *api.GitJobAccess    // optional job-side access policy
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // PendingRun holds the minimum information about a Run needed for git:// URI resolution.
 type PendingRun struct {
 	ID        string
+	JobName   string
 	Spec      []byte
 	CreatedAt time.Time
 }
@@ -585,7 +594,11 @@ type Store interface {
 	TouchSession(ctx context.Context, id string) error
 
 	// GitCredentials
-	UpsertGitCredential(ctx context.Context, name, host, credType, secretRef, knownHosts string) error
+	// UpsertGitCredential creates or replaces the credential named gc.Name.
+	// ID, CreatedAt and UpdatedAt are ignored.
+	UpsertGitCredential(ctx context.Context, gc GitCredential) error
+	// GetGitCredential returns the named credential, or (nil, nil) when absent.
+	GetGitCredential(ctx context.Context, name string) (*GitCredential, error)
 	GetGitCredentialByHost(ctx context.Context, host string) (*GitCredential, error)
 	ListGitCredentials(ctx context.Context) ([]GitCredential, error)
 	DeleteGitCredential(ctx context.Context, name string) error
