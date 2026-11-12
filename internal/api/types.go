@@ -565,20 +565,28 @@ type PostStep struct {
 type UpsertGitCredentialRequest struct {
 	Name       string `json:"name"`
 	Host       string `json:"host"`
-	CredType   string `json:"credType"`             // "token" | "sshKey"
+	CredType   string `json:"credType"`             // "token" | "sshKey" | "githubApp"
 	SecretRef  string `json:"secretRef"`            // name of an existing secret
 	KnownHosts string `json:"knownHosts,omitempty"` // optional pinned OpenSSH known_hosts lines (sshKey only)
+	// ControllerUse is optional; nil means true.
+	ControllerUse *bool            `json:"controllerUse,omitempty"`
+	GitHubApp     *GitHubAppConfig `json:"githubApp,omitempty"`
+	JobAccess     *GitJobAccess    `json:"jobAccess,omitempty"`
 }
 
 // GitCredentialMeta is the metadata for a GitCredential (for API responses).
 type GitCredentialMeta struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Host       string    `json:"host"`
-	CredType   string    `json:"credType"`
-	SecretRef  string    `json:"secretRef"`
-	KnownHosts string    `json:"knownHosts,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Host       string `json:"host"`
+	CredType   string `json:"credType"`
+	SecretRef  string `json:"secretRef"`
+	KnownHosts string `json:"knownHosts,omitempty"`
+	// ControllerUse reports whether the controller may use the credential for its own git fetches.
+	ControllerUse bool             `json:"controllerUse"`
+	GitHubApp     *GitHubAppConfig `json:"githubApp,omitempty"`
+	JobAccess     *GitJobAccess    `json:"jobAccess,omitempty"`
+	CreatedAt     time.Time        `json:"createdAt"`
 }
 
 // ---- approvals ----

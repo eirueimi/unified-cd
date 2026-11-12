@@ -13,9 +13,19 @@ metadata:
     <key>: <value>
 spec:
   host: <string>                  # required — hostname to apply credentials to
-  type: token | sshKey            # required
-  secretRef: <string>             # required — name of StoredSecret containing the credential
+  type: token | sshKey | githubApp  # required
+  secretRef: <string>             # required — name of StoredSecret containing the credential (for githubApp: the PEM private key)
   knownHosts: <string>            # optional, sshKey only — OpenSSH known_hosts lines pinning the server host key
+  controllerUse: <bool>           # optional, default true — may the controller use this credential for its own git fetches
+  githubApp:                      # required for, and only valid with, type githubApp
+    appId: <int>                  # required — GitHub App ID
+    installationId: <int>         # optional — 0/omitted: looked up from the repository owner
+    apiURL: <string>              # optional — https URL; default https://api.github.com (GHES: https://HOST/api/v3)
+  jobAccess:                      # optional, githubApp only — absent: jobs cannot use this credential
+    folders: [<string>]           # job folders allowed to use it; "*" = every job
+    repositories: [<string>]      # "owner/name", "owner/*" or "owner/prefix*"; one owner only
+    permissions:                  # GitHub App permission name -> highest level (read | write | admin)
+      <name>: <level>
 ```
 
 ### Fields
@@ -25,8 +35,11 @@ spec:
 | `metadata.name` | string | Yes | Unique credential name |
 | `metadata.annotations` | map[string]string | No | Arbitrary key/value metadata |
 | `spec.host` | string | Yes | Hostname to apply the credential to (e.g. `github.com`, `gitlab.example.com`) |
-| `spec.type` | string | Yes | `token` for HTTP PAT/OAuth token, `sshKey` for SSH private key |
-| `spec.secretRef` | string | Yes | Name of a StoredSecret holding the actual credential value |
+| `spec.type` | string | Yes | `token` for HTTP PAT/OAuth token, `sshKey` for SSH private key, `githubApp` for a GitHub App (the controller mints short-lived installation tokens from its private key) |
+| `spec.secretRef` | string | Yes | Name of a StoredSecret holding the actual credential value; for `githubApp`, the App's PEM private key (PKCS#1 or PKCS#8) |
+| `spec.controllerUse` | bool | No | Default `true`. When `false`, the controller skips this credential when it resolves a host for AppSource syncs and `git://` templates. Allowed for every type. |
+| `spec.githubApp` | object | `githubApp` only | `appId` (required, positive), `installationId` (optional, not negative) and `apiURL` (optional, `https` URL without credentials, query or fragment). Not allowed for other types; `knownHosts` is not allowed with `githubApp`. |
+| `spec.jobAccess` | object | No | `githubApp` only. Declares which jobs (`folders`), which repositories (`repositories`, a single owner) and which GitHub App permissions (`permissions`, at most the given level) a job-side token may reach. All three lists are required and non-empty when `jobAccess` is set. |
 | `spec.knownHosts` | string | No | `sshKey` only, at most 64 KiB. One or more OpenSSH `known_hosts` lines (`<host> <key-type> <base64-key>`) that pin the server's SSH host key. See [SSH host key verification](#ssh-host-key-verification). |
 
 ### SSH host key verification
@@ -39,6 +52,15 @@ For `sshKey` credentials, the controller always verifies the SSH server's host k
 A rejected key fails with an error containing `SSH host key verification failed`. If the key changed legitimately, update `knownHosts` (or delete the stale line from the controller's known_hosts file).
 
 **Not covered:** the shipped `templates/git-checkout.yaml` and `templates/rsync-deploy.yaml` run on agents, not in the controller, and they do **not** verify host keys (they pass `StrictHostKeyChecking=no` and discard known_hosts). This field does not affect them; see TODO.md for the follow-up.
+
+### Name rules for `jobAccess`
+
+A GitCredential with `jobAccess` shares the secrets namespace, so its `metadata.name` must match the secret-name pattern `^[A-Za-z_][A-Za-z0-9_-]*$`, and it cannot have the same name as a StoredSecret. Both directions are enforced, through the API and through GitOps apply:
+
+- Upserting such a credential fails (HTTP 409) with `name "<name>" is already used by a StoredSecret; a GitCredential with jobAccess shares the secrets namespace`.
+- Setting a secret fails (HTTP 409) with `name "<name>" is already used by a GitCredential with jobAccess`.
+
+`jobAccess.folders` entries are normalized like authorization folders (leading and trailing `/` removed); `"*"` is kept.
 
 ### Credential matching
 
@@ -70,6 +92,29 @@ spec:
   secretRef: GITLAB_SSH_KEY      # created with: unified-cli secret set GITLAB_SSH_KEY -f ~/.ssh/id_ed25519
   knownHosts: |                  # optional: pin the host key (ssh-keyscan -t ed25519 gitlab.example.com)
     gitlab.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
+```
+
+```yaml
+---
+# GitHub App with job access
+apiVersion: unified-cd/v1
+kind: GitCredential
+metadata:
+  name: gh-app-release
+spec:
+  host: github.com
+  type: githubApp
+  secretRef: github-app-key       # StoredSecret holding the App's PEM private key
+  controllerUse: true
+  githubApp:
+    appId: 123456
+    installationId: 7890123       # optional
+  jobAccess:
+    folders: [team-a, platform/tools]
+    repositories: [acme/app, acme/infra-*]
+    permissions:
+      contents: write
+      pull_requests: write
 ```
 
 Then reference in a job:

@@ -3,10 +3,12 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
 )
 
@@ -56,4 +58,52 @@ func TestProbeKind(t *testing.T) {
 	if k := probeKind([]byte("metadata: {name: x}")); k != "" {
 		t.Errorf("probeKind (no kind) = %q, want empty", k)
 	}
+}
+
+const gitHubAppApplyDoc = `apiVersion: unified-cd/v1
+kind: GitCredential
+metadata:
+  name: gh-app-release
+spec:
+  host: github.com
+  type: githubApp
+  secretRef: github-app-key
+  controllerUse: false
+  githubApp:
+    appId: 123456
+    installationId: 7890123
+  jobAccess:
+    folders: [team-a, /platform/tools/, "*"]
+    repositories: [acme/app, acme/infra-*]
+    permissions:
+      contents: write
+`
+
+func TestApplyResource_GitCredentialGitHubApp(t *testing.T) {
+	pg := storetest.NewTestPostgres(t)
+	ctx := context.Background()
+	name, err := applyResource(ctx, pg, "GitCredential", "", []byte(gitHubAppApplyDoc))
+	require.NoError(t, err)
+	require.Equal(t, "gh-app-release", name)
+
+	got, err := pg.GetGitCredential(ctx, "gh-app-release")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "githubApp", got.CredType)
+	require.False(t, got.ControllerUse)
+	require.Equal(t, &api.GitHubAppConfig{AppID: 123456, InstallationID: 7890123}, got.GitHubApp)
+	require.Equal(t, &api.GitJobAccess{
+		Folders:      []string{"team-a", "platform/tools", "*"},
+		Repositories: []string{"acme/app", "acme/infra-*"},
+		Permissions:  map[string]string{"contents": "write"},
+	}, got.JobAccess)
+
+	// Collision with a StoredSecret of the same name is rejected.
+	_, err = pg.UpsertSecret(ctx, "taken", []byte("dek"), []byte("ct"))
+	require.NoError(t, err)
+	doc := strings.Replace(gitHubAppApplyDoc, "gh-app-release", "taken", 1)
+	_, err = applyResource(ctx, pg, "GitCredential", "", []byte(doc))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already used by a StoredSecret")
+	require.False(t, errors.Is(err, errStoreWrite), "a name collision is a manifest problem, not a store failure")
 }

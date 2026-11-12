@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/spf13/cobra"
 )
 
 func newGitCredentialCmd(resolve func() (Config, error)) *cobra.Command {
@@ -54,7 +57,27 @@ func newListGitCredentialsCmd(resolve func() (Config, error)) *cobra.Command {
 				return nil
 			}
 			for _, gc := range list {
-				line := fmt.Sprintf("%s\thost=%s type=%s secretRef=%s", gc.Name, gc.Host, gc.CredType, gc.SecretRef)
+				line := fmt.Sprintf("%s\thost=%s secretRef=%s type=%s", gc.Name, gc.Host, gc.SecretRef, gc.CredType)
+				if app := gc.GitHubApp; app != nil {
+					inst := "auto"
+					if app.InstallationID != 0 {
+						inst = strconv.FormatInt(app.InstallationID, 10)
+					}
+					line += fmt.Sprintf(" appId=%d installationId=%s", app.AppID, inst)
+					if app.APIURL != "" {
+						line += " apiURL=" + app.APIURL
+					}
+				}
+				line += fmt.Sprintf(" controllerUse=%t", gc.ControllerUse)
+				if ja := gc.JobAccess; ja != nil {
+					perms := make([]string, 0, len(ja.Permissions))
+					for k, v := range ja.Permissions {
+						perms = append(perms, k+"="+v)
+					}
+					sort.Strings(perms)
+					line += fmt.Sprintf(" jobAccess=folders:%s repos:%s perms:%s",
+						strings.Join(ja.Folders, ","), strings.Join(ja.Repositories, ","), strings.Join(perms, ","))
+				}
 				if gc.KnownHosts != "" {
 					line += " knownHosts=pinned"
 				}

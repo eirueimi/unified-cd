@@ -366,7 +366,7 @@ func identToSchema(name string, structs map[string]StructInfo) SchemaNode {
 		return SchemaNode{"type": "string"}
 	case "bool":
 		return SchemaNode{"type": "boolean"}
-	case "int":
+	case "int", "int64":
 		return SchemaNode{"type": "integer"}
 	case "float64":
 		return SchemaNode{"type": "number"}

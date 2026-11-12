@@ -228,23 +228,36 @@
       "additionalProperties": false,
       "description": "GitCredentialSpec is the spec section of GitCredential.",
       "properties": {
+        "controllerUse": {
+          "description": "ControllerUse controls whether the controller may use this credential for its own git fetches\n(AppSource sync and uses: resolution). Defaults to true.",
+          "type": "boolean"
+        },
+        "githubApp": {
+          "$ref": "#/definitions/GitHubAppSpec",
+          "description": "GitHubApp configures the GitHub App; required for, and only valid with, type githubApp."
+        },
         "host": {
           "description": "hostname to use these credentials for (e.g. github.com)",
           "type": "string"
+        },
+        "jobAccess": {
+          "$ref": "#/definitions/GitJobAccessSpec",
+          "description": "JobAccess optionally lets jobs mint short-lived tokens from this credential; githubApp type only.\nA credential with jobAccess shares the secrets namespace, so its name must not collide with a StoredSecret."
         },
         "knownHosts": {
           "description": "KnownHosts optionally pins the SSH host keys (OpenSSH known_hosts lines) of host; sshKey type only.\nWhen set, ssh runs with StrictHostKeyChecking=yes against exactly these keys; when empty the controller\nuses trust-on-first-use and rejects a host key that later changes.",
           "type": "string"
         },
         "secretRef": {
-          "description": "name of the StoredSecret that holds the value",
+          "description": "name of the StoredSecret that holds the value (token, SSH private key, or GitHub App PEM private key)",
           "type": "string"
         },
         "type": {
           "description": "authentication type",
           "enum": [
             "token",
-            "sshKey"
+            "sshKey",
+            "githubApp"
           ],
           "type": "string"
         }
@@ -253,6 +266,61 @@
         "host",
         "type",
         "secretRef"
+      ],
+      "type": "object"
+    },
+    "GitHubAppSpec": {
+      "additionalProperties": false,
+      "description": "GitHubAppSpec identifies the GitHub App behind a githubApp credential.",
+      "properties": {
+        "apiURL": {
+          "description": "APIURL is the GitHub REST API base URL; defaults to https://api.github.com. For GitHub Enterprise\nServer use https://HOST/api/v3.",
+          "type": "string"
+        },
+        "appId": {
+          "description": "numeric GitHub App ID",
+          "type": "integer"
+        },
+        "installationId": {
+          "description": "InstallationID is the installation to mint tokens for. When 0 or omitted, the controller looks it up\nfrom the repository owner.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "appId"
+      ],
+      "type": "object"
+    },
+    "GitJobAccessSpec": {
+      "additionalProperties": false,
+      "description": "GitJobAccessSpec lets jobs obtain short-lived tokens minted from a githubApp credential. A credential\nwithout jobAccess cannot be used by jobs.",
+      "properties": {
+        "folders": {
+          "description": "Folders lists the job folders allowed to use this credential (\"*\" allows every job).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "permissions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Permissions maps GitHub App permission names (for example contents, pull_requests) to the highest\nlevel a job may request: read, write or admin.",
+          "type": "object"
+        },
+        "repositories": {
+          "description": "Repositories lists the repositories a job token may reach, as \"owner/name\", \"owner/*\" or\n\"owner/prefix*\". All entries must share one owner.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "folders",
+        "repositories",
+        "permissions"
       ],
       "type": "object"
     },

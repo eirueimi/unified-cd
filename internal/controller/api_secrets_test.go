@@ -469,3 +469,25 @@ func TestNonSecretExpressionsDoNotWidenClaimOrFetchAuthorization(t *testing.T) {
 		})
 	}
 }
+
+func TestAPI_SetSecretCollidesWithJobAccessCredential(t *testing.T) {
+	s, _ := newTestServerWithKM(t)
+	rec := postGitCredential(t, s, gitHubAppRequest("gh-app-release"))
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	body, _ := json.Marshal(api.SetSecretRequest{Name: "gh-app-release", Value: "v"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `name "gh-app-release" is already used by a GitCredential with jobAccess`)
+
+	// A credential without jobAccess does not block a secret of the same name.
+	rec = postGitCredential(t, s, api.UpsertGitCredentialRequest{
+		Name: "plain", Host: "github.com", CredType: "token", SecretRef: "gh-token",
+	})
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	mustSetSecret(t, s, "plain", "v")
+}

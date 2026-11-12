@@ -24,15 +24,29 @@
   {:else}
   <table>
     <thead>
-      <tr><th>Name</th><th>Host</th><th>Type</th><th>Secret ref</th><th>Created</th></tr>
+      <tr><th>Name</th><th>Host</th><th>Type</th><th>Secret ref</th><th>Controller use</th><th>Job access</th><th>Created</th></tr>
     </thead>
     <tbody>
       {#each creds as c (c.id)}
         <tr>
           <td>{c.name}</td>
           <td>{c.host}</td>
-          <td><span class="badge badge-success">{c.credType}</span></td>
+          <td>
+            <span class="badge badge-success">{c.credType}</span>
+            {#if c.credType === 'githubApp' && c.githubApp}
+              <div class="meta">App ID {c.githubApp.appId}</div>
+            {/if}
+          </td>
           <td class="meta">{c.secretRef}</td>
+          <td class="meta">{c.controllerUse ? 'yes' : 'no'}</td>
+          <td class="meta">
+            {#if c.jobAccess}
+              <div>folders: {(c.jobAccess.folders || []).join(', ')}</div>
+              <div>repositories: {(c.jobAccess.repositories || []).join(', ')}</div>
+            {:else}
+              none
+            {/if}
+          </td>
           <td class="meta">{fmtTime(c.createdAt)}</td>
         </tr>
       {/each}

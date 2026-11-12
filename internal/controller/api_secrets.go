@@ -31,6 +31,17 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("name %v", err), http.StatusBadRequest)
 		return
 	}
+	// A GitCredential with jobAccess shares the secrets namespace: reject a
+	// secret that would shadow it.
+	gc, err := s.store.GetGitCredential(r.Context(), req.Name)
+	if err != nil {
+		http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if gc != nil && gc.JobAccess != nil {
+		http.Error(w, nameCollisionError{fmt.Sprintf("name %q is already used by a GitCredential with jobAccess", req.Name)}.Error(), http.StatusConflict)
+		return
+	}
 	encDEK, ct, err := secrets.Encrypt(r.Context(), s.km, []byte(req.Value),
 		secrets.SecretBinding(req.Name))
 	if err != nil {

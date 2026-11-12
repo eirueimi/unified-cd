@@ -762,10 +762,34 @@ GitCredentialSpec is the spec section of GitCredential.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `controllerUse` | boolean | no | ControllerUse controls whether the controller may use this credential for its own git fetches (AppSource sync and uses: resolution). Defaults to true. |
+| `githubApp` | GitHubAppSpec | no | GitHubApp configures the GitHub App; required for, and only valid with, type githubApp. |
 | `host` | string | yes | hostname to use these credentials for (e.g. github.com) |
+| `jobAccess` | GitJobAccessSpec | no | JobAccess optionally lets jobs mint short-lived tokens from this credential; githubApp type only. A credential with jobAccess shares the secrets namespace, so its name must not collide with a StoredSecret. |
 | `knownHosts` | string | no | KnownHosts optionally pins the SSH host keys (OpenSSH known_hosts lines) of host; sshKey type only. When set, ssh runs with StrictHostKeyChecking=yes against exactly these keys; when empty the controller uses trust-on-first-use and rejects a host key that later changes. |
-| `secretRef` | string | yes | name of the StoredSecret that holds the value |
-| `type` | `token` \| `sshKey` | yes | authentication type |
+| `secretRef` | string | yes | name of the StoredSecret that holds the value (token, SSH private key, or GitHub App PEM private key) |
+| `type` | `token` \| `sshKey` \| `githubApp` | yes | authentication type |
+
+### GitHubAppSpec
+
+GitHubAppSpec identifies the GitHub App behind a githubApp credential.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `apiURL` | string | no | APIURL is the GitHub REST API base URL; defaults to https://api.github.com. For GitHub Enterprise Server use https://HOST/api/v3. |
+| `appId` | integer | yes | numeric GitHub App ID |
+| `installationId` | integer | no | InstallationID is the installation to mint tokens for. When 0 or omitted, the controller looks it up from the repository owner. |
+
+### GitJobAccessSpec
+
+GitJobAccessSpec lets jobs obtain short-lived tokens minted from a githubApp credential. A credential
+without jobAccess cannot be used by jobs.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `folders` | []string | yes | Folders lists the job folders allowed to use this credential ("*" allows every job). |
+| `permissions` | map[string]string | yes | Permissions maps GitHub App permission names (for example contents, pull_requests) to the highest level a job may request: read, write or admin. |
+| `repositories` | []string | yes | Repositories lists the repositories a job token may reach, as "owner/name", "owner/*" or "owner/prefix*". All entries must share one owner. |
 
 ## Vars
 
