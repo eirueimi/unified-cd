@@ -162,6 +162,22 @@ func TestGitAuthRunTemplate_RequiresCommandAndSlot1(t *testing.T) {
 	}
 }
 
+func TestGitAuthRunTemplate_HalfFilledSlotFails(t *testing.T) {
+	requireGit231(t)
+	_, script := loadGitAuthRunScript(t)
+	for name, env := range map[string][]string{
+		"owner without credential": {"GIT_AUTH_OWNER_1=acme", "GIT_AUTH_TOKEN_1=x", "GIT_AUTH_OWNER_2=widget", "GIT_AUTH_TOKEN_2="},
+		"credential without owner": {"GIT_AUTH_OWNER_1=acme", "GIT_AUTH_TOKEN_1=x", "GIT_AUTH_OWNER_2=", "GIT_AUTH_TOKEN_2=y"},
+	} {
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(), append([]string{"GIT_AUTH_HOST=github.com", "GIT_AUTH_COMMAND=true"}, env...)...)
+		cmd.Dir = t.TempDir()
+		out, err := cmd.CombinedOutput()
+		assert.Error(t, err, name)
+		assert.Contains(t, string(out), "git-auth-run: slot 2 needs both credential_2 and owner_2", name)
+	}
+}
+
 func TestGitHubCommitStatusTemplate_TokenSecretParam(t *testing.T) {
 	data, err := os.ReadFile("../../templates/github-commit-status.yaml")
 	require.NoError(t, err)

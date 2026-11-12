@@ -29,7 +29,13 @@
 # mints GitHub App tokens.
 #
 # Requires git 2.31+ in the job image. Up to four credential/owner pairs are
-# supported (slot 1 is required); empty slots are ignored.
+# supported (slot 1 is required); a slot with both credential_N and owner_N empty
+# is ignored, and a slot with only one of them set fails with a "git-auth-run:"
+# error naming the slot.
+#
+# Owner matching follows git's URL matching: the owner is compared as a
+# case-sensitive path prefix, so owner_N must be spelled exactly as it appears in
+# the repository URL (acme and Acme are different owners to git).
 #
 # Example (go mod tidy with modules from two organizations):
 #   - name: tidy
@@ -111,6 +117,15 @@ spec:
           echo "git-auth-run: credential_1 and owner_1 are required" >&2
           exit 1
         fi
+
+        for n in 1 2 3 4; do
+          eval "owner=\${GIT_AUTH_OWNER_$n:-}"
+          eval "token=\${GIT_AUTH_TOKEN_$n:-}"
+          if { [ -n "$owner" ] && [ -z "$token" ]; } || { [ -z "$owner" ] && [ -n "$token" ]; }; then
+            echo "git-auth-run: slot $n needs both credential_$n and owner_$n" >&2
+            exit 1
+          fi
+        done
 
         i=${GIT_CONFIG_COUNT:-0}
         add_config() {
