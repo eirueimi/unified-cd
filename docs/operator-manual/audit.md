@@ -42,8 +42,8 @@ recorded, allowed or denied, for the following actions. A **denied read** is rec
 | `agent.policy.create` / `agent.policy.update` / `agent.policy.delete` | enrollment-policy write routes |
 | `agent.identity.enable` / `agent.identity.disable` / `agent.credentials.revoke` | agent identity lifecycle routes |
 
-The agent secrets fetch also writes one row per GitHub App job token it hands out or refuses
-(`gitcredential.token_issue`, see [GitHub App job tokens](#github-app-job-tokens)); it is the only
+The agent secrets fetch also writes one row per GitHub App job token it hands out or refuses, and
+one per refused request for an App's private key (`gitcredential.token_issue`, see [GitHub App job tokens](#github-app-job-tokens)); it is the only
 agent route besides credential exchange and refresh that is audited.
 
 Each recorded entry contains:
@@ -130,8 +130,8 @@ writes an audit row directly (agent routes are outside the audit middleware):
 | `action` | `gitcredential.token_issue` |
 | `actor` / `actorId` | `agent` / `agent:<agent id>` |
 | `method` / `path` | `POST` / `/api/v1/agents/<agent id>/secrets/fetch` |
-| `resource` | The GitCredential name |
-| `status` | `200` the token was handed out; `403` the run's job is not covered by `jobAccess.folders`; `502` GitHub refused or failed to issue the token; `500` the controller could not issue (token issuing not configured, or the run could not be loaded) |
+| `resource` | The GitCredential name (for reason `private_key`, the `githubApp` credential whose private key was requested) |
+| `status` | `200` the token was handed out; `403` the run's job is not covered by `jobAccess.folders`, or the fetch asked for the App's private key; `502` GitHub refused or failed to issue the token; `500` the controller could not issue (token issuing not configured, or the run could not be loaded) |
 | `details` | See below |
 
 `details` keys:
@@ -139,18 +139,19 @@ writes an audit row directly (agent routes are outside the audit middleware):
 | Key | Present | Value |
 |---|---|---|
 | `runId` | always | The run the agent fetched for |
-| `jobName` | except for reasons `not_configured` and `run` | The run's qualified job name, as checked against `jobAccess.folders` |
-| `repositories` | always | The credential's `jobAccess.repositories` patterns (as configured, not expanded) |
-| `permissions` | always | The credential's `jobAccess.permissions` map |
+| `jobName` | except for reasons `not_configured`, `run` and `private_key` | The run's qualified job name, as checked against `jobAccess.folders` |
+| `repositories` | except for reason `private_key` | The credential's `jobAccess.repositories` patterns (as configured, not expanded) |
+| `permissions` | except for reason `private_key` | The credential's `jobAccess.permissions` map |
 | `expiresAt` | `200` only | The token's expiry (RFC 3339, UTC) |
-| `reason` | non-`200` only | `folder` (403), `issue` (502), `not_configured` or `run` (500) |
+| `secretRef` | reason `private_key` only | The requested secret name (the App's `secretRef`); never its value |
+| `reason` | non-`200` only | `folder` (403), `private_key` (403), `issue` (502), `not_configured` or `run` (500) |
 
 A `200` row is written only when the fetch response actually carries the token: if another name in
 the same fetch fails, the request is answered with that error and no `200` row is written for the
 token. The token, the App's private key and the App JWT are never recorded. The jobAccess shown is
 the credential as it was at fetch time, which is also what was checked. A request for the App's
 private key (the credential's `secretRef`) is refused with `403` before any token is issued and
-writes no row.
+writes one row with reason `private_key`; the key is never read for it.
 
 ### Failed authentication
 

@@ -108,6 +108,9 @@ spec:
 
 Applies to every credential type. The controller looks a credential up by host for AppSource syncs and `git://` (`uses:`) templates; a credential with `controllerUse: false` is skipped. Several credentials may share a host (host is not unique); among the eligible ones the most recently updated credential wins. Set `controllerUse: false` on a credential that exists only for jobs, so the controller never picks it for a sync.
 
+!!! warning "A new credential for a host shadows an older one"
+    `controllerUse` defaults to `true`, so adding a `githubApp` credential for `github.com` next to an existing token (PAT) credential for `github.com` makes the new credential the one the controller uses for that host: it is the most recently updated eligible credential. AppSource syncs then fetch with the App, and private `uses:` templates of jobs that its `jobAccess` does not allow (or of every job, when it has no `jobAccess`) are fetched anonymously and fail. Set `controllerUse: false` on the new credential if the older one should keep serving the controller.
+
 #### `jobAccess`: which jobs and how far
 
 `jobAccess` is what lets a **job** use the credential. Without it, a `githubApp` credential is never handed to any job and is never used for `uses:` (the controller can still use it for AppSource syncs).
@@ -115,7 +118,7 @@ Applies to every credential type. The controller looks a credential up by host f
 | Field | Meaning |
 |---|---|
 | `folders` | Required, non-empty. Authorization folder rules (the same rule as `authz` folder grants): `team-a` covers `team-a/build` and `team-a/sub/job`, not a job literally named `team-a`. `"*"` covers every job. A job at the root (no folder) is covered only by `"*"`. |
-| `repositories` | Required, non-empty. `owner/name`, `owner/*` or `owner/prefix*` (a trailing `*` only). **All entries must name one owner**, because an installation token belongs to one installation; a credential that needs two organizations is two credentials. |
+| `repositories` | Required, non-empty. `owner/name`, `owner/*` or `owner/prefix*` (a trailing `*` only). **All entries must name one owner**, because an installation token belongs to one installation; a credential that needs two organizations is two credentials. `owner/*` already covers every repository of the installation and must stand alone: a list such as `[acme/*, acme/app]` is rejected when the credential is saved with `spec.jobAccess.repositories ["acme/*" "acme/app"] mixes "owner/*" with other patterns; use "owner/*" alone for every repository of the installation`. |
 | `permissions` | Required, non-empty. GitHub App permission names (for example `contents`, `pull_requests`, `statuses`) mapped to the highest level a token may carry: `read < write < admin`. Names are passed through to GitHub; unified-cd keeps no list of them. The App itself must have been granted at least these permissions. |
 
 A job always receives the credential's full reach: every repository and permission in `jobAccess`. For narrower access, create more credentials.
@@ -138,7 +141,16 @@ steps:
 
 Template parameters such as `token_secret: gh-app-release` (for example on `github-commit-status.yaml`) work the same way. When the agent fetches the run's secrets, the controller checks, at that moment and against the credential as it is now, that the run's job is covered by `jobAccess.folders`, and answers with the token. A job outside the folders gets HTTP 403 `gitcredential "<name>": job "<job>" is not covered by jobAccess.folders` and the run fails like a run with a missing secret. Every hand-out and every denial is written to the [audit log](../../operator-manual/audit.md#github-app-job-tokens) (`gitcredential.token_issue`) and counted in `unifiedcd_git_credential_tokens_total`.
 
-The token is the credential's cached job token, shared between runs and reissued when less than 50 minutes of its hour remain, so a run receives a token with 50 to 60 minutes left. It is masked in logs like any secret. The private key (`secretRef`) is never delivered: requesting it as a secret fails with `secret "<name>" is the private key of GitHub App credential "<credential>" and is never delivered to jobs`.
+The token is the credential's cached job token, shared between runs and reissued when less than 50 minutes of its hour remain, so a run receives a token with 50 to 60 minutes left. It is masked in logs like any secret. The private key (`secretRef`) is never delivered: requesting it as a secret fails with `secret "<name>" is the private key of GitHub App credential "<credential>" and is never delivered to jobs`, and the refusal is audited (`gitcredential.token_issue`, reason `private_key`).
+
+The private key cannot be reused by a `token` or `sshKey` credential either, because those send their secret to the git host as a password or SSH key. Saving such a pairing is refused with HTTP 409 (API, `unified-cd apply` and GitOps sync alike), in both directions:
+
+```
+secretRef "<secret>" is the private key of GitHub App credential "<credential>"; a token or sshKey GitCredential cannot use it
+secretRef "<secret>" is already used by <token|sshKey> GitCredential "<credential>"; a GitHub App private key cannot be shared with a token or sshKey GitCredential
+```
+
+A pairing that exists anyway (for example rows written before this check) is refused when the controller would use it: `GitCredential "<name>" for host "<host>": secretRef "<secret>" is the private key of GitHub App credential "<credential>" and is never used as a token or SSH key`. Give each credential its own StoredSecret.
 
 #### Controller use
 
@@ -150,13 +162,13 @@ Set `spec.host` to the GHES host. `apiURL` defaults to `https://api.github.com` 
 
 #### Installation lookup
 
-If `githubApp.installationId` is set, it is used. Otherwise the controller looks up the installation of the repository owner (`GET /repos/{owner}/{repo}/installation`, or `/orgs/{owner}/installation` then `/users/{owner}/installation` when no concrete repository is known, as for a pattern) and caches owner to installation for one hour. For job tokens the owner comes from `jobAccess.repositories`; for controller use, from the repository being fetched. An App installed in several organizations needs `installationId` or one credential per organization.
+If `githubApp.installationId` is set, it is used. Otherwise the controller looks up the installation of the repository owner (`GET /repos/{owner}/{repo}/installation`, or `/orgs/{owner}/installation` then `/users/{owner}/installation` when no concrete repository is known, as for a pattern) and caches owner to installation for one hour. For job tokens the owner comes from `jobAccess.repositories`; for controller use, from the repository being fetched. With lookup, one credential already serves an App installed in several organizations for controller fetches, because each fetch resolves the installation of its own repository's owner. Setting `installationId` pins the credential to that one installation (one organization): fetches of another organization's repositories then fail. Job tokens always belong to the single owner of `jobAccess.repositories`, so a job that needs two organizations needs two credentials (see [Several organizations in one job](#several-organizations-in-one-job)). If GitHub answers token creation with 404 for a looked-up installation (the App was uninstalled, or reinstalled under a new installation ID), the cached entry is dropped and the next attempt looks the installation up again.
 
 A `jobAccess.repositories` pattern (`acme/*`, `acme/infra-*`) is expanded by listing the installation's repositories with a listing-only `metadata: read` token that is never cached or handed out. No match is an error (`no repository of the installation matches ...`) and more than 500 matches is an error. `owner/*` alone asks GitHub for the whole installation.
 
 #### Known drawbacks
 
-- **Rate limits.** Token issuing is subject to GitHub's secondary rate limits; the shared job token keeps issuing to about one call per credential per 10 minutes. API calls made with a token count against the installation's hourly limit (from 5,000 requests), shared by every job and controller fetch that uses the same App. Use separate Apps per purpose (sync, release, CI) to isolate them.
+- **Rate limits.** Token issuing is subject to GitHub's secondary rate limits. Each controller replica keeps its own token cache, so the shared job token keeps issuing to about one call per credential per replica per 10 minutes, and controller fetches add about one call per repository per replica per 55 minutes (a controller token is reused until 5 minutes remain). API calls made with a token count against the installation's hourly limit (from 5,000 requests), shared by every job and controller fetch that uses the same App. Use separate Apps per purpose (sync, release, CI) to isolate them.
 - **Token lifetime.** A run gets a token with 50 to 60 minutes left. A run that keeps using it after that fails; re-fetching for runs longer than one hour is not supported yet (see `TODO.md`). Tokens are not revoked when a run ends.
 - **No per-job narrowing.** A job gets the credential's full `jobAccess` reach.
 - **Shared namespace.** A GitCredential with `jobAccess` and a StoredSecret cannot share a name (see [Name rules](#name-rules-for-jobaccess)).

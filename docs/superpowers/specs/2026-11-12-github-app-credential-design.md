@@ -372,3 +372,16 @@ Recorded by the controller session; the plan implements them.
   through a race), the credential wins in the fetch.
 - An AppSource with an SSH `repoURL` and a `githubApp` credential is an error
   that asks for an https `repoURL`.
+- (Final review.) A `token` or `sshKey` credential may not name the
+  `secretRef` of a `githubApp` credential, and the reverse: saving either is a
+  409 collision (API and GitOps apply), and the resolver refuses such a pairing
+  at use time, so the private key cannot leave as a password or SSH key.
+- (Final review.) The agent fetch's refusal of a private-key `secretRef` is
+  audited as `gitcredential.token_issue` with status 403 and reason
+  `private_key`; `details` carries `runId`, `secretRef` and `reason` only.
+- (Final review.) A create-token 404 for a looked-up installation evicts the
+  cached owner-to-installation entry.
+- (Final review.) `jobAccess.repositories` mixing `owner/*` with other
+  patterns is rejected by DSL validation, not only by the token issuer.
+- (Final review.) The CLI decodes `controllerUse` from the list API as
+  optional; an absent key (older controller) means `true`.
