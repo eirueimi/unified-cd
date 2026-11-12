@@ -309,6 +309,12 @@ unified-cli authz explain --user dev@example.com --group my-org:team-a --job tea
 
 `explain` lists every held permission in catalogue order with **all** the grants that give it, using the same strings the [audit log](audit.md#permission-scope-and-grantedby) records. It describes an identity, not a token: a PAT's ceiling is not applied. Within one scope, group entries are listed before user entries. See [CLI reference](../reference/cli.md#authz) for flags and output formats.
 
+## GitHub App credentials and `jobAccess`
+
+`gitcredential.write` (global only) governs everything about a [GitHub App credential](../user-guide/resources/git-credential.md#github-app-credentials), including `jobAccess`: which job folders may receive a token, which repositories it reaches and its permission ceiling. No job-level or folder-level permission lets a caller change it, so a job author cannot widen a credential's reach. `gitcredential.read` lists credentials, with `jobAccess` shown but never key material. A GitCredential applied through an AppSource can set `jobAccess` as well; whoever can push to that repository can therefore grant jobs access, which is the trust boundary of [AppSource](../user-guide/resources/app-source.md).
+
+`jobAccess.folders` uses the same folder rule as the folder-scopable permissions (`team-a` covers `team-a/build` but not a job named `team-a`; a root-level job is covered only by `"*"`). It is checked **at fetch time**, when the run's agent requests its secrets, against the credential as it is then; changing `jobAccess` affects runs that are already queued. A refused request is answered with `403` and audited (`gitcredential.token_issue`, see [Audit Log](audit.md#github-app-job-tokens)). The agent's own authorization (the run's `claimed_by` check and the "secret not needed by this run" check) applies first.
+
 ## Agent authorization boundaries
 
 An agent credential is bound to one immutable `agentId`. The controller

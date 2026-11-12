@@ -45,7 +45,7 @@ deliberately forbids) and is meant to be applied and invoked via `call:` directl
 | `git-checkout.yaml` | Clone/checkout a Git repository (supports HTTPS/SSH, LFS, sparse checkout, submodules) | git, (git-lfs) | `git:true` | Specified via `token_secret` (e.g. github-token) / `ssh_key_secret` |
 | `slack-notify.yaml` | Notify a Slack Incoming Webhook | curl | - | `slack-webhook-url` |
 | `github-commit-status.yaml` | Update a GitHub commit status | curl | - | `token_secret` (default: `github-token`) |
-| `git-auth-run.yaml` | Run a command with git authenticated per GitHub organization (one token per owner, via env vars and a credential helper; nothing written to disk; up to 4 owners) | git 2.31+ | `credential_1`..`credential_4` (each paired with `owner_1`..`owner_4`) |
+| `git-auth-run.yaml` | Run a command with git authenticated per GitHub organization (one token per owner, via env vars and a credential helper; nothing written to disk; up to 4 owners) | git 2.31+ | - | `credential_1`..`credential_4` (each paired with `owner_1`..`owner_4`) |
 | `notify-webhook.yaml` | Send a generic JSON POST notification to a webhook | curl | - | Specified via `url_secret` (plain `url` if omitted) |
 | `notify-email.yaml` | Send email notifications via SMTP | curl (SMTP(S)-enabled build) | - | Specified via `smtp_url_secret`, `username_secret`, `password_secret` |
 | `github-pr-comment.yaml` | Post a comment on a GitHub PR/Issue | curl | - | `token_secret` (default: `github-token`) |

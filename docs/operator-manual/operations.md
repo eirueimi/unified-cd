@@ -551,7 +551,24 @@ Key metrics:
 | `unifiedcd_agent_min_free_disk_bytes{agent}` | gauge | A host agent's `minFreeDisk` **resolved to bytes** (a percentage is applied to the workspace filesystem's size). **`0` means the claim-time disk check is disabled** (explicit `minFreeDisk: 0`), not that the disk is full. Omitted while a percentage cannot be resolved yet (the workspace has not been measured) |
 | `unifiedcd_agent_claim_blocked_by_disk{agent}` | gauge | `1` while a host agent is declining to claim anything because workspace free disk is below `minFreeDisk`, else `0` |
 | `unifiedcd_agent_volume_claim_blocked{agent,agent_name,volume}` | gauge | `1` while the agent withholds this [named volume](#named-volume-hygiene) from claims because its free space is below `minFreeDisk` (runs that mount it stay `Queued`; other runs are unaffected), else `0`. Reported by host and Kubernetes agents |
+| `unifiedcd_git_credential_tokens_total{credential,purpose,result}` | counter | Git credential tokens handed out for a GitHub App credential, by credential name, `purpose` (`controller`: AppSource and `uses:` fetches; `job`: hand-out to a run) and `result` (`ok` / `denied` / `error`). For `purpose="controller"`, `denied` counts **resolution attempts**, not runs: a `uses:` fetch that `jobAccess` does not allow is counted every time the controller resolves the credential, including each retry of a run that stays Pending until its template resolves. See [GitHub App credentials](#github-app-credentials) |
+| `unifiedcd_github_app_token_requests_total{credential,result}` | counter | Installation token requests actually sent to GitHub (`ok` / `error`). Cache hits do not count, so this is the number that approaches GitHub's rate limits |
 | `go_*`, `process_*` | various | Standard Go runtime and process collectors (goroutines, heap, GC pause, RSS, CPU, open FDs) |
+
+### GitHub App credentials
+
+[GitHub App credentials](../user-guide/resources/git-credential.md#github-app-credentials) add two operator concerns.
+
+- **Rate limits.** Token issuing is subject to GitHub's secondary rate limits; the shared job token keeps it to about one call per credential per 10 minutes. API calls made with the tokens count against the installation's hourly limit (from 5,000 requests), which is shared by every job and every controller fetch that uses the same App. Create separate Apps per purpose (for example one for AppSource sync, one for release jobs, one for CI) so that one workload cannot exhaust the limit of another. Watch `unifiedcd_github_app_token_requests_total{result="error"}` per credential, and the `X-RateLimit-Remaining` header of the App's own API calls for the hourly limit.
+- **Audit.** Every token hand-out to a run, and every refusal, is written to the audit log as `gitcredential.token_issue` (see [Audit Log](audit.md#github-app-job-tokens)). Controller-side issuance (AppSource sync, `uses:`) is counted, not audited per fetch.
+
+```promql
+# GitHub token requests failing, per credential
+sum by (credential) (rate(unifiedcd_github_app_token_requests_total{result="error"}[15m])) > 0
+
+# Jobs refused a token (folder not covered by jobAccess)
+sum by (credential) (increase(unifiedcd_git_credential_tokens_total{purpose="job",result="denied"}[1h]))
+```
 
 ### Watching the background workers
 
