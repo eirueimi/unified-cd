@@ -25,6 +25,11 @@ const auditActionGitCredentialTokenIssue = "gitcredential.token_issue"
 // human-facing routes need an entry. The table is an allow-list: a route absent
 // from it is not recorded, except that a request refused by authorization is
 // always recorded (see auditLogMiddleware).
+//
+// TestEveryHumanWriteRouteIsAuditedOrExempt (audit_routes_test.go) fails for a
+// human write route in routeTable that is neither here nor in
+// auditExemptWriteRoutes; TestAuditTablesMatchRouteTable fails for a stale key
+// here.
 var auditActionTable = map[string]string{
 	"POST /api/v1/jobs":                                          "job.apply",
 	"DELETE /api/v1/jobs/*":                                      "job.delete",
