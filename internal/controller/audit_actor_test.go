@@ -58,11 +58,11 @@ func TestAudit_SamePATNameDistinguishable(t *testing.T) {
 	s := NewServer(Config{Token: "secret"}, pg)
 	t.Cleanup(s.Close)
 
-	a, err := pg.CreatePAT(t.Context(), "ci", HashToken("tok-a"), "admin", nil)
+	a, err := pg.CreatePAT(t.Context(), "ci", HashToken("tok-a"), "admin", nil, "")
 	require.NoError(t, err)
-	b, err := pg.CreatePAT(t.Context(), "ci", HashToken("tok-b"), "admin", nil)
+	b, err := pg.CreatePAT(t.Context(), "ci", HashToken("tok-b"), "admin", nil, "")
 	require.NoError(t, err)
-	imposter, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("tok-c"), "admin", nil)
+	imposter, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("tok-c"), "admin", nil, "")
 	require.NoError(t, err)
 
 	rowA := auditedDelete(t, s, pg, bearerAuth("tok-a"))

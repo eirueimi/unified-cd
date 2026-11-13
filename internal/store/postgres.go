@@ -2493,7 +2493,7 @@ func (p *Postgres) RunJobName(ctx context.Context, runID string) (string, bool, 
 }
 
 // patColumns is the column list every PAT read returns, in patScan order.
-const patColumns = `id, name, role, created_at, expires_at, last_used_at, owner_sub, owner_email, owner_claims, permissions, enroll_labels`
+const patColumns = `id, name, role, created_at, expires_at, last_used_at, owner_sub, owner_email, owner_claims, permissions, enroll_labels, created_by`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -2503,11 +2503,14 @@ type rowScanner interface {
 // Owner stays nil; permissions NULL stays a nil slice.
 func scanPAT(row rowScanner) (PAT, error) {
 	var pat PAT
-	var ownerSub, ownerEmail *string
+	var ownerSub, ownerEmail, createdBy *string
 	var ownerClaims []string
 	if err := row.Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt,
-		&ownerSub, &ownerEmail, &ownerClaims, &pat.Permissions, &pat.EnrollLabels); err != nil {
+		&ownerSub, &ownerEmail, &ownerClaims, &pat.Permissions, &pat.EnrollLabels, &createdBy); err != nil {
 		return PAT{}, err
+	}
+	if createdBy != nil {
+		pat.CreatedBy = *createdBy
 	}
 	if ownerSub != nil {
 		o := &PATOwner{Sub: *ownerSub, Claims: ownerClaims}
@@ -2522,11 +2525,19 @@ func scanPAT(row rowScanner) (PAT, error) {
 	return pat, nil
 }
 
+// nullIfEmpty maps "" to SQL NULL.
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // CreatePAT creates a role-only Personal Access Token (no owner) and returns its metadata.
-func (p *Postgres) CreatePAT(ctx context.Context, name, tokenHash, role string, expiresAt *time.Time) (*PAT, error) {
-	const q = `INSERT INTO pats(name, token_hash, role, expires_at) VALUES ($1, $2, $3, $4)
+func (p *Postgres) CreatePAT(ctx context.Context, name, tokenHash, role string, expiresAt *time.Time, createdBy string) (*PAT, error) {
+	const q = `INSERT INTO pats(name, token_hash, role, expires_at, created_by) VALUES ($1, $2, $3, $4, $5)
 		RETURNING ` + patColumns
-	pat, err := scanPAT(p.pool.QueryRow(ctx, q, name, tokenHash, role, expiresAt))
+	pat, err := scanPAT(p.pool.QueryRow(ctx, q, name, tokenHash, role, expiresAt, nullIfEmpty(createdBy)))
 	if err != nil {
 		return nil, fmt.Errorf("create pat: %w", err)
 	}
@@ -2541,11 +2552,11 @@ func (p *Postgres) CreateOwnedPAT(ctx context.Context, in NewOwnedPAT) (*PAT, er
 	if claims == nil {
 		claims = []string{}
 	}
-	const q = `INSERT INTO pats(name, token_hash, role, expires_at, owner_sub, owner_email, owner_claims, permissions, enroll_labels)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	const q = `INSERT INTO pats(name, token_hash, role, expires_at, owner_sub, owner_email, owner_claims, permissions, enroll_labels, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING ` + patColumns
 	pat, err := scanPAT(p.pool.QueryRow(ctx, q, in.Name, in.TokenHash, in.Role, in.ExpiresAt,
-		in.Owner.Sub, in.Owner.Email, claims, in.Permissions, in.EnrollLabels))
+		in.Owner.Sub, in.Owner.Email, claims, in.Permissions, in.EnrollLabels, nullIfEmpty(in.CreatedBy)))
 	if err != nil {
 		return nil, fmt.Errorf("create owned pat: %w", err)
 	}
@@ -2555,11 +2566,11 @@ func (p *Postgres) CreateOwnedPAT(ctx context.Context, in NewOwnedPAT) (*PAT, er
 // CreateEnrollPAT creates an enrollment-only PAT: no owner, role "" and the
 // single permission agent.enroll, optionally bounded to EnrollLabels.
 func (p *Postgres) CreateEnrollPAT(ctx context.Context, in NewEnrollPAT) (*PAT, error) {
-	const q = `INSERT INTO pats(name, token_hash, role, expires_at, permissions, enroll_labels)
-		VALUES ($1, $2, '', $3, $4, $5)
+	const q = `INSERT INTO pats(name, token_hash, role, expires_at, permissions, enroll_labels, created_by)
+		VALUES ($1, $2, '', $3, $4, $5, $6)
 		RETURNING ` + patColumns
 	pat, err := scanPAT(p.pool.QueryRow(ctx, q, in.Name, in.TokenHash, in.ExpiresAt,
-		[]string{"agent.enroll"}, in.EnrollLabels))
+		[]string{"agent.enroll"}, in.EnrollLabels, nullIfEmpty(in.CreatedBy)))
 	if err != nil {
 		return nil, fmt.Errorf("create enroll pat: %w", err)
 	}

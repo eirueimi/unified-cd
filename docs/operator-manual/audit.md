@@ -62,7 +62,7 @@ Each recorded entry contains:
 | `permission` | The permission the request was checked against (for example `run.trigger`); empty when no decision applied |
 | `scope` | The job name for a folder-scopable decision; empty for a global decision and for a refusal before any job was looked at |
 | `grantedBy` | A short description of the first grant that allowed the request; empty on a denial |
-| `details` | Optional structured context (a JSON object). Only `gitcredential.token_issue` rows carry it today, see [GitHub App job tokens](#github-app-job-tokens); absent on every other row |
+| `details` | Optional structured context (a JSON object). `gitcredential.token_issue` rows carry it (see [GitHub App job tokens](#github-app-job-tokens)) and successful `token.create` rows carry `{"patId", "name"}` (see [Actor identity](#actor-identity)); absent on every other row |
 
 ### Actor identity
 
@@ -79,6 +79,16 @@ from anything the caller can choose:
 Two PATs with the same name therefore produce rows with the same `actor` and different `actorId`
 values. `pats.name` has no `UNIQUE` constraint (existing databases may already hold duplicates), so
 `actorId` is the field to filter on when investigating who did something.
+
+To trace a `pat:<id>` actor back to where it came from, find the `token.create` row whose `details.patId`
+equals `<id>`. Its `resource` is the PAT name, `details.name` repeats it, its `actorId` is the creator
+and its `occurredAt` is the creation time. This works after the PAT has been deleted and when several
+PATs share a name, because the `resource` alone (the name) is not unique. The token value is never
+recorded. Only a successful create (2xx) carries `details`; a rejected request has no PAT to name.
+The same creator id is stored on the PAT itself as `createdBy` (`GET /api/v1/tokens`, `unified-cli token list`)
+for as long as the PAT exists. It is empty for PATs created before migration `030_pat_created_by`
+and for the `env:UNIFIED_TOKEN` row, and `token.create` rows from before this change have no `details`
+(match those by `resource` and time instead).
 
 ### Permission, scope and grantedBy
 
@@ -233,6 +243,10 @@ Migration `027_audit_actor_identity` adds the nullable columns `actor_id` and `a
 Migration `029_github_app_credentials` adds the nullable `details jsonb` column, returned as the
 `details` field of the API. It is `NULL` (and the field absent) for every row that has no details.
 
+Migration `030_pat_created_by` adds the nullable `created_by text` column to the `pats` table (not to
+`audit_logs`): the `actorId` of the caller that created the PAT through the API (`break-glass`,
+`pat:<id>`, `oidc:<sub>`). It is `NULL` for earlier rows and for the `env:UNIFIED_TOKEN` row.
+
 ## API
 
 ```
@@ -267,9 +281,26 @@ curl -H "Authorization: Bearer $TOKEN" \
     "status": 204,
     "permission": "secret.write",
     "grantedBy": "role:admin (roleMap[\"unified-admins\"])"
+  },
+  {
+    "id": 41,
+    "occurredAt": "2026-07-05T10:15:02Z",
+    "actor": "alice",
+    "actorId": "oidc:5f2c1a0e-0000-4000-8000-000000000001",
+    "actorSub": "5f2c1a0e-0000-4000-8000-000000000001",
+    "method": "POST",
+    "path": "/api/v1/tokens",
+    "action": "token.create",
+    "resource": "ci-bot",
+    "status": 200,
+    "permission": "token.create",
+    "grantedBy": "role:admin (roleMap[\"unified-admins\"])",
+    "details": { "patId": "3b1e7c52-0000-4000-8000-0000000000aa", "name": "ci-bot" }
   }
 ]
 ```
+
+Here `details.patId` of the `token.create` row is the `<id>` of later `pat:3b1e7c52-...` rows.
 
 ## CLI
 

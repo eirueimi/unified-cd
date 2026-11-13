@@ -9,7 +9,7 @@ import (
 
 func TestPAT_RoleRoundTrip(t *testing.T) {
 	p := NewTestPostgres(t)
-	created, err := p.CreatePAT(t.Context(), "dev-token", "hash-dev", "developer", nil)
+	created, err := p.CreatePAT(t.Context(), "dev-token", "hash-dev", "developer", nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, "developer", created.Role)
 

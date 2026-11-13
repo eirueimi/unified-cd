@@ -106,6 +106,10 @@ unified-cli token create ci-bot --server http://localhost:8080 --token <UNIFIED_
 ```
 
 PATs are stored as SHA-256 hashes in the DB and managed via `token list` / `token delete`.
+Each PAT created through the API records who created it (`created_by`, shown as `createdBy` by `token list`):
+`break-glass`, `pat:<id>` or `oidc:<sub>`, the same ids the audit log uses as `actorId`. The `token.create`
+audit row also carries the new PAT's id in `details.patId`, so a `pat:<id>` actor in later rows can be traced to
+its creation even after the PAT is deleted (see [Audit log](audit.md#actor-identity)).
 `token list` also shows `env:UNIFIED_TOKEN`, the PAT derived from `UNIFIED_TOKEN`, to a caller
 who holds `token.manage` (as noted above, deleting it is ineffective while the environment variable is still set).
 A token created with `UNIFIED_TOKEN` has no owner: it is role-only, `--role` defaults to `admin`

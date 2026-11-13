@@ -12,7 +12,7 @@ import (
 
 func makeRolePAT(t *testing.T, pg store.Store, token, role string) {
 	t.Helper()
-	_, err := pg.CreatePAT(t.Context(), role+"-user", HashToken(token), role, nil)
+	_, err := pg.CreatePAT(t.Context(), role+"-user", HashToken(token), role, nil, "")
 	require.NoError(t, err)
 }
 

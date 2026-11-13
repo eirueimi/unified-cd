@@ -288,6 +288,7 @@ func auditLogMiddleware(st interface {
 				Scope:      slot.Scope,
 			}
 			if !slot.Denied {
+				e.Details = slot.Details
 				e.GrantedBy = slot.GrantedBy
 			}
 			insert(r, e)

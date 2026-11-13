@@ -110,6 +110,10 @@ type PAT struct {
 	// EnrollLabels bounds the labels an enrollment-only PAT (agent.enroll) may
 	// put on the enrollment tokens it creates; nil means no bound.
 	EnrollLabels []string
+	// CreatedBy is the audit actor id ("break-glass", "pat:<id>", "oidc:<sub>")
+	// of the caller that created the PAT through the API; empty when unknown
+	// (NULL: bootstrap rows and rows that predate migration 030).
+	CreatedBy string
 }
 
 // PATOwner is the OIDC identity a PAT was minted by, with the email and
@@ -128,6 +132,7 @@ type NewOwnedPAT struct {
 	Permissions           []string
 	EnrollLabels          []string
 	ExpiresAt             *time.Time
+	CreatedBy             string
 }
 
 // NewEnrollPAT is the input of CreateEnrollPAT: an ownerless PAT whose only
@@ -136,6 +141,7 @@ type NewEnrollPAT struct {
 	Name, TokenHash string
 	EnrollLabels    []string
 	ExpiresAt       *time.Time
+	CreatedBy       string
 }
 
 // AuditEntry is one audit_logs row. Permission, Scope and GrantedBy describe
@@ -526,7 +532,7 @@ type Store interface {
 	ListenForNotify(ctx context.Context, channel string, callback func(payload string)) error
 
 	// PAT
-	CreatePAT(ctx context.Context, name, tokenHash, role string, expiresAt *time.Time) (*PAT, error)
+	CreatePAT(ctx context.Context, name, tokenHash, role string, expiresAt *time.Time, createdBy string) (*PAT, error)
 	GetPATByHash(ctx context.Context, tokenHash string) (*PAT, error)
 	ListPATs(ctx context.Context) ([]PAT, error)
 	DeletePAT(ctx context.Context, id string) error

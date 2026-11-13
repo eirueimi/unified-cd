@@ -390,7 +390,7 @@ func TestAuthorize_EmptyGrantSetMessages(t *testing.T) {
 
 func TestAuthorize_GlobalOnlyMessage(t *testing.T) {
 	s, st := matrixServer(t)
-	_, err := st.CreatePAT(context.Background(), "dev", HashToken("dev-pat"), "developer", nil)
+	_, err := st.CreatePAT(context.Background(), "dev", HashToken("dev-pat"), "developer", nil, "")
 	require.NoError(t, err)
 	rec := doAs(t, s, http.MethodPost, "/api/v1/secrets", "dev-pat", []byte(`{}`))
 	assert.Equal(t, http.StatusForbidden, rec.Code)

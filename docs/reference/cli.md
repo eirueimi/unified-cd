@@ -659,11 +659,14 @@ Lists the tokens you may see (IDs, names, and the ceiling only; values are never
 tokens with `token.create`, every token with `token.manage` (admin). The ceiling column is the role,
 or the comma-separated permission list for a permission-ceiling token, followed by
 `enroll-labels=<labels>` for a token with an enrollment label bound. A role-only (pre-upgrade)
-token has no owner, so a caller without `token.manage` does not see it.
+token has no owner, so a caller without `token.manage` does not see it. After the date, ` by <actorId>`
+names who created the token (`break-glass`, `pat:<id>`, `oidc:<sub>`); it is omitted for tokens created
+before the controller recorded it and for the `env:UNIFIED_TOKEN` token, and when talking to an older
+controller. The same id appears as `createdBy` in `GET /api/v1/tokens`.
 
 ```
 a7c3fec8-1922-4278-b7ca-1ec489839a61   env:UNIFIED_TOKEN   admin       (2026-07-03)   ← bootstrap token from UNIFIED_TOKEN env var
-08c1779c-812f-4d68-9971-25ff3467637e   ci-bot               developer   (2026-07-04)
+08c1779c-812f-4d68-9971-25ff3467637e   ci-bot               developer   (2026-07-04 by break-glass)
 ```
 
 ### token delete

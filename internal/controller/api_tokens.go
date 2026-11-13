@@ -166,7 +166,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 				labels = creator.EnrollLabels
 			}
 			pat, err = s.store.CreateEnrollPAT(r.Context(), store.NewEnrollPAT{
-				Name: req.Name, TokenHash: hash, EnrollLabels: labels, ExpiresAt: expiresAt,
+				Name: req.Name, TokenHash: hash, EnrollLabels: labels, ExpiresAt: expiresAt, CreatedBy: creator.AuditActorID(),
 			})
 		} else {
 			role := req.Role
@@ -177,7 +177,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, msg, status)
 				return
 			}
-			pat, err = s.store.CreatePAT(r.Context(), req.Name, hash, role, expiresAt)
+			pat, err = s.store.CreatePAT(r.Context(), req.Name, hash, role, expiresAt, creator.AuditActorID())
 		}
 	} else {
 		if !creator.ClaimsKnown {
@@ -235,7 +235,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		pat, err = s.store.CreateOwnedPAT(r.Context(), store.NewOwnedPAT{
-			Name: req.Name, TokenHash: hash, Role: role, Permissions: perms, EnrollLabels: labels, ExpiresAt: expiresAt,
+			Name: req.Name, TokenHash: hash, Role: role, Permissions: perms, EnrollLabels: labels, ExpiresAt: expiresAt, CreatedBy: creator.AuditActorID(),
 			Owner: store.PATOwner{Sub: creator.Sub, Email: creator.Email, Claims: creator.Claims},
 		})
 	}
@@ -244,6 +244,9 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The audit row's resource is the (non-unique) name; the id ties the
+	// "pat:<id>" actor of later rows back to this creation. Never the token.
+	setAuditDetails(r, map[string]any{"patId": pat.ID, "name": pat.Name})
 	writeJSON(w, http.StatusOK, api.CreatePATResponse{
 		ID:           pat.ID,
 		Name:         pat.Name,
@@ -288,6 +291,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 			LastUsedAt:   pat.LastUsedAt,
 			Permissions:  pat.Permissions,
 			EnrollLabels: pat.EnrollLabels,
+			CreatedBy:    pat.CreatedBy,
 		}
 		if pat.Owner != nil {
 			m.Owner = pat.Owner.Email

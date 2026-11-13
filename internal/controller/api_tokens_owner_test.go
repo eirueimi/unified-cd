@@ -192,7 +192,7 @@ func TestTokens_DeveloperListsAndDeletesOwnOnly(t *testing.T) {
 	adminPAT, err := pg.CreateOwnedPAT(ctx, store.NewOwnedPAT{Name: "admins", TokenHash: "h-adm",
 		Owner: store.PATOwner{Sub: "adm@example.com", Claims: []string{"g-admin"}}})
 	require.NoError(t, err)
-	roleOnly, err := pg.CreatePAT(ctx, "legacy", "h-legacy", "admin", nil)
+	roleOnly, err := pg.CreatePAT(ctx, "legacy", "h-legacy", "admin", nil, "")
 	require.NoError(t, err)
 
 	rec := doWithCookie(t, s, http.MethodGet, "/api/v1/tokens", "dev-session", nil)
@@ -225,7 +225,7 @@ func TestTokens_ManageListsAndDeletesAll(t *testing.T) {
 	_, err := pg.CreateOwnedPAT(ctx, store.NewOwnedPAT{Name: "dev-pat", TokenHash: "h1", Role: "viewer",
 		Owner: store.PATOwner{Sub: "dev@example.com", Claims: []string{"g-dev"}}})
 	require.NoError(t, err)
-	roleOnly, err := pg.CreatePAT(ctx, "legacy", "h2", "developer", nil)
+	roleOnly, err := pg.CreatePAT(ctx, "legacy", "h2", "developer", nil, "")
 	require.NoError(t, err)
 
 	tok := bearer("adm@example.com", "g-admin")
@@ -246,7 +246,7 @@ func TestTokens_ManageListsAndDeletesAll(t *testing.T) {
 func TestTokens_ManageOnlyPrincipal(t *testing.T) {
 	s, pg := newAuthzTestServer(t, tokenLegacy, tokenFolderPolicy)
 	ctx := t.Context()
-	victim, err := pg.CreatePAT(ctx, "legacy", "h2", "developer", nil)
+	victim, err := pg.CreatePAT(ctx, "legacy", "h2", "developer", nil, "")
 	require.NoError(t, err)
 	_, err = pg.CreateOwnedPAT(ctx, store.NewOwnedPAT{Name: "other", TokenHash: "h3", Role: "viewer",
 		Owner: store.PATOwner{Sub: "x@example.com", Claims: []string{"g-dev"}}})
@@ -315,7 +315,7 @@ func TestWarnRoleOnlyPATs(t *testing.T) {
 	for _, c := range []struct{ name, role string }{
 		{"a", "developer"}, {"b", "admin"}, {"v", "viewer"}, {BootstrapPATName, "admin"},
 	} {
-		_, err := pg.CreatePAT(ctx, c.name, HashToken("h-"+c.name), c.role, nil)
+		_, err := pg.CreatePAT(ctx, c.name, HashToken("h-"+c.name), c.role, nil, "")
 		require.NoError(t, err)
 	}
 	_, err := pg.CreateOwnedPAT(ctx, store.NewOwnedPAT{Name: "owned", TokenHash: "ho", Role: "admin", Owner: store.PATOwner{Sub: "s"}})
@@ -329,7 +329,7 @@ func TestWarnRoleOnlyPATs(t *testing.T) {
 
 	// Without folder grants nothing is logged.
 	s2, pg2 := newAuthzTestServer(t, tokenLegacy, "")
-	_, err = pg2.CreatePAT(ctx, "a", HashToken("h-a"), "admin", nil)
+	_, err = pg2.CreatePAT(ctx, "a", HashToken("h-a"), "admin", nil, "")
 	require.NoError(t, err)
 	log, buf = newLog()
 	require.NoError(t, WarnRoleOnlyPATs(ctx, pg2, s2.oidcCfg.Policy, log))

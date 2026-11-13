@@ -152,7 +152,11 @@ func newTokenListCmd(resolve func() (Config, error), httpClient *http.Client) *c
 				if len(t.EnrollLabels) > 0 {
 					ceiling += " enroll-labels=" + strings.Join(t.EnrollLabels, ",")
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t(%s)\n", t.ID, t.Name, ceiling, t.CreatedAt.Format("2006-01-02"))
+				created := t.CreatedAt.Format("2006-01-02")
+				if t.CreatedBy != "" {
+					created += " by " + t.CreatedBy
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t(%s)\n", t.ID, t.Name, ceiling, created)
 			}
 			return nil
 		},

@@ -56,7 +56,7 @@ func TestOwnedPATRoundTrip(t *testing.T) {
 func TestLegacyPATHasNoOwner(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, err := pg.CreatePAT(ctx, "legacy", "h1", "developer", nil)
+	_, err := pg.CreatePAT(ctx, "legacy", "h1", "developer", nil, "")
 	require.NoError(t, err)
 	got, err := pg.GetPATByHash(ctx, "h1")
 	require.NoError(t, err)
@@ -72,7 +72,7 @@ func TestListPATsByOwner(t *testing.T) {
 			Role: "viewer", Owner: PATOwner{Sub: c.sub, Claims: []string{"g"}}})
 		require.NoError(t, err)
 	}
-	_, err := pg.CreatePAT(ctx, "legacy", "hl", "viewer", nil)
+	_, err := pg.CreatePAT(ctx, "legacy", "hl", "viewer", nil, "")
 	require.NoError(t, err)
 	got, err := pg.ListPATsByOwner(ctx, "s1")
 	require.NoError(t, err)
@@ -86,7 +86,7 @@ func TestDeleteOwnedPATOnlyDeletesOwn(t *testing.T) {
 	ctx := context.Background()
 	owned, err := pg.CreateOwnedPAT(ctx, NewOwnedPAT{Name: "o", TokenHash: "h1", Role: "viewer", Owner: PATOwner{Sub: "s1"}})
 	require.NoError(t, err)
-	legacy, err := pg.CreatePAT(ctx, "legacy", "h2", "viewer", nil)
+	legacy, err := pg.CreatePAT(ctx, "legacy", "h2", "viewer", nil, "")
 	require.NoError(t, err)
 
 	ok, err := pg.DeleteOwnedPAT(ctx, owned.ID, "other")
@@ -135,11 +135,11 @@ func TestUpdatePATOwnerSnapshot(t *testing.T) {
 func TestCountRoleOnlyPATsAboveViewer(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, err := pg.CreatePAT(ctx, "viewer", "h1", "viewer", nil)
+	_, err := pg.CreatePAT(ctx, "viewer", "h1", "viewer", nil, "")
 	require.NoError(t, err)
-	_, err = pg.CreatePAT(ctx, "dev", "h2", "developer", nil)
+	_, err = pg.CreatePAT(ctx, "dev", "h2", "developer", nil, "")
 	require.NoError(t, err)
-	_, err = pg.CreatePAT(ctx, "adm", "h3", "admin", nil)
+	_, err = pg.CreatePAT(ctx, "adm", "h3", "admin", nil, "")
 	require.NoError(t, err)
 	_, err = pg.UpsertBootstrapPAT(ctx, testBootstrapPATName, "h4")
 	require.NoError(t, err)
@@ -292,7 +292,7 @@ func TestPATEnrollLabelsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"kind:linux"}, got.EnrollLabels)
 
-	_, err = pg.CreatePAT(ctx, "legacy", "h2", "developer", nil)
+	_, err = pg.CreatePAT(ctx, "legacy", "h2", "developer", nil, "")
 	require.NoError(t, err)
 	legacy, err := pg.GetPATByHash(ctx, "h2")
 	require.NoError(t, err)

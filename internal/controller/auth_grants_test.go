@@ -67,7 +67,7 @@ func TestServerAuth_BreakGlassHoldsAll26(t *testing.T) {
 
 func TestServerAuth_RoleOnlyPATEmptyRoleIsNoRole(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	_, err := pg.CreatePAT(context.Background(), "empty", HashToken("empty-tok"), "", nil)
+	_, err := pg.CreatePAT(context.Background(), "empty", HashToken("empty-tok"), "", nil, "")
 	require.NoError(t, err)
 
 	_, rec := authenticate(t, s, "empty-tok", "")
@@ -77,7 +77,7 @@ func TestServerAuth_RoleOnlyPATEmptyRoleIsNoRole(t *testing.T) {
 
 func TestServerAuth_RoleOnlyPATGrants(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	_, err := pg.CreatePAT(context.Background(), "v", HashToken("v-tok"), "viewer", nil)
+	_, err := pg.CreatePAT(context.Background(), "v", HashToken("v-tok"), "viewer", nil, "")
 	require.NoError(t, err)
 
 	p, rec := authenticate(t, s, "v-tok", "")
@@ -423,7 +423,7 @@ func TestHandleMe_ReturnsCallerGrantsOnly(t *testing.T) {
 
 func TestHandleMe_LegacyPATShape(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	_, err := pg.CreatePAT(context.Background(), "v", HashToken("v-tok"), "viewer", nil)
+	_, err := pg.CreatePAT(context.Background(), "v", HashToken("v-tok"), "viewer", nil, "")
 	require.NoError(t, err)
 
 	rec := doAs(t, s, http.MethodGet, "/api/v1/auth/me", "v-tok", nil)
@@ -455,7 +455,7 @@ func TestServerAuth_NameAloneIsNotBreakGlass(t *testing.T) {
 	s.cfg.Token = "real-bootstrap"
 	ctx := context.Background()
 	// An attacker-created developer PAT that merely carries the reserved name.
-	_, err := pg.CreatePAT(ctx, BootstrapPATName, HashToken("attacker-tok"), "developer", nil)
+	_, err := pg.CreatePAT(ctx, BootstrapPATName, HashToken("attacker-tok"), "developer", nil, "")
 	require.NoError(t, err)
 
 	p, rec := authenticate(t, s, "attacker-tok", "")
@@ -500,7 +500,7 @@ func TestServerAuth_NoServerOrNoTokenMeansNoBreakGlass(t *testing.T) {
 
 func TestCreateToken_ReservedNamesRefused(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	_, err := pg.CreatePAT(context.Background(), "dev", HashToken("dev-tok"), "developer", nil)
+	_, err := pg.CreatePAT(context.Background(), "dev", HashToken("dev-tok"), "developer", nil, "")
 	require.NoError(t, err)
 	for _, name := range []string{"env:UNIFIED_TOKEN", "env:x"} {
 		body, _ := json.Marshal(map[string]string{"name": name})

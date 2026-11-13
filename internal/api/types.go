@@ -416,6 +416,9 @@ type PATMeta struct {
 	Owner        string   `json:"owner,omitempty"`
 	Permissions  []string `json:"permissions,omitempty"`
 	EnrollLabels []string `json:"enrollLabels,omitempty"`
+	// CreatedBy is the audit actor id of the creator ("break-glass", "pat:<id>",
+	// "oidc:<sub>"); empty for tokens created before it was recorded.
+	CreatedBy string `json:"createdBy,omitempty"`
 }
 
 // ---- webhook ----

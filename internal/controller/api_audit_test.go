@@ -34,7 +34,7 @@ func TestAPI_ListAuditLogs_AdminOnly(t *testing.T) {
 
 func TestAPI_ListAuditLogs_ForbiddenForNonAdmin(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.CreatePAT(context.Background(), "dev", HashToken("dev-token"), "developer", nil)
+	_, err := pg.CreatePAT(context.Background(), "dev", HashToken("dev-token"), "developer", nil, "")
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/audit", nil)

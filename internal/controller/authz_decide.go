@@ -52,6 +52,9 @@ type authzDecision struct {
 	// Resource, when set by a handler through setAuditResource, overrides the
 	// resource the audit middleware would otherwise derive for the request.
 	Resource string
+	// Details, when set by a handler through setAuditDetails, is stored in the
+	// audit row's details column. It must never carry a credential value.
+	Details map[string]any
 }
 
 // scopeGlobalName is the Scope of a decision that is not tied to a job.
@@ -80,6 +83,14 @@ func recordDecision(r *http.Request, d authzDecision) {
 func setAuditResource(r *http.Request, resource string) {
 	if slot, ok := r.Context().Value(decisionSlotKey{}).(*authzDecision); ok {
 		slot.Resource = resource
+	}
+}
+
+// setAuditDetails lets a handler attach structured context to the audit row of
+// its request. Without a decision slot it does nothing.
+func setAuditDetails(r *http.Request, details map[string]any) {
+	if slot, ok := r.Context().Value(decisionSlotKey{}).(*authzDecision); ok {
+		slot.Details = details
 	}
 }
 
