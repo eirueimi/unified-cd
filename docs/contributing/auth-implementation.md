@@ -177,6 +177,9 @@ transaction, any other row with the reserved name and upserts the real one.
 4. **Does it mutate?** Then it belongs under a group with
    `auditLogMiddleware` and, to be recorded when allowed, in
    `auditActionTable` (denials are recorded regardless).
+   `TestEveryHumanWriteRouteIsAuditedOrExempt` fails for a human write route
+   that is in neither `auditActionTable` nor the commented exemption set
+   `auditExemptWriteRoutes` (`audit_routes_test.go`).
 5. **Would an agent running a malicious job be able to abuse it?** If so it
    should not be reachable with `agentAuth` at all.
 
