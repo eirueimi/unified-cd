@@ -28,7 +28,8 @@ const auditActionGitCredentialTokenIssue = "gitcredential.token_issue"
 //
 // TestEveryHumanWriteRouteIsAuditedOrExempt (audit_routes_test.go) fails for a
 // human write route in routeTable that is neither here nor in
-// auditExemptWriteRoutes, and for a stale key here.
+// auditExemptWriteRoutes; TestAuditTablesMatchRouteTable fails for a stale key
+// here.
 var auditActionTable = map[string]string{
 	"POST /api/v1/jobs":                                          "job.apply",
 	"DELETE /api/v1/jobs/*":                                      "job.delete",
