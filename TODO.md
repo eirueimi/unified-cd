@@ -131,3 +131,10 @@ No active items.
 - **Impact:** Only GitHub Apps can mint short-lived Git tokens. Azure DevOps, GitLab and cloud workload identity still need long-lived personal access tokens stored as `type: token`.
 - **Evidence:** `TokenSource` in `internal/gittoken` is the extension point and has one implementation (`GitHubApp`); `internal/dsl/gitcredential_parse.go` accepts `token`, `sshKey` and `githubApp` only.
 - **Done when:** A design picks the next provider and its credential shape (for example Entra workload identity for Azure DevOps), implemented behind `TokenSource` with simulated-provider tests, or records the decision not to; `git-credential.md` documents it.
+
+### 62. AppSource-scoped Vars and a test AppSource
+
+- **Status:** Open (parked by the user; needs design)
+- **Impact:** Vars can only be global or per-job, so per-repository image aliases (such as `GO_IMAGE`) cannot be defined by an AppSource: two AppSources defining the same key collide (`vars X defined by both ...`). A "test" AppSource that syncs the same repository as a production one produces identical job names (the job name is the folder, the directory under `spec.path`), and nothing detects two AppSources writing the same job, so they would overwrite each other on every sync.
+- **Evidence:** The Vars collision check (`internal/dsl/vars_parse.go`) rejects a key defined by two manifests. `internal/controller/appsource_apply.go` has no cross-AppSource ownership check (per code reading, not reproduced).
+- **Done when:** A design covers AppSource-scoped Vars, a destination folder or prefix for an AppSource's jobs, and conflict detection between AppSources; it is then implemented with tests, or the decision not to is recorded.

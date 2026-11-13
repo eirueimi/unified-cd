@@ -129,6 +129,11 @@ whitespace or control characters. Registry, `host:port`, tag and `@sha256`
 digest forms are accepted. The host agent re-checks the same rule before it
 invokes docker/podman/`container`.
 
+An image may instead be a template, such as `"{{ .Vars.GO_IMAGE }}"`. At apply
+time it is then only checked to parse as a template; the expanded value is
+validated by the rule above when the run is claimed, and a failure fails the
+run. See [Container images](../variables.md#container-images).
+
 The **uses-level** `runsIn.image` (an isolated "scope" spanning an entire
 inlined `uses:` template) has its own `resources` field — `runsIn.resources`
 — covered in the next section. It is wired to both backends, but it is not a

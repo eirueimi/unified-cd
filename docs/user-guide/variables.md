@@ -116,10 +116,67 @@ Where `{{ .Vars.KEY }}` is expanded: a step's `run:`, its `env:` values, its
 a `call:` step's `with:` values. These are all expanded by the agent, per step,
 against the run's variables.
 
+Container image fields are also expanded, but by the controller and with
+different rules; see [Container images](#container-images).
+
 An **undefined** key in a template expands to the empty string, not an error
 (templates are evaluated with `missingkey=zero`). A misspelt
 `{{ .Vars.REGISTY }}` therefore produces an empty string rather than a
 complaint.
+
+---
+
+## Container images
+
+Container image names can use `.Params` and `.Vars`, so a long image name is written once
+and bumped in one place:
+
+```yaml
+apiVersion: unified-cd/v1
+kind: Vars
+metadata:
+  name: images
+spec:
+  vars:
+    GO_IMAGE: ghcr.io/myorg/build-images/golang:1.23-bookworm
+---
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: build
+spec:
+  podTemplate:
+    spec:
+      containers:
+        - name: job
+          image: "{{ .Vars.GO_IMAGE }}"
+  steps:
+    - name: lint
+      uses: { job: "git://github.com/myorg/templates/lint.yaml@v1" }
+      runsIn:
+        image: "{{ .Vars.GO_IMAGE }}"
+```
+
+Rules:
+
+- **Where:** `podTemplate.spec.containers[].image`, `initContainers[].image`,
+  `podTemplate.override.containers[].image` and a `uses:` step's `runsIn.image`
+  (including steps of a job template merged into the job).
+- **Data:** `.Params` and `.Vars` only. `.Secrets`, `.Steps`, `.Matrix` and
+  `.Foreach` are errors.
+- **Quote the value** in YAML: an unquoted `{{ ... }}` is parsed as a YAML mapping.
+- **Strict:** unlike `run:`, an undefined key is an error, not an empty string.
+  A template that does not parse, or an expansion that is not a valid image
+  reference (empty, contains whitespace, starts with `-`), fails the run with a
+  message naming the container and the image text.
+- **When:** the controller expands images when an agent claims the run. Editing
+  a `Vars` manifest therefore affects the next claim, and a replay uses the
+  Vars current at its own claim. The run record keeps the unexpanded text.
+- **At apply time** a templated image is only checked to be a well-formed
+  template; a plain image is validated exactly as before.
+
+A param used in an image lets whoever starts the run choose the image; see
+[Parameters](writing-jobs/parameters.md).
 
 ---
 
