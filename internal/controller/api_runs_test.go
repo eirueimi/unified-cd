@@ -435,7 +435,7 @@ func TestTriggerRun_RecordsPrincipal(t *testing.T) {
 
 	// Create a PAT named "alice" with a known plain token.
 	plain := "test-alice-token"
-	_, err := pg.CreatePAT(t.Context(), "alice", HashToken(plain), "admin", nil)
+	_, err := pg.CreatePAT(t.Context(), "alice", HashToken(plain), "admin", nil, "")
 	require.NoError(t, err)
 
 	// Create a job to trigger.

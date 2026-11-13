@@ -39,7 +39,7 @@ func breakGlassServer(t *testing.T) (*Server, store.Store) {
 	pg := storetest.NewTestPostgres(t)
 	s := NewServer(Config{Token: "secret"}, pg)
 	t.Cleanup(s.Close)
-	_, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("secret"), "admin", nil)
+	_, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("secret"), "admin", nil, "")
 	require.NoError(t, err)
 	return s, pg
 }

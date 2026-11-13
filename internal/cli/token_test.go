@@ -215,3 +215,22 @@ func TestTokenListShowsEnrollLabels(t *testing.T) {
 	assert.Contains(t, out.String(), "agent.enroll")
 	assert.Contains(t, out.String(), "enroll-labels=kind:linux")
 }
+
+// token list shows who created a token; a controller that predates the field
+// omits it and the line stays as before.
+func TestTokenListShowsCreatedBy(t *testing.T) {
+	tr := &captureTransport{responseFor: func(path string) (int, []byte) {
+		b, _ := json.Marshal([]api.PATMeta{
+			{ID: "1", Name: "new", Role: "viewer", CreatedBy: "pat:0"},
+			{ID: "2", Name: "old", Role: "viewer"},
+		})
+		return http.StatusOK, b
+	}}
+	cmd, out := newTestTokenCmd(tr)
+	cmd.SetArgs([]string{"list"})
+	require.NoError(t, cmd.Execute())
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	require.Len(t, lines, 2)
+	assert.Contains(t, lines[0], "by pat:0)")
+	assert.NotContains(t, lines[1], " by ")
+}

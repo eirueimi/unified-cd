@@ -53,7 +53,7 @@ func TestCreateToken_UnknownRoleAndPermission(t *testing.T) {
 // A role-only PAT creating a PAT stays role-only and is bounded by its own role.
 func TestCreateToken_RoleOnlyPATCreatorIsRoleOnly(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	_, err := pg.CreatePAT(t.Context(), "dev", HashToken("exc_dev"), "developer", nil)
+	_, err := pg.CreatePAT(t.Context(), "dev", HashToken("exc_dev"), "developer", nil, "")
 	require.NoError(t, err)
 
 	body, _ := json.Marshal(api.CreatePATRequest{Name: "ci", Role: "admin"})

@@ -19,7 +19,7 @@ func TestPostgres_PATCreateAndGet(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 	hash := tokenHash("exc_testtoken123")
-	pat, err := pg.CreatePAT(ctx, "my-token", hash, "admin", nil)
+	pat, err := pg.CreatePAT(ctx, "my-token", hash, "admin", nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, "my-token", pat.Name)
 	assert.NotEmpty(t, pat.ID)
@@ -81,8 +81,8 @@ func TestPostgres_DeleteBootstrapPATByName(t *testing.T) {
 func TestPostgres_PATListAndDelete(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.CreatePAT(ctx, "a", tokenHash("tokenA"), "admin", nil)
-	_, _ = pg.CreatePAT(ctx, "b", tokenHash("tokenB"), "admin", nil)
+	_, _ = pg.CreatePAT(ctx, "a", tokenHash("tokenA"), "admin", nil, "")
+	_, _ = pg.CreatePAT(ctx, "b", tokenHash("tokenB"), "admin", nil, "")
 	list, err := pg.ListPATs(ctx)
 	require.NoError(t, err)
 	assert.Len(t, list, 2)
@@ -97,11 +97,11 @@ func TestPostgres_SyncBootstrapPAT(t *testing.T) {
 	const name = "env:UNIFIED_TOKEN"
 	real := tokenHash("real")
 
-	_, err := pg.CreatePAT(ctx, name, tokenHash("attacker1"), "developer", nil)
+	_, err := pg.CreatePAT(ctx, name, tokenHash("attacker1"), "developer", nil, "")
 	require.NoError(t, err)
-	_, err = pg.CreatePAT(ctx, name, tokenHash("attacker2"), "admin", nil)
+	_, err = pg.CreatePAT(ctx, name, tokenHash("attacker2"), "admin", nil, "")
 	require.NoError(t, err)
-	_, err = pg.CreatePAT(ctx, "other", tokenHash("other"), "developer", nil)
+	_, err = pg.CreatePAT(ctx, "other", tokenHash("other"), "developer", nil, "")
 	require.NoError(t, err)
 
 	removed, err := pg.SyncBootstrapPAT(ctx, name, real)
@@ -133,4 +133,60 @@ func TestPostgres_SyncBootstrapPAT(t *testing.T) {
 	removed, err = pg.SyncBootstrapPAT(ctx, name, real)
 	require.NoError(t, err)
 	assert.Empty(t, removed)
+}
+
+func TestPAT_CreatedBy(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	a, err := pg.CreatePAT(ctx, "a", tokenHash("a"), "admin", nil, "break-glass")
+	require.NoError(t, err)
+	assert.Equal(t, "break-glass", a.CreatedBy)
+	b, err := pg.CreateOwnedPAT(ctx, NewOwnedPAT{Name: "b", TokenHash: tokenHash("b"), Role: "admin",
+		Owner: PATOwner{Sub: "s"}, CreatedBy: "oidc:s"})
+	require.NoError(t, err)
+	assert.Equal(t, "oidc:s", b.CreatedBy)
+	c, err := pg.CreateEnrollPAT(ctx, NewEnrollPAT{Name: "c", TokenHash: tokenHash("c"), CreatedBy: "pat:" + a.ID})
+	require.NoError(t, err)
+	assert.Equal(t, "pat:"+a.ID, c.CreatedBy)
+	d, err := pg.CreatePAT(ctx, "d", tokenHash("d"), "admin", nil, "")
+	require.NoError(t, err)
+	assert.Empty(t, d.CreatedBy)
+	boot, err := pg.UpsertBootstrapPAT(ctx, "env:BOOT", tokenHash("boot"))
+	require.NoError(t, err)
+	assert.Empty(t, boot.CreatedBy)
+
+	got, err := pg.GetPATByHash(ctx, tokenHash("b"))
+	require.NoError(t, err)
+	assert.Equal(t, "oidc:s", got.CreatedBy)
+}
+
+// Migration 030 adds a nullable created_by; the down migration drops it and
+// the up migration restores it, keeping existing rows (NULL).
+func TestPAT_CreatedByMigrationUpDown(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	down, err := migrationsFS.ReadFile("migrations/030_pat_created_by.down.sql")
+	require.NoError(t, err)
+	up, err := migrationsFS.ReadFile("migrations/030_pat_created_by.up.sql")
+	require.NoError(t, err)
+	col := func() int {
+		var n int
+		require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
+			WHERE table_name = 'pats' AND column_name = 'created_by' AND is_nullable = 'YES' AND data_type = 'text'`).Scan(&n))
+		return n
+	}
+	require.Equal(t, 1, col())
+	_, err = pg.CreatePAT(ctx, "keep", tokenHash("keep"), "admin", nil, "break-glass")
+	require.NoError(t, err)
+	_, err = pg.pool.Exec(ctx, string(down))
+	require.NoError(t, err)
+	require.Equal(t, 0, col())
+	_, err = pg.pool.Exec(ctx, string(up))
+	require.NoError(t, err)
+	require.Equal(t, 1, col())
+	pats, err := pg.ListPATs(ctx)
+	require.NoError(t, err)
+	require.Len(t, pats, 1)
+	assert.Empty(t, pats[0].CreatedBy)
 }

@@ -39,7 +39,7 @@ func TestServerAuth_NameImpersonationIsNotBreakGlass(t *testing.T) {
 	s := NewServer(Config{Token: "real-bootstrap"}, pg)
 	t.Cleanup(s.Close)
 
-	_, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("attacker-token"), "developer", nil)
+	_, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("attacker-token"), "developer", nil, "")
 	require.NoError(t, err)
 
 	code, _ := adminOnly(t, pg, s, "attacker-token")
@@ -52,7 +52,7 @@ func TestServerAuth_RealBootstrapTokenIsAdmin(t *testing.T) {
 	t.Cleanup(s.Close)
 
 	// Stored role deliberately "developer": break-glass comes from the hash match.
-	_, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("real-bootstrap"), "developer", nil)
+	_, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("real-bootstrap"), "developer", nil, "")
 	require.NoError(t, err)
 
 	code, role := adminOnly(t, pg, s, "real-bootstrap")
@@ -62,7 +62,7 @@ func TestServerAuth_RealBootstrapTokenIsAdmin(t *testing.T) {
 
 func TestServerAuth_NoConfiguredTokenNoBreakGlass(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	_, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("some-token"), "developer", nil)
+	_, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("some-token"), "developer", nil, "")
 	require.NoError(t, err)
 
 	code, _ := adminOnly(t, pg, nil, "some-token")
