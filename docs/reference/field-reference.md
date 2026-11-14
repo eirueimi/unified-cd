@@ -79,10 +79,10 @@ readable via {{ .Params.ENV_LOCK_VALUE }}.
 
 ForeachSource is either a literal list (YAML sequence) or a template expression (YAML string).
 
-  in: [prod, staging, dev]                    → Literal
-  in: $envs                                   → Expr (JSON-array param reference)
-  in: "{{ .Params.envs | split \",\" }}"      → Expr (template)
-  in: "{{ .Steps.list.Outputs.envs | split \",\" }}" → Expr (step output reference)
+	in: [prod, staging, dev]                    → Literal
+	in: $envs                                   → Expr (JSON-array param reference)
+	in: "{{ .Params.envs | split \",\" }}"      → Expr (template)
+	in: "{{ .Steps.list.Outputs.envs | split \",\" }}" → Expr (step output reference)
 
 ### Semaphore
 
@@ -243,7 +243,7 @@ template's own steps instead.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `container` | string | no |  |
-| `image` | string | no |  |
+| `image` | string | no | Image is the scope's container image. It may use {{ .Params.X }} and {{ .Vars.X }}, expanded by the controller when the run is claimed (an undefined key fails the run); at apply time a templated value is only checked to parse as a template. |
 | `resources` | ResourceSpec | no |  |
 
 ### ResourceSpec
@@ -461,10 +461,10 @@ Key is the variable name accessible in templates as {{ .Foreach.key }}.
 
 ForeachSource is either a literal list (YAML sequence) or a template expression (YAML string).
 
-  in: [prod, staging, dev]                    → Literal
-  in: $envs                                   → Expr (JSON-array param reference)
-  in: "{{ .Params.envs | split \",\" }}"      → Expr (template)
-  in: "{{ .Steps.list.Outputs.envs | split \",\" }}" → Expr (step output reference)
+	in: [prod, staging, dev]                    → Literal
+	in: $envs                                   → Expr (JSON-array param reference)
+	in: "{{ .Params.envs | split \",\" }}"      → Expr (template)
+	in: "{{ .Steps.list.Outputs.envs | split \",\" }}" → Expr (step output reference)
 
 ### MatrixDef
 
@@ -542,7 +542,7 @@ template's own steps instead.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `container` | string | no |  |
-| `image` | string | no |  |
+| `image` | string | no | Image is the scope's container image. It may use {{ .Params.X }} and {{ .Vars.X }}, expanded by the controller when the run is claimed (an undefined key fails the run); at apply time a templated value is only checked to parse as a template. |
 | `resources` | ResourceSpec | no |  |
 
 ### ResourceSpec

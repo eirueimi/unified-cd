@@ -184,7 +184,7 @@
       "type": "object"
     },
     "ForeachSource": {
-      "description": "ForeachSource is either a literal list (YAML sequence) or a template expression (YAML string).\n\n  in: [prod, staging, dev]                    → Literal\n  in: $envs                                   → Expr (JSON-array param reference)\n  in: \"{{ .Params.envs | split \\\",\\\" }}\"      → Expr (template)\n  in: \"{{ .Steps.list.Outputs.envs | split \\\",\\\" }}\" → Expr (step output reference)",
+      "description": "ForeachSource is either a literal list (YAML sequence) or a template expression (YAML string).\n\n\tin: [prod, staging, dev]                    → Literal\n\tin: $envs                                   → Expr (JSON-array param reference)\n\tin: \"{{ .Params.envs | split \\\",\\\" }}\"      → Expr (template)\n\tin: \"{{ .Steps.list.Outputs.envs | split \\\",\\\" }}\" → Expr (step output reference)",
       "oneOf": [
         {
           "items": {
@@ -716,6 +716,7 @@
           "type": "string"
         },
         "image": {
+          "description": "Image is the scope's container image. It may use {{ .Params.X }} and\n{{ .Vars.X }}, expanded by the controller when the run is claimed (an\nundefined key fails the run); at apply time a templated value is only\nchecked to parse as a template.",
           "type": "string"
         },
         "resources": {
