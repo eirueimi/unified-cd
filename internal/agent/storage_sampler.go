@@ -55,11 +55,11 @@ func newStorageSampler(stat func(string) (uint64, uint64, error), interval time.
 	}
 }
 
-// run samples paths immediately and then every interval until ctx is done. It
+// run samples paths() immediately and then every interval (re-reading the list, as volumes come and go) until ctx is done. It
 // returns when ctx does; a measurement stuck in the kernel is abandoned, not
 // waited for, so the sampler's lifetime follows the agent's.
-func (s *storageSampler) run(ctx context.Context, paths []string) {
-	s.sampleAll(paths)
+func (s *storageSampler) run(ctx context.Context, paths func() []string) {
+	s.sampleAll(paths())
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 	for {
@@ -67,7 +67,7 @@ func (s *storageSampler) run(ctx context.Context, paths []string) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.sampleAll(paths)
+			s.sampleAll(paths())
 		}
 	}
 }

@@ -23,11 +23,10 @@ import (
 func newStorageTestAgent(t *testing.T, minFreeDisk uint64, stats func(path string) (free, total uint64, err error)) (*Agent, string) {
 	t.Helper()
 	ws := t.TempDir()
-	vm, err := NewVolumeManager(ws, []config.VolumeConfig{
-		{Name: "cache", Mode: VolumeModeExclusive},
-		{Name: "data", Mode: VolumeModeShared},
-	})
-	require.NoError(t, err)
+	vm := mustVolumeManager(t, ws,
+		exclusive("cache"),
+		shared("data"),
+	)
 	return &Agent{ID: "a1", Volumes: vm, MinFreeDisk: config.DiskThreshold{Bytes: minFreeDisk, Set: minFreeDisk > 0}, diskStatsFn: stats}, ws
 }
 

@@ -531,7 +531,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// abandoned measurement is not waited for.
 	sampler := newStorageSampler(a.statfs(), heartbeatInterval)
 	a.sampler = sampler // before any claim loop starts
-	go sampler.run(runCtx, a.storagePaths(wsBase))
+	go sampler.run(runCtx, func() []string { return a.storagePaths(wsBase) })
 
 	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot, nil, func() *api.AgentStorage { return a.storageReading(sampler, wsBase, host) })
 

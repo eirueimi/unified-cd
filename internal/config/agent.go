@@ -181,9 +181,9 @@ type VolumeConfig struct {
 	// time) or "shared" (any number of runs may hold it; unified-cd makes no
 	// write-safety guarantee).
 	Mode string `yaml:"mode"`
-	// Path is the host directory backing the volume. Host agent only; it must
-	// be absolute. Defaults to <workspaceDir>/volumes/<name>. It may not be,
-	// or sit under, a working<N> directory, which the workspace GC sweeps.
+	// Path is IGNORED since volumes became mutable (the host agent always uses
+	// <workspaceDir>/volumes/<name>); the field is removed with the whole
+	// volumes config.
 	Path string `yaml:"path"`
 	// Size is an advisory capacity such as "200Gi". The host agent measures
 	// usage and warns on overrun; it never enforces the limit. Required by the

@@ -48,11 +48,8 @@ func lockFiles(t *testing.T, base, volume string) []string {
 func twoProcessesOneBase(t *testing.T, cfgs ...config.VolumeConfig) (a, b *VolumeManager, base string) {
 	t.Helper()
 	base = t.TempDir()
-	var err error
-	a, err = NewVolumeManager(base, cfgs)
-	require.NoError(t, err)
-	b, err = NewVolumeManager(base, cfgs)
-	require.NoError(t, err)
+	a = mustVolumeManager(t, base, cfgs...)
+	b = mustVolumeManager(t, base, cfgs...)
 	asOtherProcess(a, 4101)
 	asOtherProcess(b, 4102)
 	return a, b, base

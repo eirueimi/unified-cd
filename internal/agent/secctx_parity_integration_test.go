@@ -153,8 +153,7 @@ func runSecCtxHostCase(t *testing.T, a *Agent, wsBase string, tc paritycases.Cas
 		vcfgs = append(vcfgs, config.VolumeConfig{Name: v.Name[0], Mode: "exclusive"})
 	}
 	if len(vcfgs) > 0 {
-		vm, err := NewVolumeManager(filepath.Join(caseBase, "vols"), vcfgs)
-		require.NoError(t, err)
+		vm := mustVolumeManager(t, filepath.Join(caseBase, "vols"), vcfgs...)
 		a.Volumes = vm
 	} else {
 		a.Volumes = nil

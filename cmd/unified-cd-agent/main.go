@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/agent"
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/config"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
 
@@ -193,10 +195,23 @@ func main() {
 	// so they come straight from the effective config. A bad declaration is a
 	// hard startup failure: advertising a volume the agent cannot back would
 	// strand every run routed to it.
-	volumes, err := agent.NewVolumeManager(resolvedWorkspaceDir, eff.Volumes)
+	volumes, err := agent.NewVolumeManager(resolvedWorkspaceDir)
 	if err != nil {
-		slog.Error("invalid volumes in agent config", "error", err)
+		slog.Error("create volume manager", "error", err)
 		os.Exit(1)
+	}
+	// Bridge until the controller delivers volumes (a later change removes the
+	// config field): apply the file config once. A path is ignored (volumes live
+	// at <workspaceDir>/volumes/<name>) and nothing is ever reclaimed.
+	bridged := make([]api.DesiredVolume, 0, len(eff.Volumes))
+	for _, v := range eff.Volumes {
+		bridged = append(bridged, api.DesiredVolume{Name: v.Name, Mode: v.Mode, Size: v.Size, ReclaimPolicy: dsl.ReclaimRetain})
+	}
+	for _, st := range volumes.Apply(bridged) {
+		if !st.Ready {
+			slog.Error("invalid volumes in agent config", "volume", st.Name, "reason", st.Reason)
+			os.Exit(1)
+		}
 	}
 
 	var labels []string

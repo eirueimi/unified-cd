@@ -144,11 +144,10 @@ func TestHeartbeat_ABlockedStatfsDoesNotStallBeatsOrShutdown(t *testing.T) {
 	defer srv.Close()
 
 	ws := t.TempDir()
-	vm, err := NewVolumeManager(ws, []config.VolumeConfig{
-		{Name: "cache", Mode: VolumeModeExclusive},
-		{Name: "data", Mode: VolumeModeShared},
-	})
-	require.NoError(t, err)
+	vm := mustVolumeManager(t, ws,
+		exclusive("cache"),
+		shared("data"),
+	)
 	cachePath := vm.PathOf("cache")
 	a := &Agent{
 		ID:            "a-hung",

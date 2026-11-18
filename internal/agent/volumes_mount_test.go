@@ -942,8 +942,7 @@ func volumeAgent(t *testing.T, s *volumeLoopServer, slots int, vols ...string) (
 	for _, v := range vols {
 		cfgs = append(cfgs, exclusive(v))
 	}
-	m, err := NewVolumeManager(ws, cfgs)
-	require.NoError(t, err)
+	m := mustVolumeManager(t, ws, cfgs...)
 	return &Agent{
 		ID:                    "v1",
 		Client:                NewClient(s.srv.URL, "tok"),

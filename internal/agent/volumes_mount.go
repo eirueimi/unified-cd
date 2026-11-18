@@ -288,7 +288,18 @@ func (m *VolumeManager) removeOurLink(link string) error {
 // ownsLinkTarget reports whether dest lies inside one of this agent's volume
 // directories. That is how a link is recognised as one this agent made: no
 // other link is ever removed or replaced.
+//
+// Every volume directory is <base>/volumes/<name>, so that root recognises a
+// link into any volume this agent has served: a retiring one, one that has
+// left the set since the link was made, and (for the startup sweep, which can
+// run before the first Apply) one an earlier process served. The live entries
+// are checked too, which keeps the check right if a volume ever lives elsewhere.
 func (m *VolumeManager) ownsLinkTarget(dest string) bool {
+	if pathWithinFold(filepath.Join(m.base, "volumes"), dest) {
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, v := range m.vols {
 		if pathWithinFold(v.path, dest) {
 			return true

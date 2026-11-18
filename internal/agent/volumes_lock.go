@@ -118,8 +118,7 @@ func (m *VolumeManager) markHeld(runID string, names []string) func() {
 	s := m.locks
 	var written []string
 	for _, n := range names {
-		v := m.vols[n]
-		if v == nil || v.mode != VolumeModeExclusive {
+		if m.ModeOf(n) != VolumeModeExclusive {
 			continue
 		}
 		dir := volumeLockDir(m.base, n)
