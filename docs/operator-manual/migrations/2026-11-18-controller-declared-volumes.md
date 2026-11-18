@@ -18,7 +18,7 @@ you upgrade them.
 | The same name could mean different modes or sizes on different agents. | A volume name is global: one mode and one size wherever it is delivered. |
 | `size` and `mode` per agent; `path:` (host agents) could point anywhere. | `spec.mode` and `spec.size` on the resource. The host path is always `<workspaceDir>/volumes/<name>`; there is no `path` field. |
 | Which agents have a volume = which configs list it. | `spec.agentSelector`: the labels an agent must all carry (same `key:value` syntax as a Job's `agentSelector`); empty means every agent. |
-| Removing a volume from a config never deleted data. | Deleting an `AgentVolume` (or narrowing its selector) never deletes data by default either. `spec.reclaimPolicy: Delete` makes the agent delete the directory or PVC after the volume leaves its set and no run holds it. The default is `Retain`. |
+| Removing a volume from a config never deleted data. | Deleting an `AgentVolume` (or narrowing its selector) never deletes data by default either. `spec.reclaimPolicy: Delete` makes the agent delete the directory or PVC after the volume has been absent from its set for 10 minutes and no run holds it. The default is `Retain`. |
 | A job naming an undeclared volume stayed `Queued` with `no agent declares volume "..."`. | The controller now says `no AgentVolume "..." is declared` when no resource exists, which is distinct from "declared, but no matching agent has it ready". |
 
 ## Upgrade order
@@ -106,6 +106,8 @@ first receives the `AgentVolume`.
   `AgentVolume`, and leaves it alone. It never resizes a PVC.
 - A volume whose claim name `<agentName>-<volume>` exceeds 63 characters is reported not ready; the
   others are unaffected.
+- `agentName` must now be a valid DNS label (lowercase letters, digits and `-`) even on an agent
+  that serves no volumes; any other value is refused at startup (see below).
 
 ## `reclaimPolicy`
 
@@ -114,15 +116,25 @@ first receives the `AgentVolume`.
 - **`Retain`**: when a volume leaves an agent's set (the `AgentVolume` is deleted, or its
   `agentSelector` stops matching that agent), the agent stops advertising it and leaves the data in
   place. Delete the directory or PVC yourself when you are finished with it.
-- **`Delete`**: the agent deletes the directory (host) or the PVC (k8s) after the volume has left
-  its set **and** no run holds it. A run that holds the volume when it leaves the set finishes
-  normally first. A restart between the removal and the reclaim still reclaims. A volume that comes
-  back into the set before the reclaim ran is not deleted, and the controller being unreachable
-  never causes a reclaim.
+- **`Delete`**: the agent deletes the directory (host) or the PVC (k8s) after the volume has been
+  absent from its set for **10 minutes** without interruption **and** no run holds it. A run that
+  holds the volume when it leaves the set finishes normally first. A restart between the removal
+  and the reclaim still reclaims, and keeps the 10-minute clock. A volume that comes back into the
+  set before the reclaim ran is not deleted (its clock starts again from zero the next time it
+  leaves), and the controller being unreachable never causes a reclaim.
 
 > **Warning:** with `reclaimPolicy: Delete`, a mistyped `agentSelector` edit deletes the data on
-> **every agent that stops matching**. Use `Delete` only for volumes you can rebuild, and leave the
-> default `Retain` while migrating.
+> **every agent that stops matching** unless it is reverted within 10 minutes. The same happens
+> after the grace for:
+>
+> - moving an `AgentVolume` from one AppSource to another (the old source prunes it before the new
+>   one adopts it);
+> - deleting an `AgentVolume` and re-applying it more than 10 minutes later;
+> - restoring the controller database to a state without the declaration (or starting a fresh
+>   controller database), which delivers an empty set to every agent;
+> - editing an `agentSelector`, or an agent's labels, so that the agent stops matching.
+>
+> Use `Delete` only for volumes you can rebuild, and leave the default `Retain` while migrating.
 
 See [Operations: Named-Volume Hygiene](../operations.md#named-volume-hygiene).
 
@@ -138,6 +150,13 @@ A Kubernetes agent:
 
 ```
 k8s agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)
+```
+
+A Kubernetes agent whose `agentName` is not a valid DNS label (the agent logs `invalid config` and
+exits; shown here for `agentName: Bad_Name`):
+
+```
+agentName "Bad_Name" is not usable in a PVC name: a lowercase RFC 1123 label must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character (e.g. 'my-name',  or '123-abc', regex used for validation is '[a-z0-9]([-a-z0-9]*[a-z0-9])?')
 ```
 
 A new agent against a controller that does not yet deliver volumes (logged once):

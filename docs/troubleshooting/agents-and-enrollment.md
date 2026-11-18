@@ -217,6 +217,24 @@ each matching agent in its heartbeat answer.
 `<agentName>-<volume>` is used as it is, so data is kept. Keep `agentName` as it was: a new
 `agentName` provisions new, empty PVCs and leaves the old ones behind.
 
+### A Kubernetes agent fails at startup with `agentName "..." is not usable in a PVC name`
+
+**Symptom:** a Kubernetes agent exits at startup, logging `invalid config` with (for
+`agentName: Bad_Name`):
+
+```
+agentName "Bad_Name" is not usable in a PVC name: a lowercase RFC 1123 label must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character (e.g. 'my-name',  or '123-abc', regex used for validation is '[a-z0-9]([-a-z0-9]*[a-z0-9])?')
+```
+
+**Cause:** `agentName` in the k8s-agent config prefixes every volume PVC name
+(`<agentName>-<volume>`), so it must be a DNS label. The check runs at startup even when the agent
+serves no volumes, so an agent that started before controller-declared volumes can be refused
+after the upgrade.
+
+**Fix:** set `agentName` to lowercase letters, digits and `-`, starting and ending with a letter or
+digit (or remove it if the agent never serves volumes). If PVCs named with the old value already
+hold data, rename carefully: a new `agentName` provisions new, empty PVCs.
+
 ### A Kubernetes agent reports a volume not ready (`GET /api/v1/agents`)
 
 **Symptom:** a volume appears in the agent's volume status with `ready: false` and one of these
@@ -227,6 +245,7 @@ invalid: claim name "ci-main-<volume>" exceeds 63 characters
 invalid: agentName is not set in the agent config; it prefixes the PVC names
 create PVC: persistentvolumeclaims "ci-main-go-cache" is forbidden: User "system:serviceaccount:unified-cd:unified-cd-k8s-agent" cannot create resource "persistentvolumeclaims" ...
 create PVC: annotate ci-main-go-cache with reclaim policy: ... forbidden
+create PVC: ci-main-go-cache is being deleted
 reclaim: persistentvolumeclaims "ci-main-go-cache" is forbidden: ... cannot delete resource "persistentvolumeclaims" ...
 waiting for runs holding it to finish before switching to shared
 ```
@@ -235,7 +254,9 @@ waiting for runs holding it to finish before switching to shared
 must be at most 63 characters (shorten the `AgentVolume` name, or `agentName`); `agentName` must be
 set in the k8s-agent config; the agent's Role needs `get`, `list`, `create`, `update`, `patch` and
 `delete` on `persistentvolumeclaims` (a Role from before controller-declared volumes lacks `patch`);
-and a `mode` change waits until no Pod holds the volume. The agent retries on every heartbeat.
+a PVC that is being deleted (it has a deletion timestamp, typically waiting for a Pod that still
+mounts it) is not used, and a fresh one is created once it is gone; and a `mode` change waits
+until no Pod holds the volume. The agent retries on every heartbeat.
 
 **Fix:** correct the cause. For the RBAC reasons, upgrade the Helm release (or apply the release
 bundle) so the Role in

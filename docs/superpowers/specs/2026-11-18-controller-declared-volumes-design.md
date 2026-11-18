@@ -164,6 +164,13 @@ Name of the kind (`AgentVolume`, to avoid confusion with a Job's
 - **One bad volume does not block the others.** A delivered volume that fails
   validation or provisioning is reported as not ready with its reason; the
   rest of the set is applied (my call).
+- **Reclaim** (5.8) never blocks the heartbeat: under the apply lock the
+  directory is renamed to `<base>/volumes/.reclaim-<name>-<unixnano>` (a
+  volume name is a DNS label and never starts with a dot, so this cannot
+  collide) and the record dropped; a single background goroutine deletes it.
+  A failed rename keeps the record and reports `reclaim: <error>` (retried on
+  the next apply). Leftover `.reclaim-*` directories are deleted in the
+  background at the next start.
 - If the controller is unreachable, the agent keeps its last known set (it
   never drops volumes because heartbeats fail). At startup, before the first
   successful heartbeat, the agent offers no volumes; once the set arrives it
@@ -183,7 +190,17 @@ Name of the kind (`AgentVolume`, to avoid confusion with a Job's
   is not provisioned; the agent reports it (log + the reason surfaced where
   the operator looks, see 5.6).
 - Several replicas sharing one `agentName` receive the same set and keep
-  using the PVC lock annotation as today.
+  using the PVC lock annotation as today. A reclaim (5.8) additionally
+  requires the `unified-cd/left-desired-at` annotation to be at least
+  `reclaimGrace` old and the lock annotations to name no holder within the
+  lock grace; every replica still desiring the volume clears the annotation,
+  so replicas whose sets diverge briefly do not flap-delete it. The delete is
+  conditional on the PVC's resourceVersion as read at the start of the apply.
+- An existing PVC with a deletion timestamp is not ready (`create PVC:
+  <claim> is being deleted`) and not offered; it is retried next beat.
+- The reclaim-policy annotation of an existing PVC of this agent is updated
+  (and `left-desired-at` cleared) for every delivered volume, even one that
+  fails validation or provisioning.
 - **Size or storageClassName change on an existing PVC:** warn only, as
   today; no PVC expansion and no new RBAC (my call). Document that resizing
   an existing PVC is done by the operator in Kubernetes.
@@ -228,10 +245,27 @@ Name of the kind (`AgentVolume`, to avoid confusion with a Job's
 
 - `spec.reclaimPolicy` is `Retain` (default when omitted) or `Delete`.
 - An agent **reclaims** a volume when the volume has left its desired set (the
-  declaration was deleted, or its `agentSelector` no longer matches the agent)
-  and no run holds it, and the last policy the agent knew for it is `Delete`.
-  Reclaim deletes the host directory `<workspaceDir>/volumes/<name>` with its
-  contents, or the k8s PVC `<agentName>-<name>`.
+  declaration was deleted, or its `agentSelector` no longer matches the agent),
+  has stayed absent from every delivered set for `reclaimGrace` (10 minutes)
+  without interruption, no run holds it, and the last policy the agent knew
+  for it is `Delete`. Reclaim deletes the host directory
+  `<workspaceDir>/volumes/<name>` with its contents, or the k8s PVC
+  `<agentName>-<name>`.
+- The absence clock starts when the agent first applies a delivered set
+  without the volume (host: `leftSetAt` in `.ucd-volume-reclaim.json`; k8s:
+  the PVC annotation `unified-cd/left-desired-at`), survives restarts, and is
+  cleared whenever the volume is delivered again. While waiting the agent
+  reports nothing new (the volume is not desired) and logs once
+  `volume left the set; reclaim scheduled after <grace>`.
+- The grace covers triggers that would otherwise delete data that returns
+  moments later; it does not cover ones that last longer: moving an
+  `AgentVolume` between AppSources (prune, then adopt), delete then re-apply
+  after more than the grace, restoring the controller DB to a state without
+  the declarations (or a fresh DB, which delivers `[]` fleet-wide), and
+  `agentSelector`/label edits. Docs list these.
+- A delivered volume whose `reclaimPolicy` is valid has its recorded policy
+  updated even when it fails to apply, so a `Delete`→`Retain` flip is never
+  lost.
 - Because a deleted declaration no longer reaches the agent, the agent keeps
   the last known policy of every volume it served in a small state file under
   its workspace (host) or as a PVC annotation (k8s), so a restart between the
@@ -239,29 +273,7 @@ Name of the kind (`AgentVolume`, to avoid confusion with a Job's
 - Never reclaimed: while the controller is unreachable (the last set is kept,
   so nothing has left the desired set); a volume whose policy was changed to
   `Retain` before it left the set; a volume that comes back into the desired
-  set before the reclaim ran.
-- A reclaim that fails (for example root-owned files left by a rootful
-  container runtime) is logged and reported in the agent's volume status with
-  its reason, and retried on the next heartbeat.
-- Docs must warn prominently that with `Delete`, a mistyped `agentSelector`
-  edit deletes the data on every agent that stops matching.
-
-### 5.8 Reclaim (GC) per declaration
-
-- `spec.reclaimPolicy` is `Retain` (default when omitted) or `Delete`.
-- An agent **reclaims** a volume when the volume has left its desired set (the
-  declaration was deleted, or its `agentSelector` no longer matches the agent)
-  and no run holds it, and the last policy the agent knew for it is `Delete`.
-  Reclaim deletes the host directory `<workspaceDir>/volumes/<name>` with its
-  contents, or the k8s PVC `<agentName>-<name>`.
-- Because a deleted declaration no longer reaches the agent, the agent keeps
-  the last known policy of every volume it served in a small state file under
-  its workspace (host) or as a PVC annotation (k8s), so a restart between the
-  removal and the reclaim still reclaims (my call).
-- Never reclaimed: while the controller is unreachable (the last set is kept,
-  so nothing has left the desired set); a volume whose policy was changed to
-  `Retain` before it left the set; a volume that comes back into the desired
-  set before the reclaim ran.
+  set before the reclaim ran; a volume absent for less than the grace.
 - A reclaim that fails (for example root-owned files left by a rootful
   container runtime) is logged and reported in the agent's volume status with
   its reason, and retried on the next heartbeat.

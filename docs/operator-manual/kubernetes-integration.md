@@ -474,12 +474,31 @@ is applied. Shorten the volume name or `agentName`.
   this agent) stops being advertised at once, even while a run holds it; the run finishes normally.
   With `reclaimPolicy: Retain` (the default) the PVC stays, logged once as left behind: removing a
   resource must not destroy tens of gigabytes. With **`reclaimPolicy: Delete` the agent deletes the
-  PVC**, but only after no Pod holds it (the agent re-checks the live Pods, by their volume labels
-  and by their PVC volumes, just before deleting) and only for a PVC named `<agentName>-<volume>`
-  that carries the owner label and the `Delete` annotation. It survives an agent restart: the
-  decision is read back from the annotation, not kept in memory. A failed delete is reported as
-  `reclaim: <error>` and retried. **This destroys the data.** A volume that returns to the set
-  before the PVC is deleted is never deleted.
+  PVC**, and only when all of these hold:
+  - the PVC is named `<agentName>-<volume>` and carries the owner label and the `Delete` annotation;
+  - the volume has been absent from the delivered set for **10 minutes** without interruption. The
+    first agent to see it missing stamps the annotation `unified-cd/left-desired-at` (and logs
+    `volume left the set; reclaim scheduled after 10m0s`); any replica that is still delivered the
+    volume removes the annotation on its next heartbeat, which restarts the clock, so replicas
+    sharing an `agentName` whose sets briefly disagree do not delete it;
+  - no live Pod holds it, judged from the Pod list (by the Pods' volume labels and their PVC
+    volumes) that the agent reads under its volume lock at the start of that heartbeat's apply;
+  - the PVC's lock annotations (`unified-cd/volume-held-by`, `unified-cd/volume-held-at`) name no
+    holder stamped within the lock grace (two minutes), which covers a run on another replica that
+    has taken the lock but not created its Pod yet.
+
+  The delete is conditional on the PVC's `resourceVersion` from that same read, so a lock taken or
+  an annotation cleared in the meantime cancels it until the next heartbeat. The decision survives
+  an agent restart: the policy and the clock are read back from the annotations, not kept in
+  memory. A failed delete is reported as `reclaim: <error>` and retried. **This destroys the
+  data.** A volume that returns to the set before the PVC is deleted is never deleted. The grace
+  does not help with a change that lasts longer than 10 minutes: moving an `AgentVolume` between
+  AppSources, deleting and re-applying it later, restoring the controller database to a state
+  without it, or an `agentSelector`/label edit (see
+  [Named-Volume Hygiene](operations.md#named-volume-hygiene)).
+- An existing PVC that is being deleted (it has a deletion timestamp, for example while a Pod
+  still mounts it) is not offered; the volume is reported not ready with
+  `create PVC: <claim> is being deleted` and the agent creates a fresh PVC once it is gone.
 - A `mode` change is applied only while no Pod holds the volume; until then the volume is not
   offered (status `waiting for runs holding it to finish before switching to <mode>`). The existing
   PVC's access mode is not changed (a warning says so): recreate the PVC if the new mode needs a
@@ -1356,7 +1375,8 @@ a Role that is a superset of this one (it adds `update` and `patch` on Pods, whi
 needs to mark a finished Pod idle; without them reuse silently never happens).
 
 **Roll the Role first and the agent image second.** The agent reads, lists and creates its PVCs on
-every heartbeat, patches them to record a volume's reclaim policy, updates them to take and release
+every heartbeat, patches them to record a volume's reclaim policy and when it left the set,
+updates them to take and release
 an exclusive volume's lock, and deletes the PVC of a `reclaimPolicy: Delete` volume. The Role that
 shipped before named volumes granted only `create` and `delete` on `persistentvolumeclaims`, and
 the one before controller-declared volumes lacked `patch`. The `persistentvolumeclaims` rule below
@@ -1375,10 +1395,11 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     # Only needed when the controller delivers AgentVolumes: the agent reads and
-    # creates its PVCs, records the reclaim policy (patch), takes/releases an
+    # creates its PVCs, records the reclaim policy and the left-set time (patch), takes/releases an
     # exclusive volume by updating the claim's `unified-cd/volume-held-by`
     # annotation, and deletes the PVC of a `reclaimPolicy: Delete` volume
-    # (only one it created, once it left the set and no Pod holds it).
+    # (only one it created, once it has been out of the set for 10 minutes and
+    # no Pod or lock holds it).
     verbs: ["create", "get", "list", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

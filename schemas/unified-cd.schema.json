@@ -44,7 +44,7 @@
           "type": "string"
         },
         "reclaimPolicy": {
-          "description": "ReclaimPolicy is \"Retain\" (the default) or \"Delete\". With Delete the\nagent removes the volume's data after the volume leaves its desired set\nand no run holds it.",
+          "description": "ReclaimPolicy is \"Retain\" (the default) or \"Delete\". With Delete the\nagent removes the volume's data once the volume has been absent from its\ndesired set for 10 minutes without interruption and no run holds it.",
           "type": "string"
         },
         "size": {

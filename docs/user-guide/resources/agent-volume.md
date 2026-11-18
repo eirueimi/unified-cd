@@ -26,9 +26,20 @@ spec:
 | `spec.size` | string | Yes | Volume size as a Kubernetes quantity such as `200Gi`. Must be positive. |
 | `spec.storageClassName` | string | No | Storage class used for the PVC on Kubernetes agents. |
 | `spec.agentSelector` | []string | No | Labels in the same `key:value` syntax as a Job's `agentSelector`. An agent offers the volume only when it carries every listed label. Empty means every agent. Entries must not be empty strings. |
-| `spec.reclaimPolicy` | string | No | `Retain` (default) keeps the volume's data when the volume leaves an agent's desired set. `Delete` removes the data after the volume leaves the set and no run holds it. |
+| `spec.reclaimPolicy` | string | No | `Retain` (default) keeps the volume's data when the volume leaves an agent's desired set. `Delete` removes the data once the volume has been absent from the agent's set for 10 minutes without interruption and no run holds it. |
 
 > **Warning:** with `reclaimPolicy: Delete`, a mistyped `agentSelector` that stops matching an agent removes that agent's data for the volume. Use `Retain` unless the data is disposable.
+>
+> The 10-minute grace only covers changes that are undone within it. Each of these deletes the data on every affected agent once the grace has passed:
+>
+> - moving an `AgentVolume` from one AppSource to another (the old source prunes it before the new
+>   one adopts it);
+> - deleting an `AgentVolume` and re-applying it more than 10 minutes later;
+> - restoring the controller database to a state without the declaration (or starting a fresh
+>   controller database), which delivers an empty set to every agent;
+> - editing an `agentSelector`, or an agent's labels, so that the agent stops matching.
+>
+> A volume that comes back into the agent's set within the grace keeps its data, and its clock starts again from zero the next time it leaves.
 
 Unknown fields are rejected.
 
@@ -38,7 +49,9 @@ Unknown fields are rejected.
   `agentSelector` stops matching an agent), applies to **new claims at the next heartbeat** (about
   15 seconds); agents need no restart.
 - A **mode switch** and a **reclaim** (`reclaimPolicy: Delete`) are applied only once no run holds
-  the volume. A run that holds it finishes normally first.
+  the volume. A run that holds it finishes normally first. A reclaim also waits until the volume
+  has been absent from the agent's set for 10 minutes in a row (the agent logs
+  `volume left the set; reclaim scheduled after 10m0s`).
 - A host agent offers no volumes until its first successful heartbeat, which it sends immediately
   at startup; while the controller is unreachable it keeps its last known set.
 

@@ -1150,7 +1150,8 @@ last.
 **Things to know.**
 
 - **Removing an `AgentVolume` deletes nothing by default.** The agent stops advertising it and the
-  directory stays on disk, unless the resource set `spec.reclaimPolicy: Delete`.
+  directory stays on disk, unless the resource set `spec.reclaimPolicy: Delete` (then the directory
+  is deleted once the volume has been out of the agent's set for 10 minutes and no run holds it).
 - **Restart recovery.** A host agent treats every volume as free at startup (it lost the runs that
   held them; the controller's lost-claim reconcile handles those runs) and sweeps any volume links a
   crashed native run left behind, and the holder records of processes that are gone.

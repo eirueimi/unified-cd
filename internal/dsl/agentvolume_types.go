@@ -23,7 +23,7 @@ type AgentVolumeSpec struct {
 	// offer this volume. Empty means every agent.
 	AgentSelector []string `yaml:"agentSelector,omitempty" json:"agentSelector,omitempty"`
 	// ReclaimPolicy is "Retain" (the default) or "Delete". With Delete the
-	// agent removes the volume's data after the volume leaves its desired set
-	// and no run holds it.
+	// agent removes the volume's data once the volume has been absent from its
+	// desired set for 10 minutes without interruption and no run holds it.
 	ReclaimPolicy string `yaml:"reclaimPolicy,omitempty" json:"reclaimPolicy,omitempty"`
 }
