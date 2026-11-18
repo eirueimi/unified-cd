@@ -396,8 +396,8 @@ ID started twice during a restart.
 
 **Fix**
 
-Stop the second process, or give each agent its own `workspaceDir` (or its own explicit `path` for
-the volume). If no other agent is running, the record is left over from a crash on another host or
+Stop the second process, or give each agent its own `workspaceDir` (the volume directory is
+`<workspaceDir>/volumes/<name>`). If no other agent is running, the record is left over from a crash on another host or
 a container with a changed hostname: remove the file the message names. A record of a process on
 the same host that is no longer running is swept silently at startup and ignored at reservation, so
 it never produces this warning.
@@ -469,8 +469,8 @@ path with no `cmd.exe` metacharacters (such as `&`, `^`, `%`). Both failed.
 
 **Fix**
 
-Enable Developer Mode (or run the agent with the symlink privilege), or put the volume's `path`
-and the workspace on an NTFS volume and rename any directory containing a metacharacter. The error
+Enable Developer Mode (or run the agent with the symlink privilege), or put the volume's directory
+(`<workspaceDir>/volumes/<name>`) and the workspace on an NTFS volume and rename any directory containing a metacharacter. The error
 carries both underlying causes; read them.
 
 ## Run fails: volume is shared and cannot be mounted at the workspace root
@@ -493,6 +493,8 @@ each other.
 
 Set `spec.mode: exclusive` on the volume's `AgentVolume` and apply it (agents pick the change up on
 their next heartbeat; no restart), or mount the volume at a subdirectory (`mountPath: .ucd-cache/go`).
+The mode switch is deferred while any run holds the volume: new claims do not get it until the
+holder releases, and then it is offered with the new mode.
 
 ## A shared volume never binds (RWX unavailable)
 

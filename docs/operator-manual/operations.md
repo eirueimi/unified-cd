@@ -200,6 +200,11 @@ does not delete the data either, unless the resource sets `reclaimPolicy: Delete
 > rootful container runtime) is reported in the agent's `volumeStatus` and retried on the next
 > heartbeat.
 
+A change to `spec.mode`, a removal or a re-selection takes effect for new claims at the agent's next
+heartbeat (about 15 seconds); a mode switch and a reclaim are applied only once no run holds the
+volume. A host agent offers no volumes until its first successful heartbeat, which it sends
+immediately at startup.
+
 `reclaimPolicy` is `Retain` by default, which keeps the data on disk (or the PVC in the cluster)
 after the volume leaves an agent's set; you remove it yourself when you are done with it. A
 controller that is unreachable never causes a reclaim: the agent keeps its last known set.

@@ -529,7 +529,7 @@ Caveats:
   key), and after the pod is evicted or deleted. Idle eviction is controlled by `poolIdleTimeout`
   (unset = never evicted); idle pods and their claims survive an agent restart.
 - A `ReadWriteOnce` claim pins the pooled pod, and therefore its runs, to one node.
-- `reuse` is rejected together with `spec.volumes` (agent-owned [named volumes](volumes.md)); this
+- `reuse` is rejected together with `spec.volumes` ([named volumes](volumes.md)); this
   pattern uses a pod-level volume from `podTemplate.spec.volumes` instead.
 
 ---

@@ -2,7 +2,7 @@
 
 Runnable, self-contained examples for unified-cd. Each file applies cleanly on its own and its
 trigger works without applying any other file first (`jobs/volumes.yaml` also needs volumes
-declared in an agent's config; see Notes).
+declared with `resources/agentvolume.yaml`; see Notes).
 
 ## Layout
 

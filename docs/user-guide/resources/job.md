@@ -42,7 +42,7 @@ spec:
                                    # this run; an ordinary workspace is always emptied (see Volumes)
   volumes:                        # named volumes to mount (kind: AgentVolume); the only data that survives
                                    # between runs (see user-guide/writing-jobs/volumes.md)
-    - name: <string | [string]>   # a volume the AGENT declares; a list = candidates, the agent
+    - name: <string | [string]>   # a volume an AgentVolume declares; a list = candidates, the agent
                                    # picks a free one; may contain {{ .Params.X }}
       as: <string>                # handle steps use ($UNIFIED_VOLUME_<AS>); required for a list
                                    # or a templated name, otherwise defaults to the name

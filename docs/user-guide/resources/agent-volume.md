@@ -32,6 +32,16 @@ spec:
 
 Unknown fields are rejected.
 
+### When a change takes effect
+
+- A change to `spec.mode`, or a removal or re-selection (the `AgentVolume` is deleted or its
+  `agentSelector` stops matching an agent), applies to **new claims at the next heartbeat** (about
+  15 seconds); agents need no restart.
+- A **mode switch** and a **reclaim** (`reclaimPolicy: Delete`) are applied only once no run holds
+  the volume. A run that holds it finishes normally first.
+- A host agent offers no volumes until its first successful heartbeat, which it sends immediately
+  at startup; while the controller is unreachable it keeps its last known set.
+
 ### Applying and managing
 
 ```bash

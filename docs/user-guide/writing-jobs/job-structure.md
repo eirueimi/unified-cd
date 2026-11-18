@@ -77,7 +77,7 @@ between runs, mount a named volume that an operator declares on the controller (
 ```yaml
 spec:
   volumes:
-    - name: go-cache            # declared in the agent's config, not here
+    - name: go-cache            # declared by a kind: AgentVolume, not here
       mountPath: .ucd-cache/go  # relative to the workspace; "." makes the volume the workspace
   cleanWorkspace: false         # true empties a volume mounted at "." before this run
 ```
