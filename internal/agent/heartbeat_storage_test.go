@@ -238,7 +238,7 @@ func TestStartHeartbeat_SendsStorageFromProvider(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	storage := &api.AgentStorage{AgentName: "host-1", Workspace: &api.FilesystemStats{FreeBytes: 1, TotalBytes: 2}}
-	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return []string{} }, nil, func() *api.AgentStorage { return storage })
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, BuildHeartbeat(func() []string { return []string{} }, nil, func() *api.AgentStorage { return storage }), nil)
 	defer func() { cancel(); <-done }()
 
 	require.Eventually(t, func() bool {

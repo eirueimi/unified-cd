@@ -317,15 +317,8 @@ minFreeDisk: "1%"              # stop claiming when free space on workspaceDir's
 workspaceRetentionDays: 0      # >0 opts in to the periodic GC of workspace directories an agent crash left behind (0 = disabled, default)
 logLevel: info
 
-# Agent-owned named volumes (file-only: no flag or environment variable). The only thing
-# that survives between runs; see "Agent volumes" below.
-volumes:
-  - name: unity-main
-    mode: exclusive
-    path: /var/lib/unified-cd/volumes/unity-main   # IGNORED: volumes live at <workspaceDir>/volumes/<name>
-    size: 200Gi                                    # advisory
-  - name: go-cache
-    mode: shared
+# Named volumes are not configured here: declare them on the controller with kind: AgentVolume.
+# A "volumes:" key in this file makes the agent refuse to start; see "Agent volumes" below.
 ```
 
 VM agents authenticate only via enrollment; there is no `token` config field.
@@ -436,22 +429,19 @@ or `--workspace-retention-days` flag always wins.
 
 ### Agent volumes
 
-`volumes` declares the agent-owned [named volumes](../user-guide/writing-jobs/volumes.md) this
-agent advertises and jobs mount with `spec.volumes`. It is **file-only**: unlike every scalar
-setting above it has no command-line flag and no environment variable, because a list of structured
-entries has no sensible flag or environment spelling. Each entry:
+A host agent has no `volumes` setting. Named volumes are declared on the controller with the
+[`AgentVolume`](../user-guide/resources/agent-volume.md) resource, and each agent receives the set
+that matches its labels in its heartbeat answer (the first heartbeat is sent immediately at startup).
+The agent provisions each volume at `<workspaceDir>/volumes/<name>`; the controller's `spec.mode`,
+`spec.size` and `spec.agentSelector` replace the former per-agent entries. A config file that still has
+a top-level `volumes:` key (with entries, or an empty list) is refused at startup with:
 
-| Field | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `name` | string | Yes | — | What jobs call the volume. One path segment (`.`, `..` and names containing `/` or `\` are rejected); matched exactly. A job whose volume name has characters outside letters, digits, `-` and `_` must give it a clean `as:` alias. |
-| `mode` | string | Yes | — | `exclusive`: at most one run on this agent holds it at a time (a second run waits). `shared`: any number of runs may hold it; unified-cd makes no write-safety guarantee. A `shared` volume cannot be mounted at the workspace root. |
-| `path` | string | No | — | **Ignored.** Volumes live at `<workspaceDir>/volumes/<name>`; a configured `path` is dropped and a warning naming it is logged at startup. |
-| `size` | string | No | — | Advisory capacity (`200Gi`). The agent warns when a volume exceeds it after a run and never enforces it. |
-| `storageClassName` | string | No | — | Kubernetes only; ignored by a host agent. |
+```
+agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)
+```
 
-The agent refuses to start on an invalid entry (`invalid volumes in agent config`, naming the volume). Dropping a volume from the
-list stops it being advertised and deletes nothing. See [Agent Labels and Routing: Named
-volumes](../operator-manual/agents.md#named-volumes) and [Operations: Named-Volume
+Remove the key and apply an `AgentVolume` for each volume instead. See [Agent Labels and Routing:
+Named volumes](../operator-manual/agents.md#named-volumes) and [Operations: Named-Volume
 Hygiene](../operator-manual/operations.md#named-volume-hygiene).
 
 ### Job isolation notes

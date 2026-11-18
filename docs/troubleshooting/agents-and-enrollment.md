@@ -179,18 +179,37 @@ If the first enrollment fails (for example the agent cannot read the instance me
 body ID. Start the correct agent identity and do not share credential files.
 The controller also preserves the immutable claimed-run ownership check.
 
-### An agent fails at startup with a `volume ...` configuration error
+### A host agent fails at startup with `agent config: "volumes" is no longer supported`
 
-**Symptom:** a host agent or Kubernetes agent whose config declares `volumes:` exits at startup
-with one of:
+**Symptom:** a host agent exits at startup with:
+
+```
+agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)
+```
+
+**Cause:** the agent config file still has a top-level `volumes:` key (with entries, or as an empty
+list). Named volumes are declared on the controller with `kind: AgentVolume` and delivered to each
+matching agent in its heartbeat answer.
+
+**Fix:** delete the `volumes:` key from the agent config, apply an `AgentVolume` for each volume
+(`unified-cd apply -f volume.yaml`), and restart the agent. An existing directory at
+`<workspaceDir>/volumes/<name>` is used as it is, so data is kept; a `path:` that pointed elsewhere
+was already ignored.
+
+**Related warning:** if the agent logs `controller does not deliver AgentVolumes; upgrade the
+controller`, the controller answered its heartbeat with an empty 204 (an older controller). The agent
+offers no volumes until the controller is upgraded; it logs this once per start.
+
+### A Kubernetes agent fails at startup with a `volume ...` configuration error
+
+**Symptom:** a Kubernetes agent whose config declares `volumes:` exits at startup with one of:
 
 ```
 volume "go-cache": mode must be "exclusive" or "shared", got ""
-volume "unity-main": path /data/ws/working0/unity is under /data/ws/working0, which the workspace GC sweeps (it removes aged directories below /data/ws/working*); choose a path outside any working* directory
 duplicate volume name "go-cache" in the agent config
 ```
 
-and, on a Kubernetes agent:
+and:
 
 ```
 agentName is required when volumes are declared: it prefixes the PVC names, and it must stay the same across restarts or each restart would provision empty volumes
@@ -202,11 +221,10 @@ volume "go-cache": look up PVC ci-main-go-cache: persistentvolumeclaims "ci-main
 
 **Cause:** the agent validates its volume list before it registers, so a bad entry is a startup
 failure rather than a volume that quietly never appears. `mode` is required (`exclusive` or
-`shared`). A host path must be absolute and must not be, or sit under, a `working*` directory
-(the workspace GC sweeps those) or the agent's `detached` and dot-prefixed directories. On Kubernetes
+`shared`). On Kubernetes
 a volume name must be a DNS label (lower-case letters, digits and `-`), because the PVC is named
-`<agentName>-<volume>` and that name is at most 63 characters; a name that is legal on a host
-agent can therefore be illegal here. The last error is RBAC: the agent's Role needs `get`, `list`,
+`<agentName>-<volume>` and that name is at most 63 characters; a name that is legal elsewhere
+can therefore be illegal here. The last error is RBAC: the agent's Role needs `get`, `list`,
 `create` and `update` on `persistentvolumeclaims`, and an older Role carried only `create` and
 `delete`.
 

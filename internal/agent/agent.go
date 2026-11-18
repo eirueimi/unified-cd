@@ -117,11 +117,21 @@ type Agent struct {
 	// an explicit opt-in. Host-only.
 	WorkspaceRetentionDays int
 
-	// Volumes owns the agent's declared named volumes (the `volumes` list of
-	// the agent config file). cmd/unified-cd-agent builds it with
-	// NewVolumeManager before Run. Nil means the agent declares none.
+	// Volumes owns the agent's named volumes: the set of AgentVolumes the
+	// controller delivers in each heartbeat answer (see onHeartbeat).
+	// cmd/unified-cd-agent builds it with NewVolumeManager before Run. Nil
+	// means the agent offers none and ignores delivered sets.
 	// Host-only: the k8s agent provisions PVCs instead.
 	Volumes *VolumeManager
+
+	// volumeStatus is what the last Apply reported, sent on the next beat.
+	// volumesKnown becomes true after the first Apply: from then on the claim
+	// says its (possibly empty) volume list is authoritative. volumeRevision
+	// is the last delivered set's revision, for the "changed" log line.
+	volumeMu       sync.Mutex
+	volumeStatus   []api.AgentVolumeStatus
+	volumesKnown   bool
+	volumeRevision string
 
 	// diskStatsFn reports available and total bytes for the filesystem
 	// containing the given path. Defaults to diskStats (the platform-specific
@@ -200,6 +210,69 @@ func (a *Agent) statfs() func(string) (uint64, uint64, error) {
 		return a.diskStatsFn
 	}
 	return diskStats
+}
+
+// buildHeartbeat makes the per-beat request: the common providers plus the
+// status the last Apply reported.
+func (a *Agent) buildHeartbeat(activeRunIDs func() []string, storage func() *api.AgentStorage) func() *api.HeartbeatRequest {
+	base := BuildHeartbeat(activeRunIDs, nil, storage)
+	return func() *api.HeartbeatRequest {
+		req := base()
+		if req == nil {
+			return nil
+		}
+		a.volumeMu.Lock()
+		req.VolumeStatus = append([]api.AgentVolumeStatus(nil), a.volumeStatus...)
+		a.volumeMu.Unlock()
+		return req
+	}
+}
+
+// onHeartbeat applies the AgentVolumes a heartbeat answer delivered. It is
+// called only with a successfully decoded answer (StartHeartbeat guarantees
+// that): Apply with an empty set reclaims every Delete volume, so it must never
+// run on an error, an empty 204, or before the first answer.
+func (a *Agent) onHeartbeat(resp *api.HeartbeatResponse) {
+	if resp == nil || a.Volumes == nil {
+		return
+	}
+	statuses := a.Volumes.Apply(resp.Volumes)
+	a.volumeMu.Lock()
+	changed := resp.Revision != a.volumeRevision
+	a.volumeRevision = resp.Revision
+	a.volumeStatus = statuses
+	a.volumesKnown = true
+	a.volumeMu.Unlock()
+	if changed {
+		slog.Info("volume set changed", "revision", resp.Revision, "volumes", len(resp.Volumes))
+	}
+}
+
+// claimRequest says what this agent is holding (BusyVolumes) and offers
+// (Volumes). VolumesKnown stays false until the first heartbeat answer was
+// applied, so a claim sent before then (or while the controller is down after a
+// restart) cannot wipe the volume list the controller stored for this agent.
+func (a *Agent) claimRequest() api.ClaimRequest {
+	busy := a.Volumes.Busy()
+	if a.sampler != nil {
+		gated := a.volGate.names(a.Volumes, a.sampler, a.MinFreeDisk)
+		// Hand the same list to the volume manager, so an entry that
+		// lists a gated and a healthy volume is assigned the healthy one.
+		a.Volumes.SetGated(gated)
+		busy = withGated(busy, gated)
+	}
+	return api.ClaimRequest{
+		BusyVolumes:  busy,
+		Volumes:      a.Volumes.Names(),
+		VolumesKnown: a.isVolumesKnown(),
+		Capabilities: a.capabilities(),
+	}
+}
+
+func (a *Agent) isVolumesKnown() bool {
+	a.volumeMu.Lock()
+	defer a.volumeMu.Unlock()
+	return a.volumesKnown
 }
 
 // storagePaths lists every filesystem the heartbeat reports on: the workspace
@@ -411,9 +484,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		Version:      Version,
 		Env:          collectEnv(a.ExposeEnv),
 		Capabilities: caps,
-		// The controller routes runs on this list and keeps no volume state
-		// of its own, so it is whatever the operator declared.
-		Volumes: a.Volumes.Names(),
+		// No volumes and VolumesKnown false: the controller has not told this
+		// agent its set yet; the first heartbeat follows immediately.
 	}
 	var registerErr error
 	retryUntilSuccess(ctx, func(ctx context.Context) error {
@@ -527,7 +599,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.sampler = sampler // before any claim loop starts
 	go sampler.run(runCtx, func() []string { return a.storagePaths(wsBase) })
 
-	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot, nil, func() *api.AgentStorage { return a.storageReading(sampler, wsBase, host) })
+	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, a.buildHeartbeat(activeRuns.Snapshot, func() *api.AgentStorage { return a.storageReading(sampler, wsBase, host) }), a.onHeartbeat)
 
 	// gcDone is closed once workspaceGCLoop has fully stopped, so Run can join
 	// it (like hbDone) and guarantee no sweep outlives Run. nil when the GC is
@@ -703,19 +775,7 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			// A volume below minFreeDisk is listed as busy too, so the controller
 			// skips only the runs that need it. Computed once per iteration from
 			// the sampler, never by an inline statfs on a volume.
-			busy := a.Volumes.Busy()
-			if a.sampler != nil {
-				gated := a.volGate.names(a.Volumes, a.sampler, a.MinFreeDisk)
-				// Hand the same list to the volume manager, so an entry that
-				// lists a gated and a healthy volume is assigned the healthy one.
-				a.Volumes.SetGated(gated)
-				busy = withGated(busy, gated)
-			}
-			resp, err = a.Client.Claim(claimCtx, a.ID, "30s", a.Labels, api.ClaimRequest{
-				BusyVolumes:  busy,
-				Volumes:      a.Volumes.Names(),
-				Capabilities: a.capabilities(),
-			})
+			resp, err = a.Client.Claim(claimCtx, a.ID, "30s", a.Labels, a.claimRequest())
 		}
 		if err != nil {
 			slog.Error("claim", "error", err, "slot", slot, "detached", detached)

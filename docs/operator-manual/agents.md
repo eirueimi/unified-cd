@@ -1130,34 +1130,16 @@ and where it appears, never how large it is or where it lives. The job-author vi
 operator's side for the **standard (host) agent**. For the Kubernetes agent see [Named volumes on
 Kubernetes](kubernetes-integration.md#named-volumes).
 
-Declare volumes in the agent's **config file**. The list is file-only: it has no command-line flag
-and no environment variable.
+Declare volumes on the controller with the [`AgentVolume`](../user-guide/resources/agent-volume.md)
+resource (`spec.mode`, `spec.size`, optional `spec.agentSelector` to limit which agents get it). An
+agent receives its set in each heartbeat answer and provisions every volume at
+`<workspaceDir>/volumes/<name>`; there is no per-agent volume configuration, and a `volumes:` key in
+the agent config file makes the agent refuse to start (see [the troubleshooting
+entry](../troubleshooting/agents-and-enrollment.md#a-host-agent-fails-at-startup-with-agent-config-volumes-is-no-longer-supported)).
+The agent keeps its last known set while the controller is unreachable. A volume's directory is
+never deleted for going unused.
 
-```yaml
-# unified-agent.yaml
-volumes:
-  - name: unity-main
-    mode: exclusive
-    path: /var/lib/unified-cd/volumes/unity-main   # IGNORED: volumes live at <workspaceDir>/volumes/<name>
-    size: 200Gi                                    # advisory
-  - name: go-cache
-    mode: shared
-```
-
-| Field | Required | Meaning |
-|---|---|---|
-| `name` | Yes | What jobs call it. One path segment: `.`, `..` and names containing `/` or `\` are rejected. Names are matched exactly. |
-| `mode` | Yes | `exclusive`: at most one run on this agent holds the volume at a time. `shared`: any number of runs may hold it, with **no** write-safety guarantee from unified-cd. |
-| `path` | No | **Ignored.** Volumes live at `<workspaceDir>/volumes/<name>`; a configured `path` is dropped and a warning naming it is logged at startup. |
-| `size` | No | Advisory capacity such as `200Gi`. After each run the agent measures the volume and warns when it exceeds this; it **never enforces** it, because per-directory quotas are not portable across operating systems without root. The free space of the filesystem under the volume is on `/metrics`: see [Watching agent disk headroom](operations.md#watching-agent-disk-headroom). |
-| `storageClassName` | — | Kubernetes only; ignored on a host agent. |
-
-The agent refuses to start on a bad entry: a missing or unknown `mode`, a duplicate `name`, or a
-non-positive `size`. A volume always lives at `<workspaceDir>/volumes/<name>`, which the workspace GC
-never sweeps (it only removes aged `working*` directories), so a volume is never deleted for going
-unused.
-
-**How routing works.** The agent advertises its volume names at registration (the `volumes` field
+**How routing works.** The agent advertises the names of its ready volumes (the `volumes` field
 of `GET /api/v1/agents`). A run that mounts volumes is routed only to an agent that declares at
 least one candidate for *every* entry. A volume that is declared but busy does not block routing:
 the run is claimed and waits for it, holding a concurrency slot (the controller's busy filter makes
@@ -1167,8 +1149,8 @@ last.
 
 **Things to know.**
 
-- **Removing a volume from the config deletes nothing.** The agent stops advertising it and the
-  directory stays on disk. Removing a line from a config file must not destroy tens of gigabytes.
+- **Removing an `AgentVolume` deletes nothing by default.** The agent stops advertising it and the
+  directory stays on disk, unless the resource set `spec.reclaimPolicy: Delete`.
 - **Restart recovery.** A host agent treats every volume as free at startup (it lost the runs that
   held them; the controller's lost-claim reconcile handles those runs) and sweeps any volume links a
   crashed native run left behind, and the holder records of processes that are gone.

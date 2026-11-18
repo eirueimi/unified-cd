@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -150,21 +153,18 @@ type AgentConfig struct {
 	// the GC only reclaims what an agent crash left behind; it is an explicit
 	// opt-in. Host-only.
 	WorkspaceRetentionDays int `yaml:"workspaceRetentionDays"`
-
-	// Volumes declares the agent-owned named volumes this agent advertises and
-	// jobs may mount (spec.volumes). A volume name exists once per agent: two
-	// agents declaring the same name hold two independent copies.
-	//
-	// This field is FILE-ONLY. Unlike every scalar setting above it has no
-	// command-line flag and no environment variable, because a list of
-	// structured entries has no sensible flag or env spelling; AgentEffective
-	// copies it from the config file and nowhere else.
-	Volumes []VolumeConfig `yaml:"volumes"`
 }
 
-// VolumeConfig declares one named volume in the agent config file. Name and
-// Mode are the contract a job sees; Path, Size and StorageClassName are the
-// operator-only implementation and may differ between agents.
+// errVolumesKeyRemoved is returned for a host agent config file that still has
+// a top-level "volumes" key. Volumes are declared on the controller now.
+var errVolumesKeyRemoved = errors.New(`agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)`)
+
+// VolumeConfig declares one named volume in the Kubernetes agent config file.
+// The host agent no longer reads volumes from its config (see
+// errVolumesKeyRemoved); only the Kubernetes agent still uses this type, until
+// it too receives its volumes from the controller. Name and Mode are the
+// contract a job sees; Size and StorageClassName are the operator-only
+// implementation and may differ between agents.
 //
 //	volumes:
 //	  - name: unity-main
@@ -181,9 +181,8 @@ type VolumeConfig struct {
 	// time) or "shared" (any number of runs may hold it; unified-cd makes no
 	// write-safety guarantee).
 	Mode string `yaml:"mode"`
-	// Path is IGNORED since volumes became mutable (the host agent always uses
-	// <workspaceDir>/volumes/<name>); the field is removed with the whole
-	// volumes config.
+	// Path is ignored (volumes live at <workspaceDir>/volumes/<name> on a
+	// host agent).
 	Path string `yaml:"path"`
 	// Size is an advisory capacity such as "200Gi". The host agent measures
 	// usage and warns on overrun; it never enforces the limit. Required by the
@@ -203,8 +202,22 @@ func LoadAgent(path string) (*AgentConfig, error) {
 	}
 	defer f.Close()
 
+	raw, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("read agent config %s: %w", path, err)
+	}
+	// Checked before the strict decode, whose generic "field volumes not found"
+	// would not tell the operator where volumes went. Any value counts: a list
+	// with entries, an empty list, or a bare key.
+	var top map[string]yaml.Node
+	if yaml.Unmarshal(raw, &top) == nil {
+		if _, ok := top["volumes"]; ok {
+			return nil, errVolumesKeyRemoved
+		}
+	}
+
 	var cfg AgentConfig
-	dec := yaml.NewDecoder(f)
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parse agent config %s: %w", path, err)
@@ -361,11 +374,6 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.WorkspaceRetentionDays != 0 {
 		eff.WorkspaceRetentionDays = file.WorkspaceRetentionDays
-	}
-	// File-only: there is no env var or flag to merge with (see
-	// AgentConfig.Volumes).
-	if len(file.Volumes) > 0 {
-		eff.Volumes = file.Volumes
 	}
 	return eff, nil
 }

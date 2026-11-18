@@ -251,7 +251,7 @@ Each has a symptom entry with the exact string to search for:
 - A run that fails to mount or prepare a volume: [mode flip](../../troubleshooting/steps-and-execution.md#run-fails-volume-was-last-used-by-a-nativeisolated-run), [clobber refusal](../../troubleshooting/steps-and-execution.md#run-fails-already-exists-and-was-not-created-by-this-agent-as-a-volume-link), [Windows symlink](../../troubleshooting/steps-and-execution.md#run-fails-cannot-link-on-windows), [shared volume at the workspace root](../../troubleshooting/steps-and-execution.md#run-fails-volume-is-shared-and-cannot-be-mounted-at-the-workspace-root).
 - A Pod stuck in `Pending` on a shared volume: [RWX unavailable](../../troubleshooting/steps-and-execution.md#a-shared-volume-never-binds-rwx-unavailable).
 - A workspace that cannot be emptied: [`prepare workspace failed: clean workspace`](../../troubleshooting/steps-and-execution.md#run-fails-with-prepare-workspace-failed-clean-workspace).
-- A Kubernetes agent that will not start: [volume configuration errors](../../troubleshooting/agents-and-enrollment.md#an-agent-fails-at-startup-with-a-volume-configuration-error).
+- A Kubernetes agent that will not start: [volume configuration errors](../../troubleshooting/agents-and-enrollment.md#a-kubernetes-agent-fails-at-startup-with-a-volume--configuration-error).
 - An artifact step or cache failing against an older sidecar: [`-exclude` flag](../../troubleshooting/artifacts-and-storage.md#artifact-upload-fails-or-a-cache-is-never-restored-flag-provided-but-not-defined-exclude).
 
 ---

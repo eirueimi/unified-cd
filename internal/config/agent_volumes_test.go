@@ -5,19 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-const volumesYAML = `volumes:
-  - name: unity-main
-    mode: exclusive
-    path: /var/lib/unified-cd/volumes/unity-main
-    size: 200Gi
-    storageClassName: gp3
-  - name: go-cache
-    mode: shared
-`
+const volumesRemovedMessage = `agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)`
 
 func writeAgentYAML(t *testing.T, body string) string {
 	t.Helper()
@@ -26,29 +17,25 @@ func writeAgentYAML(t *testing.T, body string) string {
 	return p
 }
 
-func TestLoadAgent_Volumes(t *testing.T) {
-	cfg, err := LoadAgent(writeAgentYAML(t, volumesYAML))
-	require.NoError(t, err)
-	require.Equal(t, []VolumeConfig{
-		{Name: "unity-main", Mode: "exclusive", Path: "/var/lib/unified-cd/volumes/unity-main", Size: "200Gi", StorageClassName: "gp3"},
-		{Name: "go-cache", Mode: "shared"},
-	}, cfg.Volumes)
+func TestConfigRejectsVolumesKey(t *testing.T) {
+	for name, body := range map[string]string{
+		"entries":    "volumes:\n  - name: a\n    mode: shared\n    size: 1Gi\n",
+		"empty list": "volumes: []\n",
+		"null":       "volumes:\n",
+		"with other": "server: http://localhost:8080\nvolumes:\n  - name: a\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := writeAgentYAML(t, body)
+			_, err := LoadAgent(p)
+			require.EqualError(t, err, volumesRemovedMessage)
+			_, err = AgentEffective(p)
+			require.EqualError(t, err, volumesRemovedMessage)
+		})
+	}
 }
 
-func TestLoadAgent_VolumesRejectsUnknownField(t *testing.T) {
-	_, err := LoadAgent(writeAgentYAML(t, "volumes:\n  - name: a\n    mode: shared\n    sizee: 1Gi\n"))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "sizee")
-}
-
-func TestAgentEffective_VolumesComeFromTheFileOnly(t *testing.T) {
-	eff, err := AgentEffective(writeAgentYAML(t, volumesYAML))
+func TestLoadAgent_NoVolumesKeyStillLoads(t *testing.T) {
+	cfg, err := LoadAgent(writeAgentYAML(t, "server: http://localhost:8080\n"))
 	require.NoError(t, err)
-	require.Len(t, eff.Volumes, 2)
-	assert.Equal(t, "go-cache", eff.Volumes[1].Name)
-
-	// No file, no volumes: there is no env var or flag spelling to fall back on.
-	eff, err = AgentEffective("")
-	require.NoError(t, err)
-	assert.Empty(t, eff.Volumes)
+	require.Equal(t, "http://localhost:8080", cfg.Server)
 }
