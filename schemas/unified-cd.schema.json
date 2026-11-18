@@ -2,6 +2,62 @@
   "$id": "https://unified-cd/schemas/unified-cd.schema.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "AgentVolume": {
+      "additionalProperties": false,
+      "description": "AgentVolume declares a named volume that agents provision for jobs to mount\n(see the job's volumes field). The volume name is metadata.name.\n\nEvery agent whose authorized labels include all of spec.agentSelector offers\nthe volume; an empty selector means every agent.",
+      "properties": {
+        "apiVersion": {
+          "const": "unified-cd/v1",
+          "type": "string"
+        },
+        "kind": {
+          "const": "AgentVolume",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "spec": {
+          "$ref": "#/definitions/AgentVolumeSpec"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "type": "object"
+    },
+    "AgentVolumeSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "agentSelector": {
+          "description": "AgentSelector lists labels (e.g. role:unity) an agent must all carry to\noffer this volume. Empty means every agent.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "description": "Mode is \"exclusive\" (one run at a time) or \"shared\" (concurrent runs).",
+          "type": "string"
+        },
+        "size": {
+          "description": "Size is a Kubernetes quantity such as 200Gi. It must be positive.",
+          "type": "string"
+        },
+        "storageClassName": {
+          "description": "StorageClassName is the storage class for Kubernetes agents' PVCs.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "size"
+      ],
+      "type": "object"
+    },
     "AppSource": {
       "additionalProperties": false,
       "properties": {
@@ -1295,6 +1351,9 @@
     },
     {
       "$ref": "#/definitions/GitCredential"
+    },
+    {
+      "$ref": "#/definitions/AgentVolume"
     },
     {
       "$ref": "#/definitions/Vars"
