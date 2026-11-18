@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -318,4 +319,68 @@ func TestApplyNilManager(t *testing.T) {
 	var m *VolumeManager
 	require.Nil(t, m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimRetain)}))
 	require.Empty(t, m.Paths())
+}
+
+func TestStoragePathsFollowLiveVolumes(t *testing.T) {
+	m, base := newEmptyVM(t)
+	a := &Agent{Volumes: m}
+	m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimRetain)})
+	dir := filepath.Join(base, "volumes", "u")
+	require.Equal(t, []string{base, dir}, a.storagePaths(base))
+	_, rel, err := m.Reserve("r1", []string{"u"})
+	require.NoError(t, err)
+
+	m.Apply(nil) // retiring, still held
+	require.Equal(t, []string{base, dir}, a.storagePaths(base), "a retiring volume is still sampled")
+	rel()
+	m.Apply(nil)
+	require.Equal(t, []string{base}, a.storagePaths(base), "dropped once forgotten")
+}
+
+// A run already waiting for an exclusive volume must keep waiting, not fail,
+// when a pending mode switch makes the volume briefly not offered.
+func TestApplyModeSwitchDoesNotFailWaiters(t *testing.T) {
+	m, _ := newEmptyVM(t)
+	m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimRetain)})
+	_, rel, err := m.Reserve("r1", []string{"u"})
+	require.NoError(t, err)
+
+	type res struct {
+		names []string
+		err   error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		n, r, err := m.ReserveSet(context.Background(), "r2", [][]string{{"u"}}, nil, nil)
+		if r != nil {
+			defer r()
+		}
+		ch <- res{n, err}
+	}()
+	requireNoResult := func() {
+		select {
+		case r := <-ch:
+			t.Fatalf("waiter returned early: %v %v", r.names, r.err)
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+	requireNoResult()
+	m.Apply([]api.DesiredVolume{dv("u", "shared", dsl.ReclaimRetain)}) // switch pending
+	requireNoResult()
+
+	rel()
+	// Nothing hands the volume out between the release and the switch.
+	requireNoResult()
+	m.Apply([]api.DesiredVolume{dv("u", "shared", dsl.ReclaimRetain)})
+	// The waiter only wakes on a release, so poke it: a fresh holder cycle.
+	_, r3, err := m.Reserve("poke", []string{"u"})
+	require.NoError(t, err)
+	r3()
+	select {
+	case r := <-ch:
+		require.NoError(t, r.err)
+		require.Equal(t, []string{"u"}, r.names)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiter did not proceed after the switch completed")
+	}
 }

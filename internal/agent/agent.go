@@ -203,15 +203,9 @@ func (a *Agent) statfs() func(string) (uint64, uint64, error) {
 }
 
 // storagePaths lists every filesystem the heartbeat reports on: the workspace
-// and each declared volume's resolved directory.
+// and each live volume's directory (retiring ones too: runs still use them).
 func (a *Agent) storagePaths(wsBase string) []string {
-	names := a.Volumes.Names()
-	paths := make([]string, 0, 1+len(names))
-	paths = append(paths, wsBase)
-	for _, name := range names {
-		paths = append(paths, a.Volumes.PathOf(name))
-	}
-	return paths
+	return append([]string{wsBase}, a.Volumes.Paths()...)
 }
 
 // storageReading assembles one heartbeat's storage reading from what sampler

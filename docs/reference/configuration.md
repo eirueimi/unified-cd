@@ -322,7 +322,7 @@ logLevel: info
 volumes:
   - name: unity-main
     mode: exclusive
-    path: /var/lib/unified-cd/volumes/unity-main   # optional
+    path: /var/lib/unified-cd/volumes/unity-main   # IGNORED: volumes live at <workspaceDir>/volumes/<name>
     size: 200Gi                                    # advisory
   - name: go-cache
     mode: shared

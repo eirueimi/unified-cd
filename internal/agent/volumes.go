@@ -306,7 +306,7 @@ func (m *VolumeManager) reserve(ctx context.Context, runID string, names []strin
 			}
 		}
 		for _, n := range known {
-			if m.vols[n].mode == VolumeModeShared || len(m.holders[n]) == 0 {
+			if v := m.vols[n]; !v.switching && (v.mode == VolumeModeShared || len(m.holders[n]) == 0) {
 				if m.holders[n] == nil {
 					m.holders[n] = make(map[string]struct{})
 				}
@@ -331,9 +331,10 @@ func (m *VolumeManager) reserve(ctx context.Context, runID string, names []strin
 	}
 }
 
-// usableLocked filters names to the volumes runID may be given: the offered
-// ones, plus any the run already holds (a retiring volume stays usable to its
-// holders). m.mu must be held.
+// usableLocked filters names to the volumes runID may be a candidate for: all but
+// retiring ones, plus any retiring one the run already holds. A volume waiting
+// to switch mode stays a candidate (so a run already waiting for it keeps
+// waiting) but is not free, see assignLocked and reserve. m.mu must be held.
 func (m *VolumeManager) usableLocked(runID string, names []string) []string {
 	var out []string
 	for _, n := range names {
@@ -341,7 +342,7 @@ func (m *VolumeManager) usableLocked(runID string, names []string) []string {
 		if !ok {
 			continue
 		}
-		if _, mine := m.holders[n][runID]; mine || v.offered() {
+		if _, mine := m.holders[n][runID]; mine || !v.retiring {
 			out = append(out, n)
 		}
 	}
@@ -482,7 +483,7 @@ func (m *VolumeManager) assignLocked(runID string, declared [][]string, pathKeys
 			return false
 		}
 		_, mine := m.holders[n][runID]
-		return mine || v.mode == VolumeModeShared || len(m.holders[n]) == 0
+		return mine || (!v.switching && (v.mode == VolumeModeShared || len(m.holders[n]) == 0))
 	}
 	return ChooseVolumesAvoiding(declared, free, func(n string) bool {
 		_, g := m.gated[n]

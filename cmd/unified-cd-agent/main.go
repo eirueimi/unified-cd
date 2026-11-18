@@ -205,6 +205,9 @@ func main() {
 	// at <workspaceDir>/volumes/<name>) and nothing is ever reclaimed.
 	bridged := make([]api.DesiredVolume, 0, len(eff.Volumes))
 	for _, v := range eff.Volumes {
+		if v.Path != "" {
+			slog.Warn("volume path in the agent config is ignored; volumes now live at <workspaceDir>/volumes/<name>", "volume", v.Name, "ignoredPath", v.Path)
+		}
 		bridged = append(bridged, api.DesiredVolume{Name: v.Name, Mode: v.Mode, Size: v.Size, ReclaimPolicy: dsl.ReclaimRetain})
 	}
 	for _, st := range volumes.Apply(bridged) {
