@@ -29,7 +29,8 @@ poolIdleTimeout: ""
 # Each AgentVolume becomes a PVC named <agentName>-<volume>. agentName must stay the same across
 # restarts; it is not the enrolled agent ID. It is required for the agent to provision any
 # volume, and never change it while a volume holds data: the PVC names derive from it, so a new
-# name provisions new, empty PVCs and orphans the old ones.
+# name provisions new, empty PVCs and orphans the old ones. It must be a DNS label (lowercase
+# letters, digits and "-"); any other value is refused at startup, even with no volumes.
 # agentName: ci-main
 #
 # The agent's Role needs get, list, create, update, patch and delete on persistentvolumeclaims

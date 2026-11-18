@@ -33,5 +33,6 @@ spec:
   # storageClassName: fast-ssd   # Kubernetes agents only
   agentSelector:
     - macos               # same label syntax as a Job's agentSelector (e.g. role:unity)
-  # reclaimPolicy: Retain # default. With Delete, an agent DELETES the data when the volume
-  #                       # leaves its set; a mistyped agentSelector then destroys it.
+  # reclaimPolicy: Retain # default. With Delete, an agent DELETES the data once the volume
+  #                       # has been out of its set for 10 minutes; a mistyped agentSelector
+  #                       # that is not reverted within that time destroys it.
