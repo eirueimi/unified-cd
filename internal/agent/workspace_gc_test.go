@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/eirueimi/unified-cd/internal/config"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
 
@@ -263,11 +262,10 @@ func TestAgent_WorkspaceGC_StartupSweep(t *testing.T) {
 
 // TestGcWorkspaces_CannotReachAVolume pins that the retention sweep cannot
 // delete a named volume, however old: the default volume path sits outside the
-// "working*" glob, and a volume placed inside it is refused by the manager.
+// "working*" glob, and a volume cannot be placed inside it (the path is always <base>/volumes/<name>).
 func TestGcWorkspaces_CannotReachAVolume(t *testing.T) {
 	base := t.TempDir()
-	m, err := NewVolumeManager(base, []config.VolumeConfig{{Name: "x", Mode: "exclusive"}})
-	require.NoError(t, err)
+	m := mustVolumeManager(t, base, exclusive("x"))
 	vol := m.PathOf("x")
 	require.Equal(t, filepath.Join(base, "volumes", "x"), vol)
 	require.NoError(t, os.WriteFile(filepath.Join(vol, "data"), []byte("keep"), 0o644))
@@ -285,9 +283,6 @@ func TestGcWorkspaces_CannotReachAVolume(t *testing.T) {
 	require.Equal(t, []string{job}, removed)
 	require.FileExists(t, filepath.Join(vol, "data"))
 
-	// The one way to put a volume in the sweep's path is refused outright.
-	_, err = NewVolumeManager(base, []config.VolumeConfig{{Name: "y", Mode: "exclusive", Path: filepath.Join(base, "working0", "y")}})
-	require.Error(t, err)
 }
 
 // The GC removes aged dirs through the same wipeDir as the per-run sweep, so a

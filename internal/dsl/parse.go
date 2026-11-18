@@ -131,7 +131,7 @@ func checkForbiddenJobFields(data []byte) error {
 // parsing, template parsing, the Kubernetes agent's config) returns for a
 // workspace.pvc block. It names the migration guide so the error is actionable
 // on its own.
-const WorkspacePVCRemovedMessage = "workspace.pvc was removed: the workspace is now ephemeral on every agent, and persistence comes from an agent-owned named volume (declare it in the agent's config and mount it with spec.volumes); see docs/operator-manual/migrations/2026-10-20-named-volumes.md"
+const WorkspacePVCRemovedMessage = "workspace.pvc was removed: the workspace is now ephemeral on every agent, and persistence comes from a named volume (declare it on the controller with kind: AgentVolume and mount it with spec.volumes); see docs/operator-manual/migrations/2026-10-20-named-volumes.md"
 
 // CheckRemovedWorkspacePVC returns an error if the raw (untyped) podTemplate
 // carries a workspace.pvc block. It exists because the field is gone from the

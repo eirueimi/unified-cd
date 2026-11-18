@@ -32,6 +32,7 @@ var exportKindDir = map[string]string{
 	"GitCredential":   "gitcredentials",
 	"AppSource":       "appsources",
 	"Vars":            "vars",
+	"AgentVolume":     "agent-volumes",
 }
 
 // isReservedExportDir reports whether seg is one of the top-level directories
@@ -57,7 +58,7 @@ func newExportCmdWithClient(resolve func() (Config, error), httpClient *http.Cli
 	cmd := &cobra.Command{
 		Use:   "export",
 		Short: "export all resources as a YAML tree consumable by an AppSource",
-		Long: `Export Jobs, Schedules, WebhookReceivers, GitCredentials, Vars and AppSources
+		Long: `Export Jobs, Schedules, WebhookReceivers, GitCredentials, Vars, AgentVolumes and AppSources
 as one YAML file per resource. Jobs are placed at their qualified path so the
 output directory can be committed to Git and used directly as an AppSource
 path. Secret values cannot be exported.`,
@@ -235,6 +236,24 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 		spec := map[string]any{"vars": v.Vars}
 		doc := exportDoc{APIVersion: "unified-cd/v1", Kind: "Vars", Metadata: exportMetadata{Name: v.Name}, Spec: spec}
 		if err := writeExportDoc(filepath.Join(outDir, exportKindDir["Vars"], v.Name+".yaml"), doc); err != nil {
+			return err
+		}
+		exported++
+	}
+
+	// AgentVolumes: controller-declared agent volumes. The spec round-trips
+	// as-is from the list endpoint.
+	var agentVolumes []api.AgentVolumeMeta
+	if err := getJSON(cfg, httpClient, "/api/v1/agent-volumes", &agentVolumes); err != nil {
+		return fmt.Errorf("list agent volumes: %w", err)
+	}
+	for _, v := range agentVolumes {
+		if skip("AgentVolume", v.Name) {
+			skipped++
+			continue
+		}
+		doc := exportDoc{APIVersion: "unified-cd/v1", Kind: "AgentVolume", Metadata: exportMetadata{Name: v.Name}, Spec: v.Spec}
+		if err := writeExportDoc(filepath.Join(outDir, exportKindDir["AgentVolume"], v.Name+".yaml"), doc); err != nil {
 			return err
 		}
 		exported++

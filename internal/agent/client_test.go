@@ -67,7 +67,7 @@ func TestClientReadsTokenForEveryRequest(t *testing.T) {
 	}), srv.Client())
 
 	require.NoError(t, c.Register(t.Context(), api.AgentRegisterRequest{AgentID: "a"}))
-	require.NoError(t, c.Heartbeat(t.Context(), "a", []string{}, nil, nil))
+	require.NoError(t, heartbeatErr(c, "a", &api.HeartbeatRequest{ActiveRunIDs: []string{}}))
 	assert.Equal(t, []string{"Bearer access-1", "Bearer access-2"}, tokens)
 }
 
@@ -94,7 +94,7 @@ func TestClient_Heartbeat_NonEmptyActiveRuns(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "t")
-	require.NoError(t, c.Heartbeat(t.Context(), "a1", []string{"r1"}, nil, nil))
+	require.NoError(t, heartbeatErr(c, "a1", &api.HeartbeatRequest{ActiveRunIDs: []string{"r1"}}))
 
 	var got api.HeartbeatRequest
 	require.NoError(t, json.Unmarshal(gotBody, &got))
@@ -113,7 +113,7 @@ func TestClient_Heartbeat_EmptyActiveRuns_SendsBody(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "t")
-	require.NoError(t, c.Heartbeat(t.Context(), "a1", []string{}, nil, nil))
+	require.NoError(t, heartbeatErr(c, "a1", &api.HeartbeatRequest{ActiveRunIDs: []string{}}))
 
 	// A live agent always sends a JSON body, even for zero active runs, so the
 	// controller can tell it apart from a legacy agent that sends none. With no
@@ -141,7 +141,7 @@ func TestClient_Heartbeat_NilActiveRuns_SendsNoBody(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "t")
-	require.NoError(t, c.Heartbeat(t.Context(), "a1", nil, nil, nil))
+	require.NoError(t, heartbeatErr(c, "a1", nil))
 
 	assert.Equal(t, int64(0), contentLength)
 	assert.Zero(t, bodyLen)
@@ -407,4 +407,40 @@ func TestClient_UploadArtifact_HTTPErrorSurfaces(t *testing.T) {
 // read, and Client.Claim always sends one.
 func drainRequestBody(r *http.Request) {
 	_, _ = io.Copy(io.Discard, r.Body)
+}
+
+// heartbeatErr sends a heartbeat and returns only its error.
+func heartbeatErr(c *Client, agentID string, req *api.HeartbeatRequest) error {
+	_, err := c.Heartbeat(context.Background(), agentID, req)
+	return err
+}
+
+func TestClient_Heartbeat_ReturnsDesiredVolumes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(api.HeartbeatResponse{
+			Volumes:  []api.DesiredVolume{{Name: "a", Mode: "shared", Size: "1Gi", ReclaimPolicy: "Retain"}},
+			Revision: "rev1",
+		})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "t")
+	got, err := c.Heartbeat(t.Context(), "a1", &api.HeartbeatRequest{ActiveRunIDs: []string{}})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "rev1", got.Revision)
+	require.Len(t, got.Volumes, 1)
+	assert.Equal(t, "a", got.Volumes[0].Name)
+}
+
+// An old controller answers 204 with no body: that is "no set delivered", not
+// an empty set, so the client returns nil.
+func TestClient_Heartbeat_204ReturnsNilResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "t")
+	got, err := c.Heartbeat(t.Context(), "a1", &api.HeartbeatRequest{ActiveRunIDs: []string{}})
+	require.NoError(t, err)
+	assert.Nil(t, got)
 }

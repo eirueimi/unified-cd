@@ -86,7 +86,7 @@ func planMounts(mounts []dsl.VolumeMount, m *VolumeManager) ([]mountSpec, error)
 		case s.root && m.ModeOf(name) == VolumeModeShared:
 			// Only the agent can know a volume's mode, so this is rejected
 			// here and not when the job is applied.
-			return nil, fmt.Errorf("spec.volumes[%d]: volume %q is shared and cannot be mounted at the workspace root (mountPath %q): several runs would work in one checkout with no exclusion. Declare it exclusive in the agent config, or mount it at a subdirectory", i, name, v.MountPath)
+			return nil, fmt.Errorf("spec.volumes[%d]: volume %q is shared and cannot be mounted at the workspace root (mountPath %q): several runs would work in one checkout with no exclusion. Declare it exclusive in its AgentVolume, or mount it at a subdirectory", i, name, v.MountPath)
 		case !s.abs && (mp == ".." || strings.HasPrefix(mp, "../")):
 			return nil, fmt.Errorf("spec.volumes[%d]: mountPath %q escapes the workspace", i, v.MountPath)
 		}
@@ -288,7 +288,18 @@ func (m *VolumeManager) removeOurLink(link string) error {
 // ownsLinkTarget reports whether dest lies inside one of this agent's volume
 // directories. That is how a link is recognised as one this agent made: no
 // other link is ever removed or replaced.
+//
+// Every volume directory is <base>/volumes/<name>, so that root recognises a
+// link into any volume this agent has served: a retiring one, one that has
+// left the set since the link was made, and (for the startup sweep, which can
+// run before the first Apply) one an earlier process served. The live entries
+// are checked too, which keeps the check right if a volume ever lives elsewhere.
 func (m *VolumeManager) ownsLinkTarget(dest string) bool {
+	if pathWithinFold(filepath.Join(m.base, "volumes"), dest) {
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, v := range m.vols {
 		if pathWithinFold(v.path, dest) {
 			return true

@@ -187,16 +187,52 @@ full flag/env/yaml forms.
 A [named volume](agents.md#named-volumes) holds whatever jobs put in it and **nothing ever
 sweeps it**: not the workspace GC, not the agent's after-run cleanup, not a run finishing. That is
 the point (it is how a 200 GiB Unity `Library/` survives between runs), and it makes volume disk
-usage a new operator responsibility. Removing a volume from the agent's config does not delete it
-either.
+usage a new operator responsibility. Removing an `AgentVolume` (or narrowing its `agentSelector`)
+does not delete the data either, unless the resource sets `reclaimPolicy: Delete`.
+
+> **Warning: `reclaimPolicy: Delete` destroys data.** With `spec.reclaimPolicy: Delete`, an agent
+> deletes a volume's directory (host) or PVC (Kubernetes) once the volume has been absent from its
+> set for **10 minutes without interruption** and no run holds it. The volume leaves the set when
+> the `AgentVolume` is deleted **or when its `agentSelector` stops matching the agent**, so a
+> mistyped `agentSelector` edit deletes the data on **every agent that stops matching** unless it is
+> reverted within the 10 minutes. Keep the default `Retain` for anything you cannot rebuild, and
+> use `Delete` only for disposable caches. The delete is not undone by re-applying the resource: the
+> agent recreates an empty volume. A reclaim that fails is reported in the agent's `volumeStatus`
+> as `reclaim: <error>` and retried on the next heartbeat.
+>
+> These operations remove a `Delete` volume from agents' sets and so delete its data once the
+> grace has passed:
+>
+> - moving an `AgentVolume` from one AppSource to another (the old source prunes it before the new
+>   one adopts it);
+> - deleting an `AgentVolume` and re-applying it more than 10 minutes later;
+> - restoring the controller database to a state without the declaration (or starting a fresh
+>   controller database), which delivers an empty set to every agent;
+> - editing an `agentSelector`, or an agent's labels, so that the agent stops matching.
+>
+> When the agent first sees the volume missing it logs `volume left the set; reclaim scheduled
+> after 10m0s` and reports nothing else; if the volume comes back within the grace it is kept and
+> the clock starts from zero the next time it leaves. The clock survives an agent restart (host: in
+> `<workspaceDir>/.ucd-volume-reclaim.json`; Kubernetes: in the PVC annotation
+> `unified-cd/left-desired-at`).
+
+A change to `spec.mode`, a removal or a re-selection takes effect for new claims at the agent's next
+heartbeat (about 15 seconds); a mode switch and a reclaim are applied only once no run holds the
+volume, and a reclaim only after the 10-minute grace above. A host agent offers no volumes until
+its first successful heartbeat, which it sends immediately at startup.
+
+`reclaimPolicy` is `Retain` by default, which keeps the data on disk (or the PVC in the cluster)
+after the volume leaves an agent's set; you remove it yourself when you are done with it. A
+controller that is unreachable never causes a reclaim: the agent keeps its last known set.
 
 **Host agents.**
 
-- Each volume is a directory (`path`, default `<workspaceDir>/volumes/<name>`). Put those
+- Each volume is a directory `<workspaceDir>/volumes/<name>`, created when the controller delivers
+  its `AgentVolume`. Put those
   paths under your normal disk monitoring, separately from `wsBase`'s `working<N>` directories,
   and give a large volume its own filesystem so it cannot fill the one the workspaces and the
   controller's checkouts share.
-- `size` is **advisory**. After each run the agent measures the volume and logs
+- `size` (on the `AgentVolume`) is **advisory**. After each run the agent measures the volume and logs
   `volume usage exceeds its advisory size; the size is not enforced` when it is over; alert on that
   line. It never stops a run. `minFreeDisk` is the guard that does act: a volume whose filesystem
   has less free space than the threshold keeps new runs that mount it queued (the default is `1%` of
@@ -217,6 +253,13 @@ either.
   removes the root-owned part (a root container's files belong to the agent's own user), but a
   job that sets `securityContext.runAsUser` still leaves files owned by a subordinate UID, which
   the agent cannot remove either; the same root fallback and the same by-hand caveat apply.
+- A `reclaimPolicy: Delete` reclaim first renames the directory to
+  `<workspaceDir>/volumes/.reclaim-<name>-<number>` (so the heartbeat never waits on a large
+  delete, and the name can be provisioned again at once) and deletes that copy in the background.
+  A background delete that fails, for example on root-owned files left by a rootful container
+  runtime, logs `could not delete reclaimed volume data; it is retried at the next agent start`
+  and leaves the `.reclaim-*` directory in place; the agent retries it at its next start, or you
+  can remove it by hand (it is no longer any volume's data).
 - To reclaim space, empty the directory with the agent stopped or the volume idle. A job with
   `cleanWorkspace: true` (which wipes a volume mounted at the workspace root only) is **not** a way
   out of a volume the gate is withholding: a job that mounts the volume waits like any other, and a
@@ -228,12 +271,16 @@ either.
 
 **Kubernetes agents.**
 
-- Each volume is a PVC named `<agentName>-<volume>`, created at startup and **never resized or
-  deleted by the agent**. A volume dropped from the config stops being advertised and its PVC stays,
-  logged as an orphan (`k8s: volume is no longer in the agent config; its PVC is left in place and
-  is not advertised. Delete the PVC yourself if the data is not wanted.`). Delete it with `kubectl`
-  when you are done with the data.
-- Changing `size` or `mode` in the config does not change an existing PVC; the agent logs a
+- Each volume is a PVC named `<agentName>-<volume>`, created when the controller delivers its
+  `AgentVolume` and **never resized by the agent**. A volume that leaves the set stops being
+  advertised. With `reclaimPolicy: Retain` (the default) its PVC stays, logged once (`k8s: volume
+  is no longer in the delivered set and no run holds it; its PVC is left in place (reclaimPolicy
+  Retain). Delete the PVC yourself if the data is not wanted.`); delete it with `kubectl` when you
+  are done with the data. With **`reclaimPolicy: Delete` the agent deletes the PVC** once the
+  volume has been absent from every replica's set for 10 minutes and no Pod or lock holds it, so
+  a mistyped `agentSelector` or an accidentally deleted `AgentVolume` that is not undone within the
+  grace destroys the data. See [Named volumes](kubernetes-integration.md#named-volumes).
+- Changing `size` or `mode` on the `AgentVolume` does not change an existing PVC; the agent logs a
   mismatch and leaves it alone. Expand it through your StorageClass, or delete and recreate.
 - A volume's free space is on `/metrics` as `unifiedcd_agent_volume_filesystem_free_bytes`, but it
   is refreshed only when a run mounts the volume; see [Watching agent disk
@@ -712,7 +759,7 @@ a series that is not there is not a zero. The cases:
 - **A host agent measures every 15s**, in the background, and omits a filesystem whose measurement
   failed or went stale (no fresh answer for about two intervals, which is what a hung network mount
   looks like) rather than reporting a zero or an old number. The workspace and each volume are
-  omitted independently. A volume dropped from the agent's config loses its series on the next
+  omitted independently. A volume that leaves the agent's delivered set loses its series on the next
   heartbeat.
 - **Only live agents are reported.** An agent that has not heartbeated within 90s (the same window as
   `unifiedcd_agents{state="alive"}`), and one that was deleted, has no series at all rather than its

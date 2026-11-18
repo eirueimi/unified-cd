@@ -21,23 +21,24 @@ poolIdleTimeout: ""
 # -> 10m ("unbounded" is not expressible); an unparseable value is rejected at
 # startup and the agent exits 1.
 # finallyTimeout: 10m
-# Agent-owned named volumes (spec.volumes in a Job). Each becomes a PVC named
-# <agentName>-<volume>, created at startup and never deleted by the agent.
-# agentName must stay the same across restarts; it is not the enrolled agent ID.
-# Required when `volumes` is set, and never change it while a volume holds data: the PVC names
-# derive from it, so a new name provisions new, empty PVCs and orphans the old ones.
-# agentName: ci-main
-# volumes:
-#   - name: go-cache         # a DNS label here: lower-case letters, digits and "-"
-#     mode: exclusive        # exclusive -> ReadWriteOnce; shared -> ReadWriteMany (needs an RWX StorageClass)
-#     size: 20Gi             # required on Kubernetes
-#     # storageClassName: gp3  # omit to use the cluster default
+# Named volumes (spec.volumes in a Job) are NOT configured here: declare them on the controller
+# with kind: AgentVolume and the controller delivers them to the agent. A "volumes:" key in this
+# file makes the agent refuse to start. See docs/operator-manual/kubernetes-integration.md,
+# "Named volumes".
 #
-# The agent's Role needs get, list, create and update on persistentvolumeclaims (see
-# charts/unified-cd/templates/agent/rbac.yaml). A freshly provisioned PVC is usually root-owned: a job
+# Each AgentVolume becomes a PVC named <agentName>-<volume>. agentName must stay the same across
+# restarts; it is not the enrolled agent ID. It is required for the agent to provision any
+# volume, and never change it while a volume holds data: the PVC names derive from it, so a new
+# name provisions new, empty PVCs and orphans the old ones. It must be a DNS label (lowercase
+# letters, digits and "-"); any other value is refused at startup, even with no volumes.
+# agentName: ci-main
+#
+# The agent's Role needs get, list, create, update, patch and delete on persistentvolumeclaims
+# (see charts/unified-cd/templates/agent/rbac.yaml); delete is used only to reclaim a
+# reclaimPolicy: Delete volume. A freshly provisioned PVC is usually root-owned: a job
 # whose image runs as a non-root user needs securityContext.fsGroup in its podTemplate.
 
-# minFreeDisk: stop claiming runs that mount a named volume (see volumes below) while that volume has
+# minFreeDisk: stop claiming runs that mount a named volume (see AgentVolume above) while that volume has
 # less free space than this. Forms: a percentage ("1%"), a size ("10Gi"), a byte count, or 0 / "off" to
 # disable. The default is "1%", so the check is ON unless you disable it; a malformed value fails
 # startup. A volume is measured only by runs that mount it, so a reading older than 10 minutes stops
@@ -87,7 +88,7 @@ podTemplates:
       mountPath: /workspace
       # The workspace is always an emptyDir: empty at the start of every run, discarded with the
       # Pod. (podTemplate.reuse keeps the Pod, but the agent empties the workspace on every claim.)
-      # To keep data between runs, declare a named volume under `volumes:` above and mount it
+      # To keep data between runs, declare a kind: AgentVolume on the controller and mount it
       # from the job with spec.volumes.
     # workspaceSizeLimit: 40Gi   # overrides the global workspaceSizeLimit for this template
     spec:

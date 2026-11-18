@@ -58,7 +58,7 @@ unified-cli apply -f <file> [--dry-run]
       --dry-run        Validate the YAML locally without applying it to the server
 ```
 
-**Supported resource kinds:** `Job`, `Schedule`, `WebhookReceiver`, `GitCredential`, `AppSource`
+**Supported resource kinds:** `Job`, `Schedule`, `WebhookReceiver`, `GitCredential`, `AppSource`, `Vars`, `AgentVolume`
 
 Multi-document YAML (separated by `---`) is supported — all resources in the file are applied.
 
@@ -731,7 +731,7 @@ unified-cli artifact download run-abc123 cli-art --dest ./out
 ## export
 
 Export all resources (Jobs, Schedules, WebhookReceivers, GitCredentials,
-Vars, AppSources) as one YAML file per resource:
+Vars, AgentVolumes, AppSources) as one YAML file per resource:
 
 ```bash
 unified-cli export -o ./exported/
@@ -741,7 +741,7 @@ unified-cli export -o ./exported/
   so the output directory can be committed to Git and pointed at by an
   AppSource `path` directly — re-importing reproduces the same names.
 - Non-Job kinds go under `schedules/`, `webhookreceivers/`,
-  `gitcredentials/`, `vars/`, `appsources/`.
+  `gitcredentials/`, `vars/`, `agent-volumes/`, `appsources/`.
 - `--unmanaged-only` exports only resources not already managed by an
   AppSource (useful for migrating manually-applied resources to Git).
 - `--force` allows writing into a non-empty directory.

@@ -17,21 +17,20 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
 // Agent-owned named volumes on Kubernetes.
 //
 // A volume is an ordinary PersistentVolumeClaim named <agentName>-<volume>,
-// created at startup and never deleted by this agent. A claim pod that mounts
+// created when the controller delivers its AgentVolume (volumes_apply.go) and
+// deleted only by reclaim (reclaimPolicy: Delete, once it left the set and no
+// pod holds it). A claim pod that mounts
 // one is labelled with it, and that label is what says a volume is in use right
 // now: occupancy is read back from the live pods, never from process memory.
 // Taking an exclusive volume is separately made atomic against other replicas
@@ -49,8 +48,8 @@ const (
 	volumeLabelPrefix = "volume.unified-cd/"
 
 	// labelVolumeOwner and labelVolumeName mark a PVC this agent created, so
-	// that a claim left behind by a volume dropped from the config can be
-	// recognised and reported. Nothing here ever deletes one.
+	// that a claim left behind by a volume that left the delivered set can be
+	// recognised, reported and, for reclaimPolicy Delete, reclaimed.
 	labelVolumeOwner = "unified-cd/volume-owner"
 	labelVolumeName  = "unified-cd/volume"
 
@@ -68,159 +67,6 @@ const (
 // claimNameFor is the PVC backing a volume: the agent name as a prefix, so
 // several k8s-agents in one namespace keep independent copies of a volume name.
 func claimNameFor(agentName, volume string) string { return agentName + "-" + volume }
-
-// validateVolumeConfigs checks the volumes of a k8s-agent config. It is called
-// at config validation, so a bad declaration is a refused start, and again by
-// EnsurePVCs, so the function cannot be handed one that was never checked.
-func validateVolumeConfigs(agentName string, cfgs []config.VolumeConfig) error {
-	if len(cfgs) == 0 {
-		return nil
-	}
-	if agentName == "" {
-		return errors.New("agentName is required when volumes are declared: it prefixes the PVC names, and it must stay the same across restarts or each restart would provision empty volumes")
-	}
-	if errs := validation.IsDNS1123Label(agentName); len(errs) > 0 {
-		return fmt.Errorf("agentName %q is not usable in a PVC name: %s", agentName, strings.Join(errs, "; "))
-	}
-	seen := map[string]bool{}
-	for _, c := range cfgs {
-		if c.Name == "" {
-			return errors.New("a volume in the agent config has no name")
-		}
-		if errs := validation.IsDNS1123Label(c.Name); len(errs) > 0 {
-			return fmt.Errorf("volume %q: the name becomes part of a PVC name, so it must be lower-case letters, digits and '-': %s", c.Name, strings.Join(errs, "; "))
-		}
-		// The claim name is also a label key's name part, which is capped at 63.
-		if claim := claimNameFor(agentName, c.Name); len(claim) > validation.LabelValueMaxLength {
-			return fmt.Errorf("volume %q: the PVC name %q is %d characters, over the %d a label allows; shorten the volume name or agentName", c.Name, claim, len(claim), validation.LabelValueMaxLength)
-		}
-		if seen[c.Name] {
-			return fmt.Errorf("duplicate volume name %q in the agent config", c.Name)
-		}
-		seen[c.Name] = true
-		switch c.Mode {
-		case agentlib.VolumeModeExclusive, agentlib.VolumeModeShared:
-		default:
-			return fmt.Errorf("volume %q: mode must be %q or %q, got %q", c.Name, agentlib.VolumeModeExclusive, agentlib.VolumeModeShared, c.Mode)
-		}
-		if c.Size == "" {
-			return fmt.Errorf("volume %q: size is required on the Kubernetes agent, which provisions a PVC of that size (for example 200Gi)", c.Name)
-		}
-		if q, err := resource.ParseQuantity(c.Size); err != nil || q.Sign() <= 0 {
-			return fmt.Errorf("volume %q: size %q is not a positive quantity such as 200Gi", c.Name, c.Size)
-		}
-	}
-	return nil
-}
-
-// volumeNames returns the names of the configured volumes, sorted, as
-// advertised at registration and on every claim.
-func volumeNames(cfgs []config.VolumeConfig) []string {
-	names := make([]string, 0, len(cfgs))
-	for _, c := range cfgs {
-		names = append(names, c.Name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-// EnsurePVCs creates the PVC behind each configured volume that does not have
-// one yet. It runs at startup, beside PodPool.Restore.
-//
-// An existing claim is left exactly as it is: it holds data, and resizing or
-// re-moding a bound claim is an operator's decision, so a mismatch is logged
-// and nothing is changed.
-//
-// It never deletes. A volume dropped from the config stops being advertised
-// (the caller registers only what is configured) and its claim stays, logged as
-// an orphan: removing a line from a config file must not destroy tens of
-// gigabytes. The operator deletes the claim deliberately if the data is not
-// wanted.
-//
-// storageClassName is left nil when unset. An empty string would mean "no
-// StorageClass" to Kubernetes, which does not apply the cluster default and
-// leaves the claim Pending.
-func EnsurePVCs(ctx context.Context, client kubernetes.Interface, namespace, agentName string, cfgs []config.VolumeConfig) error {
-	if err := validateVolumeConfigs(agentName, cfgs); err != nil {
-		return err
-	}
-	pvcs := client.CoreV1().PersistentVolumeClaims(namespace)
-	wanted := map[string]bool{}
-	for _, c := range cfgs {
-		wanted[c.Name] = true
-		if c.Path != "" {
-			slog.Warn("k8s: volume path is ignored on the Kubernetes agent, which provisions a PVC", "volume", c.Name, "path", c.Path)
-		}
-		name := claimNameFor(agentName, c.Name)
-		mode := corev1.ReadWriteOnce
-		if c.Mode == agentlib.VolumeModeShared {
-			mode = corev1.ReadWriteMany
-		}
-		existing, err := pvcs.Get(ctx, name, metav1.GetOptions{})
-		switch {
-		case err == nil:
-			warnOnClaimMismatch(existing, c, mode)
-			continue
-		case !apierrors.IsNotFound(err):
-			return fmt.Errorf("volume %q: look up PVC %s: %w", c.Name, name, err)
-		}
-		size := resource.MustParse(c.Size) // validated above
-		pvc := &corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
-				Labels:    map[string]string{labelVolumeOwner: agentName, labelVolumeName: c.Name},
-			},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes: []corev1.PersistentVolumeAccessMode{mode},
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{corev1.ResourceStorage: size},
-				},
-			},
-		}
-		if c.StorageClassName != "" {
-			sc := c.StorageClassName
-			pvc.Spec.StorageClassName = &sc
-		}
-		if _, err := pvcs.Create(ctx, pvc, metav1.CreateOptions{}); err != nil {
-			// Another replica sharing this config got there first.
-			if apierrors.IsAlreadyExists(err) {
-				continue
-			}
-			return fmt.Errorf("volume %q: create PVC %s: %w", c.Name, name, err)
-		}
-		slog.Info("k8s: created volume PVC", "volume", c.Name, "pvc", name, "size", c.Size, "mode", c.Mode)
-	}
-
-	owned, err := pvcs.List(ctx, metav1.ListOptions{LabelSelector: labelVolumeOwner + "=" + agentName})
-	if err != nil {
-		// Reporting orphans is a courtesy; it must not stop the agent starting.
-		slog.Warn("k8s: could not list this agent's PVCs to look for orphans", "error", err)
-		return nil
-	}
-	for i := range owned.Items {
-		if v := owned.Items[i].Labels[labelVolumeName]; v != "" && !wanted[v] {
-			slog.Warn("k8s: volume is no longer in the agent config; its PVC is left in place and is not advertised. Delete the PVC yourself if the data is not wanted.",
-				"volume", v, "pvc", owned.Items[i].Name)
-		}
-	}
-	return nil
-}
-
-// warnOnClaimMismatch reports a claim whose spec differs from the config,
-// without touching it.
-func warnOnClaimMismatch(existing *corev1.PersistentVolumeClaim, c config.VolumeConfig, want corev1.PersistentVolumeAccessMode) {
-	if len(existing.Spec.AccessModes) != 1 || existing.Spec.AccessModes[0] != want {
-		slog.Warn("k8s: existing volume PVC has different access modes than the config's mode asks for; it is left as it is",
-			"volume", c.Name, "pvc", existing.Name, "mode", c.Mode, "accessModes", existing.Spec.AccessModes)
-	}
-	if got, ok := existing.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
-		if wantSize, err := resource.ParseQuantity(c.Size); err == nil && got.Cmp(wantSize) != 0 {
-			slog.Warn("k8s: existing volume PVC has a different size than the config; it is not resized",
-				"volume", c.Name, "pvc", existing.Name, "pvcSize", got.String(), "configSize", c.Size)
-		}
-	}
-}
 
 // BusyVolumes returns the volumes of agentName that a live claim pod mounts,
 // sorted. It is derived from the pods themselves, so two replicas of one
@@ -353,7 +199,7 @@ func uniqueMountPath(seen map[string]int, i int, v dsl.VolumeMount, workspace st
 // one volume chosen, into the pod's volumes and into the path a step sees each
 // alias at (the UNIFIED_VOLUME_<ALIAS> values). workspace is the container
 // path of the workspace.
-func planPodVolumes(agentName string, declared map[string]config.VolumeConfig, mounts []dsl.VolumeMount, workspace string) ([]PodVolume, map[string]string, error) {
+func planPodVolumes(agentName string, declared map[string]declaredVolume, mounts []dsl.VolumeMount, workspace string) ([]PodVolume, map[string]string, error) {
 	vols := make([]PodVolume, 0, len(mounts))
 	paths := make(map[string]string, len(mounts))
 	seenPaths := make(map[string]int, len(mounts))
@@ -378,7 +224,7 @@ func planPodVolumes(agentName string, declared map[string]config.VolumeConfig, m
 			// Only the agent can know a volume's mode, so this is refused here
 			// and not when the job is applied. Same rule, same words, as the
 			// host agent.
-			return nil, nil, fmt.Errorf("spec.volumes[%d]: volume %q is shared and cannot be mounted at the workspace root (mountPath %q): several runs would work in one checkout with no exclusion. Declare it exclusive in the agent config, or mount it at a subdirectory", i, name, v.MountPath)
+			return nil, nil, fmt.Errorf("spec.volumes[%d]: volume %q is shared and cannot be mounted at the workspace root (mountPath %q): several runs would work in one checkout with no exclusion. Declare it exclusive in its AgentVolume, or mount it at a subdirectory", i, name, v.MountPath)
 		}
 		vols = append(vols, PodVolume{Name: name, ClaimName: claimNameFor(agentName, name), MountPath: mp})
 		switch {
@@ -490,15 +336,6 @@ type claimPodResult struct {
 	release func(context.Context)
 }
 
-// declaredVolumes indexes the configured volumes by name.
-func (a *K8sAgent) declaredVolumes() map[string]config.VolumeConfig {
-	m := make(map[string]config.VolumeConfig, len(a.cfg.Volumes))
-	for _, c := range a.cfg.Volumes {
-		m[c.Name] = c
-	}
-	return m
-}
-
 // heldVolumes reads which of this agent's volumes a live pod mounts, from the
 // cluster, right now.
 func (a *K8sAgent) heldVolumes(ctx context.Context) (map[string]bool, error) {
@@ -509,10 +346,11 @@ func (a *K8sAgent) heldVolumes(ctx context.Context) (map[string]bool, error) {
 	return heldVolumes(pods.Items, a.cfg.AgentName), nil
 }
 
-// claimRequest is the body of a normal claim: the volumes this agent declares,
-// the exclusive ones a live pod holds, and the ones whose last known free space
-// is below minFreeDisk (volume_gate.go). An agent with no volumes sends nothing,
-// as before.
+// claimRequest is the body of a normal claim: the volumes this agent offers
+// (VolumesKnown says that list is authoritative even when empty, which it is
+// only once the controller has delivered a set), the exclusive ones a live pod
+// holds, and the ones whose last known free space is below minFreeDisk
+// (volume_gate.go).
 //
 // The busy list is an optimisation that stops the agent being handed a run it
 // would then wait on while holding a concurrency slot. Correctness is
@@ -520,10 +358,11 @@ func (a *K8sAgent) heldVolumes(ctx context.Context) (map[string]bool, error) {
 // a failure to read the pods degrades to the gated names alone rather than
 // blocking the claim loop: gating reads only this agent's own cache.
 func (a *K8sAgent) claimRequest(ctx context.Context) api.ClaimRequest {
-	if len(a.cfg.Volumes) == 0 {
-		return api.ClaimRequest{}
+	declared := a.declaredVolumes()
+	req := api.ClaimRequest{Volumes: a.volumeNames(), VolumesKnown: a.volumesKnown()}
+	if len(declared) == 0 {
+		return req
 	}
-	req := api.ClaimRequest{Volumes: volumeNames(a.cfg.Volumes)}
 	gated := a.gatedNames(time.Now().UTC())
 	held, err := a.heldVolumes(ctx)
 	if err != nil {
@@ -531,7 +370,6 @@ func (a *K8sAgent) claimRequest(ctx context.Context) api.ClaimRequest {
 		req.BusyVolumes = withGated(nil, gated)
 		return req
 	}
-	declared := a.declaredVolumes()
 	for _, name := range sortedKeys(held) {
 		if c, ok := declared[name]; ok && c.Mode == agentlib.VolumeModeExclusive {
 			req.BusyVolumes = append(req.BusyVolumes, name)
@@ -593,7 +431,7 @@ func (a *K8sAgent) createClaimPod(ctx context.Context, c api.ClaimResponse) (cla
 	warnedAbandoned := false
 	failedCreates := 0
 	for {
-		res, created, err := a.tryCreateWithVolumes(ctx, c, sidecar, sets, declared)
+		res, created, err := a.tryCreateWithVolumes(ctx, c, sidecar, sets)
 		var retry *createRetryError
 		if errors.As(err, &retry) {
 			// The volumes were free and this run held them; it is the pod
@@ -641,7 +479,7 @@ func (a *K8sAgent) createClaimPod(ctx context.Context, c api.ClaimResponse) (cla
 
 // tryCreateWithVolumes chooses a free volume per entry and creates the pod, or
 // reports created=false if some entry has no free candidate right now.
-func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse, sidecar SidecarSpec, sets [][]string, declared map[string]config.VolumeConfig) (res claimPodResult, created bool, err error) {
+func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse, sidecar SidecarSpec, sets [][]string) (res claimPodResult, created bool, err error) {
 	a.volMu.Lock()
 	defer a.volMu.Unlock()
 
@@ -654,6 +492,7 @@ func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse
 	// made again, so a candidate list falls through to its next free entry
 	// instead of waiting a whole poll interval for the same loser.
 	contended := map[string]bool{}
+	now := a.declaredVolumes()
 	// Volumes below minFreeDisk, from the same cached readings the claim used
 	// to advertise them (no new measurement): an entry listing a gated and a
 	// healthy volume takes the healthy one. See ChooseVolumesAvoiding.
@@ -662,7 +501,10 @@ func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse
 	var release func(context.Context)
 	for {
 		free := func(n string) bool {
-			return !contended[n] && (declared[n].Mode == agentlib.VolumeModeShared || !held[n])
+			// declared was read before volMu was taken; a volume that left the
+			// set since is not chosen.
+			cur, offered := now[n]
+			return offered && !contended[n] && (cur.Mode == agentlib.VolumeModeShared || !held[n])
 		}
 		var ok, abandoned bool
 		chosen, ok, abandoned = agentlib.ChooseVolumesAvoiding(sets, free, func(n string) bool { return gated[n] })
@@ -696,7 +538,7 @@ func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse
 		narrowed[i] = v
 		narrowed[i].Name = dsl.StringOrSlice{chosen[i]}
 	}
-	vols, paths, err := planPodVolumes(a.cfg.AgentName, declared, narrowed, a.workspaceMount(c.PodTemplate))
+	vols, paths, err := planPodVolumes(a.cfg.AgentName, now, narrowed, a.workspaceMount(c.PodTemplate))
 	if err != nil {
 		return claimPodResult{}, false, fmt.Errorf("k8s: %w", err)
 	}

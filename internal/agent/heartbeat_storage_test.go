@@ -23,11 +23,10 @@ import (
 func newStorageTestAgent(t *testing.T, minFreeDisk uint64, stats func(path string) (free, total uint64, err error)) (*Agent, string) {
 	t.Helper()
 	ws := t.TempDir()
-	vm, err := NewVolumeManager(ws, []config.VolumeConfig{
-		{Name: "cache", Mode: VolumeModeExclusive},
-		{Name: "data", Mode: VolumeModeShared},
-	})
-	require.NoError(t, err)
+	vm := mustVolumeManager(t, ws,
+		exclusive("cache"),
+		shared("data"),
+	)
 	return &Agent{ID: "a1", Volumes: vm, MinFreeDisk: config.DiskThreshold{Bytes: minFreeDisk, Set: minFreeDisk > 0}, diskStatsFn: stats}, ws
 }
 
@@ -239,7 +238,7 @@ func TestStartHeartbeat_SendsStorageFromProvider(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	storage := &api.AgentStorage{AgentName: "host-1", Workspace: &api.FilesystemStats{FreeBytes: 1, TotalBytes: 2}}
-	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return []string{} }, nil, func() *api.AgentStorage { return storage })
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, BuildHeartbeat(func() []string { return []string{} }, nil, func() *api.AgentStorage { return storage }), nil)
 	defer func() { cancel(); <-done }()
 
 	require.Eventually(t, func() bool {

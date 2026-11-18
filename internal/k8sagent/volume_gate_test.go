@@ -100,7 +100,7 @@ func TestClaimRequest_GatesLowVolumes(t *testing.T) {
 	now := time.Now().UTC()
 	for _, mode := range []string{"exclusive", "shared"} {
 		t.Run(mode, func(t *testing.T) {
-			f := newVolFixture(t, []config.VolumeConfig{vcfg("full", mode, "1Gi"), vcfg("roomy", mode, "1Gi")})
+			f := newVolFixture(t, []api.DesiredVolume{vcfg("full", mode, "1Gi"), vcfg("roomy", mode, "1Gi")})
 			seed(f.a, "full", 5, 1000, now)
 			seed(f.a, "roomy", 900, 1000, now)
 			req := f.a.claimRequest(context.Background())
@@ -111,7 +111,7 @@ func TestClaimRequest_GatesLowVolumes(t *testing.T) {
 }
 
 func TestClaimRequest_HeldAndLowIsListedOnce(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("unity", "exclusive", "1Gi"), vcfg("aaa", "shared", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("unity", "exclusive", "1Gi"), vcfg("aaa", "shared", "1Gi")})
 	f.holder("r1", "unity")
 	seed(f.a, "unity", 1, 1000, time.Now().UTC())
 	seed(f.a, "aaa", 1, 1000, time.Now().UTC())
@@ -120,13 +120,13 @@ func TestClaimRequest_HeldAndLowIsListedOnce(t *testing.T) {
 }
 
 func TestClaimRequest_IgnoresUndeclaredVolumes(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("mine", "shared", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("mine", "shared", "1Gi")})
 	seed(f.a, "stranger", 1, 1000, time.Now().UTC())
 	assert.Empty(t, f.a.claimRequest(context.Background()).BusyVolumes)
 }
 
 func TestClaimRequest_StaleAndMissingReadingsFailOpen(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("old", "shared", "1Gi"), vcfg("never", "shared", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("old", "shared", "1Gi"), vcfg("never", "shared", "1Gi")})
 	seed(f.a, "old", 1, 1000, time.Now().UTC().Add(-volumeGateMaxAge-time.Minute))
 	assert.Empty(t, f.a.claimRequest(context.Background()).BusyVolumes)
 }
@@ -139,7 +139,7 @@ func (failingListPM) ListPods(context.Context, string) (*corev1.PodList, error) 
 }
 
 func TestClaimRequest_GatedNamesSurviveAPodListError(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("full", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("full", "exclusive", "1Gi")})
 	f.a.pm = failingListPM{f.a.pm.(volPM)}
 	seed(f.a, "full", 1, 1000, time.Now().UTC())
 	req := f.a.claimRequest(context.Background())
@@ -148,7 +148,7 @@ func TestClaimRequest_GatedNamesSurviveAPodListError(t *testing.T) {
 }
 
 func TestClaimRequest_UsesTheConfiguredThreshold(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("v", "shared", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("v", "shared", "1Gi")})
 	seed(f.a, "v", 500, 1000, time.Now().UTC())
 	assert.Empty(t, f.a.claimRequest(context.Background()).BusyVolumes, "50% free is fine under the 1% default")
 	f.a.cfg.MinFreeDisk = mustTh(t, "600")
@@ -159,7 +159,7 @@ func TestClaimRequest_UsesTheConfiguredThreshold(t *testing.T) {
 
 func TestClaimRequest_LogsGateTransitionsOnce(t *testing.T) {
 	lc := captureLogs(t)
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("v", "shared", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("v", "shared", "1Gi")})
 	seed(f.a, "v", 1, 1000, time.Now().UTC())
 	for i := 0; i < 3; i++ {
 		f.a.claimRequest(context.Background())
@@ -177,7 +177,7 @@ func TestClaimRequest_LogsGateTransitionsOnce(t *testing.T) {
 
 func TestClaimRequest_UnsatisfiableThresholdWarnsOncePerVolume(t *testing.T) {
 	lc := captureLogs(t)
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("small", "shared", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("small", "shared", "1Gi")})
 	f.a.cfg.MinFreeDisk = mustTh(t, "5000")
 	seed(f.a, "small", 1, 1000, time.Now().UTC())
 	for i := 0; i < 3; i++ {
@@ -188,7 +188,7 @@ func TestClaimRequest_UnsatisfiableThresholdWarnsOncePerVolume(t *testing.T) {
 }
 
 func TestStorageReading_MarksClaimBlocked(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("full", "shared", "1Gi"), vcfg("roomy", "shared", "1Gi"), vcfg("old", "shared", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("full", "shared", "1Gi"), vcfg("roomy", "shared", "1Gi"), vcfg("old", "shared", "1Gi")})
 	now := time.Now().UTC()
 	seed(f.a, "full", 5, 1000, now)
 	seed(f.a, "roomy", 900, 1000, now)
@@ -202,7 +202,7 @@ func TestStorageReading_MarksClaimBlocked(t *testing.T) {
 
 // Replicas share PVCs but not caches: each agent gates on its own readings.
 func TestClaimRequest_ReplicasGateIndependently(t *testing.T) {
-	vols := []config.VolumeConfig{vcfg("shared-pvc", "shared", "1Gi")}
+	vols := []api.DesiredVolume{vcfg("shared-pvc", "shared", "1Gi")}
 	a := newVolFixture(t, vols)
 	b := newVolFixture(t, vols)
 	seed(a.a, "shared-pvc", 1, 1000, time.Now().UTC())
@@ -212,7 +212,7 @@ func TestClaimRequest_ReplicasGateIndependently(t *testing.T) {
 }
 
 func TestWarnLowVolumes(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("full", "exclusive", "1Gi"), vcfg("roomy", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("full", "exclusive", "1Gi"), vcfg("roomy", "exclusive", "1Gi")})
 	now := time.Now().UTC()
 	seed(f.a, "full", 6<<20, 1<<30, now) // ~0.6%
 	seed(f.a, "roomy", 900<<20, 1<<30, now)
@@ -230,7 +230,7 @@ func TestWarnLowVolumes(t *testing.T) {
 }
 
 func TestExecuteRun_WarnsWhenPreRunReadingIsLow(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "10Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "exclusive", "10Gi")})
 	ex := &statfsExec{override: func(_ context.Context, _ []string, stdout io.Writer) (int, error) {
 		_, _ = io.WriteString(stdout, reading(6<<20, 1<<30))
 		return 0, nil
@@ -244,7 +244,7 @@ func TestExecuteRun_WarnsWhenPreRunReadingIsLow(t *testing.T) {
 }
 
 func TestExecuteRun_NoWarningWhenPreRunReadingIsHealthy(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "10Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "exclusive", "10Gi")})
 	ex := &statfsExec{override: func(_ context.Context, _ []string, stdout io.Writer) (int, error) {
 		_, _ = io.WriteString(stdout, reading(900<<20, 1<<30))
 		return 0, nil

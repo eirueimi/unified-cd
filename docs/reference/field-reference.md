@@ -13,6 +13,7 @@
 - [WebhookReceiver](#webhookreceiver)
 - [AppSource](#appsource)
 - [GitCredential](#gitcredential)
+- [AgentVolume](#agentvolume)
 - [Vars](#vars)
 
 ---
@@ -52,7 +53,7 @@
 | `steps` | []StepEntry | yes | Steps is the main DAG of steps to execute. (failFast was removed — all started steps run to completion.) |
 | `timeoutMinutes` | number | no |  |
 | `vars` | map[string]string | no | Plain-text variables shared by every step of this job, delivered as environment variables and as {{ .Vars.KEY }} in templates. NOT secrets — see kind: Vars. |
-| `volumes` | []VolumeMount | no | Volumes mounts agent-owned named volumes into the run. The job names a volume and where it appears; the agent's own configuration decides what backs it. See VolumeMount. |
+| `volumes` | []VolumeMount | no | Volumes mounts named volumes into the run. The job names a volume and where it appears; the volume's AgentVolume resource decides what backs it. See VolumeMount. |
 
 ### Concurrency
 
@@ -335,7 +336,7 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 
 ### VolumeMount
 
-VolumeMount mounts an agent-owned named volume into the run's workspace.
+VolumeMount mounts a named volume (declared as an AgentVolume) into the run's workspace.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -790,6 +791,39 @@ without jobAccess cannot be used by jobs.
 | `folders` | []string | yes | Folders lists the job folders allowed to use this credential ("*" allows every job). |
 | `permissions` | map[string]string | yes | Permissions maps GitHub App permission names (for example contents, pull_requests) to the highest level a job may request: read, write or admin. |
 | `repositories` | []string | yes | Repositories lists the repositories a job token may reach, as "owner/name", "owner/*" or "owner/prefix*". All entries must share one owner, and "owner/*" must stand alone. |
+
+## AgentVolume
+
+AgentVolume declares a named volume that agents provision for jobs to mount
+(see the job's volumes field). The volume name is metadata.name.
+
+Every agent whose authorized labels include all of spec.agentSelector offers
+the volume; an empty selector means every agent.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `apiVersion` | string | yes |  |
+| `kind` | string | yes |  |
+| `metadata` | Metadata | yes |  |
+| `spec` | AgentVolumeSpec | yes |  |
+
+### Metadata
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `annotations` | map[string]string | no |  |
+| `labels` | map[string]string | no |  |
+| `name` | string | yes |  |
+
+### AgentVolumeSpec
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `agentSelector` | []string | no | AgentSelector lists labels (e.g. role:unity) an agent must all carry to offer this volume. Empty means every agent. |
+| `mode` | string | yes | Mode is "exclusive" (one run at a time) or "shared" (concurrent runs). |
+| `reclaimPolicy` | string | no | ReclaimPolicy is "Retain" (the default) or "Delete". With Delete the agent removes the volume's data once the volume has been absent from its desired set for 10 minutes without interruption and no run holds it. |
+| `size` | string | yes | Size is a Kubernetes quantity such as 200Gi. It must be positive. |
+| `storageClassName` | string | no | StorageClassName is the storage class for Kubernetes agents' PVCs. |
 
 ## Vars
 

@@ -12,7 +12,6 @@ import (
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/stretchr/testify/require"
 )
@@ -137,11 +136,11 @@ func TestK8sExecuteRun_PodPolicyDeniesBeforeVolumeLocks(t *testing.T) {
 	cfg := Config{
 		AgentID: agentID, Namespace: "ci", PodImage: "ubuntu:22.04",
 		AgentName: "agent-a",
-		Volumes:   []config.VolumeConfig{{Name: "go-cache", Mode: "exclusive"}},
 	}
 	// No kube client: taking the volume lock would fail differently, so the
 	// policy error must win.
 	a := &K8sAgent{cfg: cfg, client: s.client, pm: pm, exec: &fakeExec{}}
+	seedVolumes(a, vcfg("go-cache", "exclusive", "1Gi"))
 
 	claim := privilegedClaim(runID)
 	claim.Volumes = []dsl.VolumeMount{{Name: dsl.StringOrSlice{"go-cache"}, MountPath: "cache"}}

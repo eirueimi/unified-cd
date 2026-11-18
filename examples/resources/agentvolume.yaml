@@ -1,0 +1,38 @@
+# AgentVolume — a named volume the controller delivers to the agents that match its agentSelector.
+# A job mounts it by name with spec.volumes (see examples/jobs/volumes.yaml). Volumes are not
+# configured in the agent's config file: a "volumes:" key there makes the agent refuse to start.
+#
+# Usage:
+#   unified-cd apply -f examples/resources/agentvolume.yaml
+#   unified-cd apply -f examples/jobs/volumes.yaml
+#   unified-cd run trigger go-with-cache-volume
+#
+# Agents pick up a new or changed AgentVolume on their next heartbeat (about 15 seconds).
+# A host agent keeps the data at <workspaceDir>/volumes/<name>; a Kubernetes agent creates a PVC
+# named <agentName>-<name>. Both reuse an existing directory or PVC with that name as it is.
+
+# ── A shared Go build/module cache on every agent ────────────────────────
+apiVersion: unified-cd/v1
+kind: AgentVolume
+metadata:
+  name: go-cache
+spec:
+  mode: shared            # any number of runs at once; needs ReadWriteMany storage on Kubernetes
+  size: 20Gi              # host agent: advisory; Kubernetes: the PVC request
+  # agentSelector omitted: every agent gets this volume.
+
+---
+# ── An exclusive Unity workspace, only on agents labelled macos ──────────
+apiVersion: unified-cd/v1
+kind: AgentVolume
+metadata:
+  name: unity-main
+spec:
+  mode: exclusive         # one run at a time; a second run waits for it
+  size: 200Gi
+  # storageClassName: fast-ssd   # Kubernetes agents only
+  agentSelector:
+    - macos               # same label syntax as a Job's agentSelector (e.g. role:unity)
+  # reclaimPolicy: Retain # default. With Delete, an agent DELETES the data once the volume
+  #                       # has been out of its set for 10 minutes; a mistyped agentSelector
+  #                       # that is not reverted within that time destroys it.

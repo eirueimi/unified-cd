@@ -61,12 +61,14 @@ func TestAgentAPI_Register_PersistsVolumes(t *testing.T) {
 	require.NotNil(t, got)
 	assert.ElementsMatch(t, []string{"unity-main", "go-cache"}, got.Volumes)
 
-	// Re-registering with none replaces the set: a volume dropped from the
-	// agent's config stops being routable.
-	registerVolumeAgent(t, s, token, "va", nil)
+	// Re-registering with a different list replaces the set: a volume dropped
+	// from the agent's config stops being routable. An empty list that is not
+	// marked authoritative (volumesKnown) keeps it; see
+	// TestRegisterWithVolumesKnownClearsVolumes for the clearing case.
+	registerVolumeAgent(t, s, token, "va", []string{"go-cache"})
 	got, err = pg.GetAgent(t.Context(), "va")
 	require.NoError(t, err)
-	assert.Empty(t, got.Volumes)
+	assert.Equal(t, []string{"go-cache"}, got.Volumes)
 }
 
 func TestAgentAPI_Claim_HonoursBusyVolumesFromTheBody(t *testing.T) {
@@ -82,7 +84,9 @@ func TestAgentAPI_Claim_HonoursBusyVolumesFromTheBody(t *testing.T) {
 	registerVolumeAgent(t, s, token, "va", []string{"unity"})
 
 	// While the agent reports the volume busy, the run is not handed to it.
-	busy, _ := json.Marshal(api.ClaimRequest{BusyVolumes: []string{"unity"}})
+	// The claim reports the agent's ready set (VolumesKnown), as a current
+	// agent does; routing follows that report, not the stored list.
+	busy, _ := json.Marshal(api.ClaimRequest{BusyVolumes: []string{"unity"}, Volumes: []string{"unity"}, VolumesKnown: true})
 	rec := claimAs(t, s, token, "va", busy)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	var got api.ClaimResponse
@@ -91,7 +95,7 @@ func TestAgentAPI_Claim_HonoursBusyVolumesFromTheBody(t *testing.T) {
 
 	// An absolute path is the agent's own bookkeeping and matches no volume
 	// name, so reporting one does not hold a run back.
-	paths, _ := json.Marshal(api.ClaimRequest{BusyVolumes: []string{"/go/cache"}})
+	paths, _ := json.Marshal(api.ClaimRequest{BusyVolumes: []string{"/go/cache"}, Volumes: []string{"unity"}, VolumesKnown: true})
 	rec = claimAs(t, s, token, "va", paths)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))

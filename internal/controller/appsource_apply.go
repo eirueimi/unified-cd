@@ -138,6 +138,19 @@ func applyResource(ctx context.Context, st store.Store, kind, dir string, doc []
 			return "", fmt.Errorf("%w: %v", errStoreWrite, err)
 		}
 		return v.Metadata.Name, nil
+	case "AgentVolume":
+		av, err := dsl.ParseAgentVolume(strings.NewReader(string(doc)))
+		if err != nil {
+			return "", err
+		}
+		specJSON, err := json.Marshal(av.Spec)
+		if err != nil {
+			return "", err
+		}
+		if err := st.UpsertAgentVolume(ctx, av.Metadata.Name, specJSON); err != nil {
+			return "", fmt.Errorf("%w: %v", errStoreWrite, err)
+		}
+		return av.Metadata.Name, nil
 	default:
 		return "", fmt.Errorf("unsupported kind %q", kind)
 	}
@@ -159,6 +172,8 @@ func deleteResource(ctx context.Context, st store.Store, kind, name string) erro
 		return st.DeleteAppSource(ctx, name)
 	case "Vars":
 		return st.DeleteVars(ctx, name)
+	case "AgentVolume":
+		return st.DeleteAgentVolume(ctx, name)
 	default:
 		return fmt.Errorf("unsupported kind %q", kind)
 	}

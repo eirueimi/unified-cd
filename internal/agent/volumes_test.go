@@ -16,15 +16,36 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/config"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
 func newTestVolumes(t *testing.T, cfgs ...config.VolumeConfig) (*VolumeManager, string) {
 	t.Helper()
 	base := t.TempDir()
-	m, err := NewVolumeManager(base, cfgs)
+	return mustVolumeManager(t, base, cfgs...), base
+}
+
+// mustVolumeManager builds a manager on base and applies cfgs as the desired
+// set, requiring every volume to come up ready. A config Path is ignored: a
+// volume always lives at <base>/volumes/<name>.
+func mustVolumeManager(t *testing.T, base string, cfgs ...config.VolumeConfig) *VolumeManager {
+	t.Helper()
+	m, err := NewVolumeManager(base)
 	require.NoError(t, err)
-	return m, base
+	for _, st := range m.Apply(desiredFromConfigs(cfgs)) {
+		require.True(t, st.Ready, "volume %q: %s", st.Name, st.Reason)
+	}
+	return m
+}
+
+func desiredFromConfigs(cfgs []config.VolumeConfig) []api.DesiredVolume {
+	out := make([]api.DesiredVolume, 0, len(cfgs))
+	for _, c := range cfgs {
+		out = append(out, api.DesiredVolume{Name: c.Name, Mode: c.Mode, Size: c.Size, ReclaimPolicy: dsl.ReclaimRetain})
+	}
+	return out
 }
 
 func exclusive(name string) config.VolumeConfig {
@@ -73,13 +94,9 @@ func requireReturns(t *testing.T, ch <-chan reserveResult) reserveResult {
 }
 
 func TestVolumeManager_CreatesDirectories(t *testing.T) {
-	custom := filepath.Join(t.TempDir(), "elsewhere", "unity")
-	m, base := newTestVolumes(t,
-		exclusive("a"),
-		config.VolumeConfig{Name: "unity", Mode: "exclusive", Path: custom},
-	)
+	m, base := newTestVolumes(t, exclusive("a"), exclusive("unity"))
 	require.DirExists(t, filepath.Join(base, "volumes", "a"))
-	require.DirExists(t, custom)
+	require.DirExists(t, filepath.Join(base, "volumes", "unity"))
 	require.Equal(t, []string{"a", "unity"}, m.Names())
 }
 
@@ -91,76 +108,73 @@ func TestVolumeManager_DefaultPath(t *testing.T) {
 	require.Equal(t, "", m.ModeOf("nope"))
 }
 
+func applyOneVolume(t *testing.T, d api.DesiredVolume) api.AgentVolumeStatus {
+	t.Helper()
+	m, err := NewVolumeManager(t.TempDir())
+	require.NoError(t, err)
+	sts := m.Apply([]api.DesiredVolume{d})
+	require.Len(t, sts, 1)
+	require.Empty(t, m.Names(), "an invalid volume must not be offered")
+	return sts[0]
+}
+
 func TestVolumeManager_RejectsUnknownMode(t *testing.T) {
 	for _, mode := range []string{"", "readonly", "Exclusive"} {
-		_, err := NewVolumeManager(t.TempDir(), []config.VolumeConfig{{Name: "a", Mode: mode}})
-		require.Error(t, err, "mode %q", mode)
-		require.Contains(t, err.Error(), `volume "a"`)
-		require.Contains(t, err.Error(), "mode")
+		st := applyOneVolume(t, api.DesiredVolume{Name: "a", Mode: mode})
+		require.False(t, st.Ready, "mode %q", mode)
+		require.Contains(t, st.Reason, "invalid:")
+		require.Contains(t, st.Reason, "mode")
 	}
 }
 
 func TestVolumeManager_RejectsDuplicateName(t *testing.T) {
-	_, err := NewVolumeManager(t.TempDir(), []config.VolumeConfig{exclusive("a"), shared("a")})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), `duplicate volume name "a"`)
+	m, err := NewVolumeManager(t.TempDir())
+	require.NoError(t, err)
+	sts := m.Apply([]api.DesiredVolume{
+		{Name: "a", Mode: "exclusive", ReclaimPolicy: "Retain"},
+		{Name: "a", Mode: "shared", ReclaimPolicy: "Retain"},
+	})
+	require.Len(t, sts, 1)
+	require.False(t, sts[0].Ready)
+	require.Contains(t, sts[0].Reason, "more than once")
 }
 
 func TestVolumeManager_RejectsBadNames(t *testing.T) {
 	for _, name := range []string{"", ".", "..", "a/b", `a\b`} {
-		_, err := NewVolumeManager(t.TempDir(), []config.VolumeConfig{exclusive(name)})
-		require.Error(t, err, "name %q", name)
+		st := applyOneVolume(t, api.DesiredVolume{Name: name, Mode: "exclusive"})
+		require.False(t, st.Ready, "name %q", name)
+		require.Contains(t, st.Reason, "invalid:")
 	}
 }
 
-func TestVolumeManager_RejectsPathUnderAWorkingDir(t *testing.T) {
-	base := t.TempDir()
-	for _, p := range []string{
-		filepath.Join(base, "working0"),
-		filepath.Join(base, "working3", "job", "cache"),
-		filepath.Join(base, "working"), // matches the gc glob "working*"
-		filepath.Join(base, "workingfoo"),
-	} {
-		_, err := NewVolumeManager(base, []config.VolumeConfig{{Name: "a", Mode: "exclusive", Path: p}})
-		require.Error(t, err, "path %q", p)
-		require.Contains(t, err.Error(), "workspace GC", "path %q", p)
-		require.NoDirExists(t, p, "a refused path must not be created")
+func TestVolumeManager_RejectsBadSizeAndReclaimPolicy(t *testing.T) {
+	for _, size := range []string{"lots", "0", "-1Gi"} {
+		st := applyOneVolume(t, api.DesiredVolume{Name: "a", Mode: "exclusive", Size: size})
+		require.False(t, st.Ready, "size %q", size)
+		require.Contains(t, st.Reason, "size")
 	}
-	// A directory that merely resembles the glob without matching it is fine.
-	_, err := NewVolumeManager(base, []config.VolumeConfig{{Name: "a", Mode: "exclusive", Path: filepath.Join(base, "my-working0")}})
+	st := applyOneVolume(t, api.DesiredVolume{Name: "a", Mode: "exclusive", ReclaimPolicy: "Recycle"})
+	require.False(t, st.Ready)
+	require.Contains(t, st.Reason, "reclaimPolicy")
+}
+
+// A <base>/volumes that is a link into a working* directory would put every
+// volume where the workspace GC sweeps; the lexical check cannot see it, the
+// resolved-path check must.
+func TestVolumeManager_RejectsVolumesRootResolvingIntoAWorkingDir(t *testing.T) {
+	base := t.TempDir()
+	working := filepath.Join(base, "working0")
+	require.NoError(t, os.MkdirAll(working, 0o755))
+	if err := os.Symlink(working, filepath.Join(base, "volumes")); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+	m, err := NewVolumeManager(base)
 	require.NoError(t, err)
-}
-
-func TestVolumeManager_RejectsPathContainingTheWorkspace(t *testing.T) {
-	base := t.TempDir()
-	_, err := NewVolumeManager(base, []config.VolumeConfig{{Name: "a", Mode: "exclusive", Path: base}})
-	require.Error(t, err)
-	_, err = NewVolumeManager(base, []config.VolumeConfig{{Name: "a", Mode: "exclusive", Path: filepath.Dir(base)}})
-	require.Error(t, err)
-}
-
-func TestVolumeManager_RejectsOverlappingPaths(t *testing.T) {
-	base := t.TempDir()
-	p := filepath.Join(base, "volumes", "x")
-	_, err := NewVolumeManager(base, []config.VolumeConfig{
-		{Name: "a", Mode: "exclusive", Path: p},
-		{Name: "b", Mode: "exclusive", Path: p},
-	})
-	require.Error(t, err)
-	_, err = NewVolumeManager(base, []config.VolumeConfig{
-		{Name: "a", Mode: "exclusive", Path: p},
-		{Name: "b", Mode: "exclusive", Path: filepath.Join(p, "inner")},
-	})
-	require.Error(t, err)
-}
-
-func TestVolumeManager_RejectsRelativePathAndBadSize(t *testing.T) {
-	_, err := NewVolumeManager(t.TempDir(), []config.VolumeConfig{{Name: "a", Mode: "exclusive", Path: "rel/dir"}})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "absolute")
-	_, err = NewVolumeManager(t.TempDir(), []config.VolumeConfig{{Name: "a", Mode: "exclusive", Size: "lots"}})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "size")
+	sts := m.Apply([]api.DesiredVolume{{Name: "a", Mode: "exclusive", ReclaimPolicy: "Retain"}})
+	require.Len(t, sts, 1)
+	require.False(t, sts[0].Ready)
+	require.Contains(t, sts[0].Reason, "workspace GC")
+	require.Empty(t, m.Names())
 }
 
 func TestVolumeManager_UsageMeasurementToleratesPermissionErrors(t *testing.T) {
@@ -439,24 +453,6 @@ func TestVolumeManager_ReservePathKeyIsPosix(t *testing.T) {
 	require.Equal(t, []string{"/go/cache"}, m.Busy(), "a POSIX mountPath must be reported as written, on every OS")
 	rel()
 	require.Empty(t, m.Busy())
-}
-
-func TestVolumeManager_RejectsPathsTheAgentItselfManages(t *testing.T) {
-	base := t.TempDir()
-	for _, p := range []string{
-		filepath.Join(base, "detached"),
-		filepath.Join(base, "detached", "run-1"),
-		filepath.Join(base, ".ucd-tools"),
-		filepath.Join(base, ".ucd-tools", "inner"),
-		filepath.Join(base, ".hidden"),
-	} {
-		_, err := NewVolumeManager(base, []config.VolumeConfig{{Name: "a", Mode: "exclusive", Path: p}})
-		require.Error(t, err, "path %q", p)
-		require.NoDirExists(t, p, "a refused path must not be created")
-	}
-	// A near miss is fine.
-	_, err := NewVolumeManager(base, []config.VolumeConfig{{Name: "a", Mode: "exclusive", Path: filepath.Join(base, "detached-cache")}})
-	require.NoError(t, err)
 }
 
 func TestVolumeManager_ReserveContext_CancelledWaitReturns(t *testing.T) {

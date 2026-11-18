@@ -99,6 +99,9 @@ spec:
 			case "/api/v1/vars":
 				b, _ := json.Marshal([]api.VarsMeta{{Name: "org-defaults", Vars: map[string]string{"REGISTRY": "ghcr.io/myorg", "GO_VERSION": "1.24"}}})
 				return http.StatusOK, b
+			case "/api/v1/agent-volumes":
+				b, _ := json.Marshal([]api.AgentVolumeMeta{{Name: "unity-library", Spec: dsl.AgentVolumeSpec{Mode: "exclusive", Size: "200Gi", AgentSelector: []string{"role:unity"}}}})
+				return http.StatusOK, b
 			}
 			return http.StatusNotFound, []byte("not found")
 		},
@@ -124,7 +127,7 @@ func TestExport_WritesAllKinds(t *testing.T) {
 		"team-a/build.yaml", "hello.yaml",
 		"schedules/nightly.yaml", "webhookreceivers/gh.yaml",
 		"gitcredentials/github.yaml", "appsources/src1.yaml",
-		"vars/org-defaults.yaml",
+		"vars/org-defaults.yaml", "agent-volumes/unity-library.yaml",
 	} {
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(f))); err != nil {
 			t.Errorf("expected file %s: %v", f, err)
@@ -159,7 +162,7 @@ func TestExport_WritesAllKinds(t *testing.T) {
 			t.Errorf("vars yaml missing %q:\n%s", want, string(vars))
 		}
 	}
-	if !strings.Contains(out.String(), "exported 7 resources (0 skipped as managed); secrets are not exported") {
+	if !strings.Contains(out.String(), "exported 8 resources (0 skipped as managed); secrets are not exported") {
 		t.Errorf("unexpected summary: %s", out.String())
 	}
 }
@@ -177,7 +180,7 @@ func TestExport_UnmanagedOnlySkipsManaged(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "hello.yaml")); err != nil {
 		t.Errorf("unmanaged job must be exported: %v", err)
 	}
-	if !strings.Contains(out.String(), "exported 6 resources (1 skipped as managed)") {
+	if !strings.Contains(out.String(), "exported 7 resources (1 skipped as managed)") {
 		t.Errorf("unexpected summary: %s", out.String())
 	}
 }

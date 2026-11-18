@@ -174,7 +174,15 @@ parameterized.
 A job that mounts a [named volume](../user-guide/writing-jobs/volumes.md) (`spec.volumes`) is
 applied without error, but its runs stay `Queued`, and the job's page in the Web UI shows an
 unschedulable banner. `GET /api/v1/jobs/{name}/schedulability` returns `"satisfiable": false`
-with one of three reasons:
+with one of these reasons:
+
+```
+no AgentVolume "unity-main" is declared
+```
+
+```
+no AgentVolume is declared for any of the volumes ["go-cache-1" "go-cache-2"]
+```
 
 ```
 no agent declares volume "unity-main"
@@ -190,13 +198,20 @@ no single agent that provides capability [native] and matches labels [macos] dec
 
 **Cause**
 
-A volume is declared in an *agent's* own config, never in the job, and the controller records
-only the names agents advertise (no definitions, no occupancy), so applying a job that names a
+A volume is declared by an operator-applied `kind: AgentVolume` resource, never in the job, and the
+controller records which names each agent advertises as ready, so applying a job that names a
 volume nobody declares is not an error: the run is queued and simply never claimed. Routing is an AND of ORs. For every `spec.volumes` entry the
 agent must declare at least one candidate name, and one agent must satisfy every entry, because a
 run is claimed by exactly one agent.
 
-- The first form: no registered agent advertises that single name.
+- The `no AgentVolume ... is declared` forms: no `kind: AgentVolume` resource exists for the
+  name (or for any candidate of the entry). The controller reports this before it looks at agents.
+  Apply an [AgentVolume](../user-guide/resources/agent-volume.md) with that `metadata.name`, or fix
+  the spelling in the job.
+- The first `no agent declares volume` form: the volume is declared, but no registered agent
+  advertises that single name as ready. Check the `volumeStatus` of the agents your
+  `agentSelector` matches in `GET /api/v1/agents` for the reason, and check that the volume's
+  own `agentSelector` matches those agents' labels.
 - The second form: the entry lists several candidate names and no registered agent advertises
   any of them.
 - The third form: every candidate set *is* declared somewhere, but never all by one agent that
@@ -209,12 +224,12 @@ A volume that is declared but currently **busy** is not this: that run is claime
 
 **Fix**
 
-- Check what the agents actually advertise. The volume names an agent declares are in the
-  `volumes` field of `GET /api/v1/agents` and `GET /api/v1/agents/{agentId}` (`unified-cli agent
-  list` does not print them).
-- A name that is simply not declared: add it to an agent's `volumes:` list and restart that agent
-  (the list is read at startup; there is no flag or environment variable form). On a Kubernetes
-  agent the config also needs `agentName` and a `size` for each volume.
+- Check what the agents actually advertise. The volume names an agent offers are in the
+  `volumes` field of `GET /api/v1/agents` and `GET /api/v1/agents/{agentId}`, and why a desired
+  volume is not ready is in `volumeStatus` (`unified-cli agent list` does not print them).
+- A name that is simply not declared: apply an `AgentVolume` with that `metadata.name`. Agents pick
+  it up on their next heartbeat (about 15 seconds); no agent restart. Its `agentSelector` must match
+  the labels of the agent you expect to run the job.
 - A name that differs by spelling or case from the declared one: names are matched exactly.
 - The third form: declare all the volumes on one agent, relax the job's `agentSelector`, or
   mount fewer volumes.

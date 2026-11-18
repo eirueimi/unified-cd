@@ -2,11 +2,13 @@ package k8sagent
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
@@ -14,6 +16,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // Config holds the configuration for the Kubernetes agent.
@@ -74,8 +77,9 @@ type Config struct {
 	SidecarS3SecretMode string `yaml:"sidecarS3SecretMode,omitempty"`
 
 	// AgentName is the stable name this agent's volume claims are prefixed
-	// with: <agentName>-<volume>. Required when Volumes is non-empty, and it
-	// must not change while the claims hold data.
+	// with: <agentName>-<volume>. Required for the agent to provision any
+	// AgentVolume delivered by the controller (a volume is reported not ready
+	// without it), and it must not change while the claims hold data.
 	//
 	// It is deliberately NOT AgentID. The enrolled ID is
 	// "k8s:<cluster>:<namespace>:<pod UID>", which carries characters a claim
@@ -85,10 +89,6 @@ type Config struct {
 	// of claims; that is why occupancy is read from the live pods (BusyVolumes)
 	// and not from any one process. Two agents in one namespace need two names.
 	AgentName string `yaml:"agentName,omitempty"`
-	// Volumes declares the agent-owned named volumes this agent advertises and
-	// jobs may mount (spec.volumes). Each becomes a PVC of the given size, which
-	// is required here; path is meaningless on Kubernetes and is ignored.
-	Volumes []config.VolumeConfig `yaml:"volumes,omitempty"`
 
 	// MinFreeDisk is the free-space headroom a named volume must have before
 	// this agent claims runs that mount it (percent of the volume, a size, a
@@ -217,6 +217,9 @@ func LoadConfig(configPath string) (Config, error) {
 	if err := rejectRemovedWorkspacePVC(configPath); err != nil {
 		return cfg, err
 	}
+	if err := rejectVolumesKey(configPath); err != nil {
+		return cfg, err
+	}
 	if err := rejectUnknownJobPodPolicyKeys(configPath); err != nil {
 		return cfg, err
 	}
@@ -275,6 +278,27 @@ func rejectRemovedWorkspacePVC(path string) error {
 	for _, name := range names {
 		if err := dsl.CheckRemovedWorkspacePVC(raw.PodTemplates[name], fmt.Sprintf("podTemplates[%q]", name)); err != nil {
 			return fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// errVolumesKeyRemoved is the error for a config that still has a top-level
+// "volumes" key. Volumes are declared on the controller now (kind: AgentVolume).
+var errVolumesKeyRemoved = errors.New(`k8s agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)`)
+
+// rejectVolumesKey refuses a config with a "volumes" key, whatever its value (a
+// list with entries, an empty list, or a bare key): loadYAML is lenient, and the
+// volumes would otherwise vanish silently.
+func rejectVolumesKey(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	var top map[string]yaml.Node
+	if yaml.Unmarshal(data, &top) == nil {
+		if _, ok := top["volumes"]; ok {
+			return errVolumesKeyRemoved
 		}
 	}
 	return nil
@@ -516,12 +540,12 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	// A bad volume declaration is a refused start, not a run that fails later:
-	// the agent would otherwise advertise a volume it cannot provision.
-	if err := validateVolumeConfigs(c.AgentName, c.Volumes); err != nil {
-		return err
+	if c.AgentName != "" {
+		if errs := validation.IsDNS1123Label(c.AgentName); len(errs) > 0 {
+			return fmt.Errorf("agentName %q is not usable in a PVC name: %s", c.AgentName, strings.Join(errs, "; "))
+		}
 	}
-	if err := c.JobPodPolicy.validate(c.SidecarS3SecretName, c.AgentName, c.Volumes); err != nil {
+	if err := c.JobPodPolicy.validate(c.SidecarS3SecretName); err != nil {
 		return fmt.Errorf("jobPodPolicy: %w", err)
 	}
 	return nil

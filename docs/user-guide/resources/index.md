@@ -10,3 +10,4 @@ All resources use `apiVersion: unified-cd/v1` and are applied with `unified-cli 
 - [WebhookReceiver](webhook-receiver.md)
 - [GitCredential](git-credential.md)
 - [AppSource](app-source.md)
+- [AgentVolume](agent-volume.md)

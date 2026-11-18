@@ -113,6 +113,7 @@ nav:
           - WebhookReceiver: user-guide/resources/webhook-receiver.md
           - GitCredential: user-guide/resources/git-credential.md
           - AppSource: user-guide/resources/app-source.md
+          - AgentVolume: user-guide/resources/agent-volume.md
       - Variables: user-guide/variables.md
       - Secrets: user-guide/secrets.md
   - Operator Manual:
@@ -150,6 +151,7 @@ nav:
           - "Trusted Proxies for Client Addresses": operator-manual/migrations/2026-11-09-trusted-proxies.md
           - "Host Agents Require https": operator-manual/migrations/2026-11-09-agent-require-https.md
           - "Host Agents Start Without a Native Shell": operator-manual/migrations/2026-11-12-optional-native-shell.md
+          - "Volumes Declared on the Controller": operator-manual/migrations/2026-11-18-controller-declared-volumes.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md

@@ -1,6 +1,6 @@
 # Authorization (RBAC and matrix permissions)
 
-unified-cd authorizes every human caller with a set of **permissions** drawn from a fixed catalogue of 26. The three roles — **admin**, **developer**, **viewer** — still exist and still work exactly as before, but they are now *named bundles* of permissions. For a single-team deployment nothing has to change: `roleMap` / `userMap` / `defaultRole` keep their meaning and produce one global role per caller.
+unified-cd authorizes every human caller with a set of **permissions** drawn from a fixed catalogue of 28. The three roles — **admin**, **developer**, **viewer** — still exist and still work exactly as before, but they are now *named bundles* of permissions. For a single-team deployment nothing has to change: `roleMap` / `userMap` / `defaultRole` keep their meaning and produce one global role per caller.
 
 To let several teams share one deployment without touching each other's jobs, add the optional `oidc.permissions` block. It grants permissions (individually or as role bundles) to OIDC groups and users, globally or **per job folder**, in the style of Jenkins' project-based matrix authorization. A folder is just a path prefix of the qualified job name: `team-a` covers `team-a/build` and `team-a/sub/build`.
 
@@ -8,7 +8,7 @@ Every route is classified: the API refuses an action the caller has no permissio
 
 ## Permission catalogue
 
-There are 26 permissions, written `<resource>.<verb>`. Nine are **folder-scopable**: they can be granted globally or on a folder and are checked against the job a request targets. Seventeen are **global-only**: they can only be granted in `permissions.global` (or through a role).
+There are 28 permissions, written `<resource>.<verb>`. Nine are **folder-scopable**: they can be granted globally or on a folder and are checked against the job a request targets. Nineteen are **global-only**: they can only be granted in `permissions.global` (or through a role).
 
 ### Folder-scopable (9)
 
@@ -24,7 +24,7 @@ There are 26 permissions, written `<resource>.<verb>`. Nine are **folder-scopabl
 | `run.approve` | Approve or reject a waiting `approval` step. | | yes | yes |
 | `schedule.configure` | Create, re-target or delete a Schedule that targets the job. | | yes | yes |
 
-### Global-only (17)
+### Global-only (19)
 
 | Permission | Meaning | viewer | developer | admin |
 |---|---|:--:|:--:|:--:|
@@ -34,6 +34,8 @@ There are 26 permissions, written `<resource>.<verb>`. Nine are **folder-scopabl
 | `gitcredential.write` | Create, update or delete a GitCredential. | | | yes |
 | `vars.read` | List `Vars` manifests (plain-text values). | yes | yes | yes |
 | `vars.write` | Apply or delete a `Vars` manifest. | | | yes |
+| `agentvolume.read` | List `AgentVolume` manifests. | yes | yes | yes |
+| `agentvolume.write` | Apply or delete an `AgentVolume` manifest. | | | yes |
 | `webhook.read` | List WebhookReceivers. | yes | yes | yes |
 | `webhook.write` | Apply or delete a WebhookReceiver. | | | yes |
 | `appsource.read` | List and get AppSources. | yes | yes | yes |
@@ -54,9 +56,9 @@ A role used anywhere a permission can be named expands to its bundle:
 
 | Bundle | Permissions |
 |---|---|
-| `viewer` | `job.read`, `vars.read`, `webhook.read`, `appsource.read`, `agent.read` |
+| `viewer` | `job.read`, `vars.read`, `webhook.read`, `appsource.read`, `agent.read`, `agentvolume.read` |
 | `developer` | `viewer` plus `job.configure`, `job.delete`, `run.trigger`, `run.replay`, `run.cancel`, `run.delete`, `run.approve`, `schedule.configure`, `secret.list`, `token.create` |
-| `admin` | all 26 (`authz.read` is only in this bundle) |
+| `admin` | all 28 (`authz.read` is only in this bundle) |
 
 A role resolved by `roleMap` / `userMap` / `defaultRole`, a role-only PAT's role and a pre-upgrade session's role are *global* grants of these bundles. A bundle granted on a **folder** contributes only its folder-scopable members: `admin` on `team-a` means "every one of the nine folder-scopable permissions under `team-a/`", never `secret.write`.
 
@@ -80,6 +82,7 @@ A role resolved by `roleMap` / `userMap` / `defaultRole`, a role-only PAT's role
 | `GET`/`POST`/`DELETE /api/v1/secrets` | `secret.list` / `secret.write` / `secret.write` | global |
 | `GET`/`POST`/`DELETE /api/v1/gitcredentials` | `gitcredential.read` / `gitcredential.write` / `gitcredential.write` | global |
 | `GET`/`POST`/`DELETE /api/v1/vars` | `vars.read` / `vars.write` / `vars.write` | global |
+| `GET`/`POST`/`DELETE /api/v1/agent-volumes` | `agentvolume.read` / `agentvolume.write` / `agentvolume.write` | global |
 | `GET`/`POST`/`DELETE /api/v1/webhooks` | `webhook.read` / `webhook.write` / `webhook.write` | global |
 | `GET`/`POST`/`DELETE /api/v1/appsources`, `POST .../sync` | `appsource.read` / `appsource.write` | global |
 | `POST /api/v1/tokens` | `token.create` | global |
@@ -231,7 +234,7 @@ For an OIDC caller (browser session or CLI bearer token):
 
 A browser session stores the caller's claim values (not a role) and recomputes the permissions from them and the **current** config on every request, so editing `roleMap` takes effect for live sessions at the next restart without a re-login. Claim values are refreshed at login and on silent refresh. A session created before the upgrade has no stored claims and is treated as role-only until it expires (at most 24 hours).
 
-**The break-glass `UNIFIED_TOKEN`** holds all 26 permissions globally and is checked before any of this; see [Break-glass](#break-glass).
+**The break-glass `UNIFIED_TOKEN`** holds all 28 permissions globally and is checked before any of this; see [Break-glass](#break-glass).
 
 ### Personal access tokens
 
@@ -404,7 +407,7 @@ Point `oidc.issuer` straight at the IdP; `roleMap` and enforcement are identical
 
 ## Break-glass
 
-The static `UNIFIED_TOKEN` PAT holds all 26 permissions globally, checked before any role, owner or ceiling logic. The controller recognizes it only when **both** hold: the presented token's hash matches the hash of the token the controller was started with (compared in constant time), **and** the PAT row has no owner. The PAT's *name* grants nothing: a PAT that merely is named `env:UNIFIED_TOKEN` is an ordinary PAT with its own stored role. With no `UNIFIED_TOKEN` configured there is no break-glass at all.
+The static `UNIFIED_TOKEN` PAT holds all 28 permissions globally, checked before any role, owner or ceiling logic. The controller recognizes it only when **both** hold: the presented token's hash matches the hash of the token the controller was started with (compared in constant time), **and** the PAT row has no owner. The PAT's *name* grants nothing: a PAT that merely is named `env:UNIFIED_TOKEN` is an ordinary PAT with its own stored role. With no `UNIFIED_TOKEN` configured there is no break-glass at all.
 
 The `env:` name prefix is reserved: `token create` (and `POST /api/v1/tokens`) rejects a name equal to `env:UNIFIED_TOKEN` or starting with `env:` with `400 token name "..." is reserved`. At startup the controller also deletes any pre-existing PAT named `env:UNIFIED_TOKEN` whose hash is not the configured token's, and logs a warning with the count, ids and roles (see [Troubleshooting](../troubleshooting/controller-and-database.md#token-name-env-is-reserved-startup-warning-about-impersonating-tokens)).
 

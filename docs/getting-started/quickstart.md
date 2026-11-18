@@ -194,8 +194,8 @@ spec:
 > **The workspace is not kept between runs.** Each run starts in an empty workspace directory and
 > the agent discards it afterwards, so a second `hello` run cannot see files the first one wrote.
 > That is the same on every agent. When a job has data worth keeping (a large checkout, a build
-> cache), the agent's own config declares a named *volume* and the job mounts it with
-> `spec.volumes`; see [Volumes](../user-guide/writing-jobs/volumes.md).
+> cache), an operator declares a named *volume* on the controller (`kind: AgentVolume`) and the job
+> mounts it with `spec.volumes`; see [Volumes](../user-guide/writing-jobs/volumes.md).
 
 Steps run sequentially in the order listed. To run steps concurrently, group them under a
 `parallel:` block instead (see [Concurrent Steps (`parallel`)](../user-guide/writing-jobs/steps.md#concurrent-steps-parallel)).

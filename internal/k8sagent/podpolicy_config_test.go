@@ -3,8 +3,6 @@ package k8sagent
 import (
 	"strings"
 	"testing"
-
-	"github.com/eirueimi/unified-cd/internal/config"
 )
 
 func policyBaseConfig() Config {
@@ -26,11 +24,6 @@ func TestJobPodPolicyConfigValidate(t *testing.T) {
 			c.SidecarS3SecretName = "ucd-s3"
 			c.JobPodPolicy.AllowSecrets = []string{"ucd-s3"}
 		}, `is sidecarS3SecretName`},
-		{"own named volume PVC", func(c *Config) {
-			c.AgentName = "ci-main"
-			c.Volumes = []config.VolumeConfig{{Name: "go-cache", Mode: "exclusive", Size: "1Gi"}}
-			c.JobPodPolicy.AllowPersistentVolumeClaims = []string{"ci-main-go-cache"}
-		}, `is this agent's named volume "go-cache"; jobs reach it only through spec.volumes`},
 		{"opt-in PodSpec field", func(c *Config) { c.JobPodPolicy.AllowPodSpecFields = []string{"runtimeClassName"} }, ""},
 		{"always-allowed PodSpec field", func(c *Config) { c.JobPodPolicy.AllowPodSpecFields = []string{"containers"} },
 			`"containers" is always allowed; remove it`},

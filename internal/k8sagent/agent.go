@@ -68,7 +68,7 @@ type K8sAgent struct {
 	// Run() only ever reads it (via Snapshot, for the heartbeat).
 	podBindings *podBindingSet
 
-	// kube is the clientset PVC provisioning (EnsurePVCs) runs against. It is
+	// kube is the clientset PVC provisioning (applyVolumes) runs against. It is
 	// the pool's own client, so it targets the same cluster and namespace as
 	// every pod this agent creates.
 	kube kubernetes.Interface
@@ -84,9 +84,13 @@ type K8sAgent struct {
 	drain context.Context
 	// lockGraceOverride replaces defaultVolumeLockGrace when positive. Tests only.
 	lockGraceOverride time.Duration
+	// clock replaces time.Now for the volume reclaim grace when set. Tests only.
+	clock func() time.Time
 	// volumeStats caches the latest in-pod measurement of each named volume
 	// (see measureVolumes). It is written by runs and read by the heartbeat.
 	volumeStats volumeReadings
+	// volState is the volume set the controller delivered (volumes_apply.go).
+	volState volumeState
 	// volGate remembers which volumes the claim gate is withholding, to log
 	// each transition once (volume_gate.go).
 	volGate k8sVolumeGate
@@ -122,18 +126,6 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 	labels := appendLabelIfMissing(a.cfg.Labels, "kubernetes")
 	a.drain = ctx
 
-	// Provision the volumes' claims BEFORE advertising them: an agent that
-	// registered a volume it could not back would be handed jobs that need it.
-	// A dropped volume's claim is left in place (see EnsurePVCs).
-	if len(a.cfg.Volumes) > 0 {
-		if a.kube == nil {
-			return errors.New("k8s: volumes are configured but the agent has no Kubernetes client to provision their PVCs")
-		}
-		if err := EnsurePVCs(ctx, a.kube, a.cfg.Namespace, a.cfg.AgentName, a.cfg.Volumes); err != nil {
-			return fmt.Errorf("k8s: provision volumes: %w", err)
-		}
-	}
-
 	if err := a.client.Register(ctx, api.AgentRegisterRequest{
 		AgentID:  a.cfg.AgentID,
 		Hostname: host,
@@ -144,24 +136,18 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 		// version for k8s agents too instead of an empty string.
 		Version:      agentlib.Version,
 		Capabilities: k8sAgentCapabilities(),
-		Volumes:      volumeNames(a.cfg.Volumes),
+		// No volumes and VolumesKnown false: the controller has not told this
+		// agent its set yet; the first heartbeat follows immediately.
 	}); err != nil {
 		return err
 	}
 
-	if err := a.pool.Restore(ctx, a.client); err != nil {
-		slog.Warn("k8s: pool restore failed, continuing without pool", "error", err)
-	}
 	// Restore adopts only POOLED pods. A per-run claim pod that outlived the
 	// previous process needs no adopting: nothing about volume occupancy lives
 	// in this process, because it is read from the pods' labels on every claim
-	// (BusyVolumes). This line only makes that visible at startup.
-	if len(a.cfg.Volumes) > 0 {
-		if held, err := a.heldVolumes(ctx); err != nil {
-			slog.Warn("k8s: could not read volume occupancy at startup", "error", err)
-		} else if len(held) > 0 {
-			slog.Info("k8s: volumes already held by claim pods from before this process started", "volumes", sortedKeys(held))
-		}
+	// (BusyVolumes).
+	if err := a.pool.Restore(ctx, a.client); err != nil {
+		slog.Warn("k8s: pool restore failed, continuing without pool", "error", err)
 	}
 	slog.Info("k8s agent registered", "agentId", a.cfg.AgentID, "labels", labels)
 
@@ -214,7 +200,7 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 	// Heartbeat bound to runCtx (not ctx): a drain must not stop heartbeats, or
 	// the stuck-run reaper would fail a healthy draining run after staleAfter.
 	// Joined before Run returns so no beat outlives Run.
-	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval, activeRuns.Snapshot, a.podBindings.Snapshot, a.storageReading)
+	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval, a.buildHeartbeat(activeRuns.Snapshot), func(resp *api.HeartbeatResponse) { a.onHeartbeat(runCtx, resp) })
 	go a.runPodGC(runCtx, time.Minute)
 
 	// Concurrency gates: MaxConcurrent for normal runs; a SEPARATE
@@ -383,7 +369,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// The job pod field policy (podpolicy.go). Checked before the pool, any
 	// volume lock and BuildPod: a reused pod is handed out without BuildPod,
 	// and a refused run must neither wait for nor take a volume.
-	if err := a.cfg.JobPodPolicy.CheckJobPodTemplate(a.cfg.PodTemplates, c.PodTemplate); err != nil {
+	if err := a.cfg.JobPodPolicy.checkJobPodTemplate(a.cfg.PodTemplates, c.PodTemplate, a.namedVolumeOfClaim); err != nil {
 		a.failRun(ctx, c.RunID, err.Error())
 		return
 	}

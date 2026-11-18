@@ -52,7 +52,7 @@ func TestHandleAgentHeartbeat_PersistsTheStorage(t *testing.T) {
 	}
 
 	rr := postHeartbeatForTest(t, s, "agent-st", token, &api.HeartbeatRequest{ActiveRunIDs: []string{}, Storage: want})
-	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 
 	got, err := pg.ListAgentStorage(context.Background(), time.Minute)
 	require.NoError(t, err)
@@ -78,7 +78,7 @@ func TestHandleAgentHeartbeat_ABeatWithoutAReadingClearsTheStoredOne(t *testing.
 		ActiveRunIDs: []string{},
 		Storage:      &api.AgentStorage{AgentName: "host-1", Workspace: &api.FilesystemStats{FreeBytes: 1, TotalBytes: 2}},
 	})
-	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 	got, err := pg.ListAgentStorage(context.Background(), time.Minute)
 	require.NoError(t, err)
 	require.Contains(t, got, "agent-st")
@@ -92,10 +92,10 @@ func TestHandleAgentHeartbeat_ABeatWithoutAReadingClearsTheStoredOne(t *testing.
 			ActiveRunIDs: []string{},
 			Storage:      &api.AgentStorage{AgentName: "host-1", Workspace: &api.FilesystemStats{FreeBytes: 1, TotalBytes: 2}},
 		})
-		require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+		require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 
 		rr = postHeartbeatForTest(t, s, "agent-st", token, hb)
-		require.Equal(t, http.StatusNoContent, rr.Code, name+": "+rr.Body.String())
+		require.Equal(t, http.StatusOK, rr.Code, name+": "+rr.Body.String())
 		got, err = pg.ListAgentStorage(context.Background(), time.Minute)
 		require.NoError(t, err)
 		assert.NotContains(t, got, "agent-st", name+": the stale reading was kept")
@@ -122,5 +122,5 @@ func TestHandleAgentHeartbeat_AStorageWriteFailureDoesNotFailTheHeartbeat(t *tes
 		Storage:      &api.AgentStorage{AgentName: "host-1"},
 	})
 
-	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 }

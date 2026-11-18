@@ -19,7 +19,7 @@ const (
 	ScheduleConfigure Permission = "schedule.configure"
 )
 
-// Global-only permissions (catalogue positions 9-25).
+// Global-only permissions (catalogue positions 9-27).
 const (
 	SecretList         Permission = "secret.list"
 	SecretWrite        Permission = "secret.write"
@@ -38,6 +38,8 @@ const (
 	AuditRead          Permission = "audit.read"
 	AuthzRead          Permission = "authz.read"
 	AgentEnroll        Permission = "agent.enroll"
+	AgentVolumeRead    Permission = "agentvolume.read"
+	AgentVolumeWrite   Permission = "agentvolume.write"
 )
 
 // folderScopableCount is the number of leading catalogue entries that may be
@@ -57,6 +59,7 @@ var catalogue = []Permission{
 	TokenCreate, TokenManage,
 	AuditRead, AuthzRead,
 	AgentEnroll,
+	AgentVolumeRead, AgentVolumeWrite,
 }
 
 // bitOf returns the Set bit index of p, or -1 when p is not in the catalogue.
@@ -92,7 +95,7 @@ var RoleNames = []string{"admin", "developer", "viewer"}
 
 // Bundle returns the global permission set of a built-in role.
 func Bundle(role string) (Set, bool) {
-	viewer := Set(0).With(JobRead, VarsRead, WebhookRead, AppSourceRead, AgentRead)
+	viewer := Set(0).With(JobRead, VarsRead, WebhookRead, AppSourceRead, AgentRead, AgentVolumeRead)
 	switch role {
 	case "viewer":
 		return viewer, true

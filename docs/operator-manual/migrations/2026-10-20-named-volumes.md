@@ -1,5 +1,10 @@
 # Migrating to ephemeral workspaces and agent-owned named volumes
 
+> **Superseded in part.** Volumes are no longer declared in the agent's config file: since
+> 2026-11-18 they are `kind: AgentVolume` resources on the controller, and `volumes:` in an agent
+> config is a startup error. See [Migrating to controller-declared
+> volumes](2026-11-18-controller-declared-volumes.md). The rest of this guide is kept as written.
+
 Until now the two agent types disagreed about whether a job's workspace survives a run, so a job
 author had to know which agent a job would land on. A **host agent** kept
 `<workspaceDir>/working<slot>/<job>` between runs; the **Kubernetes agent** gave each Pod an
@@ -152,7 +157,7 @@ with the Pod. Its replacement keeps the claim name out of the job:
 | The job names a cluster resource: `claimName: go-build-cache` | The job names a *volume*, `go-build-cache`; the Kubernetes agent owns the PVC `<agentName>-go-build-cache` |
 | A hand-created PVC; ReadWriteOnce contention between runs was the job's problem | The agent provisions the PVC, and a mode of `exclusive` makes the agent hold it for one run at a time |
 | `storageClassName`, `storageRequest`, `accessMode` in the job | `storageClassName`, `size` and `mode` in the agent's config, where the operator owns them |
-| An ephemeral `pvc` was deleted with the Pod | A volume is never deleted by the agent |
+| An ephemeral `pvc` was deleted with the Pod | A volume is never deleted by the agent (superseded: with `reclaimPolicy: Delete` the agent can reclaim a volume that left its set; see [Migrating to controller-declared volumes](2026-11-18-controller-declared-volumes.md)) |
 | An ephemeral `pvc` with no `storageClassName` requested the *empty* class, which Kubernetes reads as "no StorageClass": the cluster default was not applied and the claim stayed `Pending` | An unset `storageClassName` is left unset on the PVC, so the cluster default applies |
 
 ### What you will see
@@ -161,13 +166,13 @@ A job or JobTemplate that still carries the block is rejected when it is applied
 AppSource syncs it):
 
 ```
-spec.podTemplate.workspace.pvc: workspace.pvc was removed: the workspace is now ephemeral on every agent, and persistence comes from an agent-owned named volume (declare it in the agent's config and mount it with spec.volumes); see docs/operator-manual/migrations/2026-10-20-named-volumes.md
+spec.podTemplate.workspace.pvc: workspace.pvc was removed: the workspace is now ephemeral on every agent, and persistence comes from a named volume (declare it on the controller with kind: AgentVolume and mount it with spec.volumes); see docs/operator-manual/migrations/2026-10-20-named-volumes.md
 ```
 
 A Kubernetes agent whose config carries it under `podTemplates` **does not start**:
 
 ```
-<config path>: podTemplates["golang"].workspace.pvc: workspace.pvc was removed: the workspace is now ephemeral on every agent, and persistence comes from an agent-owned named volume (declare it in the agent's config and mount it with spec.volumes); see docs/operator-manual/migrations/2026-10-20-named-volumes.md
+<config path>: podTemplates["golang"].workspace.pvc: workspace.pvc was removed: the workspace is now ephemeral on every agent, and persistence comes from a named volume (declare it on the controller with kind: AgentVolume and mount it with spec.volumes); see docs/operator-manual/migrations/2026-10-20-named-volumes.md
 ```
 
 That agent-config check exists because that file's loader ignores unknown keys, so without it
@@ -225,7 +230,9 @@ cluster.
    PVCs. The Role needs `get`, `list`, `create` and `update` on `persistentvolumeclaims`.
    `manifests/base/k8s-agent/rbac.yaml` carries them; if you maintain your own Role, add them.
    The shipped Role previously had only `create` and `delete`. The agent never deletes a volume's
-   PVC itself.
+   PVC itself. (Superseded: with `reclaimPolicy: Delete` on an `AgentVolume` the agent now deletes
+   the PVC of a volume that left its set; see [Migrating to controller-declared
+   volumes](2026-11-18-controller-declared-volumes.md).)
 2. **`agentName`.** Required once `volumes` is set. It prefixes the PVC names
    (`<agentName>-<volume>`) and **must never change while the volumes hold data**: a new name
    provisions new, empty PVCs and leaves the old ones behind. The enrolled agent ID cannot serve,
@@ -251,7 +258,7 @@ Each has a symptom entry with the exact string to search for:
 - A run that fails to mount or prepare a volume: [mode flip](../../troubleshooting/steps-and-execution.md#run-fails-volume-was-last-used-by-a-nativeisolated-run), [clobber refusal](../../troubleshooting/steps-and-execution.md#run-fails-already-exists-and-was-not-created-by-this-agent-as-a-volume-link), [Windows symlink](../../troubleshooting/steps-and-execution.md#run-fails-cannot-link-on-windows), [shared volume at the workspace root](../../troubleshooting/steps-and-execution.md#run-fails-volume-is-shared-and-cannot-be-mounted-at-the-workspace-root).
 - A Pod stuck in `Pending` on a shared volume: [RWX unavailable](../../troubleshooting/steps-and-execution.md#a-shared-volume-never-binds-rwx-unavailable).
 - A workspace that cannot be emptied: [`prepare workspace failed: clean workspace`](../../troubleshooting/steps-and-execution.md#run-fails-with-prepare-workspace-failed-clean-workspace).
-- A Kubernetes agent that will not start: [volume configuration errors](../../troubleshooting/agents-and-enrollment.md#an-agent-fails-at-startup-with-a-volume-configuration-error).
+- A Kubernetes agent that will not start: [volume not-ready reasons](../../troubleshooting/agents-and-enrollment.md#a-kubernetes-agent-reports-a-volume-not-ready-get-apiv1agents).
 - An artifact step or cache failing against an older sidecar: [`-exclude` flag](../../troubleshooting/artifacts-and-storage.md#artifact-upload-fails-or-a-cache-is-never-restored-flag-provided-but-not-defined-exclude).
 
 ---

@@ -179,50 +179,98 @@ If the first enrollment fails (for example the agent cannot read the instance me
 body ID. Start the correct agent identity and do not share credential files.
 The controller also preserves the immutable claimed-run ownership check.
 
-### An agent fails at startup with a `volume ...` configuration error
+### A host agent fails at startup with `agent config: "volumes" is no longer supported`
 
-**Symptom:** a host agent or Kubernetes agent whose config declares `volumes:` exits at startup
-with one of:
-
-```
-volume "go-cache": mode must be "exclusive" or "shared", got ""
-volume "unity-main": path /data/ws/working0/unity is under /data/ws/working0, which the workspace GC sweeps (it removes aged directories below /data/ws/working*); choose a path outside any working* directory
-duplicate volume name "go-cache" in the agent config
-```
-
-and, on a Kubernetes agent:
+**Symptom:** a host agent exits at startup with:
 
 ```
-agentName is required when volumes are declared: it prefixes the PVC names, and it must stay the same across restarts or each restart would provision empty volumes
-volume "Go_Cache": the name becomes part of a PVC name, so it must be lower-case letters, digits and '-': ...
-volume "go-cache": the PVC name "ci-main-go-cache" is 70 characters, over the 63 a label allows; shorten the volume name or agentName
-volume "go-cache": size is required on the Kubernetes agent, which provisions a PVC of that size (for example 200Gi)
-volume "go-cache": look up PVC ci-main-go-cache: persistentvolumeclaims "ci-main-go-cache" is forbidden: User "system:serviceaccount:unified-cd:unified-cd-k8s-agent" cannot get resource "persistentvolumeclaims" ...
+agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)
 ```
 
-**Cause:** the agent validates its volume list before it registers, so a bad entry is a startup
-failure rather than a volume that quietly never appears. `mode` is required (`exclusive` or
-`shared`). A host path must be absolute and must not be, or sit under, a `working*` directory
-(the workspace GC sweeps those) or the agent's `detached` and dot-prefixed directories. On Kubernetes
-a volume name must be a DNS label (lower-case letters, digits and `-`), because the PVC is named
-`<agentName>-<volume>` and that name is at most 63 characters; a name that is legal on a host
-agent can therefore be illegal here. The last error is RBAC: the agent's Role needs `get`, `list`,
-`create` and `update` on `persistentvolumeclaims`, and an older Role carried only `create` and
-`delete`.
+**Cause:** the agent config file still has a top-level `volumes:` key (with entries, or as an empty
+list). Named volumes are declared on the controller with `kind: AgentVolume` and delivered to each
+matching agent in its heartbeat answer.
 
-**Fix:** correct the entry and restart the agent. For the RBAC error, upgrade the Helm release (or apply the release bundle) so the Role in
-[`charts/unified-cd/templates/agent/rbac.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/agent/rbac.yaml) is current (or add the verbs to your own) **before** rolling the agent
-image. Never "fix" a too-long or illegal PVC name by changing `agentName` on an agent whose
-volumes already hold data: a new `agentName` provisions new, empty PVCs and leaves the old ones
-behind. See [Named volumes on
-Kubernetes](../operator-manual/kubernetes-integration.md#named-volumes).
+**Fix:** delete the `volumes:` key from the agent config, apply an `AgentVolume` for each volume
+(`unified-cd apply -f volume.yaml`), and restart the agent. An existing directory at
+`<workspaceDir>/volumes/<name>` is used as it is, so data is kept; a `path:` that pointed elsewhere
+was already ignored.
+
+**Related warning:** if the agent logs `controller does not deliver AgentVolumes; upgrade the
+controller`, the controller answered its heartbeat with an empty 204 (an older controller). The agent
+offers no volumes until the controller is upgraded; it logs this once per start.
+
+### A Kubernetes agent fails at startup with `k8s agent config: "volumes" is no longer supported`
+
+**Symptom:** a Kubernetes agent exits at startup with:
+
+```
+k8s agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)
+```
+
+**Cause:** the k8s-agent config file still has a top-level `volumes:` key (with entries, or as an
+empty list). Named volumes are declared on the controller with `kind: AgentVolume` and delivered to
+each matching agent in its heartbeat answer.
+
+**Fix:** delete the `volumes:` key from the k8s-agent config, apply an `AgentVolume` for each volume
+(`unified-cd apply -f volume.yaml`) and restart the agent. An existing PVC named
+`<agentName>-<volume>` is used as it is, so data is kept. Keep `agentName` as it was: a new
+`agentName` provisions new, empty PVCs and leaves the old ones behind.
+
+### A Kubernetes agent fails at startup with `agentName "..." is not usable in a PVC name`
+
+**Symptom:** a Kubernetes agent exits at startup, logging `invalid config` with (for
+`agentName: Bad_Name`):
+
+```
+agentName "Bad_Name" is not usable in a PVC name: a lowercase RFC 1123 label must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character (e.g. 'my-name',  or '123-abc', regex used for validation is '[a-z0-9]([-a-z0-9]*[a-z0-9])?')
+```
+
+**Cause:** `agentName` in the k8s-agent config prefixes every volume PVC name
+(`<agentName>-<volume>`), so it must be a DNS label. The check runs at startup even when the agent
+serves no volumes, so an agent that started before controller-declared volumes can be refused
+after the upgrade.
+
+**Fix:** set `agentName` to lowercase letters, digits and `-`, starting and ending with a letter or
+digit (or remove it if the agent never serves volumes). If PVCs named with the old value already
+hold data, rename carefully: a new `agentName` provisions new, empty PVCs.
+
+### A Kubernetes agent reports a volume not ready (`GET /api/v1/agents`)
+
+**Symptom:** a volume appears in the agent's volume status with `ready: false` and one of these
+reasons, and jobs that need it stay `Queued`:
+
+```
+invalid: claim name "ci-main-<volume>" exceeds 63 characters
+invalid: agentName is not set in the agent config; it prefixes the PVC names
+create PVC: persistentvolumeclaims "ci-main-go-cache" is forbidden: User "system:serviceaccount:unified-cd:unified-cd-k8s-agent" cannot create resource "persistentvolumeclaims" ...
+create PVC: annotate ci-main-go-cache with reclaim policy: ... forbidden
+create PVC: ci-main-go-cache is being deleted
+reclaim: persistentvolumeclaims "ci-main-go-cache" is forbidden: ... cannot delete resource "persistentvolumeclaims" ...
+waiting for runs holding it to finish before switching to shared
+```
+
+**Cause:** the other volumes in the set are applied; only the one named is affected. `<agentName>-<volume>`
+must be at most 63 characters (shorten the `AgentVolume` name, or `agentName`); `agentName` must be
+set in the k8s-agent config; the agent's Role needs `get`, `list`, `create`, `update`, `patch` and
+`delete` on `persistentvolumeclaims` (a Role from before controller-declared volumes lacks `patch`);
+a PVC that is being deleted (it has a deletion timestamp, typically waiting for a Pod that still
+mounts it) is not used, and a fresh one is created once it is gone; and a `mode` change waits
+until no Pod holds the volume. The agent retries on every heartbeat.
+
+**Fix:** correct the cause. For the RBAC reasons, upgrade the Helm release (or apply the release
+bundle) so the Role in
+[`charts/unified-cd/templates/agent/rbac.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/agent/rbac.yaml)
+is current (or add the verbs to your own) **before** rolling the agent image. Never "fix" a
+too-long PVC name by changing `agentName` on an agent whose volumes already hold data. See [Named
+volumes on Kubernetes](../operator-manual/kubernetes-integration.md#named-volumes).
 
 ### A Kubernetes agent fails at startup with `workspace.pvc was removed`
 
 **Symptom:** the Kubernetes agent exits at startup:
 
 ```
-/etc/unified-cd/k8s-agent.yaml: podTemplates["golang"].workspace.pvc: workspace.pvc was removed: the workspace is now ephemeral on every agent, and persistence comes from an agent-owned named volume (declare it in the agent's config and mount it with spec.volumes); see docs/operator-manual/migrations/2026-10-20-named-volumes.md
+/etc/unified-cd/k8s-agent.yaml: podTemplates["golang"].workspace.pvc: workspace.pvc was removed: the workspace is now ephemeral on every agent, and persistence comes from a named volume (declare it on the controller with kind: AgentVolume and mount it with spec.volumes); see docs/operator-manual/migrations/2026-10-20-named-volumes.md
 ```
 
 **Cause:** an entry under `podTemplates` in the agent config still carries `workspace.pvc`. The

@@ -191,13 +191,11 @@ podImage: golang:1.24-alpine
 #                       or ~/.kube/config if running outside
 # kubeconfig: /path/to/kubeconfig
 
-# Agent-owned named volumes jobs mount with spec.volumes (see "Named volumes" below).
-# agentName is required when volumes is set and must never change while they hold data.
+# Named volumes are declared on the controller (kind: AgentVolume) and delivered to the
+# agent; there is no `volumes:` key here (see "Named volumes" below).
+# agentName prefixes the PVC names (<agentName>-<volume>); it is required for the agent
+# to provision any volume and must never change while they hold data.
 # agentName: ci-main
-# volumes:
-#   - name: go-cache
-#     mode: exclusive
-#     size: 20Gi
 
 # Templates registered with this agent (referenced by name in Job YAML)
 podTemplates:
@@ -416,18 +414,32 @@ PVC and a job mounts by name with `spec.volumes`. The job-author view is [Volume
 Between Runs](../user-guide/writing-jobs/volumes.md); the host-agent equivalent is [Named
 volumes](agents.md#named-volumes). This section is the Kubernetes specifics.
 
+A volume is declared on the controller with a `kind: AgentVolume` resource (`spec.mode`,
+`spec.size`, optional `spec.storageClassName` and `spec.agentSelector`, optional
+`spec.reclaimPolicy`); the controller delivers the set that matches this agent in every heartbeat
+answer, and the agent provisions a PVC for each. The agent config only needs the PVC name prefix:
+
 ```yaml
 # k8s-agent-config.yaml
-agentName: ci-main            # required when `volumes` is set
-volumes:
-  - name: unity-main          # a DNS label
-    mode: exclusive           # ReadWriteOnce
-    size: 200Gi               # required on Kubernetes
-    storageClassName: gp3     # optional; unset means the cluster default
-  - name: go-cache
-    mode: shared              # ReadWriteMany: needs an RWX StorageClass
-    size: 50Gi
+agentName: ci-main            # required to provision AgentVolumes
 ```
+
+```yaml
+# An AgentVolume (applied with `unified-cd apply -f`)
+apiVersion: unified-cd/v1
+kind: AgentVolume
+metadata:
+  name: unity-main            # a DNS label
+spec:
+  mode: exclusive             # ReadWriteOnce
+  size: 200Gi                 # required
+  storageClassName: gp3       # optional; unset means the cluster default
+  agentSelector: [kubernetes] # optional; empty means every agent
+  reclaimPolicy: Retain       # Retain (default) or Delete
+```
+
+A `volumes:` key in the k8s-agent config is refused at startup with
+`k8s agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)`.
 
 **`agentName`.** The PVCs are named `<agentName>-<volume>` (`ci-main-unity-main`). It is a separate
 field, not the agent ID, because the enrolled ID is `k8s:<cluster>:<namespace>:<pod UID>`: it
@@ -438,22 +450,62 @@ different `agentName`s. **Never change `agentName` while the volumes hold data**
 provisions new, empty PVCs and leaves the old ones behind, still holding your data and still
 costing money.
 
-**Volume names must be DNS labels.** Lower-case letters, digits and `-`, and `<agentName>-<volume>`
-must be at most 63 characters. A name that is legal on a host agent (which accepts almost any
-single path segment) can therefore be illegal here, and the agent refuses to start with an error
-naming the volume. A job that mounts such a volume on both agent types should use lower-case
-DNS-label names throughout.
+**Volume names must be DNS labels.** An `AgentVolume` name is always a DNS label (lower-case
+letters, digits and `-`), but `<agentName>-<volume>` must also be at most 63 characters. A volume
+that breaks that is not provisioned and is reported not ready with
+`invalid: claim name "<claim>" exceeds 63 characters` in `GET /api/v1/agents`; the rest of the set
+is applied. Shorten the volume name or `agentName`.
 
 **PVC lifecycle.**
 
-- The agent creates a missing PVC at startup with the configured `size`, the access mode implied
-  by `mode`, and the `storageClassName` **only if you set one**; left unset, the PVC requests the
-  cluster's default StorageClass rather than the empty class that means "no StorageClass".
-- It **never resizes or deletes** one. If an existing PVC's size or access mode differs from the
-  config it logs a warning and leaves the PVC alone; expand it through your StorageClass, or delete
-  and recreate it yourself.
-- A volume dropped from the config stops being advertised and its PVC stays, logged as an orphan.
-  Removing a line from a config file must not destroy tens of gigabytes.
+- When the controller delivers a volume, the agent creates a missing PVC with the volume's `size`,
+  the access mode implied by `mode`, and the `storageClassName` **only if you set one**; left unset,
+  the PVC requests the cluster's default StorageClass rather than the empty class that means "no
+  StorageClass". It labels the PVC `unified-cd/volume-owner=<agentName>` and records the reclaim
+  policy in the annotation `unified-cd/reclaim-policy`. A create that fails (quota, RBAC) is
+  reported as `create PVC: <error>` and retried on the next heartbeat; the other volumes are
+  unaffected.
+- An **existing** PVC with that name is used as it is and never recreated. If its size, access mode
+  or storage class differs from the `AgentVolume` the agent logs a warning and leaves the PVC alone:
+  it never resizes one. Expand it through your StorageClass, or delete and recreate it yourself.
+  Only a PVC that carries the owner label (one this agent, or an earlier agent of the same
+  `agentName`, created) is ever reclaimed; a PVC you created yourself is used but never deleted.
+- A volume that leaves the set (its `AgentVolume` is deleted, or its `agentSelector` stops matching
+  this agent) stops being advertised at once, even while a run holds it; the run finishes normally.
+  With `reclaimPolicy: Retain` (the default) the PVC stays, logged once as left behind: removing a
+  resource must not destroy tens of gigabytes. With **`reclaimPolicy: Delete` the agent deletes the
+  PVC**, and only when all of these hold:
+  - the PVC is named `<agentName>-<volume>` and carries the owner label and the `Delete` annotation;
+  - the volume has been absent from the delivered set for **10 minutes** without interruption. The
+    first agent to see it missing stamps the annotation `unified-cd/left-desired-at` (and logs
+    `volume left the set; reclaim scheduled after 10m0s`); any replica that is still delivered the
+    volume removes the annotation on its next heartbeat, which restarts the clock, so replicas
+    sharing an `agentName` whose sets briefly disagree do not delete it;
+  - no live Pod holds it, judged from the Pod list (by the Pods' volume labels and their PVC
+    volumes) that the agent reads under its volume lock at the start of that heartbeat's apply;
+  - the PVC's lock annotations (`unified-cd/volume-held-by`, `unified-cd/volume-held-at`) name no
+    holder stamped within the lock grace (two minutes), which covers a run on another replica that
+    has taken the lock but not created its Pod yet.
+
+  The delete is conditional on the PVC's `resourceVersion` from that same read, so a lock taken or
+  an annotation cleared in the meantime cancels it until the next heartbeat. The decision survives
+  an agent restart: the policy and the clock are read back from the annotations, not kept in
+  memory. A failed delete is reported as `reclaim: <error>` and retried. **This destroys the
+  data.** A volume that returns to the set before the PVC is deleted is never deleted. The grace
+  does not help with a change that lasts longer than 10 minutes: moving an `AgentVolume` between
+  AppSources, deleting and re-applying it later, restoring the controller database to a state
+  without it, or an `agentSelector`/label edit (see
+  [Named-Volume Hygiene](operations.md#named-volume-hygiene)).
+- An existing PVC that is being deleted (it has a deletion timestamp, for example while a Pod
+  still mounts it) is not offered; the volume is reported not ready with
+  `create PVC: <claim> is being deleted` and the agent creates a fresh PVC once it is gone.
+- A `mode` change is applied only while no Pod holds the volume; until then the volume is not
+  offered (status `waiting for runs holding it to finish before switching to <mode>`). The existing
+  PVC's access mode is not changed (a warning says so): recreate the PVC if the new mode needs a
+  different one.
+- A heartbeat that fails, answers `204` (a controller too old to deliver AgentVolumes) or carries no
+  volume set never removes, changes or deletes anything: the agent keeps its last known set, and
+  after a restart it offers no volumes until the first answer arrives.
 - **Free space.** The agent measures each volume's filesystem from inside the claim pod, before the
   run and again after it, and the controller exports it as
   `unifiedcd_agent_volume_filesystem_free_bytes{agent_name,volume}`. An idle volume is not measured,
@@ -534,11 +586,12 @@ not complete (attempt N of 5: ...); its volume locks were released and it will t
 that is merely slow costs a run time; one that never answers does not hold the run and its slot
 forever.
 
-**Roll the Role before the image.** With `volumes` configured the agent reads, lists, creates and
-updates PVCs at startup and when it takes a lock. The Role needs `get`, `list`, `create` and
-`update` on `persistentvolumeclaims`; the Role shipped before named volumes had only `create` and
-`delete`, so a new agent against an old Role fails at startup with a `forbidden` error. See [RBAC
-example](#rbac-example). It never deletes a volume's PVC itself.
+**Roll the Role before the image.** With AgentVolumes delivered, the agent reads, lists, creates,
+patches and updates PVCs on every heartbeat and when it takes a lock, and deletes the PVC of a
+`reclaimPolicy: Delete` volume. The Role needs `get`, `list`, `create`, `update`, `patch` and
+`delete` on `persistentvolumeclaims`; an older Role without `patch` makes the agent report each
+volume `create PVC: annotate ... with reclaim policy: ... forbidden`. See [RBAC
+example](#rbac-example).
 
 A run still waiting for its volumes when the agent starts draining is failed with `k8s: run
 abandoned: the agent is draining and the run was still waiting for its volumes ...` instead of
@@ -906,8 +959,9 @@ jobPodPolicy:
                                   # secret sources. May not name sidecarS3SecretName.
   allowImagePullSecrets: []       # imagePullSecrets a job may name (the kubelet pulls with the Secret; the
                                   # job cannot read it)
-  allowPersistentVolumeClaims: [] # claimName values of persistentVolumeClaim volumes. May not name this
-                                  # agent's own named-volume claims (<agentName>-<volume>).
+  allowPersistentVolumeClaims: [] # claimName values of persistentVolumeClaim volumes. A job that names
+                                  # one of this agent's named-volume claims (<agentName>-<volume>) is
+                                  # refused even if it is listed here.
   # Categories:
   allowHostAccess: false          # hostPath; hostNetwork / hostPID / hostIPC; hostPort / hostIP; probe and
                                   # lifecycle httpGet.host / tcpSocket.host
@@ -935,9 +989,11 @@ jobPodPolicy: ...`:
   An entry containing `*` gets `wildcards are not supported; list each name`.
 - `allowSecrets` naming `sidecarS3SecretName`:
   `allowSecrets: "<name>" is sidecarS3SecretName, the artifact sidecar's credentials, which job containers must never read`.
-- `allowPersistentVolumeClaims` naming one of this agent's named-volume claims
-  (`<agentName>-<volume>`):
-  `allowPersistentVolumeClaims: "<claim>" is this agent's named volume "<volume>"; jobs reach it only through spec.volumes, which holds its lock`.
+- A job whose `podTemplate` mounts one of this agent's named-volume claims (`<agentName>-<volume>`)
+  directly, whether or not `allowPersistentVolumeClaims` lists it. The volumes are delivered by the
+  controller, so this is checked against the live set when the run is claimed, not at startup; the
+  run fails with
+  `a volume of PersistentVolumeClaim "<claim>", this agent's named volume "<volume>"; jobs reach it only through spec.volumes, which holds its lock`.
 - An `allowPodSpecFields` or `allowVolumeTypes` entry that is not an opt-in name:
   `"<x>" is always allowed; remove it`, `"<x>" is governed by jobPodPolicy.<key>; use that instead`,
   `"<x>" cannot be allowed: it cannot be set when a Pod is created` (`ephemeralContainers`), or
@@ -1315,15 +1371,16 @@ This is comparable to how most CI systems hand artifact/cache sidecars static bu
 ## RBAC example
 
 Minimum permissions required for k8s-agent to operate. [`charts/unified-cd/templates/agent/rbac.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/agent/rbac.yaml) ships
-a Role that is a superset of this one (it keeps a `delete` verb on PVCs from before named volumes, which the agent does not use, and adds `update` and `patch` on Pods, which `podTemplate.reuse`
+a Role that is a superset of this one (it adds `update` and `patch` on Pods, which `podTemplate.reuse`
 needs to mark a finished Pod idle; without them reuse silently never happens).
 
-**When you add `volumes` to an agent, roll the Role first and the agent image second.** The agent
-reads, lists and creates its PVCs at startup and updates them to take and release an exclusive
-volume's lock. The Role that shipped before named volumes granted only `create` and `delete` on
-`persistentvolumeclaims`, so an agent started against it fails immediately with a `forbidden`
-error on `get`. The agent never deletes a volume's PVC itself. The `persistentvolumeclaims` rule
-below is needed only when the agent config declares `volumes`.
+**Roll the Role first and the agent image second.** The agent reads, lists and creates its PVCs on
+every heartbeat, patches them to record a volume's reclaim policy and when it left the set,
+updates them to take and release
+an exclusive volume's lock, and deletes the PVC of a `reclaimPolicy: Delete` volume. The Role that
+shipped before named volumes granted only `create` and `delete` on `persistentvolumeclaims`, and
+the one before controller-declared volumes lacked `patch`. The `persistentvolumeclaims` rule below
+is needed only when the controller delivers AgentVolumes to the agent.
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -1337,10 +1394,13 @@ rules:
     verbs: ["create", "get", "list", "delete", "watch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    # Only needed when the agent config declares `volumes`: the agent reads and
-    # creates its PVCs, and takes/releases an exclusive volume by updating the
-    # claim's `unified-cd/volume-held-by` annotation. It never deletes a PVC.
-    verbs: ["create", "get", "list", "update"]
+    # Only needed when the controller delivers AgentVolumes: the agent reads and
+    # creates its PVCs, records the reclaim policy and the left-set time (patch), takes/releases an
+    # exclusive volume by updating the claim's `unified-cd/volume-held-by`
+    # annotation, and deletes the PVC of a `reclaimPolicy: Delete` volume
+    # (only one it created, once it has been out of the set for 10 minutes and
+    # no Pod or lock holds it).
+    verbs: ["create", "get", "list", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

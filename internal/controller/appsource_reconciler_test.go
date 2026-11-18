@@ -216,6 +216,36 @@ func TestReconciler_AppliesAllKinds(t *testing.T) {
 	}
 }
 
+func TestReconciler_SyncsAndPrunesAgentVolume(t *testing.T) {
+	pg := storetest.NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.UpsertAppSource(ctx, "vols", []byte(`{"repoURL":"https://github.com/org/repo","targetRevision":"main","path":"jobs/","syncPolicy":{"prune":true}}`))
+	require.NoError(t, err)
+
+	vol := []byte("apiVersion: unified-cd/v1\nkind: AgentVolume\nmetadata:\n  name: cache\nspec:\n  mode: shared\n  size: 10Gi\n")
+	fetcher := &mockAppSourceFetcher{sha: "sha1", files: map[string][]byte{"vol.yaml": vol}}
+	reconcileAppSources(ctx, pg, fetcher, nil)
+
+	rec, err := pg.GetAgentVolume(ctx, "cache")
+	require.NoError(t, err)
+	require.NotNil(t, rec, "AgentVolume not applied")
+
+	as, err := pg.GetAppSource(ctx, "vols")
+	require.NoError(t, err)
+	require.Equal(t, []store.ResourceRef{{Kind: "AgentVolume", Name: "cache"}}, as.ManagedResources)
+	// Age the last sync so the next reconcile is not skipped by the interval.
+	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "vols", "sha1", time.Now().Add(-10*time.Minute), as.ManagedResources))
+
+	fetcher.sha = "sha2"
+	fetcher.files = map[string][]byte{"jobs/build.yaml": []byte(jobYAML)}
+	reconcileAppSources(ctx, pg, fetcher, nil)
+
+	rec, err = pg.GetAgentVolume(ctx, "cache")
+	require.NoError(t, err)
+	assert.Nil(t, rec, "AgentVolume should be pruned")
+}
+
 func TestReconciler_PruneNonCascadeAppSource(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()

@@ -32,25 +32,48 @@ func volSpec(names ...[]string) dsl.Spec {
 // holds no volume state, so the only honest answer is an unschedulable run
 // with a reason that names the volume.
 func TestSchedulability_UnknownVolume(t *testing.T) {
-	s := EvaluateSchedulability(volSpec([]string{"unity-main"}), []api.AgentInfo{volAgent("cache"), volAgent()})
+	s := EvaluateSchedulability(volSpec([]string{"unity-main"}), []api.AgentInfo{volAgent("cache"), volAgent()}, declared("unity-main"))
 	assert.False(t, s.Satisfiable)
 	assert.Contains(t, s.Reason, "unity-main")
 	assert.Contains(t, s.Reason, "no agent declares")
 	assert.Equal(t, [][]string{{"unity-main"}}, s.RequiredVolumes)
 }
 
+func declared(names ...string) map[string]bool {
+	m := map[string]bool{}
+	for _, n := range names {
+		m[n] = true
+	}
+	return m
+}
+
+// A volume with no AgentVolume is reported as not declared; one that is declared
+// but advertised by no agent keeps the "no agent declares volume" reason.
+func TestSchedulabilityUndeclaredVolume(t *testing.T) {
+	s := EvaluateSchedulability(volSpec([]string{"x"}), []api.AgentInfo{volAgent()}, nil)
+	assert.False(t, s.Satisfiable)
+	assert.Equal(t, `no AgentVolume "x" is declared`, s.Reason)
+
+	s = EvaluateSchedulability(volSpec([]string{"x"}), []api.AgentInfo{volAgent()}, declared("x"))
+	assert.False(t, s.Satisfiable)
+	assert.Equal(t, `no agent declares volume "x"`, s.Reason)
+
+	s = EvaluateSchedulability(volSpec([]string{"x", "y"}), []api.AgentInfo{volAgent()}, nil)
+	assert.Contains(t, s.Reason, "is declared")
+}
+
 func TestSchedulability_VolumeAdvertised(t *testing.T) {
-	s := EvaluateSchedulability(volSpec([]string{"unity-main"}), []api.AgentInfo{volAgent("unity-main")})
+	s := EvaluateSchedulability(volSpec([]string{"unity-main"}), []api.AgentInfo{volAgent("unity-main")}, nil)
 	assert.True(t, s.Satisfiable, s.Reason)
 	assert.Empty(t, s.Reason)
 }
 
 // A candidate set is an OR: any one advertised candidate satisfies it.
 func TestSchedulability_CandidateSetSatisfiedByAnyCandidate(t *testing.T) {
-	s := EvaluateSchedulability(volSpec([]string{"unity-a", "unity-b"}), []api.AgentInfo{volAgent("unity-b")})
+	s := EvaluateSchedulability(volSpec([]string{"unity-a", "unity-b"}), []api.AgentInfo{volAgent("unity-b")}, nil)
 	assert.True(t, s.Satisfiable, s.Reason)
 
-	s = EvaluateSchedulability(volSpec([]string{"unity-a", "unity-b"}), []api.AgentInfo{volAgent("unity-c")})
+	s = EvaluateSchedulability(volSpec([]string{"unity-a", "unity-b"}), []api.AgentInfo{volAgent("unity-c")}, declared("unity-a", "unity-b"))
 	assert.False(t, s.Satisfiable)
 	assert.Contains(t, s.Reason, "unity-a")
 	assert.Contains(t, s.Reason, "unity-b")
@@ -63,17 +86,17 @@ func TestSchedulability_EveryVolumeSetMustBeSatisfied(t *testing.T) {
 	spec := volSpec([]string{"unity-main"}, []string{"build-cache"})
 
 	// One agent has both.
-	s := EvaluateSchedulability(spec, []api.AgentInfo{volAgent("unity-main", "build-cache")})
+	s := EvaluateSchedulability(spec, []api.AgentInfo{volAgent("unity-main", "build-cache")}, nil)
 	assert.True(t, s.Satisfiable, s.Reason)
 
 	// One set is advertised nowhere: the reason names the missing one only.
-	s = EvaluateSchedulability(spec, []api.AgentInfo{volAgent("unity-main")})
+	s = EvaluateSchedulability(spec, []api.AgentInfo{volAgent("unity-main")}, nil)
 	assert.False(t, s.Satisfiable)
 	assert.Contains(t, s.Reason, "build-cache")
 	assert.NotContains(t, s.Reason, "unity-main")
 
 	// Each set is advertised somewhere, but never together on one agent.
-	s = EvaluateSchedulability(spec, []api.AgentInfo{volAgent("unity-main"), volAgent("build-cache")})
+	s = EvaluateSchedulability(spec, []api.AgentInfo{volAgent("unity-main"), volAgent("build-cache")}, nil)
 	assert.False(t, s.Satisfiable)
 	assert.Contains(t, s.Reason, "no single agent")
 }
@@ -81,7 +104,7 @@ func TestSchedulability_EveryVolumeSetMustBeSatisfied(t *testing.T) {
 // A volume name that is a template resolves only at queue time, so it cannot
 // be judged here. Like a templated selector, it is flagged rather than warned.
 func TestSchedulability_TemplatedVolumeNameIsDeferred(t *testing.T) {
-	s := EvaluateSchedulability(volSpec([]string{"unity-{{ .Params.LIB }}"}), []api.AgentInfo{volAgent()})
+	s := EvaluateSchedulability(volSpec([]string{"unity-{{ .Params.LIB }}"}), []api.AgentInfo{volAgent()}, nil)
 	assert.True(t, s.Satisfiable, s.Reason)
 	assert.True(t, s.VolumesDependOnParams)
 }
@@ -109,9 +132,15 @@ func TestAPI_GetJobSchedulability_UnknownVolume(t *testing.T) {
 
 	got := get()
 	assert.False(t, got.Satisfiable)
+	assert.Equal(t, `no AgentVolume "unity-main" is declared`, got.Reason)
+	assert.Equal(t, [][]string{{"unity-main"}}, got.RequiredVolumes)
+
+	// Once an AgentVolume is declared the reason becomes "no agent has it".
+	require.NoError(t, pg.UpsertAgentVolume(t.Context(), "unity-main", []byte(`{"mode":"shared","size":"1Gi"}`)))
+	got = get()
+	assert.False(t, got.Satisfiable)
 	assert.Contains(t, got.Reason, "no agent declares")
 	assert.Contains(t, got.Reason, "unity-main")
-	assert.Equal(t, [][]string{{"unity-main"}}, got.RequiredVolumes)
 
 	require.NoError(t, pg.UpsertAgent(t.Context(), "ag2", "host2", "linux", "dev", nil, []string{"native", "container"}, []string{"unity-main"}, nil))
 	got = get()
@@ -120,7 +149,7 @@ func TestAPI_GetJobSchedulability_UnknownVolume(t *testing.T) {
 
 // A job with no volumes is unaffected.
 func TestSchedulability_NoVolumes(t *testing.T) {
-	s := EvaluateSchedulability(dsl.Spec{Native: true}, []api.AgentInfo{volAgent()})
+	s := EvaluateSchedulability(dsl.Spec{Native: true}, []api.AgentInfo{volAgent()}, nil)
 	assert.True(t, s.Satisfiable)
 	assert.Empty(t, s.RequiredVolumes)
 	assert.False(t, s.VolumesDependOnParams)

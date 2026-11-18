@@ -128,8 +128,7 @@ func TestReserveSet_AnAbandonedSearchIsLoggedOnceOutsideTheLock(t *testing.T) {
 	for _, n := range append(namesN("v", 10), "w0", "w1") {
 		cfgs = append(cfgs, exclusive(n))
 	}
-	m, err := NewVolumeManager(t.TempDir(), cfgs)
-	require.NoError(t, err)
+	m := mustVolumeManager(t, t.TempDir(), cfgs...)
 
 	h := &recordingHandler{m: m}
 	prev := slog.Default()
@@ -139,7 +138,7 @@ func TestReserveSet_AnAbandonedSearchIsLoggedOnceOutsideTheLock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	waited := 0
-	_, _, err = m.ReserveSet(ctx, "run-x", explodingEntries(), nil, func() { waited++ })
+	_, _, err := m.ReserveSet(ctx, "run-x", explodingEntries(), nil, func() { waited++ })
 
 	require.ErrorIs(t, err, context.DeadlineExceeded, "the run waits; it is neither failed nor given a volume")
 	assert.Equal(t, 1, waited)

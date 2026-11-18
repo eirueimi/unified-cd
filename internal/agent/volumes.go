@@ -12,10 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"k8s.io/apimachinery/pkg/api/resource"
-
-	"github.com/eirueimi/unified-cd/internal/config"
+	"time"
 )
 
 // Volume modes, as spelled in the agent config and returned by ModeOf.
@@ -26,26 +23,38 @@ const (
 	VolumeModeShared = "shared"
 )
 
-// volume is one resolved entry of the agent's `volumes` config.
+// volume is one live entry of the agent's volume set.
 type volume struct {
 	mode string
 	path string
 	// size is the advisory capacity in bytes; 0 means none was declared.
 	size int64
+	// retiring: the volume left the desired set while runs still hold it. It is
+	// not offered or assigned; it is forgotten when the last holder releases.
+	retiring bool
+	// switching: the desired mode differs from mode and holders must release
+	// first. The volume is not offered until the switch completes.
+	switching bool
 }
 
-// VolumeManager owns the agent's named volumes: it validates the operator's
-// declarations, creates the backing directories, and enforces the exclusion
-// the declarations promise. Nothing about it is persisted: every volume is
-// free when the agent starts, because the agent has lost all its runs.
+// offered reports whether new claims may be given the volume.
+func (v *volume) offered() bool { return !v.retiring && !v.switching }
+
+// VolumeManager owns the agent's named volumes: it applies the set the
+// controller delivers (Apply), creates the backing directories, and enforces
+// the exclusion the declarations promise. Holders are not persisted: every
+// volume is free when the agent starts, because the agent has lost all its
+// runs. Only the reclaim policy of served volumes is recorded (see
+// volumes_apply.go).
 //
 // A volume name exists once per agent, so two agents declaring the same name
 // hold two independent copies; the controller stores no volume state.
 type VolumeManager struct {
-	vols map[string]*volume
 	base string // absolute workspace dir
 
 	mu sync.Mutex
+	// vols holds every live entry, offered or retiring. Guarded by mu.
+	vols map[string]*volume
 	// holders maps a volume name to the set of runs currently holding it. An
 	// exclusive volume has at most one; a shared one any number.
 	holders map[string]map[string]struct{}
@@ -69,6 +78,16 @@ type VolumeManager struct {
 	// failure a real unlink only produces on a damaged or busy filesystem.
 	removeLink func(string) error
 
+	// removeAll deletes a reclaimed volume's directory (after it was moved
+	// aside, in the background); os.RemoveAll, a field so a test can inject a
+	// failure or a slow delete.
+	removeAll func(string) error
+	// rename moves a reclaimed volume's directory aside; os.Rename, a field so
+	// a test can inject a failure.
+	rename func(oldpath, newpath string) error
+	// now is time.Now; a field so a test can move the reclaim grace clock.
+	now func() time.Time
+
 	// linkMu serialises edits to the on-disk registry of links native runs
 	// have created (see volumes_mount.go), which every claim slot writes.
 	linkMu sync.Mutex
@@ -80,83 +99,52 @@ type VolumeManager struct {
 	// locks is the diagnostic that notices another agent process on the same
 	// volume directory (volumes_lock.go). It decides nothing.
 	locks *volumeLockState
+
+	// applyMu serialises Apply and guards reclaim.
+	applyMu sync.Mutex
+	// reclaim maps every served volume's name to its last known reclaim policy;
+	// it mirrors <base>/.ucd-volume-reclaim.json. Guarded by applyMu.
+	reclaim map[string]string
+	// leftSetAt holds, for a Delete volume that is no longer delivered, when
+	// it was first seen absent; it is reclaimed only once reclaimGrace has
+	// passed since. Persisted with reclaim. Guarded by applyMu.
+	leftSetAt map[string]time.Time
+
+	// trash is the background deleter's queue of moved-aside reclaimed
+	// directories (volumes_apply.go). Guarded by trashMu.
+	trashMu   sync.Mutex
+	trash     []string
+	trashBusy bool
+	trashWG   sync.WaitGroup
 }
 
-// NewVolumeManager validates cfgs and creates each volume's backing directory.
-// base is the agent's workspace directory; a volume without an explicit Path
-// lives at <base>/volumes/<name>. Nothing is created unless every entry is
-// valid.
-func NewVolumeManager(base string, cfgs []config.VolumeConfig) (*VolumeManager, error) {
+// NewVolumeManager returns an empty manager for the workspace directory base;
+// volumes arrive through Apply. It loads the reclaim record a previous process
+// left, so the first Apply can reclaim volumes that left the set meanwhile, and
+// schedules the background removal of any reclaimed data a previous process
+// moved aside but did not finish deleting.
+func NewVolumeManager(base string) (*VolumeManager, error) {
 	absBase, err := filepath.Abs(base)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace directory %q: %w", base, err)
 	}
 	m := &VolumeManager{
-		vols:    make(map[string]*volume, len(cfgs)),
+		vols:    make(map[string]*volume),
 		base:    absBase,
 		holders: make(map[string]map[string]struct{}),
 		paths:   make(map[string]struct{}),
 		pinned:  make(map[string]struct{}),
 
 		removeLink: os.Remove,
+		removeAll:  os.RemoveAll,
+		rename:     os.Rename,
+		now:        time.Now,
 		changed:    make(chan struct{}),
 		walk:       filepath.WalkDir,
 		locks:      newVolumeLockState(),
 	}
-
-	for _, c := range cfgs {
-		if err := validateVolumeConfigName(c.Name); err != nil {
-			return nil, err
-		}
-		if _, dup := m.vols[c.Name]; dup {
-			return nil, fmt.Errorf("duplicate volume name %q in the agent config", c.Name)
-		}
-		switch c.Mode {
-		case VolumeModeExclusive, VolumeModeShared:
-		default:
-			return nil, fmt.Errorf("volume %q: mode must be %q or %q, got %q", c.Name, VolumeModeExclusive, VolumeModeShared, c.Mode)
-		}
-		var size int64
-		if c.Size != "" {
-			q, err := resource.ParseQuantity(c.Size)
-			if err != nil || q.Value() <= 0 {
-				return nil, fmt.Errorf("volume %q: size %q is not a positive quantity such as 200Gi", c.Name, c.Size)
-			}
-			size = q.Value()
-		}
-		p := filepath.Join(absBase, "volumes", c.Name)
-		if c.Path != "" {
-			if !filepath.IsAbs(c.Path) {
-				return nil, fmt.Errorf("volume %q: path %q must be absolute", c.Name, c.Path)
-			}
-			p = filepath.Clean(c.Path)
-		}
-		if err := checkOutOfGCReach(absBase, p); err != nil {
-			return nil, fmt.Errorf("volume %q: %w", c.Name, err)
-		}
-		for other, ov := range m.vols {
-			if pathWithin(ov.path, p) || pathWithin(p, ov.path) {
-				return nil, fmt.Errorf("volume %q: path %s overlaps volume %q at %s; two volumes must not share data", c.Name, p, other, ov.path)
-			}
-		}
-		m.vols[c.Name] = &volume{mode: c.Mode, path: p, size: size}
-	}
-
-	for _, name := range m.Names() {
-		v := m.vols[name]
-		if err := os.MkdirAll(v.path, 0o755); err != nil {
-			return nil, fmt.Errorf("volume %q: create %s: %w", name, v.path, err)
-		}
-		// The lexical check above cannot see a symlink that leads into a
-		// working<N> directory; check the resolved location too.
-		rp, rerr := filepath.EvalSymlinks(v.path)
-		rb, berr := filepath.EvalSymlinks(absBase)
-		if rerr == nil && berr == nil {
-			if err := checkOutOfGCReach(rb, rp); err != nil {
-				return nil, fmt.Errorf("volume %q: %s resolves to %s: %w", name, v.path, rp, err)
-			}
-		}
-	}
+	m.reclaim, m.leftSetAt = m.loadReclaimRecord()
+	m.scheduleLeftoverTrash()
 	return m, nil
 }
 
@@ -224,18 +212,39 @@ func checkOutOfGCReach(base, p string) error {
 // that declares no volumes holds (Agent.Volumes): it advertises nothing,
 // reports nothing busy, and cannot reserve anything.
 
-// Names returns the declared volume names, sorted. This is what the agent
+// Names returns the offered volume names, sorted: ready volumes only, not
+// retiring ones and not ones waiting to switch mode. This is what the agent
 // advertises as capabilities.
 func (m *VolumeManager) Names() []string {
 	if m == nil {
 		return []string{}
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	names := make([]string, 0, len(m.vols))
-	for n := range m.vols {
-		names = append(names, n)
+	for n, v := range m.vols {
+		if v.offered() {
+			names = append(names, n)
+		}
 	}
 	sort.Strings(names)
 	return names
+}
+
+// Paths returns the host directory of every live volume, offered or retiring,
+// sorted. The storage sampler measures these.
+func (m *VolumeManager) Paths() []string {
+	if m == nil {
+		return []string{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.vols))
+	for _, v := range m.vols {
+		out = append(out, v.path)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ModeOf returns the volume's mode, or "" for a name this agent does not
@@ -244,6 +253,8 @@ func (m *VolumeManager) ModeOf(name string) string {
 	if m == nil {
 		return ""
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if v, ok := m.vols[name]; ok {
 		return v.mode
 	}
@@ -256,6 +267,8 @@ func (m *VolumeManager) PathOf(name string) string {
 	if m == nil {
 		return ""
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if v, ok := m.vols[name]; ok {
 		return v.path
 	}
@@ -302,18 +315,13 @@ func (m *VolumeManager) reserve(ctx context.Context, runID string, names []strin
 	if runID == "" {
 		return "", nil, errors.New("reserve volume: run ID is required")
 	}
-	var known []string
-	for _, n := range names {
-		if _, ok := m.vols[n]; ok {
-			known = append(known, n)
-		}
-	}
-	if len(known) == 0 {
-		return "", nil, fmt.Errorf("reserve volume: this agent declares none of %q", names)
-	}
-
 	for {
 		m.mu.Lock()
+		known := m.usableLocked(runID, names)
+		if len(known) == 0 {
+			m.mu.Unlock()
+			return "", nil, fmt.Errorf("reserve volume: this agent declares none of %q", names)
+		}
 		for _, n := range known {
 			if _, ok := m.holders[n][runID]; ok {
 				m.mu.Unlock()
@@ -321,7 +329,7 @@ func (m *VolumeManager) reserve(ctx context.Context, runID string, names []strin
 			}
 		}
 		for _, n := range known {
-			if m.vols[n].mode == VolumeModeShared || len(m.holders[n]) == 0 {
+			if v := m.vols[n]; !v.switching && (v.mode == VolumeModeShared || len(m.holders[n]) == 0) {
 				if m.holders[n] == nil {
 					m.holders[n] = make(map[string]struct{})
 				}
@@ -344,6 +352,24 @@ func (m *VolumeManager) reserve(ctx context.Context, runID string, names []strin
 			return "", nil, fmt.Errorf("waiting for volume %q: %w", known, ctx.Err())
 		}
 	}
+}
+
+// usableLocked filters names to the volumes runID may be a candidate for: all but
+// retiring ones, plus any retiring one the run already holds. A volume waiting
+// to switch mode stays a candidate (so a run already waiting for it keeps
+// waiting) but is not free, see assignLocked and reserve. m.mu must be held.
+func (m *VolumeManager) usableLocked(runID string, names []string) []string {
+	var out []string
+	for _, n := range names {
+		v, ok := m.vols[n]
+		if !ok {
+			continue
+		}
+		if _, mine := m.holders[n][runID]; mine || !v.retiring {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // ReserveSet acquires everything a run needs in one atomic step: one volume for
@@ -384,17 +410,6 @@ func (m *VolumeManager) ReserveSet(ctx context.Context, runID string, volumeSets
 	if runID == "" {
 		return nil, nil, errors.New("reserve volumes: run ID is required")
 	}
-	declared := make([][]string, len(volumeSets))
-	for i, set := range volumeSets {
-		for _, n := range set {
-			if _, ok := m.vols[n]; ok {
-				declared[i] = append(declared[i], n)
-			}
-		}
-		if len(declared[i]) == 0 {
-			return nil, nil, fmt.Errorf("reserve volumes: this agent declares none of %q", set)
-		}
-	}
 	var keys []string
 	seen := map[string]bool{}
 	for _, p := range absPaths {
@@ -411,6 +426,17 @@ func (m *VolumeManager) ReserveSet(ctx context.Context, runID string, volumeSets
 	warnedAbandoned := false
 	for {
 		m.mu.Lock()
+		// Recomputed on every pass: a volume can leave the set while the call
+		// waits, and the wait must then fail rather than go on for a volume that
+		// is gone.
+		declared := make([][]string, len(volumeSets))
+		for i, set := range volumeSets {
+			declared[i] = m.usableLocked(runID, set)
+			if len(declared[i]) == 0 {
+				m.mu.Unlock()
+				return nil, nil, fmt.Errorf("reserve volumes: this agent declares none of %q", set)
+			}
+		}
 		chosen, ok, abandoned := m.assignLocked(runID, declared, keys)
 		if ok {
 			var added []string
@@ -448,7 +474,7 @@ func (m *VolumeManager) ReserveSet(ctx context.Context, runID string, volumeSets
 		// search is re-run on every wake-up and would say the same each time.
 		if abandoned && !warnedAbandoned {
 			warnedAbandoned = true
-			slog.Warn(VolumeSearchAbandonedMsg(len(declared)), "runId", runID)
+			slog.Warn(VolumeSearchAbandonedMsg(len(volumeSets)), "runId", runID)
 		}
 		if onWait != nil {
 			onWait()
@@ -475,8 +501,12 @@ func (m *VolumeManager) assignLocked(runID string, declared [][]string, pathKeys
 		}
 	}
 	free := func(n string) bool {
+		v := m.vols[n]
+		if v == nil {
+			return false
+		}
 		_, mine := m.holders[n][runID]
-		return mine || m.vols[n].mode == VolumeModeShared || len(m.holders[n]) == 0
+		return mine || (!v.switching && (v.mode == VolumeModeShared || len(m.holders[n]) == 0))
 	}
 	return ChooseVolumesAvoiding(declared, free, func(n string) bool {
 		_, g := m.gated[n]
@@ -785,7 +815,9 @@ func (m *VolumeManager) Busy() []string {
 	defer m.mu.Unlock()
 	busy := []string{}
 	for n, hs := range m.holders {
-		if len(hs) > 0 && m.vols[n].mode == VolumeModeExclusive {
+		// A held volume always has an entry (a retiring one is kept until its
+		// last holder releases); the nil check is defence, not an expected case.
+		if v := m.vols[n]; len(hs) > 0 && v != nil && v.mode == VolumeModeExclusive {
 			busy = append(busy, n)
 		}
 	}
@@ -809,18 +841,25 @@ func (m *VolumeManager) CheckUsage(name string) {
 	if m == nil {
 		return
 	}
+	m.mu.Lock()
 	v, ok := m.vols[name]
-	if !ok || v.size == 0 {
+	var vpath string
+	var vsize int64
+	if ok {
+		vpath, vsize = v.path, v.size
+	}
+	m.mu.Unlock()
+	if !ok || vsize == 0 {
 		return
 	}
 	used, skipped, firstErr := m.measureUsage(name)
 	if skipped > 0 {
 		slog.Warn("volume usage could not be measured completely: some entries could not be read, so the figure is a lower bound (likely root-owned files left by an isolated run on a rootful container runtime)",
-			"volume", name, "path", v.path, "unreadableEntries", skipped, "firstError", firstErr)
+			"volume", name, "path", vpath, "unreadableEntries", skipped, "firstError", firstErr)
 	}
-	if used > v.size {
+	if used > vsize {
 		slog.Warn("volume usage exceeds its advisory size; the size is not enforced",
-			"volume", name, "path", v.path, "usedBytes", used, "sizeBytes", v.size)
+			"volume", name, "path", vpath, "usedBytes", used, "sizeBytes", vsize)
 	}
 }
 
@@ -828,8 +867,8 @@ func (m *VolumeManager) CheckUsage(name string) {
 // counts entries that could not be read (permission errors, files that vanish
 // mid-walk) and firstErr is the first such error. Symlinks are not followed.
 func (m *VolumeManager) measureUsage(name string) (used int64, skipped int, firstErr error) {
-	v, ok := m.vols[name]
-	if !ok {
+	vpath := m.PathOf(name)
+	if vpath == "" {
 		return 0, 0, nil
 	}
 	note := func(err error) {
@@ -838,7 +877,7 @@ func (m *VolumeManager) measureUsage(name string) (used int64, skipped int, firs
 			firstErr = err
 		}
 	}
-	walkErr := m.walk(v.path, func(_ string, d fs.DirEntry, err error) error {
+	walkErr := m.walk(vpath, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// Returning nil keeps the walk going; for a directory that could
 			// not be listed, its contents are simply not counted.

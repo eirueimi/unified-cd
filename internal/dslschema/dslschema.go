@@ -42,6 +42,7 @@ var rootDisplayOrder = []string{
 	"WebhookReceiver",
 	"AppSource",
 	"GitCredential",
+	"AgentVolume",
 }
 
 // deriveRoots returns the top-level YAML resource kinds: every parsed struct

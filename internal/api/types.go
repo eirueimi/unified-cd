@@ -114,6 +114,30 @@ type HeartbeatRequest struct {
 	// whose measurement gave up): the controller then drops whatever it held,
 	// so a silent agent loses its series instead of keeping a stale one alive.
 	Storage *AgentStorage `json:"storage,omitempty"`
+
+	// VolumeStatus is the agent's state of each controller-declared volume it
+	// was asked to provision. It is replaced wholesale on every beat; nil
+	// clears what the controller holds.
+	VolumeStatus []AgentVolumeStatus `json:"volumeStatus,omitempty"`
+}
+
+// DesiredVolume is one controller-declared volume an agent should provision.
+// ReclaimPolicy is always filled by the controller ("Retain" or "Delete").
+type DesiredVolume struct {
+	Name             string `json:"name"`
+	Mode             string `json:"mode"`
+	Size             string `json:"size"`
+	StorageClassName string `json:"storageClassName,omitempty"`
+	ReclaimPolicy    string `json:"reclaimPolicy"`
+}
+
+// HeartbeatResponse is the body of a heartbeat answer. Volumes is the
+// authoritative set of AgentVolumes the agent should offer (empty, never
+// null, when there are none), sorted by name. Revision is the hex SHA-256 of
+// the canonical JSON of Volumes, so an agent can tell whether the set changed.
+type HeartbeatResponse struct {
+	Volumes  []DesiredVolume `json:"volumes"`
+	Revision string          `json:"revision"`
 }
 
 // PodBinding names the Kubernetes Pod a heartbeating Kubernetes agent
@@ -144,6 +168,10 @@ type AgentRegisterRequest struct {
 	Capabilities []string          `json:"capabilities,omitempty"`
 	// Volumes lists the named volumes the agent declares in its own config.
 	Volumes []string `json:"volumes,omitempty"`
+	// VolumesKnown says Volumes is authoritative even when empty (the agent has
+	// received its controller-declared set). When false, an empty Volumes keeps
+	// the stored list.
+	VolumesKnown bool `json:"volumesKnown,omitempty"`
 }
 
 // ClaimRequest is the optional JSON body of a normal (non-detached) claim.
@@ -166,6 +194,12 @@ type ClaimRequest struct {
 	// lets the recreated row route volume jobs again. Empty (or absent) means
 	// "not supplied" and never clears the recorded volumes.
 	Volumes []string `json:"volumes,omitempty"`
+	// VolumesKnown says Volumes is authoritative even when empty: the agent has
+	// received its controller-declared set, so an empty list means "none".
+	// False (an older agent, or a restart while the controller was down) keeps
+	// the stored list when Volumes is empty, for display only: such a claim is
+	// routed as offering no volumes.
+	VolumesKnown bool `json:"volumesKnown,omitempty"`
 	// Capabilities is the capability set the agent advertised at registration
 	// (native, container, pod). Registration is the only other writer of that
 	// column, and a heartbeat can recreate an agent row without it, so a row
@@ -449,6 +483,20 @@ type VarsMeta struct {
 	Vars map[string]string `json:"vars"`
 }
 
+// ---- agent volumes ----
+
+// ApplyAgentVolumeRequest is the request for registering or updating an AgentVolume manifest YAML.
+type ApplyAgentVolumeRequest struct {
+	YAML string `json:"yaml"`
+}
+
+// AgentVolumeMeta is the metadata for an AgentVolume manifest (for API responses).
+type AgentVolumeMeta struct {
+	Name      string              `json:"name"`
+	Spec      dsl.AgentVolumeSpec `json:"spec"`
+	UpdatedAt time.Time           `json:"updatedAt"`
+}
+
 // ---- schedules ----
 
 // ApplyScheduleRequest is the request for registering or updating a Schedule YAML.
@@ -478,6 +526,17 @@ type AgentInfo struct {
 	Capabilities []string          `json:"capabilities,omitempty"`
 	// Volumes lists the named volumes the agent declares in its own config.
 	Volumes []string `json:"volumes,omitempty"`
+	// VolumeStatus is the agent's last reported state of each controller-declared
+	// volume it was asked to provision.
+	VolumeStatus []AgentVolumeStatus `json:"volumeStatus,omitempty"`
+}
+
+// AgentVolumeStatus is one controller-declared volume's provisioning state on
+// an agent. Reason is set when Ready is false.
+type AgentVolumeStatus struct {
+	Name   string `json:"name"`
+	Ready  bool   `json:"ready"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // FilesystemStats is one filesystem's free and total capacity, in bytes.

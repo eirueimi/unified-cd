@@ -25,7 +25,6 @@ import (
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
@@ -155,20 +154,22 @@ func (p *barrierPM) ListPods(ctx context.Context, sel string) (*corev1.PodList, 
 
 // lockReplica is one k8s-agent process of a Deployment: same config, same
 // cluster, its own memory.
-func lockReplica(cs *fake.Clientset, ctlURL string, pm podManager, vols []config.VolumeConfig) *K8sAgent {
-	return &K8sAgent{
-		cfg:    Config{AgentID: "k8s-replica", AgentName: "agent1", Namespace: testVolNS, PodImage: "ubuntu:22.04", Volumes: vols},
+func lockReplica(cs *fake.Clientset, ctlURL string, pm podManager, vols []api.DesiredVolume) *K8sAgent {
+	a := &K8sAgent{
+		cfg:    Config{AgentID: "k8s-replica", AgentName: "agent1", Namespace: testVolNS, PodImage: "ubuntu:22.04"},
 		client: agentlib.NewClient(ctlURL, "tok"),
 		pm:     pm,
 		kube:   cs,
 	}
+	seedVolumes(a, vols...)
+	return a
 }
 
-func lockCluster(t *testing.T, vols ...config.VolumeConfig) *fake.Clientset {
+func lockCluster(t *testing.T, vols ...api.DesiredVolume) *fake.Clientset {
 	t.Helper()
 	cs := fake.NewSimpleClientset()
 	installPVCCompareAndSwap(cs)
-	require.NoError(t, EnsurePVCs(context.Background(), cs, testVolNS, "agent1", vols))
+	ensureTestPVCs(t, cs, vols...)
 	old := agentlib.CancelPollInterval
 	agentlib.CancelPollInterval = 20 * time.Millisecond
 	t.Cleanup(func() { agentlib.CancelPollInterval = old })
@@ -187,7 +188,7 @@ func TestVolumeLock_TwoReplicasCannotBothTakeAFreeVolume(t *testing.T) {
 	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
 	ctl := newControllerStub(t)
 	bar := newBarrier(2)
-	vols := []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")}
+	vols := []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")}
 	mk := func() *K8sAgent {
 		return lockReplica(cs, ctl.srv.URL, &barrierPM{podManager: volPM{NewPodManager(cs, testVolNS, "img")}, b: bar}, vols)
 	}
@@ -251,7 +252,7 @@ func TestVolumeLock_ALostRaceFallsThroughToTheNextCandidate(t *testing.T) {
 	// labels call cache-1 free.
 	setLock(t, cs, "agent1-cache-1", "other-run", time.Now())
 	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")},
-		[]config.VolumeConfig{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
+		[]api.DesiredVolume{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
 
 	res, err := a.createClaimPod(context.Background(), claimFor("run-a",
 		dsl.VolumeMount{Name: dsl.StringOrSlice{"cache-1", "cache-2"}, As: "cache", MountPath: ".cache"}))
@@ -280,7 +281,7 @@ func TestVolumeLock_ConflictingUpdateIsRetriedNotLost(t *testing.T) {
 		return false, nil, nil
 	})
 	ctl := newControllerStub(t)
-	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 
 	ok, err := a.lockVolume(context.Background(), "unity-main", "run-a")
 	require.NoError(t, err)
@@ -316,7 +317,7 @@ func TestVolumeLock_StaleHolders(t *testing.T) {
 			}
 			setLock(t, cs, "agent1-unity-main", "dead", tc.at)
 			ctl := newControllerStub(t)
-			a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+			a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 
 			ok, err := a.lockVolume(context.Background(), "unity-main", "run-a")
 			require.NoError(t, err)
@@ -333,7 +334,7 @@ func TestVolumeLock_StaleHolders(t *testing.T) {
 func TestVolumeLock_UnlockLeavesAnotherRunsLockAlone(t *testing.T) {
 	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
 	ctl := newControllerStub(t)
-	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 	setLock(t, cs, "agent1-unity-main", "someone-else", time.Now())
 
 	require.NoError(t, a.unlockVolume(context.Background(), "unity-main", "run-a"))
@@ -343,7 +344,7 @@ func TestVolumeLock_UnlockLeavesAnotherRunsLockAlone(t *testing.T) {
 func TestVolumeLock_SharedVolumesAreNeverLocked(t *testing.T) {
 	cs := lockCluster(t, vcfg("go-cache", "shared", "1Gi"))
 	ctl := newControllerStub(t)
-	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []config.VolumeConfig{vcfg("go-cache", "shared", "1Gi")})
+	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []api.DesiredVolume{vcfg("go-cache", "shared", "1Gi")})
 	res, err := a.createClaimPod(context.Background(), claimFor("run-a", mount("go-cache", "", ".cache")))
 	require.NoError(t, err)
 	assert.Empty(t, pvcAnnotation(t, cs, "agent1-go-cache", annoVolumeHeldBy))
@@ -354,7 +355,7 @@ func TestVolumeLock_SharedVolumesAreNeverLocked(t *testing.T) {
 // taken before the pod, is in place while a step runs, and is gone when the run
 // ends.
 func TestExecuteRun_HoldsTheVolumeLockForTheRunAndReleasesItAfter(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 	var during string
 	f.a.exec = &podCapturingExec{inner: f.ex, onExec: func() {
 		during = pvcAnnotation(t, f.cs, "agent1-unity-main", annoVolumeHeldBy)
@@ -401,7 +402,7 @@ func (p *onCreatePM) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Po
 func TestVolumeLock_LockStolenDuringACreateIsNotKeptByThePod(t *testing.T) {
 	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
 	ctl := newControllerStub(t)
-	vols := []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")}
+	vols := []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")}
 	pm := &onCreatePM{podManager: volPM{NewPodManager(cs, testVolNS, "img")}}
 	// Replica B judges A's lock stale and takes it over while A's create is in flight.
 	pm.hook = func() { setLock(t, cs, "agent1-unity-main", "run-b", time.Now()) }
@@ -460,7 +461,7 @@ func TestVolumeLock_ConfirmationIsACompareAndSwapThatInvalidatesARivalsPendingWr
 		require.NoError(t, err)
 		bsView = p
 	}
-	a := lockReplica(cs, ctl.srv.URL, pm, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	a := lockReplica(cs, ctl.srv.URL, pm, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 
 	res, err := a.createClaimPod(context.Background(), claimFor("run-a", mount("unity-main", "", ".")))
 	require.NoError(t, err)
@@ -496,7 +497,7 @@ func TestVolumeLock_ConfirmationConflictReReadsAndLosesToTheWinner(t *testing.T)
 		return true, nil, apierrors.NewConflict(pvcResource.GroupResource(), obj.Name, errors.New("modified"))
 	})
 	ctl := newControllerStub(t)
-	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -532,7 +533,7 @@ func TestVolumeLock_ACreateThatTimesOutIsRetriedNotFatal(t *testing.T) {
 	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
 	ctl := newControllerStub(t)
 	pm := &stallOnceCreatePM{podManager: volPM{NewPodManager(cs, testVolNS, "img")}}
-	a := lockReplica(cs, ctl.srv.URL, pm, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	a := lockReplica(cs, ctl.srv.URL, pm, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 	a.lockGraceOverride = 400 * time.Millisecond // so the create deadline is 100ms
 
 	start := time.Now()
@@ -569,7 +570,7 @@ func TestVolumeLock_APodCreateThatNeverLandsFailsTheRunWithTheTrueReason(t *test
 	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
 	ctl := newControllerStub(t)
 	pm := &alwaysAlreadyExistsPM{podManager: volPM{NewPodManager(cs, testVolNS, "img")}}
-	a := lockReplica(cs, ctl.srv.URL, pm, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	a := lockReplica(cs, ctl.srv.URL, pm, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -630,7 +631,7 @@ func TestVolumeLock_FailedCreatesAreCountedConsecutivelyNotForTheLifetimeOfTheRu
 			_ = cs.CoreV1().Pods(testVolNS).Delete(context.Background(), "holder", metav1.DeleteOptions{})
 		})
 	}
-	a := lockReplica(cs, ctl.srv.URL, pm, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	a := lockReplica(cs, ctl.srv.URL, pm, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -667,7 +668,7 @@ func TestVolumeLock_AlreadyExistsFromAnEarlierAttemptIsRetried(t *testing.T) {
 	require.NoError(t, err)
 
 	a := lockReplica(cs, ctl.srv.URL, &alreadyExistsOncePM{podManager: volPM{NewPodManager(cs, testVolNS, "img")}},
-		[]config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+		[]api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 	res, err := a.createClaimPod(context.Background(), claimFor("run-a", mount("unity-main", "", ".")))
 	require.NoError(t, err)
 	require.NotNil(t, res.pod)
@@ -698,7 +699,7 @@ func TestRemoveOwnPod_NeverDeletesAnotherRunsPod(t *testing.T) {
 }
 
 func TestExecuteRun_RejectsTwoVolumesAtOneMountPath(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("a-cache", "exclusive", "1Gi"), vcfg("b-cache", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("a-cache", "exclusive", "1Gi"), vcfg("b-cache", "exclusive", "1Gi")})
 	f.a.executeRun(context.Background(), f.claim([]dsl.VolumeMount{
 		mount("a-cache", "", ".cache"), mount("b-cache", "", "./.cache/"),
 	}))
@@ -742,8 +743,8 @@ func TestUniqueMountPath_ComparesTheContainerPathNotTheSpelling(t *testing.T) {
 }
 
 func TestVolumeLock_ConfirmLockWithoutAClient(t *testing.T) {
-	a := &K8sAgent{cfg: Config{AgentName: "agent1", Namespace: testVolNS,
-		Volumes: []config.VolumeConfig{vcfg("go-cache", "shared", "1Gi"), vcfg("unity-main", "exclusive", "1Gi")}}}
+	a := &K8sAgent{cfg: Config{AgentName: "agent1", Namespace: testVolNS}}
+	seedVolumes(a, vcfg("go-cache", "shared", "1Gi"), vcfg("unity-main", "exclusive", "1Gi"))
 
 	lost, err := a.confirmLock(context.Background(), []string{"go-cache"}, "run-a")
 	require.NoError(t, err, "an all-shared claim locked nothing, so there is nothing to confirm and no client is needed")
@@ -760,7 +761,7 @@ func (failCreatePM) CreatePod(context.Context, *corev1.Pod) (*corev1.Pod, error)
 }
 
 func TestExecuteRun_ReleasesTheLockWhenThePodCannotBeCreated(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 	f.a.pm = failCreatePM{f.a.pm}
 
 	f.a.executeRun(context.Background(), f.claim([]dsl.VolumeMount{mount("unity-main", "", ".")}))
@@ -810,10 +811,12 @@ func TestRun_VolumeWaitIsAbandonedOnDrain(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	cfg := Config{AgentID: agentID, AgentName: "agent1", Namespace: testVolNS, MaxConcurrent: 2,
-		Volumes: []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")}}
+	cfg := Config{AgentID: agentID, AgentName: "agent1", Namespace: testVolNS, MaxConcurrent: 2}
 	pm := NewPodManager(cs, testVolNS, "img")
 	a := NewK8sAgent(cfg, agentlib.NewClient(srv.URL, "tok"), pm, nil, NewPodPool(cs, testVolNS, pm))
+	// The controller stub does not deliver volumes; seed the set a heartbeat would.
+	ensureTestPVCs(t, cs, vcfg("unity-main", "exclusive", "1Gi"))
+	seedVolumes(a, vcfg("unity-main", "exclusive", "1Gi"))
 	// No DrainTimeout: the run context is not cancelled by the drain, so only the
 	// claim context (the drain itself) can break the wait.
 

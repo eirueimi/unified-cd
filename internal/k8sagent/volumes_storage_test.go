@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
@@ -310,7 +309,7 @@ func TestK8sStorage_AnOlderReadingNeverReplacesANewerOne(t *testing.T) {
 // --- through executeRun -----------------------------------------------------
 
 func TestK8sStorage_ExecuteRunMeasuresMountedVolumes(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "10Gi"), vcfg("unity", "exclusive", "10Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "exclusive", "10Gi"), vcfg("unity", "exclusive", "10Gi")})
 	ex := &statfsExec{out: map[string]string{
 		"/workspace/.ucd-cache/go": reading(10, 100),
 		"/workspace":               reading(20, 200),
@@ -334,7 +333,7 @@ func TestK8sStorage_ExecuteRunMeasuresMountedVolumes(t *testing.T) {
 // A measurement is a metric: a failing or hung exec must neither fail the run
 // nor hold it up for longer than the measurement's own bound.
 func TestK8sStorage_AFailingMeasurementDoesNotFailTheRun(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "10Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "exclusive", "10Gi")})
 	f.a.exec = &stepAndStatfsExec{steps: f.ex, statfs: &statfsExec{override: func(context.Context, []string, io.Writer) (int, error) {
 		return 1, assert.AnError
 	}}}
@@ -352,7 +351,7 @@ func TestK8sStorage_AHungMeasurementIsBoundedAndDoesNotFailTheRun(t *testing.T) 
 	volumeMeasureTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { volumeMeasureTimeout = old })
 
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "10Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "exclusive", "10Gi")})
 	f.a.exec = &stepAndStatfsExec{steps: f.ex, statfs: &statfsExec{override: func(ctx context.Context, _ []string, _ io.Writer) (int, error) {
 		<-ctx.Done()
 		return 1, ctx.Err()
@@ -405,7 +404,7 @@ func (s *stepAndStatfsExec) ExecStepArgv(ctx context.Context, pod, container str
 // after a wipe that is always near-full. The one an alert needs is taken after
 // the run, so the cache must end up holding it.
 func TestK8sStorage_ExecuteRunMeasuresAgainAfterTheRun(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "10Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "exclusive", "10Gi")})
 	var n int
 	var mu sync.Mutex
 	ex := &statfsExec{override: func(_ context.Context, _ []string, stdout io.Writer) (int, error) {
@@ -434,7 +433,7 @@ func TestK8sStorage_ExecuteRunMeasuresAgainAfterTheRun(t *testing.T) {
 // it is measured too: the post-run measurement does not inherit the run's
 // cancellation.
 func TestK8sStorage_ExecuteRunMeasuresAfterACancelledRun(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "10Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "exclusive", "10Gi")})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var mu sync.Mutex

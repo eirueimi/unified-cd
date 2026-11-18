@@ -189,13 +189,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Volumes are file-only (no flag or env var; see config.AgentConfig.Volumes),
-	// so they come straight from the effective config. A bad declaration is a
-	// hard startup failure: advertising a volume the agent cannot back would
-	// strand every run routed to it.
-	volumes, err := agent.NewVolumeManager(resolvedWorkspaceDir, eff.Volumes)
+	// The volume manager starts empty: the controller delivers the AgentVolumes
+	// this agent offers in its heartbeat answers (agent.Agent applies them).
+	volumes, err := agent.NewVolumeManager(resolvedWorkspaceDir)
 	if err != nil {
-		slog.Error("invalid volumes in agent config", "error", err)
+		slog.Error("create volume manager", "error", err)
 		os.Exit(1)
 	}
 

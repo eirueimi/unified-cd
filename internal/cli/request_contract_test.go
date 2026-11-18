@@ -108,6 +108,7 @@ func contractRows(t *testing.T) []contractRow {
 	asYAML := write("as.yaml", "apiVersion: unified-cd/v1\nkind: AppSource\nmetadata:\n  name: as\nspec:\n  repo: https://example.com/r.git\n")
 	scYAML := write("sc.yaml", "apiVersion: unified-cd/v1\nkind: Schedule\nmetadata:\n  name: sc\nspec:\n  cron: \"* * * * *\"\n  job: hello\n")
 	varsYAML := write("vars.yaml", "apiVersion: unified-cd/v1\nkind: Vars\nmetadata:\n  name: v\nspec:\n  values:\n    A: b\n")
+	avYAML := write("av.yaml", "apiVersion: unified-cd/v1\nkind: AgentVolume\nmetadata:\n  name: av\nspec:\n  mode: shared\n  size: 1Gi\n")
 	exportDir := filepath.Join(dir, "export")
 
 	// A real (tiny) artifact archive, so download exercises the whole command.
@@ -133,11 +134,12 @@ func contractRows(t *testing.T) []contractRow {
 		{name: "apply appsource", leaf: "apply", args: []string{"apply", "-f", asYAML}, want: []string{post + " /api/v1/appsources"}},
 		{name: "apply schedule", leaf: "apply", args: []string{"apply", "-f", scYAML}, want: []string{post + " /api/v1/schedules/"}},
 		{name: "apply vars", leaf: "apply", args: []string{"apply", "-f", varsYAML}, want: []string{post + " /api/v1/vars/"}},
+		{name: "apply agentvolume", leaf: "apply", args: []string{"apply", "-f", avYAML}, want: []string{post + " /api/v1/agent-volumes/"}},
 
 		// export: authenticated GETs of every exportable collection.
 		{name: "export", leaf: "export", args: []string{"export", "-o", exportDir}, want: []string{
 			get + " /api/v1/appsources", get + " /api/v1/jobs", get + " /api/v1/schedules",
-			get + " /api/v1/webhooks", get + " /api/v1/gitcredentials", get + " /api/v1/vars",
+			get + " /api/v1/webhooks", get + " /api/v1/gitcredentials", get + " /api/v1/vars", get + " /api/v1/agent-volumes",
 		}},
 
 		// jobs
@@ -284,7 +286,7 @@ var collectionSegments = map[string]bool{
 	"agents": true, "jobs": true, "runs": true, "active": true, "schedules": true, "webhooks": true,
 	"gitcredentials": true, "appsources": true, "tokens": true, "secrets": true, "artifacts": true,
 	"approvals": true, "steps": true, "logs": true, "audit": true, "vars": true,
-	"agent-enrollments": true, "agent-enrollment-policies": true,
+	"agent-enrollments": true, "agent-enrollment-policies": true, "agent-volumes": true,
 }
 
 func (c *contractTransport) RoundTrip(req *http.Request) (*http.Response, error) {

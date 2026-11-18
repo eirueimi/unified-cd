@@ -2,6 +2,66 @@
   "$id": "https://unified-cd/schemas/unified-cd.schema.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "AgentVolume": {
+      "additionalProperties": false,
+      "description": "AgentVolume declares a named volume that agents provision for jobs to mount\n(see the job's volumes field). The volume name is metadata.name.\n\nEvery agent whose authorized labels include all of spec.agentSelector offers\nthe volume; an empty selector means every agent.",
+      "properties": {
+        "apiVersion": {
+          "const": "unified-cd/v1",
+          "type": "string"
+        },
+        "kind": {
+          "const": "AgentVolume",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "spec": {
+          "$ref": "#/definitions/AgentVolumeSpec"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "type": "object"
+    },
+    "AgentVolumeSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "agentSelector": {
+          "description": "AgentSelector lists labels (e.g. role:unity) an agent must all carry to\noffer this volume. Empty means every agent.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "description": "Mode is \"exclusive\" (one run at a time) or \"shared\" (concurrent runs).",
+          "type": "string"
+        },
+        "reclaimPolicy": {
+          "description": "ReclaimPolicy is \"Retain\" (the default) or \"Delete\". With Delete the\nagent removes the volume's data once the volume has been absent from its\ndesired set for 10 minutes without interruption and no run holds it.",
+          "type": "string"
+        },
+        "size": {
+          "description": "Size is a Kubernetes quantity such as 200Gi. It must be positive.",
+          "type": "string"
+        },
+        "storageClassName": {
+          "description": "StorageClassName is the storage class for Kubernetes agents' PVCs.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "size"
+      ],
+      "type": "object"
+    },
     "AppSource": {
       "additionalProperties": false,
       "properties": {
@@ -862,7 +922,7 @@
           "type": "object"
         },
         "volumes": {
-          "description": "Volumes mounts agent-owned named volumes into the run. The job names a\nvolume and where it appears; the agent's own configuration decides what\nbacks it. See VolumeMount.",
+          "description": "Volumes mounts named volumes into the run. The job names a volume and\nwhere it appears; the volume's AgentVolume resource decides what backs\nit. See VolumeMount.",
           "items": {
             "$ref": "#/definitions/VolumeMount"
           },
@@ -1138,7 +1198,7 @@
     },
     "VolumeMount": {
       "additionalProperties": false,
-      "description": "VolumeMount mounts an agent-owned named volume into the run's workspace.",
+      "description": "VolumeMount mounts a named volume (declared as an AgentVolume) into the run's workspace.",
       "properties": {
         "as": {
           "description": "As is the stable handle steps use to reach the volume. Required when\nName is a list of several candidates or contains a template, because the\nchosen name is not known when the job is written; otherwise it defaults\nto the single literal Name. A step reads the volume's absolute path from\n$UNIFIED_VOLUME_\u003cAS\u003e: upper-cased, with \"-\" as \"_\" (go-cache gives\nUNIFIED_VOLUME_GO_CACHE). Two entries whose aliases give one variable\nare rejected.",
@@ -1296,6 +1356,9 @@
     },
     {
       "$ref": "#/definitions/GitCredential"
+    },
+    {
+      "$ref": "#/definitions/AgentVolume"
     },
     {
       "$ref": "#/definitions/Vars"

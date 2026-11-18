@@ -1110,7 +1110,7 @@ bound and is never swept.
 `--workspace-dir` root) must live under a path the container runtime's file
 sharing exposes to containers — e.g. under `/Users` for Docker Desktop on
 macOS, or an equivalent shared drive on Windows. A `wsBase` outside the
-runtime's shared paths will fail to bind-mount into the claim pod. A volume's `path` is bind-mounted
+runtime's shared paths will fail to bind-mount into the claim pod. A volume's directory (under `wsBase`) is bind-mounted
 into the claim pod as well, so the same rule applies to it.
 
 Every `run:` step also receives `UNIFIED_AGENT_OS` (Go's `runtime.GOOS` on
@@ -1130,37 +1130,16 @@ and where it appears, never how large it is or where it lives. The job-author vi
 operator's side for the **standard (host) agent**. For the Kubernetes agent see [Named volumes on
 Kubernetes](kubernetes-integration.md#named-volumes).
 
-Declare volumes in the agent's **config file**. The list is file-only: it has no command-line flag
-and no environment variable.
+Declare volumes on the controller with the [`AgentVolume`](../user-guide/resources/agent-volume.md)
+resource (`spec.mode`, `spec.size`, optional `spec.agentSelector` to limit which agents get it). An
+agent receives its set in each heartbeat answer and provisions every volume at
+`<workspaceDir>/volumes/<name>`; there is no per-agent volume configuration, and a `volumes:` key in
+the agent config file makes the agent refuse to start (see [the troubleshooting
+entry](../troubleshooting/agents-and-enrollment.md#a-host-agent-fails-at-startup-with-agent-config-volumes-is-no-longer-supported)).
+The agent keeps its last known set while the controller is unreachable. A volume's directory is
+never deleted for going unused.
 
-```yaml
-# unified-agent.yaml
-volumes:
-  - name: unity-main
-    mode: exclusive
-    path: /var/lib/unified-cd/volumes/unity-main   # optional
-    size: 200Gi                                    # advisory
-  - name: go-cache
-    mode: shared
-```
-
-| Field | Required | Meaning |
-|---|---|---|
-| `name` | Yes | What jobs call it. One path segment: `.`, `..` and names containing `/` or `\` are rejected. Names are matched exactly. |
-| `mode` | Yes | `exclusive`: at most one run on this agent holds the volume at a time. `shared`: any number of runs may hold it, with **no** write-safety guarantee from unified-cd. |
-| `path` | No | Absolute host directory backing the volume. Defaults to `<workspaceDir>/volumes/<name>`. Created at startup if absent. |
-| `size` | No | Advisory capacity such as `200Gi`. After each run the agent measures the volume and warns when it exceeds this; it **never enforces** it, because per-directory quotas are not portable across operating systems without root. The free space of the filesystem under the volume is on `/metrics`: see [Watching agent disk headroom](operations.md#watching-agent-disk-headroom). |
-| `storageClassName` | — | Kubernetes only; ignored on a host agent. |
-
-The agent refuses to start (`volume "<name>": ...`) on a bad entry: a missing or unknown `mode`, a
-duplicate `name`, a relative `path`, a non-positive `size`, or two volumes whose paths overlap.
-**A `path` may not be, contain or sit under** the workspace directory's `working*` entries (which
-the workspace GC sweeps), the `detached` directory, or any dot-prefixed entry of the workspace
-directory (agent tooling). That is enforced rather than left to the spelling of the GC's glob: a
-volume deleted for going unused past `workspaceRetentionDays` would destroy exactly the data
-declared in order to keep it. The workspace GC never touches a volume.
-
-**How routing works.** The agent advertises its volume names at registration (the `volumes` field
+**How routing works.** The agent advertises the names of its ready volumes (the `volumes` field
 of `GET /api/v1/agents`). A run that mounts volumes is routed only to an agent that declares at
 least one candidate for *every* entry. A volume that is declared but busy does not block routing:
 the run is claimed and waits for it, holding a concurrency slot (the controller's busy filter makes
@@ -1170,8 +1149,9 @@ last.
 
 **Things to know.**
 
-- **Removing a volume from the config deletes nothing.** The agent stops advertising it and the
-  directory stays on disk. Removing a line from a config file must not destroy tens of gigabytes.
+- **Removing an `AgentVolume` deletes nothing by default.** The agent stops advertising it and the
+  directory stays on disk, unless the resource set `spec.reclaimPolicy: Delete` (then the directory
+  is deleted once the volume has been out of the agent's set for 10 minutes and no run holds it).
 - **Restart recovery.** A host agent treats every volume as free at startup (it lost the runs that
   held them; the controller's lost-claim reconcile handles those runs) and sweeps any volume links a
   crashed native run left behind, and the holder records of processes that are gone.
@@ -1183,14 +1163,14 @@ last.
   in memory, so two agent *processes* on one volume directory do not see each other: one agent ID
   started twice with an overlapping restart, or two agents on one machine that share a
   `workspaceDir` (both default to `<workspaceDir>/volumes/<name>`). Give each agent its own
-  `workspaceDir`, or its own explicit `path` for the volume, and start each agent ID once. As a
+  `workspaceDir` and start each agent ID once. As a
   diagnostic only, an agent records each exclusive volume it holds in
   `<workspaceDir>/.ucd-volume-locks/<volume>/` (outside the volume, so its contents stay exactly
   what jobs put there) and warns in the run's log, and in the agent log, when it finds a record of
   another process that is still running:
   `volume "unity-main" is also held by another agent process`. The run proceeds; the warning
   decides nothing. It can only see agents that share a `workspaceDir`, and it cannot tell two
-  agents with different `workspaceDir`s and the same explicit `path` apart.
+  agents whose volumes resolve to the same directory through different `workspaceDir`s (for example a symlink) apart.
   See [the troubleshooting entry](../troubleshooting/steps-and-execution.md#a-run-warns-that-a-volume-is-also-held-by-another-agent-process).
 - **Draining.** A run still waiting for a volume when the agent starts draining is failed with
   `run abandoned: the agent is draining and the run was still waiting for its volumes`; a drain does
@@ -1254,14 +1234,36 @@ replaces the recorded list wholesale, so dropping a volume from the config
 and restarting the agent stops it being advertised. A claim writes the list
 **when it supplies one** and leaves the recorded list alone when it does not:
 an empty list on a claim means "not supplied", never "none", so a claim can
-never wipe what registration recorded. The reason the claim carries the list
+never wipe what registration recorded. The exception is a claim (or
+registration) that sets `volumesKnown: true`, which an agent sends once it has
+received its controller-declared set: from then on an empty list means "none"
+and replaces the stored one.
+
+Routing, however, never uses a list the claim did not supply. A claim that is
+not authoritative (`volumesKnown` false) and lists no volumes is matched as
+an agent that offers **no** volumes; the recorded list is kept for display
+only. So a new agent before its first applied heartbeat (a few seconds after
+start) gets no volume runs, and an older agent that drops its last config
+volume stops receiving volume runs, even though `GET /api/v1/agents` may still
+show the old list until the agent claims or registers with
+`volumesKnown: true`. The reason the claim carries the list
 at all is that it can recreate an agent row the database lost (for example
 after a reset under a running agent), and a recreated row that forgot the
 volumes would stop routing volume jobs to an agent that still declares them.
 
 Independent of claim activity, the agent runs a background heartbeat loop
 that calls `POST /api/v1/agents/{id}/heartbeat` every 15s
-(`agent.DefaultHeartbeatInterval`), refreshing `last_seen_at`. This matters
+(`agent.DefaultHeartbeatInterval`), refreshing `last_seen_at`. The controller
+answers every authenticated heartbeat with `200` and a JSON body
+(`{"volumes": [...], "revision": "<sha256>"}`): the [`AgentVolume`](../user-guide/resources/agent-volume.md)
+set this agent should offer, computed from the labels its credential
+authorizes (never from the request body) and sorted by name. `volumes` is
+always an array, empty when none applies, and `revision` changes whenever the
+set changes. If the controller cannot read the volume definitions it answers
+`503` with no body, and the agent keeps the set it last received. The agent
+reports the state of each of those volumes in the heartbeat's `volumeStatus`
+field, which `GET /api/v1/agents` shows per agent; a beat that omits it clears
+the stored status. This matters
 because a busy agent (all concurrency slots occupied) stops polling for new
 claims, and without a heartbeat it could be misidentified as dead. See
 [High Availability: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery)

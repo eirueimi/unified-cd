@@ -942,8 +942,7 @@ func volumeAgent(t *testing.T, s *volumeLoopServer, slots int, vols ...string) (
 	for _, v := range vols {
 		cfgs = append(cfgs, exclusive(v))
 	}
-	m, err := NewVolumeManager(ws, cfgs)
-	require.NoError(t, err)
+	m := mustVolumeManager(t, ws, cfgs...)
 	return &Agent{
 		ID:                    "v1",
 		Client:                NewClient(s.srv.URL, "tok"),
@@ -1315,7 +1314,7 @@ func TestRunLoop_RunWithVolumesOnAnAgentWithoutAnyFails(t *testing.T) {
 	require.Equal(t, 0, srv.stepCount("run-1"))
 }
 
-func TestRun_AdvertisesVolumesAndSweepsStaleLinksBeforeClaiming(t *testing.T) {
+func TestRun_SweepsStaleLinksAndRegistersWithoutVolumesBeforeClaiming(t *testing.T) {
 	srv := newVolumeLoopServer(t, func(int, <-chan string) *api.ClaimResponse { return nil })
 	a, ws := volumeAgent(t, srv, 1, "unity", "go-cache")
 
@@ -1337,5 +1336,7 @@ func TestRun_AdvertisesVolumesAndSweepsStaleLinksBeforeClaiming(t *testing.T) {
 
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	require.Equal(t, []string{"go-cache", "unity"}, srv.registered.Volumes)
+	// The controller has not delivered a set yet, so register offers none and does not claim to know.
+	require.Empty(t, srv.registered.Volumes)
+	require.False(t, srv.registered.VolumesKnown)
 }

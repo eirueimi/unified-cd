@@ -61,9 +61,9 @@ type Spec struct {
 	// scalar shorthand); the run: script is appended as the final argv
 	// element. See Step.Shell for the full resolution priority.
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
-	// Volumes mounts agent-owned named volumes into the run. The job names a
-	// volume and where it appears; the agent's own configuration decides what
-	// backs it. See VolumeMount.
+	// Volumes mounts named volumes into the run. The job names a volume and
+	// where it appears; the volume's AgentVolume resource decides what backs
+	// it. See VolumeMount.
 	Volumes []VolumeMount `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 	// Description is a human-readable summary of the job, shown in the WebUI.
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
@@ -564,7 +564,7 @@ type WorkspaceConfig struct {
 	MountPath string `yaml:"mountPath,omitempty" json:"mountPath,omitempty"`
 }
 
-// VolumeMount mounts an agent-owned named volume into the run's workspace.
+// VolumeMount mounts a named volume (declared as an AgentVolume) into the run's workspace.
 type VolumeMount struct {
 	// Name is the volume to mount: one literal name, a list of candidate
 	// names (the agent picks a free one), or a template expanded against the

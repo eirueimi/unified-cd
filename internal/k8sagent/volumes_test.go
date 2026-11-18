@@ -7,13 +7,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
 
-	"github.com/eirueimi/unified-cd/internal/config"
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
@@ -24,8 +21,8 @@ func storageOf(p corev1.PersistentVolumeClaim) string {
 	return q.String()
 }
 
-func vcfg(name, mode, size string) config.VolumeConfig {
-	return config.VolumeConfig{Name: name, Mode: mode, Size: size}
+func vcfg(name, mode, size string) api.DesiredVolume {
+	return api.DesiredVolume{Name: name, Mode: mode, Size: size, ReclaimPolicy: dsl.ReclaimRetain}
 }
 
 func listPVCs(t *testing.T, cs *fake.Clientset) map[string]corev1.PersistentVolumeClaim {
@@ -37,142 +34,6 @@ func listPVCs(t *testing.T, cs *fake.Clientset) map[string]corev1.PersistentVolu
 		out[p.Name] = p
 	}
 	return out
-}
-
-func TestEnsurePVCs_CreatesOnePerVolume(t *testing.T) {
-	cs := fake.NewSimpleClientset()
-	err := EnsurePVCs(context.Background(), cs, testVolNS, "agent1", []config.VolumeConfig{
-		vcfg("unity-main", "exclusive", "200Gi"),
-		vcfg("go-cache", "exclusive", "20Gi"),
-	})
-	require.NoError(t, err)
-
-	pvcs := listPVCs(t, cs)
-	require.Len(t, pvcs, 2)
-	got := pvcs["agent1-unity-main"]
-	assert.Equal(t, "200Gi", storageOf(got))
-	// An ordinary PVC, not a generic ephemeral volume: it must outlive any pod.
-	assert.Empty(t, got.OwnerReferences)
-}
-
-func TestEnsurePVCs_IsIdempotentAndLeavesAnExistingClaimAlone(t *testing.T) {
-	cs := fake.NewSimpleClientset()
-	cfgs := []config.VolumeConfig{vcfg("go-cache", "exclusive", "20Gi")}
-	require.NoError(t, EnsurePVCs(context.Background(), cs, testVolNS, "agent1", cfgs))
-	before := listPVCs(t, cs)["agent1-go-cache"]
-
-	// A bigger size in the config must not rewrite a claim that holds data.
-	cfgs[0].Size = "40Gi"
-	require.NoError(t, EnsurePVCs(context.Background(), cs, testVolNS, "agent1", cfgs))
-	after := listPVCs(t, cs)
-	require.Len(t, after, 1)
-	assert.Equal(t, storageOf(before), storageOf(after["agent1-go-cache"]))
-}
-
-func TestEnsurePVCs_ExclusiveIsRWO_SharedIsRWX(t *testing.T) {
-	cs := fake.NewSimpleClientset()
-	require.NoError(t, EnsurePVCs(context.Background(), cs, testVolNS, "agent1", []config.VolumeConfig{
-		vcfg("unity-main", "exclusive", "200Gi"),
-		vcfg("go-cache", "shared", "20Gi"),
-	}))
-	pvcs := listPVCs(t, cs)
-	assert.Equal(t, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, pvcs["agent1-unity-main"].Spec.AccessModes)
-	assert.Equal(t, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}, pvcs["agent1-go-cache"].Spec.AccessModes)
-}
-
-// TestEnsurePVCs_UnsetStorageClassLeavesTheFieldNil is the spec section 10
-// defect: storageClassName "" means "no StorageClass" in Kubernetes, so the
-// cluster default is not applied and the claim stays Pending. Unset must be
-// nil, not a pointer to the empty string.
-func TestEnsurePVCs_UnsetStorageClassLeavesTheFieldNil(t *testing.T) {
-	cs := fake.NewSimpleClientset()
-	withClass := vcfg("fast", "exclusive", "10Gi")
-	withClass.StorageClassName = "gp3"
-	require.NoError(t, EnsurePVCs(context.Background(), cs, testVolNS, "agent1", []config.VolumeConfig{
-		vcfg("plain", "exclusive", "10Gi"), withClass,
-	}))
-	pvcs := listPVCs(t, cs)
-
-	assert.Nil(t, pvcs["agent1-plain"].Spec.StorageClassName, "an unset storageClassName must not be sent as an empty string")
-	require.NotNil(t, pvcs["agent1-fast"].Spec.StorageClassName)
-	assert.Equal(t, "gp3", *pvcs["agent1-fast"].Spec.StorageClassName)
-}
-
-func TestEnsurePVCs_RequiresSize(t *testing.T) {
-	cs := fake.NewSimpleClientset()
-	for _, size := range []string{"", "lots", "0", "-5Gi"} {
-		err := EnsurePVCs(context.Background(), cs, testVolNS, "agent1", []config.VolumeConfig{vcfg("go-cache", "exclusive", size)})
-		require.Error(t, err, "size %q", size)
-		assert.Contains(t, err.Error(), "go-cache")
-		assert.Contains(t, err.Error(), "size")
-	}
-	assert.Empty(t, listPVCs(t, cs), "an invalid config must create nothing")
-}
-
-func TestEnsurePVCs_RejectsAnUnusableConfig(t *testing.T) {
-	cs := fake.NewSimpleClientset()
-	cases := map[string][]config.VolumeConfig{
-		"bad mode":        {vcfg("a", "private", "1Gi")},
-		"empty mode":      {vcfg("a", "", "1Gi")},
-		"upper case name": {vcfg("Unity", "exclusive", "1Gi")},
-		"underscore name": {vcfg("go_cache", "exclusive", "1Gi")},
-		"duplicate":       {vcfg("a", "exclusive", "1Gi"), vcfg("a", "shared", "1Gi")},
-	}
-	for name, cfgs := range cases {
-		t.Run(name, func(t *testing.T) {
-			require.Error(t, EnsurePVCs(context.Background(), cs, testVolNS, "agent1", cfgs))
-			assert.Empty(t, listPVCs(t, cs))
-		})
-	}
-	t.Run("no agent name", func(t *testing.T) {
-		require.Error(t, EnsurePVCs(context.Background(), cs, testVolNS, "", []config.VolumeConfig{vcfg("a", "exclusive", "1Gi")}))
-	})
-	t.Run("claim name too long for a label", func(t *testing.T) {
-		long := "v-1234567890123456789012345678901234567890123456789012345678"
-		require.Error(t, EnsurePVCs(context.Background(), cs, testVolNS, "agent1", []config.VolumeConfig{vcfg(long, "exclusive", "1Gi")}))
-	})
-}
-
-func TestEnsurePVCs_PrefixesWithAgentName(t *testing.T) {
-	cs := fake.NewSimpleClientset()
-	cfgs := []config.VolumeConfig{vcfg("go-cache", "exclusive", "20Gi")}
-	require.NoError(t, EnsurePVCs(context.Background(), cs, testVolNS, "ci-a", cfgs))
-	require.NoError(t, EnsurePVCs(context.Background(), cs, testVolNS, "ci-b", cfgs))
-
-	pvcs := listPVCs(t, cs)
-	assert.Contains(t, pvcs, "ci-a-go-cache")
-	assert.Contains(t, pvcs, "ci-b-go-cache")
-	assert.Len(t, pvcs, 2, "two agents in one namespace keep independent copies")
-}
-
-// TestEnsurePVCs_DoesNotDeleteAPVCForARemovedVolume: removing a line from the
-// agent config must not destroy tens of gigabytes. The claim stays; the agent
-// only stops advertising it.
-func TestEnsurePVCs_DoesNotDeleteAPVCForARemovedVolume(t *testing.T) {
-	cs := fake.NewSimpleClientset()
-	ctx := context.Background()
-	require.NoError(t, EnsurePVCs(ctx, cs, testVolNS, "agent1", []config.VolumeConfig{
-		vcfg("unity-main", "exclusive", "200Gi"), vcfg("go-cache", "exclusive", "20Gi"),
-	}))
-
-	require.NoError(t, EnsurePVCs(ctx, cs, testVolNS, "agent1", []config.VolumeConfig{vcfg("go-cache", "exclusive", "20Gi")}))
-	assert.Contains(t, listPVCs(t, cs), "agent1-unity-main", "a volume dropped from the config must keep its PVC")
-
-	require.NoError(t, EnsurePVCs(ctx, cs, testVolNS, "agent1", nil))
-	assert.Len(t, listPVCs(t, cs), 2, "an empty config deletes nothing either")
-
-	for _, a := range cs.Actions() {
-		assert.NotEqual(t, "delete", a.GetVerb(), "EnsurePVCs must never issue a delete: %v", a)
-	}
-}
-
-func TestEnsurePVCs_CreateRaceIsNotAnError(t *testing.T) {
-	cs := fake.NewSimpleClientset()
-	// Another replica creates the claim between our Get and our Create.
-	cs.PrependReactor("create", "persistentvolumeclaims", func(k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, apierrors.NewAlreadyExists(corev1.Resource("persistentvolumeclaims"), "agent1-go-cache")
-	})
-	require.NoError(t, EnsurePVCs(context.Background(), cs, testVolNS, "agent1", []config.VolumeConfig{vcfg("go-cache", "exclusive", "20Gi")}))
 }
 
 // claimPod is a claim pod of the given agent holding the named volumes.
@@ -321,55 +182,4 @@ func TestBuildPod_NoVolumesAddsNoLabelsOrClaims(t *testing.T) {
 	for _, v := range pod.Spec.Volumes {
 		assert.Nil(t, v.PersistentVolumeClaim)
 	}
-}
-
-func validVolumeConfig() Config {
-	return Config{Server: "http://localhost:8080", EnrollmentPolicy: "p", AgentName: "ci-main",
-		Volumes: []config.VolumeConfig{vcfg("go-cache", "exclusive", "20Gi")}}
-}
-
-func TestConfigValidate_Volumes(t *testing.T) {
-	c := validVolumeConfig()
-	require.NoError(t, c.Validate())
-
-	t.Run("no volumes needs no agentName", func(t *testing.T) {
-		c := validVolumeConfig()
-		c.AgentName, c.Volumes = "", nil
-		require.NoError(t, c.Validate())
-	})
-	t.Run("volumes need an agentName", func(t *testing.T) {
-		c := validVolumeConfig()
-		c.AgentName = ""
-		err := c.Validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "agentName")
-	})
-	t.Run("size is required", func(t *testing.T) {
-		c := validVolumeConfig()
-		c.Volumes[0].Size = ""
-		err := c.Validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "size")
-	})
-}
-
-func TestLoadConfig_Volumes(t *testing.T) {
-	path := writeTempYAML(t, `
-server: http://localhost:8080
-agentName: ci-main
-volumes:
-  - name: unity-main
-    mode: exclusive
-    size: 200Gi
-    storageClassName: gp3
-  - name: go-cache
-    mode: shared
-    size: 20Gi
-`)
-	got, err := LoadConfig(path)
-	require.NoError(t, err)
-	assert.Equal(t, "ci-main", got.AgentName)
-	require.Len(t, got.Volumes, 2)
-	assert.Equal(t, config.VolumeConfig{Name: "unity-main", Mode: "exclusive", Size: "200Gi", StorageClassName: "gp3"}, got.Volumes[0])
-	assert.Equal(t, "shared", got.Volumes[1].Mode)
 }

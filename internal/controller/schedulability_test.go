@@ -18,21 +18,21 @@ func TestEvaluateSchedulability(t *testing.T) {
 	k8s := agent([]string{"pod", "container"}, []string{"kind:k8s", "kubernetes"})
 
 	// native job, only a k8s agent online -> unsatisfiable by cap
-	s := EvaluateSchedulability(dsl.Spec{Native: true}, []api.AgentInfo{k8s})
+	s := EvaluateSchedulability(dsl.Spec{Native: true}, []api.AgentInfo{k8s}, nil)
 	assert.False(t, s.Satisfiable)
 	assert.Contains(t, s.Reason, "native")
 
 	// native job, host agent online -> satisfiable
-	s = EvaluateSchedulability(dsl.Spec{Native: true}, []api.AgentInfo{host, k8s})
+	s = EvaluateSchedulability(dsl.Spec{Native: true}, []api.AgentInfo{host, k8s}, nil)
 	assert.True(t, s.Satisfiable)
 
 	// label no agent has -> unsatisfiable by label
-	s = EvaluateSchedulability(dsl.Spec{Native: true, AgentSelector: []string{"kind:macos"}}, []api.AgentInfo{host})
+	s = EvaluateSchedulability(dsl.Spec{Native: true, AgentSelector: []string{"kind:macos"}}, []api.AgentInfo{host}, nil)
 	assert.False(t, s.Satisfiable)
 	assert.Contains(t, s.Reason, "kind:macos")
 
 	// param-templated selector -> don't warn; flag it
-	s = EvaluateSchedulability(dsl.Spec{Native: true, AgentSelector: []string{"hostname:{{ .Params.agent }}"}}, []api.AgentInfo{host})
+	s = EvaluateSchedulability(dsl.Spec{Native: true, AgentSelector: []string{"hostname:{{ .Params.agent }}"}}, []api.AgentInfo{host}, nil)
 	assert.True(t, s.SelectorDependsOnParams)
 	assert.True(t, s.Satisfiable) // cap part is satisfiable; label part deferred
 }
@@ -45,12 +45,12 @@ func TestEvaluateSchedulability_NullCapabilitiesAgentIsAHostAgent(t *testing.T) 
 	podSpec := dsl.Spec{PodTemplate: &dsl.PodTemplate{Name: "agent-side-template"}}
 	require.Equal(t, []string{dsl.CapPod}, dsl.RequiredCaps(podSpec))
 
-	s := EvaluateSchedulability(podSpec, []api.AgentInfo{legacy})
+	s := EvaluateSchedulability(podSpec, []api.AgentInfo{legacy}, nil)
 	assert.False(t, s.Satisfiable)
 	assert.Contains(t, s.Reason, "pod")
 
-	assert.True(t, EvaluateSchedulability(dsl.Spec{Native: true}, []api.AgentInfo{legacy}).Satisfiable)
-	assert.True(t, EvaluateSchedulability(dsl.Spec{}, []api.AgentInfo{legacy}).Satisfiable)
+	assert.True(t, EvaluateSchedulability(dsl.Spec{Native: true}, []api.AgentInfo{legacy}, nil).Satisfiable)
+	assert.True(t, EvaluateSchedulability(dsl.Spec{}, []api.AgentInfo{legacy}, nil).Satisfiable)
 }
 
 // A job requiring securitycontext is satisfiable by a new host agent and by
@@ -67,9 +67,9 @@ func TestEvaluateSchedulability_SecurityContext(t *testing.T) {
 	newHost := agent([]string{"native", "container", "securitycontext"}, nil)
 	oldK8s := agent([]string{"pod", "container"}, nil)
 
-	assert.False(t, EvaluateSchedulability(spec, []api.AgentInfo{oldHost}).Satisfiable)
-	assert.False(t, EvaluateSchedulability(spec, []api.AgentInfo{agent(nil, nil)}).Satisfiable)
-	assert.True(t, EvaluateSchedulability(spec, []api.AgentInfo{newHost}).Satisfiable)
-	assert.True(t, EvaluateSchedulability(spec, []api.AgentInfo{oldK8s}).Satisfiable,
+	assert.False(t, EvaluateSchedulability(spec, []api.AgentInfo{oldHost}, nil).Satisfiable)
+	assert.False(t, EvaluateSchedulability(spec, []api.AgentInfo{agent(nil, nil)}, nil).Satisfiable)
+	assert.True(t, EvaluateSchedulability(spec, []api.AgentInfo{newHost}, nil).Satisfiable)
+	assert.True(t, EvaluateSchedulability(spec, []api.AgentInfo{oldK8s}, nil).Satisfiable,
 		"an agent stored before normalization existed must still count")
 }

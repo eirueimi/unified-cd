@@ -187,7 +187,7 @@ oidc:
 
 | Key | Value |
 |---|---|
-| `global.groups.<claim value>` / `global.users.<email or sub>` | A role name (`viewer`, `developer`, `admin`), a permission name, or a list mixing both. Any of the 26 permissions is allowed. |
+| `global.groups.<claim value>` / `global.users.<email or sub>` | A role name (`viewer`, `developer`, `admin`), a permission name, or a list mixing both. Any of the 28 permissions is allowed. |
 | `folders.<folder>.groups.<claim value>` / `folders.<folder>.users.<email or sub>` | The same, but only folder-scopable permissions (`job.read`, `job.configure`, `job.delete`, `run.trigger`, `run.replay`, `run.cancel`, `run.delete`, `run.approve`, `schedule.configure`). A role name contributes only its folder-scopable members. |
 
 Group keys are compared to the values of `oidc.rolesClaim`; user keys to the token's `email` and `sub`. Folder keys are normalised by trimming leading and trailing `/`; `*`, `?`, `[`, whitespace and empty, `.` or `..` segments are rejected. The full semantics, the list of startup error strings and recipes are in [Authorization](../operator-manual/authorization.md#configuring-grants-oidcpermissions); `examples/config/controller.yaml` carries a commented example.
@@ -317,15 +317,8 @@ minFreeDisk: "1%"              # stop claiming when free space on workspaceDir's
 workspaceRetentionDays: 0      # >0 opts in to the periodic GC of workspace directories an agent crash left behind (0 = disabled, default)
 logLevel: info
 
-# Agent-owned named volumes (file-only: no flag or environment variable). The only thing
-# that survives between runs; see "Agent volumes" below.
-volumes:
-  - name: unity-main
-    mode: exclusive
-    path: /var/lib/unified-cd/volumes/unity-main   # optional
-    size: 200Gi                                    # advisory
-  - name: go-cache
-    mode: shared
+# Named volumes are not configured here: declare them on the controller with kind: AgentVolume.
+# A "volumes:" key in this file makes the agent refuse to start; see "Agent volumes" below.
 ```
 
 VM agents authenticate only via enrollment; there is no `token` config field.
@@ -436,22 +429,19 @@ or `--workspace-retention-days` flag always wins.
 
 ### Agent volumes
 
-`volumes` declares the agent-owned [named volumes](../user-guide/writing-jobs/volumes.md) this
-agent advertises and jobs mount with `spec.volumes`. It is **file-only**: unlike every scalar
-setting above it has no command-line flag and no environment variable, because a list of structured
-entries has no sensible flag or environment spelling. Each entry:
+A host agent has no `volumes` setting. Named volumes are declared on the controller with the
+[`AgentVolume`](../user-guide/resources/agent-volume.md) resource, and each agent receives the set
+that matches its labels in its heartbeat answer (the first heartbeat is sent immediately at startup).
+The agent provisions each volume at `<workspaceDir>/volumes/<name>`; the controller's `spec.mode`,
+`spec.size` and `spec.agentSelector` replace the former per-agent entries. A config file that still has
+a top-level `volumes:` key (with entries, or an empty list) is refused at startup with:
 
-| Field | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `name` | string | Yes | — | What jobs call the volume. One path segment (`.`, `..` and names containing `/` or `\` are rejected); matched exactly. A job whose volume name has characters outside letters, digits, `-` and `_` must give it a clean `as:` alias. |
-| `mode` | string | Yes | — | `exclusive`: at most one run on this agent holds it at a time (a second run waits). `shared`: any number of runs may hold it; unified-cd makes no write-safety guarantee. A `shared` volume cannot be mounted at the workspace root. |
-| `path` | string | No | `<workspaceDir>/volumes/<name>` | Absolute host directory backing the volume, created at startup. It may not be, contain or sit under a `working*` directory of the workspace directory, its `detached` directory, or a dot-prefixed entry of it. Two volumes' paths may not overlap. |
-| `size` | string | No | — | Advisory capacity (`200Gi`). The agent warns when a volume exceeds it after a run and never enforces it. |
-| `storageClassName` | string | No | — | Kubernetes only; ignored by a host agent. |
+```
+agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)
+```
 
-The agent refuses to start on an invalid entry (`volume "<name>": ...`). Dropping a volume from the
-list stops it being advertised and deletes nothing. See [Agent Labels and Routing: Named
-volumes](../operator-manual/agents.md#named-volumes) and [Operations: Named-Volume
+Remove the key and apply an `AgentVolume` for each volume instead. See [Agent Labels and Routing:
+Named volumes](../operator-manual/agents.md#named-volumes) and [Operations: Named-Volume
 Hygiene](../operator-manual/operations.md#named-volume-hygiene).
 
 ### Job isolation notes
@@ -586,15 +576,10 @@ poolIdleTimeout: 10m
 minFreeDisk: "1%"
 # workspaceSizeLimit: 20Gi
 
-# Agent-owned named volumes (jobs mount them with spec.volumes). Each becomes a PVC named
-# <agentName>-<volume>. agentName is required when volumes is set and must never change while
-# the volumes hold data.
+# Named volumes are declared on the controller (kind: AgentVolume), not here; a "volumes:" key
+# makes the agent refuse to start. Each delivered volume becomes a PVC named <agentName>-<volume>.
+# agentName is required to provision them and must never change while the volumes hold data.
 agentName: ci-main
-volumes:
-  - name: go-cache
-    mode: exclusive          # ReadWriteOnce; "shared" needs a StorageClass that supports ReadWriteMany
-    size: 20Gi               # required on Kubernetes
-    # storageClassName: gp3  # omit to use the cluster default
 
 # What a job's OWN podTemplate content (an inline spec, an override patch) may put in the Pod.
 # File-only (no environment variables). An absent block is the most restrictive policy: a job that
@@ -605,7 +590,7 @@ volumes:
 #   allowServiceAccounts: []        # e.g. [deployer]
 #   allowSecrets: []                # e.g. [db-password]; may not name sidecarS3SecretName
 #   allowImagePullSecrets: []
-#   allowPersistentVolumeClaims: [] # may not name <agentName>-<volume>
+#   allowPersistentVolumeClaims: [] # a job naming <agentName>-<volume> is refused even if listed
 #   allowHostAccess: false          # hostPath, hostNetwork/hostPID/hostIPC, hostPort, probe hosts
 #   allowPrivileged: false          # privileged, extra capabilities, procMount, sysctls, ...
 #   allowUnconfinedProfiles: false  # seccomp / AppArmor Unconfined (rootless BuildKit)
@@ -669,12 +654,12 @@ podTemplates:
 | `drainTimeout` | string | No | `0` (wait indefinitely) | Go duration bounding the graceful-shutdown drain window. Env override: `UNIFIED_K8S_DRAIN_TIMEOUT`. On SIGTERM/rollout the agent immediately stops claiming new runs but lets in-flight runs keep going — heartbeats keep beating during drain so a draining run isn't reaped as stuck — until either they finish or `drainTimeout` elapses, whichever comes first. `0`/unset waits forever for in-flight runs to finish (no forced cutoff). Parity with the standard agent's `--drain-timeout`. |
 | `finallyTimeout` | string | No | `10m` | Go duration bounding **each** of a run's post-DAG cleanup phases: the [`spec.finally`](../user-guide/writing-jobs/approval-and-finally.md#finally-block-finally) pipeline, and each `post:`/`cache:` hook drain. Env override: `UNIFIED_K8S_FINALLY_TIMEOUT`. Those phases deliberately keep running after a cancellation — that is what `finally:` is for — which also discards the job-level `spec.timeoutMinutes` deadline, so without this ceiling a cleanup step that never returns (most easily a `call:` waiting on a child run that will never be claimed) pinned the run and the agent's concurrency slot indefinitely. Unset or non-positive falls back to the default; "unbounded" is deliberately not expressible. An **unparseable** value is rejected at startup (`invalid config: finallyTimeout "10 minutes": …`) and the agent exits 1 — it does not fall back. It is a per-phase budget, not a shared total: four phases carry it inside the shared cleanup loop (each hook drain, the `finally` pipeline, and scope/Pod teardown), and this agent adds a fifth after that loop returns — the claim Pod's own deletion or return to the idle pool. So the worst-case post-DAG time here is **5 × this value**, 50m at the default; size a rollout's `terminationGracePeriodSeconds` against that, not against the standard agent's 4 × / 40m. Per-step `timeoutMinutes:` works inside `finally:` and remains the precise tool. Parity with the standard agent's `--finally-timeout`. |
 | `poolIdleTimeout` | string | No | unset (never evicted) | Go duration an idle pooled Pod is kept before it is evicted (e.g. `10m`). Unset or `0` disables idle eviction only; Pods are still pooled for jobs with `podTemplate.reuse: true` |
-| `minFreeDisk` | string or int | No | `1%` | Minimum free space on each agent-owned volume's filesystem before the agent stops claiming runs that mount it: `"1%"`, `"10Gi"` / `"10GiB"`, a bare byte count, or `0` / `"off"` to disable. A volume is measured only by runs that mount it, so a reading older than 10 minutes no longer gates, so runs that mount the volume are let through until one of them measures it again (a run that starts while the volume is still low logs a warning in its run log, and the gate re-arms from that pre-run measurement); restarting the agent clears the readings, and each replica keeps its own. A malformed value fails startup. Env override: `UNIFIED_K8S_MIN_FREE_DISK`. See [Kubernetes Integration: Disk limits and headroom](../operator-manual/kubernetes-integration.md#disk-limits-and-headroom). The k8s-agent config loader ignores unknown keys, so a misspelled `minFreeDisk` silently leaves the default in place. |
+| `minFreeDisk` | string or int | No | `1%` | Minimum free space on each named volume's filesystem before the agent stops claiming runs that mount it: `"1%"`, `"10Gi"` / `"10GiB"`, a bare byte count, or `0` / `"off"` to disable. A volume is measured only by runs that mount it, so a reading older than 10 minutes no longer gates, so runs that mount the volume are let through until one of them measures it again (a run that starts while the volume is still low logs a warning in its run log, and the gate re-arms from that pre-run measurement); restarting the agent clears the readings, and each replica keeps its own. A malformed value fails startup. Env override: `UNIFIED_K8S_MIN_FREE_DISK`. See [Kubernetes Integration: Disk limits and headroom](../operator-manual/kubernetes-integration.md#disk-limits-and-headroom). The k8s-agent config loader ignores unknown keys, so a misspelled `minFreeDisk` silently leaves the default in place. |
 | `workspaceSizeLimit` | string | No | unset | Kubernetes quantity (e.g. `10Gi`). When set, the agent sets `sizeLimit` on the workspace `emptyDir` and an `ephemeral-storage` **request** (no limit) on the `job` container, so the scheduler reserves the space and the kubelet evicts a run that exceeds it instead of letting it fill the node. Applied only when the workspace is an `emptyDir` and nothing in the pod template already sets `ephemeral-storage`. Scope pods get the global value. Overridable per template with `podTemplates.<name>.workspaceSizeLimit`. Env override: `UNIFIED_K8S_WORKSPACE_SIZE_LIMIT`. Unset by default because a limit that is too small kills legitimate runs; the agent logs an INFO at startup while it is unset. |
 | `podTemplates` | map | No | — | Named Pod templates referenced from Job YAML via `podTemplate.name` (see below) |
-| `jobPodPolicy` | map | No | absent = most restrictive | Which Pod fields a **job's own** `podTemplate` content (an inline `spec`, an `override` patch) may use on this agent. Keys: `allowServiceAccounts`, `allowSecrets`, `allowImagePullSecrets`, `allowPersistentVolumeClaims` (lists of object names, no wildcards), `allowHostAccess`, `allowPrivileged`, `allowUnconfinedProfiles`, `allowNodeName` (booleans), `allowPodSpecFields`, `allowVolumeTypes` (lists of opt-in field/type names; `hostAliases`, `dnsPolicy` and `dnsConfig` are opt-in PodSpec fields because they also steer the artifact sidecar's connections). **File-only: there are no environment variables.** An absent block denies every category. The agent refuses to start on an unknown key under `jobPodPolicy`, a name that is not a valid object name (or contains `*`), `allowSecrets` naming `sidecarS3SecretName`, `allowPersistentVolumeClaims` naming one of the agent's `<agentName>-<volume>` claims, or an `allowPodSpecFields` / `allowVolumeTypes` entry that is always allowed, belongs to a category, or is not a known opt-in. A refused run fails with `k8s: job pod policy: ...`. A job-supplied workspace or absolute volume `mountPath` over a system directory (`/usr`, `/etc`, `/usr/local/bin`, ...) is refused whatever this block says. See [Job Pod field policy](../operator-manual/kubernetes-integration.md#job-pod-field-policy) |
-| `agentName` | string | Yes, when `volumes` is set | — | Stable name that prefixes this agent's volume PVCs (`<agentName>-<volume>`). A DNS label (lower-case letters, digits, `-`). **Do not change it while the volumes hold data**: a new name provisions new, empty PVCs and leaves the old ones behind. It is not the agent ID, which the controller assigns per Pod (`k8s:<cluster>:<namespace>:<pod UID>`) and so changes on every restart. Replicas that share one config share one set of PVCs. |
-| `volumes` | list | No | — | Agent-owned named volumes jobs mount with `spec.volumes`. Each entry: `name` (a DNS label), `mode` (`exclusive` requests a `ReadWriteOnce` PVC; `shared` requests `ReadWriteMany`, which only works if the StorageClass supports it), `size` (**required**, e.g. `200Gi`) and optional `storageClassName` (unset means the cluster default). `path` is for host agents and is ignored here. A PVC is created at startup if it does not exist and is never resized or deleted by the agent; a volume removed from this list stops being advertised and its PVC is left in place (logged as an orphan). A `shared` volume cannot be mounted at the workspace root. An `exclusive` volume is held by one run at a time across all replicas: the run writes its ID to the PVC's `unified-cd/volume-held-by` annotation before its Pod is created and clears it when the Pod has been deleted (a lock whose run has no live Pod is taken over after two minutes). A run waiting for a held volume fails with `the agent is draining` if the agent starts draining. |
+| `jobPodPolicy` | map | No | absent = most restrictive | Which Pod fields a **job's own** `podTemplate` content (an inline `spec`, an `override` patch) may use on this agent. Keys: `allowServiceAccounts`, `allowSecrets`, `allowImagePullSecrets`, `allowPersistentVolumeClaims` (lists of object names, no wildcards), `allowHostAccess`, `allowPrivileged`, `allowUnconfinedProfiles`, `allowNodeName` (booleans), `allowPodSpecFields`, `allowVolumeTypes` (lists of opt-in field/type names; `hostAliases`, `dnsPolicy` and `dnsConfig` are opt-in PodSpec fields because they also steer the artifact sidecar's connections). **File-only: there are no environment variables.** An absent block denies every category. The agent refuses to start on an unknown key under `jobPodPolicy`, a name that is not a valid object name (or contains `*`), `allowSecrets` naming `sidecarS3SecretName`, or an `allowPodSpecFields` / `allowVolumeTypes` entry that is always allowed, belongs to a category, or is not a known opt-in. A refused run fails with `k8s: job pod policy: ...`; that includes a job that mounts one of the agent's named-volume claims (`<agentName>-<volume>`) directly, even if `allowPersistentVolumeClaims` lists it (checked against the volumes the controller delivered, at claim time). A job-supplied workspace or absolute volume `mountPath` over a system directory (`/usr`, `/etc`, `/usr/local/bin`, ...) is refused whatever this block says. See [Job Pod field policy](../operator-manual/kubernetes-integration.md#job-pod-field-policy) |
+| `agentName` | string | Yes, to provision AgentVolumes | — | Stable name that prefixes this agent's volume PVCs (`<agentName>-<volume>`). A DNS label (lower-case letters, digits, `-`). Without it every delivered volume is reported not ready. **Do not change it while the volumes hold data**: a new name provisions new, empty PVCs and leaves the old ones behind. It is not the agent ID, which the controller assigns per Pod (`k8s:<cluster>:<namespace>:<pod UID>`) and so changes on every restart. Replicas that share one config share one set of PVCs. |
+| `volumes` | — | — | — | **Removed.** Named volumes are `kind: AgentVolume` resources on the controller, delivered to the agent in each heartbeat answer. A `volumes:` key (with entries, an empty list, or bare) is refused at startup with `k8s agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)`. For each delivered volume the agent creates the PVC if missing (existing ones are used as they are, never resized), applies `reclaimPolicy` (with `Delete`, the PVC is deleted once the volume has been out of the set for 10 minutes and no Pod or lock holds it), and a `shared` volume cannot be mounted at the workspace root. An `exclusive` volume is held by one run at a time across all replicas: the run writes its ID to the PVC's `unified-cd/volume-held-by` annotation before its Pod is created and clears it when the Pod has been deleted (a lock whose run has no live Pod is taken over after two minutes). A run waiting for a held volume fails with `the agent is draining` if the agent starts draining. See [Kubernetes integration: Named volumes](../operator-manual/kubernetes-integration.md#named-volumes). |
 
 The default agent Deployment projects a ServiceAccount token with audience `unified-cd-agent-enrollment` and mounts it read-only at `/var/run/secrets/unified-cd-agent`. Do not add a token Secret to that Deployment.
 
@@ -695,7 +680,7 @@ Agent templates are operator-written and trusted: the agent does not filter them
 The workspace is always an `emptyDir`: empty when the run starts, discarded with the Pod. The
 former `pvc` block under `workspace` (a persistent claim, or a per-Pod ephemeral one) has
 been **removed**; an agent config that still carries it does not start. Persistence now comes from
-the agent's [`volumes`](#k8s-agent-config-fields) mounted by a job's `spec.volumes`. See the
+the controller-declared [`AgentVolume`](../operator-manual/kubernetes-integration.md#named-volumes)s mounted by a job's `spec.volumes`. See the
 [migration guide](../operator-manual/migrations/2026-10-20-named-volumes.md).
 
 A job's `podTemplate.workspace.mountPath` takes effect on the Kubernetes agent whether the
