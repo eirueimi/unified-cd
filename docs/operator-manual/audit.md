@@ -33,6 +33,8 @@ recorded, allowed or denied, for the following actions. A **denied read** is rec
 | `webhook.delete` | `DELETE /api/v1/webhooks/{name}` |
 | `vars.apply` | `POST /api/v1/vars` |
 | `vars.delete` | `DELETE /api/v1/vars/{name}` |
+| `agentvolume.apply` | `POST /api/v1/agent-volumes` |
+| `agentvolume.delete` | `DELETE /api/v1/agent-volumes/{name}` |
 | `schedule.apply` | `POST /api/v1/schedules` |
 | `schedule.delete` | `DELETE /api/v1/schedules/{name}` |
 | `appsource.apply` | `POST /api/v1/appsources` |

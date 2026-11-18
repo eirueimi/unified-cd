@@ -449,6 +449,20 @@ type VarsMeta struct {
 	Vars map[string]string `json:"vars"`
 }
 
+// ---- agent volumes ----
+
+// ApplyAgentVolumeRequest is the request for registering or updating an AgentVolume manifest YAML.
+type ApplyAgentVolumeRequest struct {
+	YAML string `json:"yaml"`
+}
+
+// AgentVolumeMeta is the metadata for an AgentVolume manifest (for API responses).
+type AgentVolumeMeta struct {
+	Name      string              `json:"name"`
+	Spec      dsl.AgentVolumeSpec `json:"spec"`
+	UpdatedAt time.Time           `json:"updatedAt"`
+}
+
 // ---- schedules ----
 
 // ApplyScheduleRequest is the request for registering or updating a Schedule YAML.

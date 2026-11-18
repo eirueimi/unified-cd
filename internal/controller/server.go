@@ -582,6 +582,15 @@ func (s *Server) routes() {
 		r.With(s.authorize).Delete("/{name}", s.handleDeleteVars)
 	})
 
+	// AgentVolume management (auth required)
+	s.r.Route("/api/v1/agent-volumes", func(r chi.Router) {
+		r.Use(ServerAuth(s.store, s))
+		r.Use(auditLogMiddleware(s.store))
+		r.With(s.authorize).Post("/", s.handleApplyAgentVolume)
+		r.With(s.authorize).Get("/", s.handleListAgentVolumes)
+		r.With(s.authorize).Delete("/{name}", s.handleDeleteAgentVolume)
+	})
+
 	// Schedule management (auth required)
 	s.r.Route("/api/v1/schedules", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))

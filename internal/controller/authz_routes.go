@@ -158,6 +158,9 @@ var routeTable = []routeRule{
 	global(mPost, "/api/v1/vars", authz.VarsWrite),
 	global(mGet, "/api/v1/vars", authz.VarsRead),
 	global(mDelete, "/api/v1/vars/{name}", authz.VarsWrite),
+	global(mPost, "/api/v1/agent-volumes", authz.AgentVolumeWrite),
+	global(mGet, "/api/v1/agent-volumes", authz.AgentVolumeRead),
+	global(mDelete, "/api/v1/agent-volumes/{name}", authz.AgentVolumeWrite),
 
 	{Method: mPost, Pattern: "/api/v1/schedules", Perm: authz.ScheduleConfigure, Scope: scopeScheduleBody},
 	{Method: mGet, Pattern: "/api/v1/schedules", Perm: authz.JobRead, Scope: scopeFiltered},

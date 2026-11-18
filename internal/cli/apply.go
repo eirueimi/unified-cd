@@ -127,6 +127,9 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 	case "Vars":
 		endpoint = cfg.Server + "/api/v1/vars/"
 		bodyBytes, _ = json.Marshal(api.ApplyVarsRequest{YAML: string(b)})
+	case "AgentVolume":
+		endpoint = cfg.Server + "/api/v1/agent-volumes/"
+		bodyBytes, _ = json.Marshal(api.ApplyAgentVolumeRequest{YAML: string(b)})
 	default:
 		endpoint = cfg.Server + "/api/v1/jobs"
 		bodyBytes, _ = json.Marshal(api.ApplyJobRequest{YAML: string(b)})
@@ -182,6 +185,12 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "vars applied: %s (%d keys)\n", meta.Name, len(meta.Vars))
+	case "AgentVolume":
+		var meta api.AgentVolumeMeta
+		if err := json.Unmarshal(respBody, &meta); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "agent volume applied: %s\n", meta.Name)
 	default:
 		var job api.Job
 		if err := json.Unmarshal(respBody, &job); err != nil {
@@ -230,6 +239,12 @@ func applyOneDocumentDryRun(cmd *cobra.Command, kind string, b []byte, docIndex 
 		name = g.Metadata.Name
 	case "Vars":
 		v, err := dsl.ParseVars(bytes.NewReader(b))
+		if err != nil {
+			return fmt.Errorf("document %d: %w", docIndex+1, err)
+		}
+		name = v.Metadata.Name
+	case "AgentVolume":
+		v, err := dsl.ParseAgentVolume(bytes.NewReader(b))
 		if err != nil {
 			return fmt.Errorf("document %d: %w", docIndex+1, err)
 		}

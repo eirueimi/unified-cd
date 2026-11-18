@@ -103,6 +103,10 @@ var legacyExempt = map[string]bool{
 var legacyNewRoutes = map[string]bool{
 	"GET /api/v1/authz/policy":   true,
 	"POST /api/v1/authz/explain": true,
+
+	"POST /api/v1/agent-volumes":          true,
+	"GET /api/v1/agent-volumes":           true,
+	"DELETE /api/v1/agent-volumes/{name}": true,
 }
 
 // isHumanRow reports whether a row is decided by a permission (as opposed to

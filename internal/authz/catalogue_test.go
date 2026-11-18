@@ -6,9 +6,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCatalogueHas26PermissionsInOrder(t *testing.T) {
+func TestCatalogueHas28PermissionsInOrder(t *testing.T) {
 	all := All()
-	require.Len(t, all, 26)
+	require.Len(t, all, 28)
 	folder := 0
 	for i, p := range all {
 		if FolderScopable(p) {
@@ -19,6 +19,8 @@ func TestCatalogueHas26PermissionsInOrder(t *testing.T) {
 	require.Equal(t, 9, folder)
 	require.Equal(t, AuthzRead, all[24])
 	require.Equal(t, AgentEnroll, all[25])
+	require.Equal(t, AgentVolumeRead, all[26])
+	require.Equal(t, AgentVolumeWrite, all[27])
 	require.False(t, FolderScopable(AgentEnroll))
 	require.Equal(t, JobRead, all[0])
 }
@@ -27,9 +29,9 @@ func TestBundles(t *testing.T) {
 	v, _ := Bundle("viewer")
 	d, _ := Bundle("developer")
 	a, _ := Bundle("admin")
-	require.ElementsMatch(t, []string{"agent.read", "appsource.read", "job.read", "vars.read", "webhook.read"}, v.Names())
+	require.ElementsMatch(t, []string{"agent.read", "agentvolume.read", "appsource.read", "job.read", "vars.read", "webhook.read"}, v.Names())
 	require.Equal(t, v, d.Intersect(v)) // developer is a superset of viewer
-	require.Len(t, d.Names(), 15)
+	require.Len(t, d.Names(), 16)
 	require.Equal(t, AllSet(), a)
 	require.False(t, d.Has(AuthzRead))
 	require.False(t, d.Has(AgentEnroll))

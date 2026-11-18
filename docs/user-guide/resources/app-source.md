@@ -137,8 +137,8 @@ actionable through the API only to callers whose folder grants cover them.
 
 1. The controller clones or fetches the repository at every `interval`.
 2. All `.yaml`/`.yml` files under `path` are scanned recursively.
-3. AppSource syncs `Job`, `Schedule`, `WebhookReceiver`, `GitCredential`, `AppSource`, and `Vars` documents found (recursively) under `spec.path`. Files of other kinds, or files that fail to parse, are skipped with a per-file warning; the rest of the sync continues.
-4. Files are applied in two passes — GitCredentials and Jobs first, then Schedules, WebhookReceivers, AppSources, and Vars — so cross-references (e.g. a Schedule's `job`) resolve on the first sync. Within each pass, files are processed in sorted path order. If two files declare the same kind and name, the first (lexicographically earliest path) wins and the rest are skipped with a warning.
+3. AppSource syncs `Job`, `Schedule`, `WebhookReceiver`, `GitCredential`, `AppSource`, `Vars`, and `AgentVolume` documents found (recursively) under `spec.path`. Files of other kinds, or files that fail to parse, are skipped with a per-file warning; the rest of the sync continues.
+4. Files are applied in two passes — GitCredentials and Jobs first, then Schedules, WebhookReceivers, AppSources, Vars, and AgentVolumes — so cross-references (e.g. a Schedule's `job`) resolve on the first sync. Within each pass, files are processed in sorted path order. If two files declare the same kind and name, the first (lexicographically earliest path) wins and the rest are skipped with a warning.
 5. If `prune: true`, resources that were previously managed by this AppSource but no longer appear in the repo are deleted. Pruning a nested `AppSource` removes only that AppSource; the resources it managed are left in place (non-cascading, matching Argo CD's default).
 
 Do not manage the same resource from two AppSources — the last sync wins.

@@ -123,6 +123,10 @@ func TestExport_RoundTripAllKindsParse(t *testing.T) {
 			if _, err := dsl.ParseVars(bytes.NewReader(b)); err != nil {
 				t.Errorf("%s: exported Vars must re-parse with strict parser: %v", path, err)
 			}
+		case "AgentVolume":
+			if _, err := dsl.ParseAgentVolume(bytes.NewReader(b)); err != nil {
+				t.Errorf("%s: exported AgentVolume must re-parse with strict parser: %v", path, err)
+			}
 		default:
 			t.Errorf("%s: unrecognized kind %q", path, probe.Kind)
 			return nil
@@ -139,7 +143,7 @@ func TestExport_RoundTripAllKindsParse(t *testing.T) {
 	// a failure. That is how kind: Vars was dropped — silently, on the
 	// documented export -> commit -> AppSource migration path, leaving every
 	// global variable behind.
-	for _, kind := range []string{"Job", "Schedule", "WebhookReceiver", "GitCredential", "AppSource", "Vars"} {
+	for _, kind := range []string{"Job", "Schedule", "WebhookReceiver", "GitCredential", "AppSource", "Vars", "AgentVolume"} {
 		if parsed[kind] == 0 {
 			t.Errorf("expected at least one exported %s file, found none", kind)
 		}
