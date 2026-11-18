@@ -74,3 +74,24 @@ func TestAgentVolumeMatches(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAgentVolume_ReclaimPolicy(t *testing.T) {
+	doc := func(extra string) string {
+		return "apiVersion: unified-cd/v1\nkind: AgentVolume\nmetadata:\n  name: v\nspec:\n  mode: shared\n  size: 1Gi\n" + extra
+	}
+	for _, ok := range []string{"", "  reclaimPolicy: Delete\n", "  reclaimPolicy: Retain\n"} {
+		if _, err := ParseAgentVolume(strings.NewReader(doc(ok))); err != nil {
+			t.Errorf("%q: unexpected error: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"  reclaimPolicy: delete\n", "  reclaimPolicy: Purge\n"} {
+		_, err := ParseAgentVolume(strings.NewReader(doc(bad)))
+		if err == nil || !strings.Contains(err.Error(), "reclaimPolicy") {
+			t.Errorf("%q: want reclaimPolicy error, got %v", bad, err)
+		}
+	}
+	_, err := ParseAgentVolume(strings.NewReader(doc("  agentSelector: [\"\"]\n")))
+	if err == nil || !strings.Contains(err.Error(), "agentSelector") {
+		t.Errorf("empty selector entry: want agentSelector error, got %v", err)
+	}
+}

@@ -157,37 +157,32 @@ func (c *Client) Deregister(ctx context.Context, agentID string) error {
 	return err
 }
 
-// Heartbeat refreshes the agent's last_seen_at on the controller.
-// activeRunIDs is the current snapshot of runs this agent process has in
-// flight, as reported by the caller's active-run provider (see
-// StartHeartbeat / RunSet.Snapshot):
-//   - nil sends no body at all (bodyless) — this is the legacy/pre-tracking
-//     wire shape and is only reachable if a caller explicitly passes nil;
-//     live code always passes a snapshot, so this path is kept for safety
-//     rather than exercised in production.
-//   - any non-nil slice, including an empty one, is marshalled as
-//     api.HeartbeatRequest{ActiveRunIDs: activeRunIDs} and always sent as a
-//     body — even for zero active runs — so the controller can distinguish
-//     "live agent, zero active runs" (a reconcile candidate) from "legacy
-//     agent, no body" (skip, unknown).
+// Heartbeat refreshes the agent's last_seen_at on the controller and returns
+// the controller-declared volume set the agent should offer.
 //
-// podBindings is forwarded unchanged as api.HeartbeatRequest.PodBindings.
-// It is nil for every host-agent call (there is no Kubernetes Pod to
-// report) and only ever populated by the Kubernetes agent — see
-// PodBindings' doc comment for why this rides the existing heartbeat call
-// rather than a new endpoint. Ignored (never sent) when activeRunIDs is
-// nil, since a bodyless beat cannot carry it either.
+// A nil req sends no body at all (bodyless), the legacy wire shape; the
+// controller still answers with the volume set. A non-nil req is sent as the
+// body even when it reports zero active runs (a non-nil empty ActiveRunIDs),
+// so the controller can tell "live agent, zero active runs" (a reconcile
+// candidate) from "legacy agent, no body" (skip, unknown).
 //
-// storage is forwarded unchanged as api.HeartbeatRequest.Storage and is
-// likewise ignored when activeRunIDs is nil. A nil storage sends no reading,
-// which the controller reads as "clear what you hold for this agent".
-func (c *Client) Heartbeat(ctx context.Context, agentID string, activeRunIDs []string, podBindings map[string]api.PodBinding, storage *api.AgentStorage) error {
+// The result is (nil, nil) when the controller answers 204, which is what a
+// controller that predates controller-declared volumes does: the caller must
+// not treat that as an empty set.
+func (c *Client) Heartbeat(ctx context.Context, agentID string, req *api.HeartbeatRequest) (*api.HeartbeatResponse, error) {
 	var body any
-	if activeRunIDs != nil {
-		body = api.HeartbeatRequest{ActiveRunIDs: activeRunIDs, PodBindings: podBindings, Storage: storage}
+	if req != nil {
+		body = req
 	}
-	_, err := c.do(ctx, http.MethodPost, "/api/v1/agents/"+agentID+"/heartbeat", body, nil)
-	return err
+	var out api.HeartbeatResponse
+	code, err := c.do(ctx, http.MethodPost, "/api/v1/agents/"+agentID+"/heartbeat", body, &out)
+	if err != nil {
+		return nil, err
+	}
+	if code == http.StatusNoContent {
+		return nil, nil
+	}
+	return &out, nil
 }
 
 // Claim requests an executable Run for the agent. labels is the list of agent

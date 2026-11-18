@@ -1254,14 +1254,27 @@ replaces the recorded list wholesale, so dropping a volume from the config
 and restarting the agent stops it being advertised. A claim writes the list
 **when it supplies one** and leaves the recorded list alone when it does not:
 an empty list on a claim means "not supplied", never "none", so a claim can
-never wipe what registration recorded. The reason the claim carries the list
+never wipe what registration recorded. The exception is a claim (or
+registration) that sets `volumesKnown: true`, which an agent sends once it has
+received its controller-declared set: from then on an empty list means "none"
+and replaces the stored one. The reason the claim carries the list
 at all is that it can recreate an agent row the database lost (for example
 after a reset under a running agent), and a recreated row that forgot the
 volumes would stop routing volume jobs to an agent that still declares them.
 
 Independent of claim activity, the agent runs a background heartbeat loop
 that calls `POST /api/v1/agents/{id}/heartbeat` every 15s
-(`agent.DefaultHeartbeatInterval`), refreshing `last_seen_at`. This matters
+(`agent.DefaultHeartbeatInterval`), refreshing `last_seen_at`. The controller
+answers every authenticated heartbeat with `200` and a JSON body
+(`{"volumes": [...], "revision": "<sha256>"}`): the [`AgentVolume`](../user-guide/resources/agent-volume.md)
+set this agent should offer, computed from the labels its credential
+authorizes (never from the request body) and sorted by name. `volumes` is
+always an array, empty when none applies, and `revision` changes whenever the
+set changes. If the controller cannot read the volume definitions it answers
+`503` with no body, and the agent keeps the set it last received. The agent
+reports the state of each of those volumes in the heartbeat's `volumeStatus`
+field, which `GET /api/v1/agents` shows per agent; a beat that omits it clears
+the stored status. This matters
 because a busy agent (all concurrency slots occupied) stops polling for new
 claims, and without a heartbeat it could be misidentified as dead. See
 [High Availability: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery)

@@ -43,6 +43,10 @@
           "description": "Mode is \"exclusive\" (one run at a time) or \"shared\" (concurrent runs).",
           "type": "string"
         },
+        "reclaimPolicy": {
+          "description": "ReclaimPolicy is \"Retain\" (the default) or \"Delete\". With Delete the\nagent removes the volume's data after the volume leaves its desired set\nand no run holds it.",
+          "type": "string"
+        },
         "size": {
           "description": "Size is a Kubernetes quantity such as 200Gi. It must be positive.",
           "type": "string"

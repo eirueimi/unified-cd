@@ -240,7 +240,16 @@ func (s *Server) serveJobSchedulability(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, EvaluateSchedulability(spec, agents))
+	defs, err := s.store.ListAgentVolumes(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	declared := make(map[string]bool, len(defs))
+	for _, d := range defs {
+		declared[d.Name] = true
+	}
+	writeJSON(w, http.StatusOK, EvaluateSchedulability(spec, agents, declared))
 }
 
 // handleDeleteJob deletes the Job with the given name. Associated Run history is also cascade-deleted.

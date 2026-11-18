@@ -757,7 +757,7 @@ func TestAgentHeartbeat_TouchesLastSeen(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb/heartbeat", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	s.Router().ServeHTTP(rr, req)
-	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 
 	after, err := pg.GetAgent(context.Background(), "agent-hb")
 	require.NoError(t, err)
@@ -818,7 +818,7 @@ func TestAgentHeartbeat_ReconcilesLostClaims(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	s.Router().ServeHTTP(rr, req)
-	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 
 	got, err := pgc.GetRun(ctx, r1.ID)
 	require.NoError(t, err)
@@ -865,7 +865,7 @@ func TestAgentHeartbeat_ReconcileEmptyActiveSetStillFails(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	s.Router().ServeHTTP(rr, req)
-	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 
 	got, err := pgc.GetRun(ctx, r4.ID)
 	require.NoError(t, err)
@@ -899,7 +899,7 @@ func TestAgentHeartbeat_BodylessSkipsReconcile(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb-legacy/heartbeat", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	s.Router().ServeHTTP(rr, req)
-	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 
 	got, err := pgc.GetRun(ctx, r5.ID)
 	require.NoError(t, err)
@@ -930,7 +930,7 @@ func TestAgentHeartbeat_RecordsPodBindings(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	s.Router().ServeHTTP(rr, req)
-	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 
 	binding, ok, err := pg.GetRunPodBinding(t.Context(), run.ID)
 	require.NoError(t, err)
@@ -964,7 +964,7 @@ func TestAgentHeartbeat_PodBindingsOverwritesOnReclaim(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Content-Type", "application/json")
 		s.Router().ServeHTTP(rr, req)
-		require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+		require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 	}
 
 	beat("ucd-run-first", "pod-uid-first")

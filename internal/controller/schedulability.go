@@ -27,12 +27,14 @@ type Schedulability struct {
 // candidates include a "{{" name is skipped the same way and sets
 // VolumesDependOnParams.
 //
-// An unknown volume is deliberately not an apply-time error: the controller
-// holds no volume state (spec section 4.2), so it cannot know which names
-// exist. The only honest answer is a run that stays Queued with a reason that
-// names the volume, which is what this reports. Whether a volume is currently
-// free is the agent's business and is not judged here.
-func EvaluateSchedulability(spec dsl.Spec, agents []api.AgentInfo) Schedulability {
+// A volume name with no AgentVolume is deliberately not an apply-time error: a
+// job may be applied before the volume it mounts is declared. The run stays
+// Queued with a reason that names the volume: `no AgentVolume "X" is declared`
+// when declaredVolumes (the names of every AgentVolume) lacks it, and
+// `no agent declares volume "X"` when it is declared but no agent offers it
+// ready. Whether a volume is currently free is the agent's business and is not
+// judged here.
+func EvaluateSchedulability(spec dsl.Spec, agents []api.AgentInfo, declaredVolumes map[string]bool) Schedulability {
 	req := dsl.RequiredCaps(spec)
 	reqVols := dsl.RequiredVolumes(spec)
 	vols, volsDependOnParams := judgeableVolumes(reqVols)
@@ -61,7 +63,7 @@ func EvaluateSchedulability(spec dsl.Spec, agents []api.AgentInfo) Schedulabilit
 			RequiredVolumes: reqVols, VolumesDependOnParams: volsDependOnParams}
 	}
 
-	reason := reasonNoAgent(agents, req, staticSel, vols)
+	reason := reasonNoAgent(agents, req, staticSel, vols, declaredVolumes)
 	return Schedulability{RequiredCaps: req, Selector: sel, Satisfiable: false, Reason: reason, SelectorDependsOnParams: dependsOnParams,
 		RequiredVolumes: reqVols, VolumesDependOnParams: volsDependOnParams}
 }
@@ -118,6 +120,16 @@ func setCovered(agentVolumes, set []string) bool {
 	return false
 }
 
+// anyDeclared reports whether any candidate of set names an AgentVolume.
+func anyDeclared(declared map[string]bool, set []string) bool {
+	for _, name := range set {
+		if declared[name] {
+			return true
+		}
+	}
+	return false
+}
+
 // setDeclaredBy reports whether any agent advertises any candidate of set.
 func setDeclaredBy(agents []api.AgentInfo, set []string) bool {
 	for _, a := range agents {
@@ -165,13 +177,22 @@ func labelsCover(agentLabels, selector []string) bool {
 	return true
 }
 
-func reasonNoAgent(agents []api.AgentInfo, req, sel []string, vols [][]string) string {
+func reasonNoAgent(agents []api.AgentInfo, req, sel []string, vols [][]string, declaredVolumes map[string]bool) string {
 	// A volume no agent advertises is the most specific answer and the one the
 	// author can act on, so it is reported before the capability and label
 	// reasons.
 	for _, set := range vols {
 		if setDeclaredBy(agents, set) {
 			continue
+		}
+		// No AgentVolume defines any candidate: the author has nothing to wait
+		// for until one is applied, which is a different fix from "no agent has
+		// it ready".
+		if !anyDeclared(declaredVolumes, set) {
+			if len(set) == 1 {
+				return fmt.Sprintf("no AgentVolume %q is declared", set[0])
+			}
+			return fmt.Sprintf("no AgentVolume is declared for any of the volumes %q", set)
 		}
 		if len(set) == 1 {
 			return fmt.Sprintf("no agent declares volume %q", set[0])

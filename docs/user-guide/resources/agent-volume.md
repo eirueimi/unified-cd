@@ -14,6 +14,7 @@ spec:
   size: <quantity>                # required — Kubernetes quantity, e.g. 200Gi
   storageClassName: <string>      # optional — storage class for Kubernetes agents
   agentSelector: [<string>]       # optional — labels an agent must all carry, e.g. role:unity
+  reclaimPolicy: Retain | Delete  # optional — default Retain
 ```
 
 ### Fields
@@ -24,7 +25,10 @@ spec:
 | `spec.mode` | string | Yes | `exclusive` allows one run at a time to hold the volume; `shared` allows concurrent runs. |
 | `spec.size` | string | Yes | Volume size as a Kubernetes quantity such as `200Gi`. Must be positive. |
 | `spec.storageClassName` | string | No | Storage class used for the PVC on Kubernetes agents. |
-| `spec.agentSelector` | []string | No | Labels in the same `key:value` syntax as a Job's `agentSelector`. An agent offers the volume only when it carries every listed label. Empty means every agent. |
+| `spec.agentSelector` | []string | No | Labels in the same `key:value` syntax as a Job's `agentSelector`. An agent offers the volume only when it carries every listed label. Empty means every agent. Entries must not be empty strings. |
+| `spec.reclaimPolicy` | string | No | `Retain` (default) keeps the volume's data when the volume leaves an agent's desired set. `Delete` removes the data after the volume leaves the set and no run holds it. |
+
+> **Warning:** with `reclaimPolicy: Delete`, a mistyped `agentSelector` that stops matching an agent removes that agent's data for the volume. Use `Retain` unless the data is disposable.
 
 Unknown fields are rejected.
 

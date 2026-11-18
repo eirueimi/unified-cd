@@ -69,7 +69,13 @@ func StartHeartbeat(ctx context.Context, client *Client, agentID string, interva
 				if storage != nil {
 					reading = storage()
 				}
-				err := client.Heartbeat(hbCtx, agentID, ids, bindings, reading)
+				// A nil id slice is the legacy bodyless beat; bindings and the
+				// reading ride only on a beat that has a body.
+				var hb *api.HeartbeatRequest
+				if ids != nil {
+					hb = &api.HeartbeatRequest{ActiveRunIDs: ids, PodBindings: bindings, Storage: reading}
+				}
+				_, err := client.Heartbeat(hbCtx, agentID, hb)
 				cancel()
 				if err != nil && ctx.Err() == nil {
 					slog.Warn("agent heartbeat failed", "agentId", agentID, "error", err)

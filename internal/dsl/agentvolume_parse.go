@@ -15,6 +15,12 @@ const (
 	VolumeModeShared    = "shared"
 )
 
+// Reclaim policies for AgentVolume.spec.reclaimPolicy. Empty means Retain.
+const (
+	ReclaimRetain = "Retain"
+	ReclaimDelete = "Delete"
+)
+
 // ParseAgentVolume decodes and validates a kind: AgentVolume YAML document.
 func ParseAgentVolume(r io.Reader) (*AgentVolume, error) {
 	dec := yaml.NewDecoder(r)
@@ -57,6 +63,16 @@ func (v *AgentVolume) Validate() error {
 	}
 	if q, err := resource.ParseQuantity(v.Spec.Size); err != nil || q.Sign() <= 0 {
 		return fmt.Errorf("spec.size %q must be a positive quantity such as 200Gi", v.Spec.Size)
+	}
+	for i, sel := range v.Spec.AgentSelector {
+		if sel == "" {
+			return fmt.Errorf("spec.agentSelector[%d] must not be empty", i)
+		}
+	}
+	switch v.Spec.ReclaimPolicy {
+	case "", ReclaimRetain, ReclaimDelete:
+	default:
+		return fmt.Errorf("spec.reclaimPolicy %q is invalid (want %q or %q)", v.Spec.ReclaimPolicy, ReclaimRetain, ReclaimDelete)
 	}
 	return nil
 }

@@ -174,7 +174,15 @@ parameterized.
 A job that mounts a [named volume](../user-guide/writing-jobs/volumes.md) (`spec.volumes`) is
 applied without error, but its runs stay `Queued`, and the job's page in the Web UI shows an
 unschedulable banner. `GET /api/v1/jobs/{name}/schedulability` returns `"satisfiable": false`
-with one of three reasons:
+with one of these reasons:
+
+```
+no AgentVolume "unity-main" is declared
+```
+
+```
+no AgentVolume is declared for any of the volumes ["go-cache-1" "go-cache-2"]
+```
 
 ```
 no agent declares volume "unity-main"
@@ -196,7 +204,14 @@ volume nobody declares is not an error: the run is queued and simply never claim
 agent must declare at least one candidate name, and one agent must satisfy every entry, because a
 run is claimed by exactly one agent.
 
-- The first form: no registered agent advertises that single name.
+- The `no AgentVolume ... is declared` forms: no `kind: AgentVolume` resource exists for the
+  name (or for any candidate of the entry). The controller reports this before it looks at agents.
+  Apply an [AgentVolume](../user-guide/resources/agent-volume.md) with that `metadata.name`, or fix
+  the spelling in the job.
+- The first `no agent declares volume` form: the volume is declared, but no registered agent
+  advertises that single name as ready. Check the `volumeStatus` of the agents your
+  `agentSelector` matches in `GET /api/v1/agents` for the reason, and check that the volume's
+  own `agentSelector` matches those agents' labels.
 - The second form: the entry lists several candidate names and no registered agent advertises
   any of them.
 - The third form: every candidate set *is* declared somewhere, but never all by one agent that

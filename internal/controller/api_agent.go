@@ -2,12 +2,15 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -65,7 +68,23 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 	// controller keeps no volume state of its own and routes runs by whatever
 	// the agent last advertised. A full registration replaces the set, so a
 	// volume removed from the agent's config stops attracting runs.
-	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, capabilities, req.Volumes, req.Env); err != nil {
+	//
+	// Controller-declared volumes arrive later, on the heartbeat. An agent that
+	// has not received its set yet (VolumesKnown false) and declares none must
+	// not wipe the stored list, so it is kept; an older agent that still lists
+	// volumes from its own config keeps the replace semantics.
+	volumes := req.Volumes
+	if !req.VolumesKnown && len(volumes) == 0 {
+		existing, err := s.store.GetAgent(r.Context(), req.AgentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if existing != nil {
+			volumes = existing.Volumes
+		}
+	}
+	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, capabilities, volumes, req.Env); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -104,6 +123,13 @@ const heartbeatReconcileGrace = 60 * time.Second
 // all of its stale runs), which a nil-slice check would wrongly skip. A
 // decode error or missing body is treated the same as "unknown" and simply
 // skips reconcile for this heartbeat — it never fails the heartbeat itself.
+//
+// The answer is 200 with an api.HeartbeatResponse: the AgentVolumes this
+// agent should offer, computed from its authorized labels. The body may also
+// carry the agent's volume status (HeartbeatRequest.VolumeStatus), replaced on
+// every beat like the storage reading. If the volume definitions cannot be
+// read the answer is 503 with no body, so the agent keeps its last set rather
+// than treating an error as an empty one.
 func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	agentID := chi.URLParam(r, "agentId")
 	recreated, err := s.store.TouchAgent(r.Context(), agentID)
@@ -126,10 +152,12 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	// storage stays nil for a bodyless or undecodable beat; SetAgentStorage is
 	// called with it regardless (see below).
 	var storage *api.AgentStorage
+	var volumeStatus []api.AgentVolumeStatus
 	if r.ContentLength != 0 {
 		var req api.HeartbeatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 			storage = req.Storage
+			volumeStatus = req.VolumeStatus
 			reported := map[string]struct{}{}
 			for _, id := range req.ActiveRunIDs {
 				reported[id] = struct{}{}
@@ -173,8 +201,59 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.SetAgentStorage(r.Context(), agentID, storage); err != nil {
 		slog.Warn("heartbeat: failed to record agent storage", "agentId", agentID, "error", err)
 	}
+	// Same replace-on-every-beat rule and best-effort handling as the storage
+	// reading: a beat that carries no status clears the stored one.
+	if err := s.store.SetAgentVolumeStatus(r.Context(), agentID, volumeStatus); err != nil {
+		slog.Warn("heartbeat: failed to record agent volume status", "agentId", agentID, "error", err)
+	}
 
-	w.WriteHeader(http.StatusNoContent)
+	var labels []string
+	if principal, ok := agentPrincipalFromContext(r.Context()); ok {
+		labels = principal.AuthorizedLabels
+	}
+	resp, err := s.desiredVolumes(r.Context(), labels)
+	if err != nil {
+		slog.Warn("heartbeat: failed to list agent volumes", "agentId", agentID, "error", err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// desiredVolumes computes the AgentVolume set an agent with the given
+// authorized labels should offer. The set is sorted by name and never nil; the
+// revision is the hex SHA-256 of its JSON encoding.
+func (s *Server) desiredVolumes(ctx context.Context, agentLabels []string) (api.HeartbeatResponse, error) {
+	recs, err := s.store.ListAgentVolumes(ctx)
+	if err != nil {
+		return api.HeartbeatResponse{}, err
+	}
+	vols := []api.DesiredVolume{}
+	for _, rec := range recs {
+		var spec dsl.AgentVolumeSpec
+		if err := json.Unmarshal(rec.Spec, &spec); err != nil {
+			slog.Warn("heartbeat: skipping AgentVolume with unreadable spec", "name", rec.Name, "error", err)
+			continue
+		}
+		if !dsl.AgentVolumeMatches(spec.AgentSelector, agentLabels) {
+			continue
+		}
+		reclaim := spec.ReclaimPolicy
+		if reclaim == "" {
+			reclaim = dsl.ReclaimRetain
+		}
+		vols = append(vols, api.DesiredVolume{
+			Name: rec.Name, Mode: spec.Mode, Size: spec.Size,
+			StorageClassName: spec.StorageClassName, ReclaimPolicy: reclaim,
+		})
+	}
+	sort.Slice(vols, func(i, j int) bool { return vols[i].Name < vols[j].Name })
+	canonical, err := json.Marshal(vols)
+	if err != nil {
+		return api.HeartbeatResponse{}, err
+	}
+	sum := sha256.Sum256(canonical)
+	return api.HeartbeatResponse{Volumes: vols, Revision: hex.EncodeToString(sum[:])}, nil
 }
 
 // handleAgentClaim is the endpoint for agents to pick up a Queued Run.
@@ -219,7 +298,7 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	// UI Agents page), even if it was never explicitly registered or the controller
 	// DB was reset out from under a still-running agent. This is best-effort: a
 	// failure here must not fail the claim itself.
-	if err := s.store.UpsertAgentOnClaim(r.Context(), agentID, "", "", "", agentLabels, dsl.NormalizeCapabilities(claimReq.Capabilities), claimReq.Volumes, false, nil); err != nil {
+	if err := s.store.UpsertAgentOnClaim(r.Context(), agentID, "", "", "", agentLabels, dsl.NormalizeCapabilities(claimReq.Capabilities), claimReq.Volumes, claimReq.VolumesKnown, nil); err != nil {
 		slog.Warn("agent claim: failed to upsert agent registration", "agentId", agentID, "error", err)
 	}
 

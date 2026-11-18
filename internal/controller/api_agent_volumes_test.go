@@ -61,12 +61,14 @@ func TestAgentAPI_Register_PersistsVolumes(t *testing.T) {
 	require.NotNil(t, got)
 	assert.ElementsMatch(t, []string{"unity-main", "go-cache"}, got.Volumes)
 
-	// Re-registering with none replaces the set: a volume dropped from the
-	// agent's config stops being routable.
-	registerVolumeAgent(t, s, token, "va", nil)
+	// Re-registering with a different list replaces the set: a volume dropped
+	// from the agent's config stops being routable. An empty list that is not
+	// marked authoritative (volumesKnown) keeps it; see
+	// TestRegisterWithVolumesKnownClearsVolumes for the clearing case.
+	registerVolumeAgent(t, s, token, "va", []string{"go-cache"})
 	got, err = pg.GetAgent(t.Context(), "va")
 	require.NoError(t, err)
-	assert.Empty(t, got.Volumes)
+	assert.Equal(t, []string{"go-cache"}, got.Volumes)
 }
 
 func TestAgentAPI_Claim_HonoursBusyVolumesFromTheBody(t *testing.T) {
