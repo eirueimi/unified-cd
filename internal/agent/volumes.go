@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Volume modes, as spelled in the agent config and returned by ModeOf.
@@ -77,9 +78,15 @@ type VolumeManager struct {
 	// failure a real unlink only produces on a damaged or busy filesystem.
 	removeLink func(string) error
 
-	// removeAll deletes a reclaimed volume's directory; os.RemoveAll, a field
-	// so a test can inject a failure.
+	// removeAll deletes a reclaimed volume's directory (after it was moved
+	// aside, in the background); os.RemoveAll, a field so a test can inject a
+	// failure or a slow delete.
 	removeAll func(string) error
+	// rename moves a reclaimed volume's directory aside; os.Rename, a field so
+	// a test can inject a failure.
+	rename func(oldpath, newpath string) error
+	// now is time.Now; a field so a test can move the reclaim grace clock.
+	now func() time.Time
 
 	// linkMu serialises edits to the on-disk registry of links native runs
 	// have created (see volumes_mount.go), which every claim slot writes.
@@ -98,11 +105,24 @@ type VolumeManager struct {
 	// reclaim maps every served volume's name to its last known reclaim policy;
 	// it mirrors <base>/.ucd-volume-reclaim.json. Guarded by applyMu.
 	reclaim map[string]string
+	// leftSetAt holds, for a Delete volume that is no longer delivered, when
+	// it was first seen absent; it is reclaimed only once reclaimGrace has
+	// passed since. Persisted with reclaim. Guarded by applyMu.
+	leftSetAt map[string]time.Time
+
+	// trash is the background deleter's queue of moved-aside reclaimed
+	// directories (volumes_apply.go). Guarded by trashMu.
+	trashMu   sync.Mutex
+	trash     []string
+	trashBusy bool
+	trashWG   sync.WaitGroup
 }
 
 // NewVolumeManager returns an empty manager for the workspace directory base;
 // volumes arrive through Apply. It loads the reclaim record a previous process
-// left, so the first Apply can reclaim volumes that left the set meanwhile.
+// left, so the first Apply can reclaim volumes that left the set meanwhile, and
+// schedules the background removal of any reclaimed data a previous process
+// moved aside but did not finish deleting.
 func NewVolumeManager(base string) (*VolumeManager, error) {
 	absBase, err := filepath.Abs(base)
 	if err != nil {
@@ -117,11 +137,14 @@ func NewVolumeManager(base string) (*VolumeManager, error) {
 
 		removeLink: os.Remove,
 		removeAll:  os.RemoveAll,
+		rename:     os.Rename,
+		now:        time.Now,
 		changed:    make(chan struct{}),
 		walk:       filepath.WalkDir,
 		locks:      newVolumeLockState(),
 	}
-	m.reclaim = m.loadReclaimRecord()
+	m.reclaim, m.leftSetAt = m.loadReclaimRecord()
+	m.scheduleLeftoverTrash()
 	return m, nil
 }
 

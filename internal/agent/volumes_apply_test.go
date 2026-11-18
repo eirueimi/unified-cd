@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,6 +40,48 @@ func readReclaimRecord(t *testing.T, base string) map[string]string {
 	var rec reclaimRecord
 	require.NoError(t, json.Unmarshal(b, &rec))
 	return rec.Volumes
+}
+
+// withClock gives m a clock the test moves with the returned function.
+func withClock(m *VolumeManager) func(time.Duration) {
+	var mu sync.Mutex
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	m.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	return func(d time.Duration) {
+		mu.Lock()
+		now = now.Add(d)
+		mu.Unlock()
+	}
+}
+
+func readLeftSetAt(t *testing.T, base string) map[string]string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(base, volumeReclaimFile))
+	require.NoError(t, err)
+	var rec reclaimRecord
+	require.NoError(t, json.Unmarshal(b, &rec))
+	return rec.LeftSetAt
+}
+
+// trashEntries lists the moved-aside reclaimed directories under base.
+func trashEntries(t *testing.T, base string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(base, "volumes"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	require.NoError(t, err)
+	var out []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), reclaimTrashPrefix) {
+			out = append(out, e.Name())
+		}
+	}
+	return out
 }
 
 func TestApplyAddCreatesDirAndKeepsExisting(t *testing.T) {
@@ -149,6 +193,7 @@ func TestApplyIdempotent(t *testing.T) {
 
 func TestReclaimDeleteAfterRelease(t *testing.T) {
 	m, base := newEmptyVM(t)
+	advance := withClock(m)
 	dir := filepath.Join(base, "volumes", "u")
 	m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimDelete)})
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o644))
@@ -159,10 +204,16 @@ func TestReclaimDeleteAfterRelease(t *testing.T) {
 	require.DirExists(t, dir, "a held volume is not reclaimed")
 	require.Equal(t, map[string]string{"u": "Delete"}, readReclaimRecord(t, base))
 
+	advance(reclaimGrace)
+	require.Empty(t, m.Apply(nil))
+	require.DirExists(t, dir, "past the grace, but still held")
+
 	rel()
 	require.Empty(t, m.Apply(nil))
 	require.NoDirExists(t, dir)
 	require.Empty(t, readReclaimRecord(t, base), "the record is dropped")
+	m.waitTrash()
+	require.Empty(t, trashEntries(t, base), "the moved-aside data is deleted in the background")
 }
 
 func TestReclaimRetainKeeps(t *testing.T) {
@@ -183,8 +234,171 @@ func TestReclaimSurvivesRestart(t *testing.T) {
 
 	m2, err := NewVolumeManager(base)
 	require.NoError(t, err)
+	advance := withClock(m2)
+	require.Empty(t, m2.Apply(nil))
+	require.DirExists(t, dir, "the grace starts when the volume is first seen absent")
+	advance(reclaimGrace)
 	require.Empty(t, m2.Apply(nil))
 	require.NoDirExists(t, dir)
+}
+
+// Absent for less than the grace: kept. At the grace: reclaimed.
+func TestReclaimWaitsForGrace(t *testing.T) {
+	m, base := newEmptyVM(t)
+	advance := withClock(m)
+	dir := filepath.Join(base, "volumes", "u")
+	m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimDelete)})
+
+	require.Empty(t, m.Apply(nil))
+	require.DirExists(t, dir)
+	require.Empty(t, m.Names(), "not offered while waiting")
+	require.Contains(t, readLeftSetAt(t, base), "u")
+
+	advance(reclaimGrace - time.Second)
+	require.Empty(t, m.Apply(nil))
+	require.DirExists(t, dir, "absent for less than the grace")
+
+	advance(time.Second)
+	require.Empty(t, m.Apply(nil))
+	require.NoDirExists(t, dir, "absent for the full grace")
+}
+
+// A volume that comes back within the grace keeps its data, and its clock
+// restarts from zero the next time it leaves.
+func TestReclaimGraceResetsWhenBack(t *testing.T) {
+	m, base := newEmptyVM(t)
+	advance := withClock(m)
+	dir := filepath.Join(base, "volumes", "u")
+	m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimDelete)})
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o644))
+
+	m.Apply(nil)
+	advance(reclaimGrace - time.Second)
+	sts := m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimDelete)})
+	require.True(t, sts[0].Ready)
+	require.Empty(t, readLeftSetAt(t, base), "the clock is cleared when it is delivered again")
+
+	m.Apply(nil)
+	advance(reclaimGrace - time.Second)
+	require.Empty(t, m.Apply(nil))
+	require.FileExists(t, filepath.Join(dir, "f"), "the clock restarted when it left again")
+	advance(time.Second)
+	m.Apply(nil)
+	require.NoDirExists(t, dir)
+}
+
+// A restart in the middle of the grace keeps the clock: the new process does
+// not start it again from zero.
+func TestReclaimGraceSurvivesRestart(t *testing.T) {
+	m, base := newEmptyVM(t)
+	advance := withClock(m)
+	dir := filepath.Join(base, "volumes", "u")
+	m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimDelete)})
+	m.Apply(nil)
+	advance(reclaimGrace / 2)
+
+	m2, err := NewVolumeManager(base)
+	require.NoError(t, err)
+	m2.now = m.now
+	require.Empty(t, m2.Apply(nil))
+	require.DirExists(t, dir)
+	advance(reclaimGrace / 2)
+	require.Empty(t, m2.Apply(nil))
+	require.NoDirExists(t, dir, "the recorded clock carried over the restart")
+}
+
+// Reclaim only moves the data aside: Apply returns while the slow delete is
+// still running, and the name can be served again at once from a fresh, empty
+// directory.
+func TestReclaimDoesNotBlockOnASlowDelete(t *testing.T) {
+	m, base := newEmptyVM(t)
+	advance := withClock(m)
+	dir := filepath.Join(base, "volumes", "u")
+	m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimDelete)})
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "old"), []byte("x"), 0o644))
+
+	started := make(chan string, 1)
+	unblock := make(chan struct{})
+	m.removeAll = func(p string) error {
+		started <- p
+		<-unblock
+		return os.RemoveAll(p)
+	}
+	t.Cleanup(func() {
+		select {
+		case <-unblock:
+		default:
+			close(unblock)
+		}
+		m.waitTrash()
+	})
+
+	m.Apply(nil)
+	advance(reclaimGrace)
+	done := make(chan []api.AgentVolumeStatus, 1)
+	go func() { done <- m.Apply(nil) }()
+	select {
+	case sts := <-done:
+		require.Empty(t, sts)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Apply waited for the background delete")
+	}
+	var trash string
+	select {
+	case trash = <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the background delete never started")
+	}
+	require.True(t, strings.HasPrefix(filepath.Base(trash), reclaimTrashPrefix+"u-"), trash)
+	require.Equal(t, filepath.Join(base, "volumes"), filepath.Dir(trash))
+	require.NoDirExists(t, dir)
+
+	sts := m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimDelete)})
+	require.Equal(t, []api.AgentVolumeStatus{{Name: "u", Ready: true}}, sts)
+	require.DirExists(t, dir)
+	require.NoFileExists(t, filepath.Join(dir, "old"), "a fresh, empty directory")
+	require.DirExists(t, trash, "the old tree is still being deleted")
+
+	close(unblock)
+	m.waitTrash()
+	require.NoDirExists(t, trash)
+	require.DirExists(t, dir)
+}
+
+// Moved-aside data a previous process did not finish deleting is removed in
+// the background at start; nothing else under volumes/ is touched.
+func TestReclaimLeftoversRemovedAtStart(t *testing.T) {
+	base := t.TempDir()
+	vols := filepath.Join(base, "volumes")
+	leftover := filepath.Join(vols, reclaimTrashPrefix+"u-123")
+	require.NoError(t, os.MkdirAll(filepath.Join(leftover, "deep"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(leftover, "deep", "f"), []byte("x"), 0o644))
+	keep := filepath.Join(vols, "u")
+	require.NoError(t, os.MkdirAll(keep, 0o755))
+	plainFile := filepath.Join(vols, reclaimTrashPrefix+"file")
+	require.NoError(t, os.WriteFile(plainFile, []byte("x"), 0o644))
+
+	m, err := NewVolumeManager(base)
+	require.NoError(t, err)
+	m.waitTrash()
+	require.NoDirExists(t, leftover)
+	require.DirExists(t, keep)
+	require.FileExists(t, plainFile, "only directories are taken")
+}
+
+// The background deleter refuses any path that is not moved-aside data.
+func TestTrashDeleterRefusesOtherPaths(t *testing.T) {
+	m, base := newEmptyVM(t)
+	dir := filepath.Join(base, "volumes", "u")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	nested := filepath.Join(base, "volumes", "u", reclaimTrashPrefix+"x")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+	m.scheduleTrash(dir)
+	m.scheduleTrash(nested)
+	m.scheduleTrash(base)
+	m.waitTrash()
+	require.DirExists(t, dir)
+	require.DirExists(t, nested)
 }
 
 func TestReclaimNotWhenBackInSet(t *testing.T) {
@@ -215,16 +429,19 @@ func TestReclaimNotWhenDeliveredButInvalid(t *testing.T) {
 
 func TestReclaimFailureReported(t *testing.T) {
 	m, base := newEmptyVM(t)
+	advance := withClock(m)
 	dir := filepath.Join(base, "volumes", "u")
 	m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimDelete)})
 	fail := true
-	m.removeAll = func(p string) error {
+	m.rename = func(from, to string) error {
 		if fail {
 			return errors.New("disk on fire")
 		}
-		return os.RemoveAll(p)
+		return os.Rename(from, to)
 	}
 
+	m.Apply(nil)
+	advance(reclaimGrace)
 	sts := m.Apply(nil)
 	require.Len(t, sts, 1)
 	require.Equal(t, "u", sts[0].Name)
@@ -243,6 +460,7 @@ func TestReclaimFailureReported(t *testing.T) {
 // the target outside the workspace survives and the failure is reported.
 func TestReclaimRefusesASymlink(t *testing.T) {
 	m, base := newEmptyVM(t)
+	advance := withClock(m)
 	m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimDelete)})
 	dir := filepath.Join(base, "volumes", "u")
 	require.NoError(t, os.Remove(dir))
@@ -252,6 +470,8 @@ func TestReclaimRefusesASymlink(t *testing.T) {
 		t.Skipf("cannot create a symlink here: %v", err)
 	}
 
+	m.Apply(nil)
+	advance(reclaimGrace)
 	sts := m.Apply(nil)
 	require.Len(t, sts, 1)
 	require.False(t, sts[0].Ready)
@@ -269,11 +489,31 @@ func TestReclaimRefusesAPlainFileAndHostileNames(t *testing.T) {
 
 	sentinel := filepath.Join(base, "sentinel")
 	require.NoError(t, os.MkdirAll(sentinel, 0o755))
-	for _, name := range []string{"", ".", "..", "../sentinel", `..\sentinel`, "a/b"} {
+	require.NoError(t, os.MkdirAll(filepath.Join(base, "volumes", ".hidden"), 0o755))
+	for _, name := range []string{"", ".", "..", "../sentinel", `..\sentinel`, "a/b", ".hidden"} {
 		require.Error(t, m.reclaimVolume(name), "name %q", name)
 	}
 	require.DirExists(t, sentinel)
 	require.DirExists(t, filepath.Join(base, "volumes"))
+	require.DirExists(t, filepath.Join(base, "volumes", ".hidden"))
+}
+
+// A Delete-to-Retain change delivered while the volume cannot be applied is
+// still recorded, so removing the volume afterwards never deletes it.
+func TestReclaimRetainFlipRecordedWhileApplyFails(t *testing.T) {
+	m, base := newEmptyVM(t)
+	advance := withClock(m)
+	dir := filepath.Join(base, "volumes", "u")
+	m.Apply([]api.DesiredVolume{dv("u", "exclusive", dsl.ReclaimDelete)})
+
+	sts := m.Apply([]api.DesiredVolume{dv("u", "bogus", dsl.ReclaimRetain)})
+	require.False(t, sts[0].Ready)
+	require.Equal(t, map[string]string{"u": "Retain"}, readReclaimRecord(t, base))
+
+	m.Apply(nil)
+	advance(reclaimGrace)
+	m.Apply(nil)
+	require.DirExists(t, dir)
 }
 
 func TestReclaimIgnoresACorruptRecord(t *testing.T) {

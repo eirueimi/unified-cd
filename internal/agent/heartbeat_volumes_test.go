@@ -164,6 +164,7 @@ func TestDeliveredEmptySetReclaimsDelete(t *testing.T) {
 	f := newHBController(t)
 	f.set = []api.DesiredVolume{dv("d", "exclusive", dsl.ReclaimDelete)}
 	a, _ := newVolumeTestAgent(t, f)
+	advance := withClock(a.Volumes)
 	startAgentHeartbeat(t, a, 20*time.Millisecond)
 	require.Eventually(t, func() bool { return len(a.Volumes.Names()) == 1 }, 2*time.Second, 5*time.Millisecond)
 	dir := a.Volumes.PathOf("d")
@@ -171,6 +172,10 @@ func TestDeliveredEmptySetReclaimsDelete(t *testing.T) {
 	f.mu.Lock()
 	f.set, f.revision = nil, "r2"
 	f.mu.Unlock()
+	require.Eventually(t, func() bool { return len(a.Volumes.Names()) == 0 }, 2*time.Second, 5*time.Millisecond)
+	f.waitBeats(t, 2)
+	require.DirExists(t, dir, "kept during the reclaim grace")
+	advance(reclaimGrace)
 	require.Eventually(t, func() bool { _, err := os.Stat(dir); return err != nil }, 2*time.Second, 5*time.Millisecond)
 }
 
