@@ -445,7 +445,7 @@ entries has no sensible flag or environment spelling. Each entry:
 |---|---|---|---|---|
 | `name` | string | Yes | — | What jobs call the volume. One path segment (`.`, `..` and names containing `/` or `\` are rejected); matched exactly. A job whose volume name has characters outside letters, digits, `-` and `_` must give it a clean `as:` alias. |
 | `mode` | string | Yes | — | `exclusive`: at most one run on this agent holds it at a time (a second run waits). `shared`: any number of runs may hold it; unified-cd makes no write-safety guarantee. A `shared` volume cannot be mounted at the workspace root. |
-| `path` | string | No | `<workspaceDir>/volumes/<name>` | Absolute host directory backing the volume, created at startup. It may not be, contain or sit under a `working*` directory of the workspace directory, its `detached` directory, or a dot-prefixed entry of it. Two volumes' paths may not overlap. |
+| `path` | string | No | — | **Ignored.** Volumes live at `<workspaceDir>/volumes/<name>`; a configured `path` is dropped and a warning naming it is logged at startup. |
 | `size` | string | No | — | Advisory capacity (`200Gi`). The agent warns when a volume exceeds it after a run and never enforces it. |
 | `storageClassName` | string | No | — | Kubernetes only; ignored by a host agent. |
 

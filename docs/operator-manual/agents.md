@@ -1110,7 +1110,7 @@ bound and is never swept.
 `--workspace-dir` root) must live under a path the container runtime's file
 sharing exposes to containers — e.g. under `/Users` for Docker Desktop on
 macOS, or an equivalent shared drive on Windows. A `wsBase` outside the
-runtime's shared paths will fail to bind-mount into the claim pod. A volume's `path` is bind-mounted
+runtime's shared paths will fail to bind-mount into the claim pod. A volume's directory (under `wsBase`) is bind-mounted
 into the claim pod as well, so the same rule applies to it.
 
 Every `run:` step also receives `UNIFIED_AGENT_OS` (Go's `runtime.GOOS` on
@@ -1148,17 +1148,14 @@ volumes:
 |---|---|---|
 | `name` | Yes | What jobs call it. One path segment: `.`, `..` and names containing `/` or `\` are rejected. Names are matched exactly. |
 | `mode` | Yes | `exclusive`: at most one run on this agent holds the volume at a time. `shared`: any number of runs may hold it, with **no** write-safety guarantee from unified-cd. |
-| `path` | No | Absolute host directory backing the volume. Defaults to `<workspaceDir>/volumes/<name>`. Created at startup if absent. |
+| `path` | No | **Ignored.** Volumes live at `<workspaceDir>/volumes/<name>`; a configured `path` is dropped and a warning naming it is logged at startup. |
 | `size` | No | Advisory capacity such as `200Gi`. After each run the agent measures the volume and warns when it exceeds this; it **never enforces** it, because per-directory quotas are not portable across operating systems without root. The free space of the filesystem under the volume is on `/metrics`: see [Watching agent disk headroom](operations.md#watching-agent-disk-headroom). |
 | `storageClassName` | — | Kubernetes only; ignored on a host agent. |
 
-The agent refuses to start (`volume "<name>": ...`) on a bad entry: a missing or unknown `mode`, a
-duplicate `name`, a relative `path`, a non-positive `size`, or two volumes whose paths overlap.
-**A `path` may not be, contain or sit under** the workspace directory's `working*` entries (which
-the workspace GC sweeps), the `detached` directory, or any dot-prefixed entry of the workspace
-directory (agent tooling). That is enforced rather than left to the spelling of the GC's glob: a
-volume deleted for going unused past `workspaceRetentionDays` would destroy exactly the data
-declared in order to keep it. The workspace GC never touches a volume.
+The agent refuses to start on a bad entry: a missing or unknown `mode`, a duplicate `name`, or a
+non-positive `size`. A volume always lives at `<workspaceDir>/volumes/<name>`, which the workspace GC
+never sweeps (it only removes aged `working*` directories), so a volume is never deleted for going
+unused.
 
 **How routing works.** The agent advertises its volume names at registration (the `volumes` field
 of `GET /api/v1/agents`). A run that mounts volumes is routed only to an agent that declares at
@@ -1183,14 +1180,14 @@ last.
   in memory, so two agent *processes* on one volume directory do not see each other: one agent ID
   started twice with an overlapping restart, or two agents on one machine that share a
   `workspaceDir` (both default to `<workspaceDir>/volumes/<name>`). Give each agent its own
-  `workspaceDir`, or its own explicit `path` for the volume, and start each agent ID once. As a
+  `workspaceDir` and start each agent ID once. As a
   diagnostic only, an agent records each exclusive volume it holds in
   `<workspaceDir>/.ucd-volume-locks/<volume>/` (outside the volume, so its contents stay exactly
   what jobs put there) and warns in the run's log, and in the agent log, when it finds a record of
   another process that is still running:
   `volume "unity-main" is also held by another agent process`. The run proceeds; the warning
   decides nothing. It can only see agents that share a `workspaceDir`, and it cannot tell two
-  agents with different `workspaceDir`s and the same explicit `path` apart.
+  agents whose volumes resolve to the same directory through different `workspaceDir`s (for example a symlink) apart.
   See [the troubleshooting entry](../troubleshooting/steps-and-execution.md#a-run-warns-that-a-volume-is-also-held-by-another-agent-process).
 - **Draining.** A run still waiting for a volume when the agent starts draining is failed with
   `run abandoned: the agent is draining and the run was still waiting for its volumes`; a drain does
