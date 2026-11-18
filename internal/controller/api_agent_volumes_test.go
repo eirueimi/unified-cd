@@ -84,7 +84,9 @@ func TestAgentAPI_Claim_HonoursBusyVolumesFromTheBody(t *testing.T) {
 	registerVolumeAgent(t, s, token, "va", []string{"unity"})
 
 	// While the agent reports the volume busy, the run is not handed to it.
-	busy, _ := json.Marshal(api.ClaimRequest{BusyVolumes: []string{"unity"}})
+	// The claim reports the agent's ready set (VolumesKnown), as a current
+	// agent does; routing follows that report, not the stored list.
+	busy, _ := json.Marshal(api.ClaimRequest{BusyVolumes: []string{"unity"}, Volumes: []string{"unity"}, VolumesKnown: true})
 	rec := claimAs(t, s, token, "va", busy)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	var got api.ClaimResponse
@@ -93,7 +95,7 @@ func TestAgentAPI_Claim_HonoursBusyVolumesFromTheBody(t *testing.T) {
 
 	// An absolute path is the agent's own bookkeeping and matches no volume
 	// name, so reporting one does not hold a run back.
-	paths, _ := json.Marshal(api.ClaimRequest{BusyVolumes: []string{"/go/cache"}})
+	paths, _ := json.Marshal(api.ClaimRequest{BusyVolumes: []string{"/go/cache"}, Volumes: []string{"unity"}, VolumesKnown: true})
 	rec = claimAs(t, s, token, "va", paths)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))

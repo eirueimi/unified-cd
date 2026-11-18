@@ -1230,16 +1230,22 @@ a claim can never blank what registration recorded.
 
 The declared **volumes** follow a fifth rule of their own. Registration
 replaces the recorded list wholesale, so dropping a volume from the config
-and restarting the agent stops it being advertised. (Caveat: an older agent
-that drops its last config volume sends an empty list, which is not
-authoritative, so the controller keeps advertising that volume until the agent
-claims or registers with `volumesKnown: true`.) A claim writes the list
+and restarting the agent stops it being advertised. A claim writes the list
 **when it supplies one** and leaves the recorded list alone when it does not:
 an empty list on a claim means "not supplied", never "none", so a claim can
 never wipe what registration recorded. The exception is a claim (or
 registration) that sets `volumesKnown: true`, which an agent sends once it has
 received its controller-declared set: from then on an empty list means "none"
-and replaces the stored one. The reason the claim carries the list
+and replaces the stored one.
+
+Routing, however, never uses a list the claim did not supply. A claim that is
+not authoritative (`volumesKnown` false) and lists no volumes is matched as
+an agent that offers **no** volumes; the recorded list is kept for display
+only. So a new agent before its first applied heartbeat (a few seconds after
+start) gets no volume runs, and an older agent that drops its last config
+volume stops receiving volume runs, even though `GET /api/v1/agents` may still
+show the old list until the agent claims or registers with
+`volumesKnown: true`. The reason the claim carries the list
 at all is that it can recreate an agent row the database lost (for example
 after a reset under a running agent), and a recreated row that forgot the
 volumes would stop routing volume jobs to an agent that still declares them.

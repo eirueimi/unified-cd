@@ -310,6 +310,24 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("agent claim: failed to upsert agent registration", "agentId", agentID, "error", err)
 	}
 
+	// Routing follows what the agent reports ready, never the stored list. A
+	// claim that has not received its controller-declared set (VolumesKnown
+	// false) and lists no volumes — a new agent before its first applied
+	// heartbeat, a restart while the controller was down, an older agent with
+	// no config volumes — offers none. The stored agents.volumes list is kept
+	// above for display, so mask every name in it as busy for this claim.
+	busyVolumes := claimReq.BusyVolumes
+	if !detached && !claimReq.VolumesKnown && len(claimReq.Volumes) == 0 {
+		stored, err := s.store.GetAgent(r.Context(), agentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if stored != nil && len(stored.Volumes) > 0 {
+			busyVolumes = append(append([]string(nil), busyVolumes...), stored.Volumes...)
+		}
+	}
+
 	deadline := time.Now().Add(timeout)
 	for {
 		// Return an empty response immediately during shutdown (prevents errors before the DB connection closes).
@@ -324,7 +342,7 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 		if detached {
 			claimed, err = s.store.ClaimNextRunDetached(r.Context(), agentID, agentLabels)
 		} else {
-			claimed, err = s.store.ClaimNextRun(r.Context(), agentID, agentLabels, claimReq.BusyVolumes)
+			claimed, err = s.store.ClaimNextRun(r.Context(), agentID, agentLabels, busyVolumes)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

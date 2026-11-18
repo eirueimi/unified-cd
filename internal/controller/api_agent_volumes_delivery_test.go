@@ -217,3 +217,36 @@ func TestHeartbeatCorruptStoredSpecReturns503(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 	assert.Empty(t, rr.Body.String())
 }
+
+// A claim that has not received its controller-declared set (VolumesKnown false)
+// and lists no volumes must be routed as offering none, even though the stored
+// agents.volumes list (kept for display) still names a volume: the agent does
+// not have it ready, so a run needing it would fail on the agent.
+func TestClaimWithoutVolumesKnownRoutesAsNoVolumes(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(t.Context(), "vj", "unified-cd/v1", []byte(volumeJobSpec))
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "vj", map[string]string{"LIB": "u"}, []byte(volumeJobSpec), nil, nil, "", "")
+	require.NoError(t, err)
+	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
+	require.NoError(t, err)
+	token := issueAgentAccessForTest(t, pg, "cl3", nil, nil)
+	registerVolumeAgent(t, s, token, "cl3", []string{"u"})
+
+	body, _ := json.Marshal(api.ClaimRequest{})
+	rec := claimAs(t, s, token, "cl3", body)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var got api.ClaimResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Empty(t, got.RunID, "an agent that has not reported its set ready must not get a volume run")
+
+	stored, err := pg.GetAgent(t.Context(), "cl3")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"u"}, stored.Volumes, "the stored list is kept for display")
+
+	body, _ = json.Marshal(api.ClaimRequest{Volumes: []string{"u"}, VolumesKnown: true})
+	rec = claimAs(t, s, token, "cl3", body)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, run.ID, got.RunID)
+}

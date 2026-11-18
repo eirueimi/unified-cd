@@ -197,7 +197,8 @@ type ClaimRequest struct {
 	// VolumesKnown says Volumes is authoritative even when empty: the agent has
 	// received its controller-declared set, so an empty list means "none".
 	// False (an older agent, or a restart while the controller was down) keeps
-	// the stored list when Volumes is empty.
+	// the stored list when Volumes is empty, for display only: such a claim is
+	// routed as offering no volumes.
 	VolumesKnown bool `json:"volumesKnown,omitempty"`
 	// Capabilities is the capability set the agent advertised at registration
 	// (native, container, pod). Registration is the only other writer of that

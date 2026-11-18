@@ -131,7 +131,11 @@ Name of the kind (`AgentVolume`, to avoid confusion with a Job's
   `UpsertAgentOnClaim` ignores an empty list, `internal/store/postgres.go`
   ~1698); fix that as part of this work with an explicit "volumes known"
   signal, so an agent that has not yet received its first set does not wipe
-  the stored list.
+  the stored list. The stored list is then display only: a claim that is
+  not authoritative (`volumesKnown` false) and lists no volumes is routed as
+  offering none, so a new agent before its first applied heartbeat, or an
+  older agent that dropped its last config volume, is never handed a run
+  needing a volume it does not have.
 - **Schedulability** (`GET /api/v1/jobs/{name}/schedulability`) can now tell
   "no AgentVolume named X is declared" apart from "declared, but no matching
   agent has it ready". Applying a Job that names an undeclared volume stays
