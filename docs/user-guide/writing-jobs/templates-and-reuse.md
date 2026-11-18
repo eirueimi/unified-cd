@@ -314,6 +314,8 @@ Existing `uses:` targets authored as `kind: Job` must be converted:
 
 ## Uses-level `runsIn.image` (scope)
 
+`runsIn.image` may use `{{ .Vars.NAME }}` and `{{ .Params.NAME }}`, expanded when the run is claimed; see [Container images](../variables.md#container-images).
+
 Put `runsIn.image` on a `uses:` step to run the **entire inlined template** in
 **one** isolated environment — a "scope" — that stays alive across all of the
 template's steps (one container on the standard agent, one dedicated pod on

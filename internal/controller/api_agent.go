@@ -313,7 +313,8 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 				// last_seen_at predicate would never select it for reaping. Both
 				// errors that reach here are deterministic — buildClaimResponse is
 				// pure computation over the already-stored spec bytes (e.g. the
-				// pre-migration runsIn guard), and a corrupt vars manifest decodes
+				// pre-migration runsIn guard, or a container image whose
+				// {{ .Vars.X }} names an undefined key), and a corrupt vars manifest decodes
 				// the same way on every claim — so retrying can never succeed
 				// either; fail fast, with the reason on the run, rather than treat
 				// it as transient.
@@ -466,13 +467,22 @@ func buildClaimResponse(c *store.ClaimedRun, globalVars map[string]string) (api.
 		vars[k] = v
 	}
 
+	// Container images may carry {{ .Params.X }} / {{ .Vars.X }}. Expand them
+	// here, once, so both agents receive final image names. The expansion
+	// copies what it rewrites; the parsed spec is left as written. Strict: an
+	// undefined key or an invalid result fails the run (see the claim handler).
+	podTemplate, err := dsl.ExpandPodTemplateImages(spec.PodTemplate, c.Params, vars)
+	if err != nil {
+		return api.ClaimResponse{}, err
+	}
+
 	resp := api.ClaimResponse{
 		RunID:          c.ID,
 		JobName:        c.JobName,
 		Params:         c.Params,
 		Vars:           vars,
 		TimeoutMinutes: spec.TimeoutMinutes,
-		PodTemplate:    spec.PodTemplate,
+		PodTemplate:    podTemplate,
 		Native:         spec.Native,
 		CleanWorkspace: spec.CleanWorkspace,
 	}
@@ -503,10 +513,47 @@ func buildClaimResponse(c *store.ClaimedRun, globalVars map[string]string) (api.
 		return api.ClaimResponse{}, err
 	}
 
+	if err := expandScopeImages(resp.Stages, c.Params, vars); err != nil {
+		return api.ClaimResponse{}, err
+	}
+	if err := expandScopeImages(resp.Finally, c.Params, vars); err != nil {
+		return api.ClaimResponse{}, err
+	}
+
 	for name := range secretsNeeded {
 		resp.SecretsNeeded = append(resp.SecretsNeeded, name)
 	}
 	return resp, nil
+}
+
+// expandScopeImages expands the runsIn.image a uses: step carried into its
+// ScopeImage (see internal/gittemplate/inline.go), in place on the freshly
+// built claim steps, including parallel sub-steps.
+func expandScopeImages(stages []api.ClaimStage, params, vars map[string]string) error {
+	expand := func(cs *api.ClaimStep) error {
+		if cs.ScopeImage == "" {
+			return nil
+		}
+		img, err := dsl.ExpandImage(cs.ScopeImage, params, vars)
+		if err != nil {
+			return fmt.Errorf("step %q runsIn.image %q: %w", cs.Name, cs.ScopeImage, err)
+		}
+		cs.ScopeImage = img
+		return nil
+	}
+	for i := range stages {
+		if stages[i].Step != nil {
+			if err := expand(stages[i].Step); err != nil {
+				return err
+			}
+		}
+		for j := range stages[i].Parallel {
+			if err := expand(&stages[i].Parallel[j]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // secretNamesForRun recomputes the set of secret names a run's spec

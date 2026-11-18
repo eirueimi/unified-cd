@@ -247,3 +247,122 @@ func TestAgentAPI_Claim_FailsRunWhenAVarsManifestIsCorrupt(t *testing.T) {
 	assert.Contains(t, joined, "corrupt-defaults",
 		"the message must name the offending manifest so an operator can find the row")
 }
+
+func claimWithImages(t *testing.T, spec dsl.Spec, params map[string]string, globals map[string]string) (api.ClaimResponse, error) {
+	t.Helper()
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	return buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j", Params: params}, Spec: b}, globals)
+}
+
+// Image fields are expanded at claim time from the merged vars (job spec.vars
+// over globals) and the run's params, in podTemplate containers,
+// initContainers, override containers and every scope image (steps, parallel
+// sub-steps and finally).
+func TestBuildClaimResponse_ExpandsImages(t *testing.T) {
+	spec := dsl.Spec{
+		Vars: map[string]string{"GO_IMAGE": "golang:job"},
+		PodTemplate: &dsl.PodTemplate{
+			Spec: map[string]any{
+				"containers":     []any{map[string]any{"name": "build", "image": "{{ .Vars.GO_IMAGE }}"}},
+				"initContainers": []any{map[string]any{"name": "init", "image": "{{ .Vars.REG }}/init:{{ .Params.TAG }}"}},
+			},
+			Override: &dsl.PodSpecPatch{Containers: []map[string]any{{"name": "side", "image": "{{ .Vars.REG }}/side"}}},
+		},
+		Steps: []dsl.StepEntry{
+			{Name: "u", ScopeID: "s1", ScopeImage: "{{ .Vars.REG }}/tool:{{ .Params.TAG }}", Run: "true"},
+			{Parallel: []dsl.Step{{Name: "p", ScopeID: "s2", ScopeImage: "{{ .Vars.GO_IMAGE }}", Run: "true"}}},
+		},
+		Finally: []dsl.StepEntry{{Name: "f", ScopeID: "s3", ScopeImage: "plain:1", Run: "true"}},
+	}
+	globals := map[string]string{"GO_IMAGE": "golang:global", "REG": "reg.io"}
+	resp, err := claimWithImages(t, spec, map[string]string{"TAG": "v1"}, globals)
+	require.NoError(t, err)
+
+	cs := resp.PodTemplate.Spec["containers"].([]any)
+	assert.Equal(t, "golang:job", cs[0].(map[string]any)["image"])
+	assert.Equal(t, "reg.io/init:v1", resp.PodTemplate.Spec["initContainers"].([]any)[0].(map[string]any)["image"])
+	assert.Equal(t, "reg.io/side", resp.PodTemplate.Override.Containers[0]["image"])
+	assert.Equal(t, "reg.io/tool:v1", resp.Stages[0].Step.ScopeImage)
+	assert.Equal(t, "golang:job", resp.Stages[1].Parallel[0].ScopeImage)
+	assert.Equal(t, "plain:1", resp.Finally[0].Step.ScopeImage)
+	assert.Equal(t, map[string]string{"GO_IMAGE": "golang:global", "REG": "reg.io"}, globals)
+}
+
+// The spec is parsed fresh per claim, so nothing the caller holds is mutated;
+// this pins that the expansion works on copies by claiming the same bytes twice
+// with different vars.
+func TestBuildClaimResponse_ExpandsImagesWithoutLeaking(t *testing.T) {
+	spec := dsl.Spec{
+		PodTemplate: &dsl.PodTemplate{Spec: map[string]any{
+			"containers": []any{map[string]any{"name": "build", "image": "{{ .Vars.I }}"}},
+		}},
+		Steps: []dsl.StepEntry{{Name: "s", Run: "true"}},
+	}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	c := &store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}
+	r1, err := buildClaimResponse(c, map[string]string{"I": "a:1"})
+	require.NoError(t, err)
+	r2, err := buildClaimResponse(c, map[string]string{"I": "b:2"})
+	require.NoError(t, err)
+	assert.Equal(t, "a:1", r1.PodTemplate.Spec["containers"].([]any)[0].(map[string]any)["image"])
+	assert.Equal(t, "b:2", r2.PodTemplate.Spec["containers"].([]any)[0].(map[string]any)["image"])
+	assert.Equal(t, "{{ .Vars.I }}", spec.PodTemplate.Spec["containers"].([]any)[0].(map[string]any)["image"])
+}
+
+func TestBuildClaimResponse_ImageErrors(t *testing.T) {
+	pod := dsl.Spec{
+		PodTemplate: &dsl.PodTemplate{Spec: map[string]any{
+			"containers": []any{map[string]any{"name": "build", "image": "{{ .Vars.GO_IMAGE }}"}},
+		}},
+		Steps: []dsl.StepEntry{{Name: "s", Run: "true"}},
+	}
+	_, err := claimWithImages(t, pod, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `podTemplate container "build" image "{{ .Vars.GO_IMAGE }}"`)
+	assert.Contains(t, err.Error(), "GO_IMAGE")
+
+	scope := dsl.Spec{Steps: []dsl.StepEntry{{Name: "u", ScopeID: "s1", ScopeImage: "{{ .Secrets.X }}", Run: "true"}}}
+	_, err = claimWithImages(t, scope, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `step "u"`)
+}
+
+// Through the claim endpoint an undefined var fails the run deterministically
+// with the reason in its log, instead of requeueing it.
+func TestAgentAPI_Claim_FailsRunWhenImageVarUndefined(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	spec := []byte(`{"podTemplate":{"spec":{"containers":[{"name":"build","image":"{{ .Vars.NOPE }}"}]}},"steps":[{"name":"s","run":"echo x"}]}`)
+	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", spec)
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "j", nil, spec, nil, nil, "", "")
+	require.NoError(t, err)
+	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
+	require.NoError(t, err)
+
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=200ms", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var got api.ClaimResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Empty(t, got.RunID)
+
+	after, err := pg.GetRun(t.Context(), run.ID)
+	require.NoError(t, err)
+	require.NotNil(t, after)
+	assert.Equal(t, api.RunFailed, after.Status)
+
+	lines, err := pg.TailLogs(t.Context(), run.ID, 0, 10)
+	require.NoError(t, err)
+	var joined string
+	for _, l := range lines {
+		joined += l.Line + "\n"
+	}
+	assert.Contains(t, joined, "NOPE")
+}
