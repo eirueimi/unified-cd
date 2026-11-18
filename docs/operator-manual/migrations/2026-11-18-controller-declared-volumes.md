@@ -74,7 +74,7 @@ For each volume listed under `volumes:` in an agent config file:
    authorized labels of its enrollment (see [Agents](../agents.md)); add them first (re-enroll the
    agent if needed), then apply the volume. Check the labels in `GET /api/v1/agents`.
 3. **Apply the resources**: `unified-cli apply -f agent-volumes.yaml`. See
-   [`examples/resources/agentvolume.yaml`](../../../examples/resources/agentvolume.yaml).
+   [`examples/resources/agentvolume.yaml`](https://github.com/eirueimi/unified-cd/blob/main/examples/resources/agentvolume.yaml).
 4. **Remove `volumes:` from the agent config** (host agent and k8s agent) and **restart the agent**
    on the new version. A `volumes:` key is refused at startup, even as an empty list or a bare key.
 5. **Check** `GET /api/v1/agents`: each agent's `volumes` lists what it advertises as ready, and
