@@ -478,6 +478,17 @@ type AgentInfo struct {
 	Capabilities []string          `json:"capabilities,omitempty"`
 	// Volumes lists the named volumes the agent declares in its own config.
 	Volumes []string `json:"volumes,omitempty"`
+	// VolumeStatus is the agent's last reported state of each controller-declared
+	// volume it was asked to provision.
+	VolumeStatus []AgentVolumeStatus `json:"volumeStatus,omitempty"`
+}
+
+// AgentVolumeStatus is one controller-declared volume's provisioning state on
+// an agent. Reason is set when Ready is false.
+type AgentVolumeStatus struct {
+	Name   string `json:"name"`
+	Ready  bool   `json:"ready"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // FilesystemStats is one filesystem's free and total capacity, in bytes.

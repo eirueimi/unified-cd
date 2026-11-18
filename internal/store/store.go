@@ -167,6 +167,14 @@ type WebhookReceiver struct {
 	UpdatedAt time.Time
 }
 
+// AgentVolumeRecord is one stored AgentVolume manifest. Spec is the raw JSON of
+// the AgentVolume spec.
+type AgentVolumeRecord struct {
+	Name      string
+	Spec      []byte
+	UpdatedAt time.Time
+}
+
 // VarsRecord is one stored Vars manifest. Spec is the raw JSON of dsl.VarsSpec.
 type VarsRecord struct {
 	Name string
@@ -406,7 +414,7 @@ type Store interface {
 	// written (so a row a claim recreates keeps routing volume jobs); an empty one
 	// leaves the recorded volumes untouched. Capabilities follow the same rule, so
 	// a row a heartbeat recreated with none gets them back on the next claim poll.
-	UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, volumes []string, env map[string]string) error
+	UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, volumes []string, volumesKnown bool, env map[string]string) error
 	// TouchAgent refreshes an agent's last_seen_at from its heartbeat. It UPSERTs:
 	// a heartbeat must be able to recreate a row something else deleted (the row is
 	// not owned by the process that heartbeats it), otherwise a live agent's runs
@@ -418,6 +426,9 @@ type Store interface {
 	// clears the reading, so a heartbeat that carried none leaves no series. An
 	// unknown agent is a silent no-op, not an error.
 	SetAgentStorage(ctx context.Context, agentID string, s *api.AgentStorage) error
+	// SetAgentVolumeStatus replaces the agent's whole controller-declared volume
+	// status list; nil clears it. Same contract as SetAgentStorage.
+	SetAgentVolumeStatus(ctx context.Context, agentID string, st []api.AgentVolumeStatus) error
 	// ListAgentStorage returns the storage reading of every live agent (heartbeat
 	// within staleAfter) that has reported one, keyed by agent ID.
 	ListAgentStorage(ctx context.Context, staleAfter time.Duration) (map[string]api.AgentStorage, error)
@@ -576,6 +587,16 @@ type Store interface {
 	// DeleteVars removes a Vars manifest. Deleting one that does not exist is
 	// not an error - AppSource's delete path must be idempotent.
 	DeleteVars(ctx context.Context, name string) error
+
+	// AgentVolume definitions
+	// UpsertAgentVolume stores an AgentVolume spec by name, replacing any previous one.
+	UpsertAgentVolume(ctx context.Context, name string, specJSON []byte) error
+	// ListAgentVolumes returns every AgentVolume, sorted by name.
+	ListAgentVolumes(ctx context.Context) ([]AgentVolumeRecord, error)
+	// GetAgentVolume returns one AgentVolume, or (nil, nil) when absent.
+	GetAgentVolume(ctx context.Context, name string) (*AgentVolumeRecord, error)
+	// DeleteAgentVolume removes an AgentVolume. Deleting an absent one is not an error.
+	DeleteAgentVolume(ctx context.Context, name string) error
 
 	// Secrets
 	UpsertSecret(ctx context.Context, name string, encryptedDEK, ciphertext []byte) (*StoredSecret, error)

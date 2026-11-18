@@ -87,27 +87,27 @@ func TestUpsertAgentOnClaim_CapabilitiesAreWrittenWhenSuppliedAndNeverBlanked(t 
 
 	require.NoError(t, pg.UpsertAgent(ctx, "a", "h", "linux/k8s", "", nil, k8s, nil, nil))
 	// Neither nil (an older agent) nor an empty set may blank what is stored.
-	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, nil, nil, nil))
-	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, []string{}, nil, nil))
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, nil, nil, false, nil))
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, []string{}, nil, false, nil))
 	info, err := pg.GetAgent(ctx, "a")
 	require.NoError(t, err)
 	assert.ElementsMatch(t, k8s, info.Capabilities)
 
 	// A supplied set replaces the stored one.
-	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, []string{"native", "container"}, nil, nil))
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, []string{"native", "container"}, nil, false, nil))
 	info, err = pg.GetAgent(ctx, "a")
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"native", "container"}, info.Capabilities)
 
 	// A claim that creates the row records the set too.
-	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "fresh", "", "", "", nil, k8s, nil, nil))
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "fresh", "", "", "", nil, k8s, nil, false, nil))
 	info, err = pg.GetAgent(ctx, "fresh")
 	require.NoError(t, err)
 	assert.ElementsMatch(t, k8s, info.Capabilities)
 
 	// A claim that creates the row without a set leaves NULL, not an empty
 	// array, so an agent that never advertised keeps the legacy baseline.
-	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "bare", "", "", "", nil, nil, nil, nil))
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "bare", "", "", "", nil, nil, nil, false, nil))
 	var isNull bool
 	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT capabilities IS NULL FROM agents WHERE id = 'bare'`).Scan(&isNull))
 	assert.True(t, isNull)
@@ -141,7 +141,7 @@ func TestKubernetesAgentRowRecreatedByTouchAgentRestoresPodOnNextClaimPoll(t *te
 	assert.Nil(t, got, "until it advertises pod, the recreated row must not claim a pod run")
 
 	// The agent's next claim poll carries its capability set.
-	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "k8s", "", "", "", []string{}, k8s, nil, nil))
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "k8s", "", "", "", []string{}, k8s, nil, false, nil))
 	got, err = pg.ClaimNextRun(ctx, "k8s", []string{}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, got)

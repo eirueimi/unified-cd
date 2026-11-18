@@ -62,6 +62,8 @@ var schemaSentinels = []sentinel{
 	{version: 28, migration: "028_git_credential_known_hosts", table: "git_credentials", column: "known_hosts"},
 	{version: 29, migration: "029_github_app_credentials", table: "git_credentials", column: "config"},
 	{version: 30, migration: "030_pat_created_by", table: "pats", column: "created_by"},
+	// One sentinel per migration: the table probe. The same file also adds agents.volume_status.
+	{version: 31, migration: "031_agent_volumes", table: "agent_volume_defs"},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel

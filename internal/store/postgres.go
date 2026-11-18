@@ -1666,13 +1666,17 @@ func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, versi
 // An empty list is "not supplied", never "none": a claim cannot wipe what
 // registration recorded. Dropping a volume is a registration, which replaces.
 //
+// volumesKnown says the list is authoritative even when empty: the agent has
+// received its controller-declared set, so an empty list means "none" and
+// replaces the stored one. When false, the rule above holds.
+//
 // capabilities follows the same rule, for the same reason: it is written when
 // non-empty and otherwise left alone. TouchAgent recreates a deleted row with
 // NULL capabilities, and registration, the only other writer, runs once at
 // startup, so without this the column would stay NULL until the agent
 // restarted. An agent that predates the field sends none and leaves the column
 // exactly as it was.
-func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, volumes []string, env map[string]string) error {
+func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, volumes []string, volumesKnown bool, env map[string]string) error {
 	if labels == nil {
 		labels = []string{}
 	}
@@ -1695,7 +1699,7 @@ func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os
 		      labels       = (SELECT ARRAY(SELECT DISTINCT unnest(agents.labels || EXCLUDED.labels))),
 		      version      = COALESCE(NULLIF(EXCLUDED.version, ''), agents.version),
 		      env          = CASE WHEN EXCLUDED.env = '{}'::jsonb THEN agents.env ELSE EXCLUDED.env END,
-		      volumes      = CASE WHEN cardinality(EXCLUDED.volumes) > 0 THEN EXCLUDED.volumes ELSE agents.volumes END,
+		      volumes      = CASE WHEN $9::boolean OR cardinality(EXCLUDED.volumes) > 0 THEN EXCLUDED.volumes ELSE agents.volumes END,
 		      capabilities = CASE WHEN cardinality(EXCLUDED.capabilities) > 0 THEN EXCLUDED.capabilities ELSE agents.capabilities END,
 		      last_seen_at = NOW();
 	`
@@ -1706,7 +1710,7 @@ func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os
 	if len(capabilities) == 0 {
 		capabilities = nil
 	}
-	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, envJSON, volumes, capabilities)
+	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, envJSON, volumes, capabilities, volumesKnown)
 	return err
 }
 
@@ -1778,6 +1782,24 @@ func (p *Postgres) SetAgentStorage(ctx context.Context, agentID string, s *api.A
 	return nil
 }
 
+// SetAgentVolumeStatus records the agent's latest controller-declared volume
+// status, replacing the previous list wholesale; nil clears it (SQL NULL). Like
+// SetAgentStorage it only UPDATEs, so an unknown agent is a silent no-op.
+func (p *Postgres) SetAgentVolumeStatus(ctx context.Context, agentID string, st []api.AgentVolumeStatus) error {
+	// b stays a nil []byte for nil st; pgx sends that as SQL NULL, not JSON null.
+	var b []byte
+	if st != nil {
+		var err error
+		if b, err = json.Marshal(st); err != nil {
+			return fmt.Errorf("marshal agent volume status: %w", err)
+		}
+	}
+	if _, err := p.pool.Exec(ctx, `UPDATE agents SET volume_status = $2 WHERE id = $1`, agentID, b); err != nil {
+		return fmt.Errorf("set agent volume status: %w", err)
+	}
+	return nil
+}
+
 // ListAgentStorage returns the storage reading of every live agent, keyed by
 // agent ID, for the metrics collector. Live means a heartbeat within
 // staleAfter, the same window CountAgentsByLiveness uses. An agent that has
@@ -1813,7 +1835,7 @@ func (p *Postgres) DeleteAgent(ctx context.Context, agentID string) error {
 }
 
 func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
-	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities, volumes FROM agents ORDER BY last_seen_at DESC`
+	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities, volumes, volume_status FROM agents ORDER BY last_seen_at DESC`
 	rows, err := p.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -1822,9 +1844,14 @@ func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
 	var out []api.AgentInfo
 	for rows.Next() {
 		var a api.AgentInfo
-		var envJSON []byte
-		if err := rows.Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities, &a.Volumes); err != nil {
+		var envJSON, statusJSON []byte
+		if err := rows.Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities, &a.Volumes, &statusJSON); err != nil {
 			return nil, err
+		}
+		if len(statusJSON) > 0 {
+			if err := json.Unmarshal(statusJSON, &a.VolumeStatus); err != nil {
+				return nil, fmt.Errorf("list agents: decode volume status for agent %q: %w", a.ID, err)
+			}
 		}
 		_ = json.Unmarshal(envJSON, &a.Env)
 		if a.Env == nil {
@@ -1836,16 +1863,21 @@ func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
 }
 
 func (p *Postgres) GetAgent(ctx context.Context, id string) (*api.AgentInfo, error) {
-	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities, volumes FROM agents WHERE id = $1`
+	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities, volumes, volume_status FROM agents WHERE id = $1`
 	var a api.AgentInfo
-	var envJSON []byte
+	var envJSON, statusJSON []byte
 	err := p.pool.QueryRow(ctx, q, id).
-		Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities, &a.Volumes)
+		Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities, &a.Volumes, &statusJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get agent: %w", err)
+	}
+	if len(statusJSON) > 0 {
+		if err := json.Unmarshal(statusJSON, &a.VolumeStatus); err != nil {
+			return nil, fmt.Errorf("get agent: decode volume status: %w", err)
+		}
 	}
 	_ = json.Unmarshal(envJSON, &a.Env)
 	if a.Env == nil {
@@ -2835,6 +2867,54 @@ func (p *Postgres) ListVars(ctx context.Context) ([]VarsRecord, error) {
 // DeleteVars deletes a Vars manifest by name.
 func (p *Postgres) DeleteVars(ctx context.Context, name string) error {
 	_, err := p.pool.Exec(ctx, `DELETE FROM vars WHERE name = $1;`, name)
+	return err
+}
+
+// UpsertAgentVolume creates or replaces an AgentVolume definition.
+func (p *Postgres) UpsertAgentVolume(ctx context.Context, name string, specJSON []byte) error {
+	const q = `INSERT INTO agent_volume_defs(name, spec) VALUES ($1, $2)
+		ON CONFLICT (name) DO UPDATE SET spec = EXCLUDED.spec, updated_at = NOW();`
+	if _, err := p.pool.Exec(ctx, q, name, specJSON); err != nil {
+		return fmt.Errorf("upsert agent volume %q: %w", name, err)
+	}
+	return nil
+}
+
+// ListAgentVolumes returns all AgentVolume definitions ordered by name.
+func (p *Postgres) ListAgentVolumes(ctx context.Context) ([]AgentVolumeRecord, error) {
+	rows, err := p.pool.Query(ctx, `SELECT name, spec, updated_at FROM agent_volume_defs ORDER BY name;`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AgentVolumeRecord
+	for rows.Next() {
+		var v AgentVolumeRecord
+		if err := rows.Scan(&v.Name, &v.Spec, &v.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// GetAgentVolume returns one AgentVolume definition, or (nil, nil) when absent.
+func (p *Postgres) GetAgentVolume(ctx context.Context, name string) (*AgentVolumeRecord, error) {
+	var v AgentVolumeRecord
+	err := p.pool.QueryRow(ctx, `SELECT name, spec, updated_at FROM agent_volume_defs WHERE name = $1;`, name).
+		Scan(&v.Name, &v.Spec, &v.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get agent volume %q: %w", name, err)
+	}
+	return &v, nil
+}
+
+// DeleteAgentVolume deletes an AgentVolume definition; an absent one is not an error.
+func (p *Postgres) DeleteAgentVolume(ctx context.Context, name string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM agent_volume_defs WHERE name = $1;`, name)
 	return err
 }
 
