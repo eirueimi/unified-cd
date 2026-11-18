@@ -16,12 +16,14 @@ rules:
     verbs: ["create", "get", "list", "delete", "watch", "update", "patch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    # Agent-owned named volumes (the agent config's `volumes`): the agent looks
-    # up and lists its PVCs at startup (get, list), creates the missing ones
-    # (create), and takes and releases an exclusive volume by updating the
-    # claim's lock annotation (update). It never deletes a volume's PVC itself;
-    # delete is kept from before named volumes existed.
-    verbs: ["create", "get", "list", "update", "delete"]
+    # Agent-owned named volumes (AgentVolume resources delivered by the
+    # controller): the agent looks up and lists its PVCs on every heartbeat
+    # (get, list), creates the missing ones (create), takes and releases an
+    # exclusive volume by updating the claim's lock annotation (update), records
+    # a volume's reclaim policy on its PVC (patch), and deletes the PVC of a
+    # reclaimPolicy: Delete volume once it left the set and no pod holds it
+    # (delete). It deletes nothing else.
+    verbs: ["create", "get", "list", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

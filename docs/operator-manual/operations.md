@@ -228,12 +228,15 @@ either.
 
 **Kubernetes agents.**
 
-- Each volume is a PVC named `<agentName>-<volume>`, created at startup and **never resized or
-  deleted by the agent**. A volume dropped from the config stops being advertised and its PVC stays,
-  logged as an orphan (`k8s: volume is no longer in the agent config; its PVC is left in place and
-  is not advertised. Delete the PVC yourself if the data is not wanted.`). Delete it with `kubectl`
-  when you are done with the data.
-- Changing `size` or `mode` in the config does not change an existing PVC; the agent logs a
+- Each volume is a PVC named `<agentName>-<volume>`, created when the controller delivers its
+  `AgentVolume` and **never resized by the agent**. A volume that leaves the set stops being
+  advertised. With `reclaimPolicy: Retain` (the default) its PVC stays, logged once (`k8s: volume
+  is no longer in the delivered set and no run holds it; its PVC is left in place (reclaimPolicy
+  Retain). Delete the PVC yourself if the data is not wanted.`); delete it with `kubectl` when you
+  are done with the data. With **`reclaimPolicy: Delete` the agent deletes the PVC** once no Pod
+  holds it, so a mistyped `agentSelector` or an accidentally deleted `AgentVolume` destroys the
+  data. See [Named volumes](kubernetes-integration.md#named-volumes).
+- Changing `size` or `mode` on the `AgentVolume` does not change an existing PVC; the agent logs a
   mismatch and leaves it alone. Expand it through your StorageClass, or delete and recreate.
 - A volume's free space is on `/metrics` as `unifiedcd_agent_volume_filesystem_free_bytes`, but it
   is refreshed only when a run mounts the volume; see [Watching agent disk

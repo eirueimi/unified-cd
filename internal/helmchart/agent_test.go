@@ -65,7 +65,7 @@ func TestAgentObjectsMatchBase(t *testing.T) {
 	assert.Equal(t, "ci", Object(role).Namespace())
 	assert.Equal(t, []any{"create", "get", "list", "delete", "watch", "update", "patch"}, dig(t, role, "rules", 0, "verbs"))
 	assert.Equal(t, []any{"pods", "pods/exec", "pods/log"}, dig(t, role, "rules", 0, "resources"))
-	assert.Equal(t, []any{"create", "get", "list", "update", "delete"}, dig(t, role, "rules", 1, "verbs"))
+	assert.Equal(t, []any{"create", "get", "list", "update", "patch", "delete"}, dig(t, role, "rules", 1, "verbs"))
 	assert.Equal(t, []any{"persistentvolumeclaims"}, dig(t, role, "rules", 1, "resources"))
 
 	rb := map[string]any(Find(objs, "RoleBinding", "unified-cd-k8s-agent"))

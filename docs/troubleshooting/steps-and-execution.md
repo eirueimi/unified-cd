@@ -512,7 +512,7 @@ and the volume's PVC (`<agentName>-<volume>`) is stuck `Pending`.
 
 `mode: shared` requests a `ReadWriteMany` PVC, which only binds on a StorageClass that supports
 RWX: in practice a network filesystem (NFS, CephFS, EFS, Azure Files, Longhorn). The agent creates
-the PVC at startup regardless; the cluster cannot bind it, so every Pod that mounts it stays
+the PVC when the controller delivers the volume regardless; the cluster cannot bind it, so every Pod that mounts it stays
 `Pending`.
 
 **Fix**

@@ -65,11 +65,8 @@ type k8sVolumeGate struct {
 
 // names returns the declared volumes to withhold from a claim, in name order,
 // and logs the changes since the previous call.
-func (g *k8sVolumeGate) names(declared []config.VolumeConfig, readings map[string]api.VolumeStats, th config.DiskThreshold, now time.Time) []string {
-	byName := make([]string, 0, len(declared))
-	for _, c := range declared {
-		byName = append(byName, c.Name)
-	}
+func (g *k8sVolumeGate) names(declared []string, readings map[string]api.VolumeStats, th config.DiskThreshold, now time.Time) []string {
+	byName := append([]string(nil), declared...)
 	sort.Strings(byName)
 
 	current := make(map[string]bool)
@@ -130,7 +127,7 @@ type volumeVerdictFor struct {
 
 // gatedNames lists the volumes the claim must withhold, logging transitions.
 func (a *K8sAgent) gatedNames(now time.Time) []string {
-	return a.volGate.names(a.cfg.Volumes, a.volumeStats.snapshot(), a.cfg.EffectiveMinFreeDisk(), now)
+	return a.volGate.names(a.volumeNames(), a.volumeStats.snapshot(), a.cfg.EffectiveMinFreeDisk(), now)
 }
 
 // gatedSet is the set of declared volumes whose cached reading gates claims at

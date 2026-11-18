@@ -10,7 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
@@ -60,7 +59,7 @@ var podSpecFieldClass = map[string]fieldClass{
 	"securityContext": classAllowed, "restartPolicy": classAllowed,
 	"terminationGracePeriodSeconds": classAllowed, "activeDeadlineSeconds": classAllowed,
 	"nodeSelector": classAllowed,
-	"affinity": classAllowed, "tolerations": classAllowed, "topologySpreadConstraints": classAllowed,
+	"affinity":     classAllowed, "tolerations": classAllowed, "topologySpreadConstraints": classAllowed,
 	"hostname": classAllowed, "subdomain": classAllowed, "setHostnameAsFQDN": classAllowed,
 	"enableServiceLinks": classAllowed, "os": classAllowed,
 	"hostUsers": classAllowed, "resources": classAllowed,
@@ -225,6 +224,17 @@ func (e *JobPodPolicyError) Error() string {
 // spec when no name is set, the override patch when one is. A decode error
 // returns nil so BuildPod reports it with its usual message (spec R4).
 func (p *JobPodPolicy) CheckJobPodTemplate(agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate) error {
+	return p.checkJobPodTemplate(agentTmpls, jobTmpl, nil)
+}
+
+// checkJobPodTemplate is CheckJobPodTemplate with one more rule: reserved says
+// whether a PVC claim name is a named volume's (volume name, true). Such a claim
+// is refused even when allowPersistentVolumeClaims lists it, because a job
+// reaches a named volume only through spec.volumes, which takes its lock. The
+// volumes are delivered by the controller, so this cannot be checked at startup
+// and is checked against the live set on every claim. A nil reserved reserves
+// nothing.
+func (p *JobPodPolicy) checkJobPodTemplate(agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, reserved func(claim string) (string, bool)) error {
 	if jobTmpl == nil {
 		return nil
 	}
@@ -241,13 +251,13 @@ func (p *JobPodPolicy) CheckJobPodTemplate(agentTmpls map[string]AgentPodTemplat
 		if err != nil {
 			return nil // BuildPod reports it
 		}
-		return p.checkOverride(base, jobTmpl.Override)
+		return p.checkOverride(base, jobTmpl.Override, reserved)
 	case jobTmpl.Spec != nil:
 		spec, err := podSpecFromMap(jobTmpl.Spec)
 		if err != nil {
 			return nil
 		}
-		c := &podPolicyChecker{p: p, sa: effectiveServiceAccount(spec)}
+		c := &podPolicyChecker{p: p, sa: effectiveServiceAccount(spec), reserved: reserved}
 		c.checkPodSpec(spec, "podTemplate.spec")
 		return c.result()
 	}
@@ -257,7 +267,7 @@ func (p *JobPodPolicy) CheckJobPodTemplate(agentTmpls map[string]AgentPodTemplat
 // checkOverride applies spec §5.6: patch volumes and containers are job
 // content; a patch container's mount of a template volume the patch does not
 // replace is checked as if the job had declared that volume.
-func (p *JobPodPolicy) checkOverride(base *corev1.PodSpec, patch *dsl.PodSpecPatch) error {
+func (p *JobPodPolicy) checkOverride(base *corev1.PodSpec, patch *dsl.PodSpecPatch, reserved func(string) (string, bool)) error {
 	containers, err := containersFromMaps(patch.Containers)
 	if err != nil {
 		return nil
@@ -266,7 +276,7 @@ func (p *JobPodPolicy) checkOverride(base *corev1.PodSpec, patch *dsl.PodSpecPat
 	if err != nil {
 		return nil
 	}
-	c := &podPolicyChecker{p: p, sa: effectiveServiceAccount(base)}
+	c := &podPolicyChecker{p: p, sa: effectiveServiceAccount(base), reserved: reserved}
 	replaced := map[string]bool{}
 	for _, v := range volumes {
 		replaced[v.Name] = true
@@ -299,8 +309,11 @@ func effectiveServiceAccount(spec *corev1.PodSpec) string {
 }
 
 type podPolicyChecker struct {
-	p          *JobPodPolicy
-	sa         string // effective ServiceAccount of the Pod being checked
+	p  *JobPodPolicy
+	sa string // effective ServiceAccount of the Pod being checked
+	// reserved reports a PVC claim name that is a named volume's (see
+	// checkJobPodTemplate); nil reserves nothing.
+	reserved   func(claim string) (string, bool)
 	violations []PodPolicyViolation
 }
 
@@ -516,6 +529,12 @@ func (c *podPolicyChecker) checkVolumeSource(src *corev1.VolumeSource, subj stri
 	if src.Secret != nil {
 		c.secret(at("secret"), subj, src.Secret.SecretName, prefix+"a secret volume that ")
 	}
+	if pvc := src.PersistentVolumeClaim; pvc != nil && c.reserved != nil {
+		if volume, ok := c.reserved(pvc.ClaimName); ok {
+			c.deny(at("persistentVolumeClaim"), subj, prefix+fmt.Sprintf("a volume of PersistentVolumeClaim %q, this agent's named volume %q; jobs reach it only through spec.volumes, which holds its lock", pvc.ClaimName, volume), "")
+			return
+		}
+	}
 	if pvc := src.PersistentVolumeClaim; pvc != nil && !slices.Contains(p.AllowPersistentVolumeClaims, pvc.ClaimName) {
 		c.deny(at("persistentVolumeClaim"), subj, prefix+fmt.Sprintf("a volume of PersistentVolumeClaim %q", pvc.ClaimName), fmt.Sprintf("allowPersistentVolumeClaims: [%q]", pvc.ClaimName))
 	}
@@ -611,7 +630,7 @@ func (c *podPolicyChecker) hostProcess(path, subj string, w *corev1.WindowsSecur
 }
 
 // validate applies spec section 4's startup rules.
-func (p *JobPodPolicy) validate(sidecarSecret, agentName string, vols []config.VolumeConfig) error {
+func (p *JobPodPolicy) validate(sidecarSecret string) error {
 	for _, l := range []struct {
 		key   string
 		names []string
@@ -630,11 +649,6 @@ func (p *JobPodPolicy) validate(sidecarSecret, agentName string, vols []config.V
 	}
 	if sidecarSecret != "" && slices.Contains(p.AllowSecrets, sidecarSecret) {
 		return fmt.Errorf("allowSecrets: %q is sidecarS3SecretName, the artifact sidecar's credentials, which job containers must never read", sidecarSecret)
-	}
-	for _, v := range vols {
-		if claim := claimNameFor(agentName, v.Name); slices.Contains(p.AllowPersistentVolumeClaims, claim) {
-			return fmt.Errorf("allowPersistentVolumeClaims: %q is this agent's named volume %q; jobs reach it only through spec.volumes, which holds its lock", claim, v.Name)
-		}
 	}
 	if err := validateEscapeList("allowPodSpecFields", "PodSpec field", p.AllowPodSpecFields, podSpecFieldClass, podSpecCategoryKey); err != nil {
 		return err

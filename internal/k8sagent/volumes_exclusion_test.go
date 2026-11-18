@@ -18,7 +18,6 @@ import (
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/artifact"
-	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
@@ -121,7 +120,7 @@ func (f *volFixture) exclusionNotices() []string {
 
 func runWithGolden(t *testing.T, g exclusionScenario, step *api.ClaimStep) (*volFixture, *argvExec) {
 	t.Helper()
-	var cfgs []config.VolumeConfig
+	var cfgs []api.DesiredVolume
 	var mounts []dsl.VolumeMount
 	for _, mt := range g.Mounts {
 		cfgs = append(cfgs, vcfg(mt.Name, "exclusive", "1Gi"))

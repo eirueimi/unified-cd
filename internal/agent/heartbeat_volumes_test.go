@@ -49,6 +49,9 @@ func newHBController(t *testing.T) *hbController {
 			w.WriteHeader(http.StatusNoContent)
 		case "500":
 			http.Error(w, "boom", http.StatusInternalServerError)
+		case "nokey":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"revision":"x"}`))
 		case "garbage":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte("{not json"))
@@ -135,7 +138,7 @@ func TestAgentKeepsLastSetOnHeartbeatError(t *testing.T) {
 // Apply with an empty set reclaims every Delete volume. A beat that did not
 // deliver a set (error, 204, undecodable answer) must therefore never reach it.
 func TestNoApplyWithoutADeliveredSet(t *testing.T) {
-	for _, mode := range []string{"500", "204", "garbage"} {
+	for _, mode := range []string{"500", "204", "garbage", "nokey"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newHBController(t)
 			f.set = []api.DesiredVolume{dv("d", "exclusive", dsl.ReclaimDelete)}

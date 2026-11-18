@@ -70,7 +70,8 @@ covers it.
 - [Every agent reports `"version": "dev"`](agents-and-enrollment.md#every-agent-reports-version-dev)
 - [Agent enrollment and credentials](agents-and-enrollment.md#agent-enrollment-and-credentials)
 - [A host agent fails at startup with `agent config: "volumes" is no longer supported`](agents-and-enrollment.md#a-host-agent-fails-at-startup-with-agent-config-volumes-is-no-longer-supported)
-- [A Kubernetes agent fails at startup with a `volume ...` configuration error](agents-and-enrollment.md#a-kubernetes-agent-fails-at-startup-with-a-volume--configuration-error)
+- [A Kubernetes agent fails at startup with `k8s agent config: "volumes" is no longer supported`](agents-and-enrollment.md#a-kubernetes-agent-fails-at-startup-with-k8s-agent-config-volumes-is-no-longer-supported)
+- [A Kubernetes agent reports a volume not ready](agents-and-enrollment.md#a-kubernetes-agent-reports-a-volume-not-ready-get-apiv1agents)
 - [A Kubernetes agent fails at startup with `workspace.pvc was removed`](agents-and-enrollment.md#a-kubernetes-agent-fails-at-startup-with-workspacepvc-was-removed)
 - [A host agent is not claiming: `free disk space below minimum, skipping claim`](agents-and-enrollment.md#a-host-agent-is-not-claiming-free-disk-space-below-minimum-skipping-claim)
 

@@ -159,20 +159,12 @@ type AgentConfig struct {
 // a top-level "volumes" key. Volumes are declared on the controller now.
 var errVolumesKeyRemoved = errors.New(`agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)`)
 
-// VolumeConfig declares one named volume in the Kubernetes agent config file.
-// The host agent no longer reads volumes from its config (see
-// errVolumesKeyRemoved); only the Kubernetes agent still uses this type, until
-// it too receives its volumes from the controller. Name and Mode are the
-// contract a job sees; Size and StorageClassName are the operator-only
-// implementation and may differ between agents.
-//
-//	volumes:
-//	  - name: unity-main
-//	    mode: exclusive
-//	    path: /var/lib/unified-cd/volumes/unity-main   # optional
-//	    size: 200Gi                                    # advisory
-//	  - name: go-cache
-//	    mode: shared
+// VolumeConfig is a legacy declaration of one named volume. No agent reads it
+// from a config file any more (both reject a "volumes" key, see
+// errVolumesKeyRemoved): volumes are AgentVolume resources the controller
+// delivers. Only the host agent's tests still build their volume sets with it.
+// Name and Mode are the contract a job sees; Size and StorageClassName were the
+// operator-only implementation.
 type VolumeConfig struct {
 	// Name is what jobs refer to. It is a single path segment: the default
 	// Path is derived from it.

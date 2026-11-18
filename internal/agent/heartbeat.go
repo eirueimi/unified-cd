@@ -73,8 +73,10 @@ func BuildHeartbeat(activeRunIDs func() []string, podBindings func() map[string]
 // onResponse is called with each successfully decoded answer, and only then: on
 // a heartbeat error (the agent keeps whatever it last applied) and on an empty
 // 204 answer (an old controller that does not deliver AgentVolumes; one warning
-// is logged for the lifetime of this goroutine) it is not called. A nil
-// onResponse discards answers.
+// is logged for the lifetime of this goroutine) it is not called. Nor is it
+// called for an answer whose Volumes is nil (JSON without a "volumes" key; the
+// controller always sends [] for an empty set), which is warned about once too.
+// A nil onResponse discards answers.
 func StartHeartbeat(ctx context.Context, client *Client, agentID string, interval time.Duration, build func() *api.HeartbeatRequest, onResponse func(*api.HeartbeatResponse)) <-chan struct{} {
 	if interval <= 0 {
 		interval = DefaultHeartbeatInterval
@@ -83,6 +85,7 @@ func StartHeartbeat(ctx context.Context, client *Client, agentID string, interva
 	go func() {
 		defer close(done)
 		warned204 := false
+		warnedNoSet := false
 		beat := func() {
 			hbCtx, cancel := context.WithTimeout(ctx, heartbeatTimeout)
 			defer cancel()
@@ -100,6 +103,14 @@ func StartHeartbeat(ctx context.Context, client *Client, agentID string, interva
 				if !warned204 {
 					warned204 = true
 					slog.Warn("controller does not deliver AgentVolumes; upgrade the controller", "agentId", agentID)
+				}
+			case resp.Volumes == nil:
+				// A 200 without a "volumes" key is not a delivered set: the
+				// controller always sends [] for an empty one. Treating it as
+				// empty would reclaim every Delete volume.
+				if !warnedNoSet {
+					warnedNoSet = true
+					slog.Warn("controller heartbeat answer has no volumes set; ignoring it", "agentId", agentID)
 				}
 			case onResponse != nil:
 				onResponse(resp)

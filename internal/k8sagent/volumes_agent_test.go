@@ -19,7 +19,6 @@ import (
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
@@ -43,7 +42,7 @@ type volFixture struct {
 	runStatus api.RunStatus
 }
 
-func newVolFixture(t *testing.T, vols []config.VolumeConfig) *volFixture {
+func newVolFixture(t *testing.T, vols []api.DesiredVolume) *volFixture {
 	t.Helper()
 	const agentID = "k8s-vol-1"
 	f := &volFixture{runID: "run-vol-1", finish: make(chan api.RunStatus, 4), runStatus: api.RunRunning, cs: fake.NewSimpleClientset()}
@@ -79,7 +78,7 @@ func newVolFixture(t *testing.T, vols []config.VolumeConfig) *volFixture {
 
 	f.ex = &envCaptureExec{}
 	f.a = &K8sAgent{
-		cfg:    Config{AgentID: agentID, AgentName: "agent1", Namespace: testVolNS, PodImage: "ubuntu:22.04", Volumes: vols},
+		cfg:    Config{AgentID: agentID, AgentName: "agent1", Namespace: testVolNS, PodImage: "ubuntu:22.04"},
 		client: agentlib.NewClient(srv.URL, "tok"),
 		pm:     volPM{NewPodManager(f.cs, testVolNS, "ubuntu:22.04")},
 		exec:   f.ex,
@@ -87,9 +86,8 @@ func newVolFixture(t *testing.T, vols []config.VolumeConfig) *volFixture {
 	}
 	// The claims exist before a run mounts or locks one, as after a real startup.
 	installPVCCompareAndSwap(f.cs)
-	if len(vols) > 0 {
-		require.NoError(t, EnsurePVCs(context.Background(), f.cs, testVolNS, "agent1", vols))
-	}
+	ensureTestPVCs(t, f.cs, vols...)
+	seedVolumes(f.a, vols...)
 
 	old := agentlib.CancelPollInterval
 	agentlib.CancelPollInterval = 20 * time.Millisecond
@@ -154,7 +152,7 @@ func mount(name, as, mountPath string) dsl.VolumeMount {
 // $UNIFIED_VOLUME_GO_CACHE sees the same variable on Kubernetes as it does on a
 // host agent.
 func TestExecuteRun_ExposesVolumePathsToSteps(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "10Gi"), vcfg("tool-cache", "shared", "10Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "exclusive", "10Gi"), vcfg("tool-cache", "shared", "10Gi")})
 	var observed []corev1.Pod
 	f.a.exec = &podCapturingExec{inner: f.ex, onExec: func() { observed = f.createdPods(t) }}
 
@@ -199,7 +197,7 @@ func (p *podCapturingExec) ExecStepArgv(ctx context.Context, pod, container stri
 }
 
 func TestExecuteRun_PicksAFreeCandidate(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
 	f.holder("other-run", "cache-1")
 	var observed []corev1.Pod
 	f.a.exec = &podCapturingExec{inner: f.ex, onExec: func() { observed = f.createdPods(t) }}
@@ -234,7 +232,7 @@ func TestExecuteRun_PicksAFreeCandidate(t *testing.T) {
 // using. The holder here is a pod, not anything in this process: another
 // replica's pod would look exactly the same.
 func TestExecuteRun_WaitsForAnExclusiveVolumeAnotherPodHolds(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 	f.holder("other-run", "unity-main")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -257,7 +255,7 @@ func TestExecuteRun_WaitsForAnExclusiveVolumeAnotherPodHolds(t *testing.T) {
 }
 
 func TestExecuteRun_DoesNotWaitForASharedVolume(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "shared", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "shared", "1Gi")})
 	f.holder("other-run", "go-cache")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -267,7 +265,7 @@ func TestExecuteRun_DoesNotWaitForASharedVolume(t *testing.T) {
 }
 
 func TestExecuteRun_StopsWaitingWhenTheRunIsCancelled(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 	f.holder("other-run", "unity-main")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -294,7 +292,7 @@ func TestExecuteRun_StopsWaitingWhenTheRunIsCancelled(t *testing.T) {
 }
 
 func TestExecuteRun_FailsOnAVolumeTheAgentDoesNotDeclare(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "exclusive", "1Gi")})
 	f.a.executeRun(context.Background(), f.claim([]dsl.VolumeMount{mount("nope", "", ".cache")}))
 	assert.Equal(t, api.RunFailed, f.waitFinish(t))
 	assert.Contains(t, f.logText(), "nope")
@@ -305,7 +303,7 @@ func TestExecuteRun_FailsOnAVolumeTheAgentDoesNotDeclare(t *testing.T) {
 // agent: only the agent knows a volume's mode, so it is the agent that refuses
 // several runs checking out over each other with no exclusion.
 func TestExecuteRun_RejectsASharedVolumeAtTheWorkspaceRoot(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "shared", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "shared", "1Gi")})
 	f.a.executeRun(context.Background(), f.claim([]dsl.VolumeMount{mount("go-cache", "", ".")}))
 	assert.Equal(t, api.RunFailed, f.waitFinish(t))
 	assert.Contains(t, f.logText(), "shared")
@@ -313,7 +311,7 @@ func TestExecuteRun_RejectsASharedVolumeAtTheWorkspaceRoot(t *testing.T) {
 }
 
 func TestExecuteRun_RejectsAMountPathThatEscapesTheWorkspace(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "exclusive", "1Gi")})
 	f.a.executeRun(context.Background(), f.claim([]dsl.VolumeMount{mount("go-cache", "", "../outside")}))
 	assert.Equal(t, api.RunFailed, f.waitFinish(t))
 	assert.Contains(t, f.logText(), "escapes")
@@ -325,7 +323,7 @@ func TestExecuteRun_RejectsAMountPathThatEscapesTheWorkspace(t *testing.T) {
 // volumes never draws from the pool. apply-time validation already refuses the
 // combination; this is the backstop for a claim that arrives anyway.
 func TestExecuteRun_VolumesAreNotPooled(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "exclusive", "1Gi")})
 	c := f.claim([]dsl.VolumeMount{mount("go-cache", "", ".cache")})
 	c.PodTemplate = &dsl.PodTemplate{Reuse: true}
 	f.a.executeRun(context.Background(), c)
@@ -358,7 +356,7 @@ func TestExecuteRun_CleanWorkspaceWipesAVolumeAtTheRoot(t *testing.T) {
 	}
 
 	t.Run("job asks for it", func(t *testing.T) {
-		f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+		f := newVolFixture(t, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 		c := f.claim([]dsl.VolumeMount{mount("unity-main", "", ".")})
 		c.CleanWorkspace = true
 		f.a.executeRun(context.Background(), c)
@@ -369,7 +367,7 @@ func TestExecuteRun_CleanWorkspaceWipesAVolumeAtTheRoot(t *testing.T) {
 		assert.Contains(t, ss[0], "'/workspace'")
 	})
 	t.Run("podTemplate asks for it", func(t *testing.T) {
-		f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+		f := newVolFixture(t, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 		c := f.claim([]dsl.VolumeMount{mount("unity-main", "", ".")})
 		c.PodTemplate = &dsl.PodTemplate{CleanWorkspace: true}
 		f.a.executeRun(context.Background(), c)
@@ -377,13 +375,13 @@ func TestExecuteRun_CleanWorkspaceWipesAVolumeAtTheRoot(t *testing.T) {
 		assert.True(t, cleared(scripts(f)))
 	})
 	t.Run("nobody asks", func(t *testing.T) {
-		f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+		f := newVolFixture(t, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 		f.a.executeRun(context.Background(), f.claim([]dsl.VolumeMount{mount("unity-main", "", ".")}))
 		require.Equal(t, api.RunSucceeded, f.waitFinish(t))
 		assert.False(t, cleared(scripts(f)), "a volume is never wiped unless the job asks")
 	})
 	t.Run("a volume at a subdirectory is not the workspace", func(t *testing.T) {
-		f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "1Gi")})
+		f := newVolFixture(t, []api.DesiredVolume{vcfg("go-cache", "exclusive", "1Gi")})
 		c := f.claim([]dsl.VolumeMount{mount("go-cache", "", ".cache")})
 		c.CleanWorkspace = true
 		f.a.executeRun(context.Background(), c)
@@ -394,7 +392,7 @@ func TestExecuteRun_CleanWorkspaceWipesAVolumeAtTheRoot(t *testing.T) {
 	// plain rm of the root's children would recurse through a nested mount
 	// point and empty that volume while the run reported success.
 	t.Run("a volume mounted below the root is not wiped", func(t *testing.T) {
-		f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi"), vcfg("go-cache", "exclusive", "1Gi")})
+		f := newVolFixture(t, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi"), vcfg("go-cache", "exclusive", "1Gi")})
 		c := f.claim([]dsl.VolumeMount{mount("unity-main", "", "."), mount("go-cache", "", ".ucd-cache/go")})
 		c.CleanWorkspace = true
 		f.a.executeRun(context.Background(), c)
@@ -420,7 +418,7 @@ func TestK8sBackend_VolumePathsAreForTheDefaultPodOnly(t *testing.T) {
 }
 
 func TestClaimRequest_ReportsDeclaredAndBusyExclusiveVolumes(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{
+	f := newVolFixture(t, []api.DesiredVolume{
 		vcfg("unity-main", "exclusive", "1Gi"), vcfg("go-cache", "shared", "1Gi"), vcfg("idle", "exclusive", "1Gi"),
 	})
 	f.holder("r1", "unity-main", "go-cache")
@@ -436,12 +434,14 @@ func TestClaimRequest_AnAgentWithoutVolumesSendsNothing(t *testing.T) {
 	assert.Equal(t, api.ClaimRequest{}, f.a.claimRequest(context.Background()))
 }
 
-// TestRun_RegistersItsVolumes: the controller routes volume jobs by what an
-// agent registered, so a k8s-agent that provisioned PVCs but did not advertise
-// them would never receive a job that needs one.
-func TestRun_RegistersItsVolumesAndProvisionsTheirClaims(t *testing.T) {
+// TestRun_ReceivesVolumesFromTheHeartbeat: volumes arrive in the heartbeat
+// answer, not in the config. The agent provisions their claims, reports their
+// status on its next beat (see TestK8sHeartbeatReportsVolumeStatus), and says on its claims that the list it offers is
+// authoritative.
+func TestRun_ReceivesVolumesFromTheHeartbeat(t *testing.T) {
 	var mu sync.Mutex
 	var reg api.AgentRegisterRequest
+	var claims []api.ClaimRequest
 	mux := http.NewServeMux()
 	ok := func(w http.ResponseWriter, r *http.Request) { drainRequestBody(r); w.WriteHeader(http.StatusOK) }
 	mux.HandleFunc("POST /api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
@@ -450,22 +450,30 @@ func TestRun_RegistersItsVolumesAndProvisionsTheirClaims(t *testing.T) {
 		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("POST /api/v1/agents/k8s-1/heartbeat", ok)
+	mux.HandleFunc("POST /api/v1/agents/k8s-1/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
+		orchestrateWriteJSON(w, api.HeartbeatResponse{Revision: "r1", Volumes: []api.DesiredVolume{
+			vcfg("unity-main", "exclusive", "5Gi"), vcfg("go-cache", "shared", "1Gi")}})
+	})
 	mux.HandleFunc("DELETE /api/v1/agents/k8s-1", ok)
 	mux.HandleFunc("POST /api/v1/agents/k8s-1/runs/reconcile", func(w http.ResponseWriter, r *http.Request) {
 		drainRequestBody(r)
 		orchestrateWriteJSON(w, map[string]int{"failedRuns": 0})
 	})
 	mux.HandleFunc("POST /api/v1/agents/k8s-1/claim", func(w http.ResponseWriter, r *http.Request) {
-		drainRequestBody(r)
+		var req api.ClaimRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		claims = append(claims, req)
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
 		orchestrateWriteJSON(w, api.ClaimResponse{})
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
 	cs := fake.NewSimpleClientset()
-	cfg := Config{AgentID: "k8s-1", AgentName: "agent1", Namespace: testVolNS, MaxConcurrent: 2,
-		Volumes: []config.VolumeConfig{vcfg("unity-main", "exclusive", "5Gi"), vcfg("go-cache", "shared", "1Gi")}}
+	cfg := Config{AgentID: "k8s-1", AgentName: "agent1", Namespace: testVolNS, MaxConcurrent: 2}
 	pm := NewPodManager(cs, testVolNS, "img")
 	a := NewK8sAgent(cfg, agentlib.NewClient(srv.URL, "tok"), pm, nil, NewPodPool(cs, testVolNS, pm))
 
@@ -475,13 +483,25 @@ func TestRun_RegistersItsVolumesAndProvisionsTheirClaims(t *testing.T) {
 	require.Eventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return len(reg.Volumes) == 2
+		for _, c := range claims {
+			if c.VolumesKnown && len(c.Volumes) == 2 {
+				return true
+			}
+		}
+		return false
 	}, 5*time.Second, 20*time.Millisecond)
 	cancel()
 	<-done
 
 	mu.Lock()
-	assert.Equal(t, []string{"go-cache", "unity-main"}, reg.Volumes)
+	assert.Empty(t, reg.Volumes, "volumes are not advertised at registration any more")
+	for _, c := range claims {
+		if c.VolumesKnown {
+			assert.Equal(t, []string{"go-cache", "unity-main"}, c.Volumes)
+		} else {
+			assert.Empty(t, c.Volumes, "before the first answer the claim must not claim to know the list")
+		}
+	}
 	mu.Unlock()
 	assert.Contains(t, listPVCs(t, cs), "agent1-unity-main")
 	assert.Contains(t, listPVCs(t, cs), "agent1-go-cache")
@@ -504,7 +524,7 @@ func srcTemplate() map[string]AgentPodTemplate {
 // that is not the volume: the one deliberate way to destroy volume data
 // silently does nothing.
 func TestExecuteRun_AgentTemplateWorkspaceIsHonouredForVolumes(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi"), vcfg("go-cache", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi"), vcfg("go-cache", "exclusive", "1Gi")})
 	f.a.cfg.PodTemplates = srcTemplate()
 	var observed []corev1.Pod
 	f.a.exec = &podCapturingExec{inner: f.ex, onExec: func() { observed = f.createdPods(t) }}
@@ -572,14 +592,14 @@ func TestBuildPod_UsesResolveWorkspaceConfig(t *testing.T) {
 // server rejects the pod with "Duplicate value" at create time.
 func TestExecuteRun_RejectsAnAbsoluteMountPathThatIsTheWorkspace(t *testing.T) {
 	t.Run("default workspace", func(t *testing.T) {
-		f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+		f := newVolFixture(t, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 		f.a.executeRun(context.Background(), f.claim([]dsl.VolumeMount{mount("unity-main", "", "/workspace")}))
 		assert.Equal(t, api.RunFailed, f.waitFinish(t))
 		assert.Contains(t, f.logText(), "is the workspace itself")
 		assert.Empty(t, f.createdPods(t))
 	})
 	t.Run("a workspace an agent template moved", func(t *testing.T) {
-		f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+		f := newVolFixture(t, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 		f.a.cfg.PodTemplates = srcTemplate()
 		c := f.claim([]dsl.VolumeMount{mount("unity-main", "", "/src")})
 		c.PodTemplate = &dsl.PodTemplate{Name: "golang"}
@@ -633,7 +653,7 @@ func claimedPVCs(t *testing.T, f *volFixture, mounts []dsl.VolumeMount) []string
 // name: [cache-1, cache-2] with cache-1 below minFreeDisk: the controller let
 // the run through on the strength of cache-2, so the pod must mount cache-2.
 func TestExecuteRun_PrefersAnUngatedCandidate(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
 	now := time.Now().UTC()
 	f.a.volumeStats.set("cache-1", api.FilesystemStats{FreeBytes: 5, TotalBytes: 1000}, now)
 	f.a.volumeStats.set("cache-2", api.FilesystemStats{FreeBytes: 500, TotalBytes: 1000}, now)
@@ -646,7 +666,7 @@ func TestExecuteRun_PrefersAnUngatedCandidate(t *testing.T) {
 // Every candidate gated: the run is already claimed, so it falls back to the
 // first free one and still starts.
 func TestExecuteRun_FallsBackWhenEveryCandidateIsGated(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
 	now := time.Now().UTC()
 	f.a.volumeStats.set("cache-1", api.FilesystemStats{FreeBytes: 5, TotalBytes: 1000}, now)
 	f.a.volumeStats.set("cache-2", api.FilesystemStats{FreeBytes: 5, TotalBytes: 1000}, now)
@@ -658,7 +678,7 @@ func TestExecuteRun_FallsBackWhenEveryCandidateIsGated(t *testing.T) {
 
 // Nothing gated: the first listed free candidate, as before.
 func TestExecuteRun_NothingGatedKeepsListedOrder(t *testing.T) {
-	f := newVolFixture(t, []config.VolumeConfig{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
 
 	claims := claimedPVCs(t, f, []dsl.VolumeMount{{Name: dsl.StringOrSlice{"cache-1", "cache-2"}, As: "cache", MountPath: ".cache"}})
 
