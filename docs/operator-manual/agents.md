@@ -1251,7 +1251,10 @@ a claim can never blank what registration recorded.
 
 The declared **volumes** follow a fifth rule of their own. Registration
 replaces the recorded list wholesale, so dropping a volume from the config
-and restarting the agent stops it being advertised. A claim writes the list
+and restarting the agent stops it being advertised. (Caveat: an older agent
+that drops its last config volume sends an empty list, which is not
+authoritative, so the controller keeps advertising that volume until the agent
+claims or registers with `volumesKnown: true`.) A claim writes the list
 **when it supplies one** and leaves the recorded list alone when it does not:
 an empty list on a claim means "not supplied", never "none", so a claim can
 never wipe what registration recorded. The exception is a claim (or

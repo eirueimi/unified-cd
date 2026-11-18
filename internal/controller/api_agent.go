@@ -132,6 +132,15 @@ const heartbeatReconcileGrace = 60 * time.Second
 // than treating an error as an empty one.
 func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	agentID := chi.URLParam(r, "agentId")
+	// The desired set is computed from the principal's authorized labels. Without
+	// a principal there is no label set to compute from, and an empty one would
+	// deliver a set the agent could treat as complete (and reclaim against), so
+	// refuse before doing anything else.
+	principal, ok := agentPrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	recreated, err := s.store.TouchAgent(r.Context(), agentID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -207,11 +216,7 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("heartbeat: failed to record agent volume status", "agentId", agentID, "error", err)
 	}
 
-	var labels []string
-	if principal, ok := agentPrincipalFromContext(r.Context()); ok {
-		labels = principal.AuthorizedLabels
-	}
-	resp, err := s.desiredVolumes(r.Context(), labels)
+	resp, err := s.desiredVolumes(r.Context(), principal.AuthorizedLabels)
 	if err != nil {
 		slog.Warn("heartbeat: failed to list agent volumes", "agentId", agentID, "error", err)
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -232,8 +237,11 @@ func (s *Server) desiredVolumes(ctx context.Context, agentLabels []string) (api.
 	for _, rec := range recs {
 		var spec dsl.AgentVolumeSpec
 		if err := json.Unmarshal(rec.Spec, &spec); err != nil {
-			slog.Warn("heartbeat: skipping AgentVolume with unreadable spec", "name", rec.Name, "error", err)
-			continue
+			// Never skip: a set missing a volume would look complete to the agent
+			// and could make it reclaim that volume's data. Fail the beat instead
+			// so the agent keeps its last set.
+			slog.Warn("heartbeat: AgentVolume has an unreadable stored spec", "name", rec.Name, "error", err)
+			return api.HeartbeatResponse{}, fmt.Errorf("agent volume %q: unreadable stored spec: %w", rec.Name, err)
 		}
 		if !dsl.AgentVolumeMatches(spec.AgentSelector, agentLabels) {
 			continue

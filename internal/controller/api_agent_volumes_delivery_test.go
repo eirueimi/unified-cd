@@ -192,3 +192,28 @@ func TestRegisterWithVolumesKnownClearsVolumes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, got.Volumes)
 }
+
+// A beat that reaches the handler without an agent principal must not get a
+// set computed from empty labels.
+func TestHeartbeatWithoutPrincipalIsUnauthorized(t *testing.T) {
+	s, pg := newTestServer(t)
+	putAgentVolume(t, pg, "b", `{"mode":"shared","size":"2Gi"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/np/heartbeat", nil)
+	rec := httptest.NewRecorder()
+	s.handleAgentHeartbeat(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.NotContains(t, rec.Body.String(), `"volumes"`)
+}
+
+// A stored spec that cannot be decoded must fail the beat (503, no body), not be
+// dropped from the set: an incomplete set would look authoritative to the agent.
+func TestHeartbeatCorruptStoredSpecReturns503(t *testing.T) {
+	s, pg := newTestServer(t)
+	putAgentVolume(t, pg, "good", `{"mode":"shared","size":"2Gi"}`)
+	putAgentVolume(t, pg, "bad", `{"mode":42}`)
+	token := issueAgentAccessForTest(t, pg, "hb-corrupt", nil, nil)
+
+	rr := postHeartbeatForTest(t, s, "hb-corrupt", token, &api.HeartbeatRequest{ActiveRunIDs: []string{}})
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	assert.Empty(t, rr.Body.String())
+}
