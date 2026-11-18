@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
 )
 
 // Volume modes, as spelled in the agent config and returned by ModeOf.
@@ -848,7 +847,7 @@ func (m *VolumeManager) measureUsage(name string) (used int64, skipped int, firs
 	if vpath == "" {
 		return 0, 0, nil
 	}
-	note :=func(err error) {
+	note := func(err error) {
 		skipped++
 		if firstErr == nil {
 			firstErr = err
