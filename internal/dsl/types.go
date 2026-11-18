@@ -315,6 +315,10 @@ type MatrixDimension struct {
 // runsIn.container on a uses: entry is rejected; set container: on the
 // template's own steps instead.
 type RunsIn struct {
+	// Image is the scope's container image. It may use {{ .Params.X }} and
+	// {{ .Vars.X }}, expanded by the controller when the run is claimed (an
+	// undefined key fails the run); at apply time a templated value is only
+	// checked to parse as a template.
 	Image     string        `yaml:"image,omitempty" json:"image,omitempty"`
 	Container string        `yaml:"container,omitempty" json:"container,omitempty"`
 	Resources *ResourceSpec `yaml:"resources,omitempty" json:"resources,omitempty"`
@@ -386,10 +390,10 @@ func (m MatrixDef) MarshalYAML() (any, error) {
 
 // ForeachSource is either a literal list (YAML sequence) or a template expression (YAML string).
 //
-//   in: [prod, staging, dev]                    → Literal
-//   in: $envs                                   → Expr (JSON-array param reference)
-//   in: "{{ .Params.envs | split \",\" }}"      → Expr (template)
-//   in: "{{ .Steps.list.Outputs.envs | split \",\" }}" → Expr (step output reference)
+//	in: [prod, staging, dev]                    → Literal
+//	in: $envs                                   → Expr (JSON-array param reference)
+//	in: "{{ .Params.envs | split \",\" }}"      → Expr (template)
+//	in: "{{ .Steps.list.Outputs.envs | split \",\" }}" → Expr (step output reference)
 type ForeachSource struct {
 	Literal []string `json:"literal,omitempty"`
 	Expr    string   `json:"expr,omitempty"`

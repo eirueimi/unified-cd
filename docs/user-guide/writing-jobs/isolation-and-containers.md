@@ -439,6 +439,8 @@ a pod-level `runAsNonRoot` without a pod-level `runAsUser` can block the platfor
 helper containers. See [Permission denied writing to a volume as a non-root
 user](../../troubleshooting/steps-and-execution.md#permission-denied-writing-to-a-volume-as-a-non-root-user).
 
+Container images (`containers[].image`, `initContainers[].image` and `override.containers[].image`) may use `{{ .Vars.NAME }}` and `{{ .Params.NAME }}`; they are expanded by the controller when the run is claimed, and an undefined key fails the run. See [Container images](../variables.md#container-images).
+
 ### podTemplate fields
 
 | Field | Type | Description |
