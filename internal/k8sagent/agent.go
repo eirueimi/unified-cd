@@ -84,6 +84,8 @@ type K8sAgent struct {
 	drain context.Context
 	// lockGraceOverride replaces defaultVolumeLockGrace when positive. Tests only.
 	lockGraceOverride time.Duration
+	// clock replaces time.Now for the volume reclaim grace when set. Tests only.
+	clock func() time.Time
 	// volumeStats caches the latest in-pod measurement of each named volume
 	// (see measureVolumes). It is written by runs and read by the heartbeat.
 	volumeStats volumeReadings

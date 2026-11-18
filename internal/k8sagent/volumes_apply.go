@@ -28,6 +28,28 @@ import (
 // reclaimed after a restart (no state file).
 const annotationReclaimPolicy = "unified-cd/reclaim-policy"
 
+// annotationLeftDesiredAt records on a reclaimPolicy Delete PVC when an agent
+// first saw its volume absent from the delivered set (RFC 3339). The PVC is
+// reclaimed only once the volume has stayed absent for reclaimGrace; any agent
+// (replica) that is still delivered the volume removes the annotation, which
+// restarts the clock. Being in the cluster, it survives agent restarts.
+const annotationLeftDesiredAt = "unified-cd/left-desired-at"
+
+// reclaimGrace is how long a Delete volume must stay continuously absent from
+// the delivered set before its PVC is deleted. A volume that comes back within
+// it (an AgentVolume moved between AppSources, deleted and re-applied, a
+// controller database restored, a label edit reverted, or replicas whose
+// delivered sets briefly disagree) keeps its PVC.
+var reclaimGrace = 10 * time.Minute
+
+// now is the clock the reclaim grace is measured with.
+func (a *K8sAgent) now() time.Time {
+	if a.clock != nil {
+		return a.clock()
+	}
+	return time.Now()
+}
+
 // declaredVolume is one volume this agent currently offers.
 type declaredVolume struct {
 	Name string
@@ -190,9 +212,12 @@ func reclaimPolicyOrDefault(p string) string {
 //   - A volume is validated, its PVC created if missing (an existing PVC is
 //     used as it is, with a warning on a mismatch) and annotated with its
 //     reclaim policy. One that fails is reported not ready and does not block
-//     the rest; it is retried on the next call.
+//     the rest; it is retried on the next call. An existing PVC of this agent
+//     is annotated with the delivered reclaim policy, and loses any
+//     left-desired-at annotation, even when the volume fails to apply.
 //   - A volume that left the set stops being offered at once. Its PVC is never
-//     deleted here unless it carries reclaimPolicy Delete and no pod holds it.
+//     deleted here unless it carries reclaimPolicy Delete, has been absent for
+//     reclaimGrace, and no pod or lock holds it (see reclaim).
 //   - A mode change is applied only while no pod holds the volume; until then
 //     the volume is not offered. The existing PVC's access mode is not changed.
 //
@@ -336,6 +361,13 @@ func (a *K8sAgent) applyOne(ctx context.Context, d api.DesiredVolume, owned map[
 		entry()
 		setOffered(false, "")
 		st.Reason = fmt.Sprintf("invalid: %v", err)
+		// The volume is still declared: keep its PVC's policy current and its
+		// absence clock cleared, so a Delete-to-Retain change is never lost.
+		if pvc := owned[claimNameFor(a.cfg.AgentName, d.Name)]; pvc != nil && a.kube != nil {
+			if _, perr := a.syncPVCAnnotations(ctx, pvc, d); perr != nil {
+				slog.Warn("k8s: could not update the annotations of a volume that failed to apply", "volume", d.Name, "pvc", pvc.Name, "error", perr)
+			}
+		}
 		return st
 	}
 	e := entry()
@@ -398,6 +430,11 @@ func (a *K8sAgent) ensurePVC(ctx context.Context, d api.DesiredVolume, size reso
 			return nil, fmt.Errorf("create PVC: look up %s: %w", name, err)
 		}
 	}
+	if existing != nil && existing.DeletionTimestamp != nil {
+		// Terminating: the PVC is gone as soon as its last pod releases it, so
+		// it is not offered. A later call creates a fresh one.
+		return nil, fmt.Errorf("create PVC: %s is being deleted", name)
+	}
 	if existing == nil {
 		pvc := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
@@ -444,15 +481,34 @@ func (a *K8sAgent) ensurePVC(ctx context.Context, d api.DesiredVolume, size reso
 		e.mismatchWarned = true
 		warnOnClaimMismatch(existing, d)
 	}
-	if existing.Annotations[annotationReclaimPolicy] != policy {
-		patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{annotationReclaimPolicy: policy}}})
-		got, err := pvcs.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("create PVC: annotate %s with reclaim policy: %w", name, err)
-		}
-		return got, nil
+	got, err := a.syncPVCAnnotations(ctx, existing, d)
+	if err != nil {
+		return nil, fmt.Errorf("create PVC: annotate %s with reclaim policy: %w", name, err)
 	}
-	return existing, nil
+	return got, nil
+}
+
+// syncPVCAnnotations brings the annotations of pvc, a PVC this agent created
+// for the still-delivered volume d, in line: the reclaim policy is d's, and the
+// left-desired-at mark is removed (the volume is desired, so its absence clock
+// restarts). A PVC without this agent's owner label is never touched.
+func (a *K8sAgent) syncPVCAnnotations(ctx context.Context, pvc *corev1.PersistentVolumeClaim, d api.DesiredVolume) (*corev1.PersistentVolumeClaim, error) {
+	if pvc.Labels[labelVolumeOwner] != a.cfg.AgentName {
+		return pvc, nil
+	}
+	policy := reclaimPolicyOrDefault(d.ReclaimPolicy)
+	ann := map[string]any{}
+	if pvc.Annotations[annotationReclaimPolicy] != policy {
+		ann[annotationReclaimPolicy] = policy
+	}
+	if _, ok := pvc.Annotations[annotationLeftDesiredAt]; ok {
+		ann[annotationLeftDesiredAt] = nil // a merge patch removes a null key
+	}
+	if len(ann) == 0 {
+		return pvc, nil
+	}
+	patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": ann}})
+	return a.kube.CoreV1().PersistentVolumeClaims(a.cfg.Namespace).Patch(ctx, pvc.Name, types.MergePatchType, patch, metav1.PatchOptions{})
 }
 
 // warnOnClaimMismatch reports a claim whose spec differs from the delivered
@@ -478,9 +534,13 @@ func warnOnClaimMismatch(existing *corev1.PersistentVolumeClaim, d api.DesiredVo
 // is deleted only when ALL of these hold: it is named <agentName>-<volume> for
 // the volume its label names, it carries the owner label for this agent, its
 // annotation says reclaimPolicy Delete, the volume is not in the delivered set,
-// and no live pod holds it (checked again under volMu, so a pod being created
-// for it is seen). Everything else is kept; a kept one is reported once as
-// left behind. A failed delete is reported as "reclaim: <error>" and retried.
+// its left-desired-at annotation is at least reclaimGrace old, no live pod
+// holds it (the pod list read under volMu at the start of this apply), and its
+// lock annotations name no holder stamped within the lock grace. The delete is
+// conditional on the PVC's resourceVersion from that same read, so a lock
+// taken, or a left-desired-at cleared by another replica, since then cancels
+// it. Everything else is kept; a Retain one is reported once as left behind. A
+// failed delete is reported as "reclaim: <error>" and retried.
 func (a *K8sAgent) reclaim(ctx context.Context, mentioned map[string]bool, owned map[string]*corev1.PersistentVolumeClaim, heldKnown bool, holdsVolume func(string) bool) []api.AgentVolumeStatus {
 	var failed []api.AgentVolumeStatus
 	names := make([]string, 0, len(owned))
@@ -492,6 +552,9 @@ func (a *K8sAgent) reclaim(ctx context.Context, mentioned map[string]bool, owned
 		pvc := owned[n]
 		v := pvc.Labels[labelVolumeName]
 		if v == "" || pvc.Name != claimNameFor(a.cfg.AgentName, v) || pvc.Labels[labelVolumeOwner] != a.cfg.AgentName || mentioned[v] {
+			continue
+		}
+		if pvc.Annotations[annotationReclaimPolicy] == dsl.ReclaimDelete && !a.reclaimGraceOver(ctx, pvc, v) {
 			continue
 		}
 		if !heldKnown || holdsVolume(v) {
@@ -508,7 +571,17 @@ func (a *K8sAgent) reclaim(ctx context.Context, mentioned map[string]bool, owned
 			}
 			continue
 		}
-		err := a.kube.CoreV1().PersistentVolumeClaims(a.cfg.Namespace).Delete(ctx, pvc.Name, metav1.DeleteOptions{})
+		if holder := pvc.Annotations[annoVolumeHeldBy]; holder != "" {
+			at, perr := time.Parse(time.RFC3339, pvc.Annotations[annoVolumeHeldAt])
+			if perr != nil || a.now().Sub(at) < a.lockGrace() {
+				continue // a run may be between taking the lock and creating its pod
+			}
+		}
+		rv := pvc.ResourceVersion
+		err := a.kube.CoreV1().PersistentVolumeClaims(a.cfg.Namespace).Delete(ctx, pvc.Name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{ResourceVersion: &rv}})
+		if apierrors.IsConflict(err) {
+			continue // the PVC changed since it was read: decide again next time
+		}
 		if err != nil && !apierrors.IsNotFound(err) {
 			slog.Warn("k8s: volume reclaim failed; it will be retried on the next heartbeat", "volume", v, "pvc", pvc.Name, "error", err)
 			failed = append(failed, api.AgentVolumeStatus{Name: v, Reason: fmt.Sprintf("reclaim: %v", err)})
@@ -520,4 +593,22 @@ func (a *K8sAgent) reclaim(ctx context.Context, mentioned map[string]bool, owned
 		a.volState.mu.Unlock()
 	}
 	return failed
+}
+
+// reclaimGraceOver reports whether the Delete volume v, absent from the
+// delivered set, has been absent for reclaimGrace. The first time it is seen
+// absent (no or an unreadable left-desired-at annotation) the annotation is
+// stamped with the current time and the reclaim is scheduled.
+func (a *K8sAgent) reclaimGraceOver(ctx context.Context, pvc *corev1.PersistentVolumeClaim, v string) bool {
+	now := a.now()
+	if at, err := time.Parse(time.RFC3339, pvc.Annotations[annotationLeftDesiredAt]); err == nil {
+		return now.Sub(at) >= reclaimGrace
+	}
+	patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{annotationLeftDesiredAt: now.UTC().Format(time.RFC3339)}}})
+	if _, err := a.kube.CoreV1().PersistentVolumeClaims(a.cfg.Namespace).Patch(ctx, pvc.Name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+		slog.Warn("k8s: could not mark a volume as left the set; its reclaim waits", "volume", v, "pvc", pvc.Name, "error", err)
+		return false
+	}
+	slog.Info(fmt.Sprintf("volume left the set; reclaim scheduled after %s", reclaimGrace), "volume", v, "pvc", pvc.Name)
+	return false
 }

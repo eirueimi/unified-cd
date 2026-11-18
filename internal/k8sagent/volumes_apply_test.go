@@ -63,6 +63,36 @@ func newApplyAgent(cs *fake.Clientset) *K8sAgent {
 	}
 }
 
+// testClock is a clock several agents (replicas, or a restarted process) can
+// share; advance moves it.
+type testClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newTestClock() *testClock {
+	return &testClock{now: time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)}
+}
+
+func (c *testClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *testClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+}
+
+// clockedApplyAgent is newApplyAgent on clock c.
+func clockedApplyAgent(cs *fake.Clientset, c *testClock) *K8sAgent {
+	a := newApplyAgent(cs)
+	a.clock = c.Now
+	return a
+}
+
 func del(name, mode string) api.DesiredVolume {
 	d := vcfg(name, mode, "1Gi")
 	d.ReclaimPolicy = dsl.ReclaimDelete
@@ -298,8 +328,17 @@ func TestK8sReclaimDeletesPVC(t *testing.T) {
 	ctx := context.Background()
 	t.Run("Delete with no holder", func(t *testing.T) {
 		cs := fake.NewSimpleClientset()
-		a := newApplyAgent(cs)
+		c := newTestClock()
+		a := clockedApplyAgent(cs, c)
 		a.applyVolumes(ctx, []api.DesiredVolume{del("d", "exclusive")})
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		pvcs := listPVCs(t, cs)
+		require.Contains(t, pvcs, "agent1-d", "kept during the grace")
+		assert.Equal(t, c.Now().Format(time.RFC3339), pvcs["agent1-d"].Annotations[annotationLeftDesiredAt])
+		c.advance(reclaimGrace - time.Second)
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		require.Contains(t, listPVCs(t, cs), "agent1-d", "absent for less than the grace")
+		c.advance(time.Second)
 		a.applyVolumes(ctx, []api.DesiredVolume{})
 		assert.NotContains(t, listPVCs(t, cs), "agent1-d")
 	})
@@ -312,9 +351,12 @@ func TestK8sReclaimDeletesPVC(t *testing.T) {
 	})
 	t.Run("a holder defers it until the pod is gone", func(t *testing.T) {
 		cs := fake.NewSimpleClientset()
-		a := newApplyAgent(cs)
+		c := newTestClock()
+		a := clockedApplyAgent(cs, c)
 		a.applyVolumes(ctx, []api.DesiredVolume{del("d", "exclusive")})
 		addPod(t, cs, claimPod("run-1", "agent1", corev1.PodRunning, "d"))
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		c.advance(reclaimGrace)
 		a.applyVolumes(ctx, []api.DesiredVolume{})
 		assert.Contains(t, listPVCs(t, cs), "agent1-d", "a live pod holds it")
 		deletePod(t, cs, "run-1")
@@ -345,11 +387,97 @@ func TestK8sReclaimDeletesPVC(t *testing.T) {
 	})
 	t.Run("survives an agent restart", func(t *testing.T) {
 		cs := fake.NewSimpleClientset()
-		a := newApplyAgent(cs)
+		c := newTestClock()
+		a := clockedApplyAgent(cs, c)
 		a.applyVolumes(ctx, []api.DesiredVolume{del("d", "exclusive")})
-		b := newApplyAgent(cs) // a new process: no memory of the volume
+		b := clockedApplyAgent(cs, c) // a new process: no memory of the volume
+		b.applyVolumes(ctx, []api.DesiredVolume{})
+		c.advance(reclaimGrace)
 		b.applyVolumes(ctx, []api.DesiredVolume{})
 		assert.NotContains(t, listPVCs(t, cs), "agent1-d")
+	})
+	t.Run("a restart in the middle of the grace keeps the clock", func(t *testing.T) {
+		cs := fake.NewSimpleClientset()
+		c := newTestClock()
+		a := clockedApplyAgent(cs, c)
+		a.applyVolumes(ctx, []api.DesiredVolume{del("d", "exclusive")})
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		c.advance(reclaimGrace / 2)
+		b := clockedApplyAgent(cs, c)
+		b.applyVolumes(ctx, []api.DesiredVolume{})
+		require.Contains(t, listPVCs(t, cs), "agent1-d")
+		c.advance(reclaimGrace / 2)
+		b.applyVolumes(ctx, []api.DesiredVolume{})
+		assert.NotContains(t, listPVCs(t, cs), "agent1-d", "the annotation carried the clock over the restart")
+	})
+	t.Run("back in the set within the grace: kept, and the clock restarts", func(t *testing.T) {
+		cs := fake.NewSimpleClientset()
+		c := newTestClock()
+		a := clockedApplyAgent(cs, c)
+		a.applyVolumes(ctx, []api.DesiredVolume{del("d", "exclusive")})
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		c.advance(reclaimGrace - time.Second)
+		sts := a.applyVolumes(ctx, []api.DesiredVolume{del("d", "exclusive")})
+		require.True(t, statusOf(sts, "d").Ready)
+		require.NotContains(t, listPVCs(t, cs)["agent1-d"].Annotations, annotationLeftDesiredAt, "cleared while desired")
+
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		c.advance(reclaimGrace - time.Second)
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		require.Contains(t, listPVCs(t, cs), "agent1-d", "the clock restarted when it left again")
+		c.advance(time.Second)
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		assert.NotContains(t, listPVCs(t, cs), "agent1-d")
+	})
+	t.Run("a replica that still desires it clears the mark", func(t *testing.T) {
+		cs := fake.NewSimpleClientset()
+		c := newTestClock()
+		a := clockedApplyAgent(cs, c)
+		b := clockedApplyAgent(cs, c) // same agentName, diverging delivered set
+		a.applyVolumes(ctx, []api.DesiredVolume{del("d", "exclusive")})
+		for i := 0; i < 3; i++ {
+			a.applyVolumes(ctx, []api.DesiredVolume{})
+			b.applyVolumes(ctx, []api.DesiredVolume{del("d", "exclusive")})
+			c.advance(reclaimGrace)
+		}
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		assert.Contains(t, listPVCs(t, cs), "agent1-d", "never absent from every replica's set for the grace")
+	})
+	t.Run("a lock stamped within the lock grace defers it", func(t *testing.T) {
+		cs := fake.NewSimpleClientset()
+		c := newTestClock()
+		a := clockedApplyAgent(cs, c)
+		a.applyVolumes(ctx, []api.DesiredVolume{del("d", "exclusive")})
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		c.advance(reclaimGrace)
+		// Another replica took the lock and is about to create its pod.
+		pvc, err := cs.CoreV1().PersistentVolumeClaims(testVolNS).Get(ctx, "agent1-d", metav1.GetOptions{})
+		require.NoError(t, err)
+		pvc.Annotations[annoVolumeHeldBy] = "run-9"
+		pvc.Annotations[annoVolumeHeldAt] = c.Now().Add(-time.Second).Format(time.RFC3339)
+		_, err = cs.CoreV1().PersistentVolumeClaims(testVolNS).Update(ctx, pvc, metav1.UpdateOptions{})
+		require.NoError(t, err)
+
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		require.Contains(t, listPVCs(t, cs), "agent1-d", "a fresh lock may precede its pod")
+		c.advance(a.lockGrace())
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		assert.NotContains(t, listPVCs(t, cs), "agent1-d", "a stale lock with no pod does not hold it")
+	})
+	t.Run("a Retain flip delivered while the volume fails to apply is recorded", func(t *testing.T) {
+		cs := fake.NewSimpleClientset()
+		c := newTestClock()
+		a := clockedApplyAgent(cs, c)
+		a.applyVolumes(ctx, []api.DesiredVolume{del("d", "exclusive")})
+		bad := vcfg("d", "exclusive", "lots") // Retain, and an invalid size
+		sts := a.applyVolumes(ctx, []api.DesiredVolume{bad})
+		require.False(t, statusOf(sts, "d").Ready)
+		require.Equal(t, dsl.ReclaimRetain, listPVCs(t, cs)["agent1-d"].Annotations[annotationReclaimPolicy])
+
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		c.advance(reclaimGrace)
+		a.applyVolumes(ctx, []api.DesiredVolume{})
+		assert.Contains(t, listPVCs(t, cs), "agent1-d")
 	})
 	t.Run("another agent's PVC and unlabelled PVCs are never touched", func(t *testing.T) {
 		mk := func(name string, labels, ann map[string]string) *corev1.PersistentVolumeClaim {
@@ -377,8 +505,11 @@ func TestK8sReclaimDeletesPVC(t *testing.T) {
 			}
 			return false, nil, nil
 		})
-		a := newApplyAgent(cs)
+		c := newTestClock()
+		a := clockedApplyAgent(cs, c)
 		a.applyVolumes(ctx, []api.DesiredVolume{del("d", "exclusive")})
+		require.Empty(t, a.applyVolumes(ctx, []api.DesiredVolume{}), "nothing new is reported while waiting")
+		c.advance(reclaimGrace)
 		sts := a.applyVolumes(ctx, []api.DesiredVolume{})
 		assert.Equal(t, []api.AgentVolumeStatus{{Name: "d", Reason: "reclaim: forbidden"}}, sts)
 		assert.Contains(t, listPVCs(t, cs), "agent1-d")
@@ -463,16 +594,40 @@ func TestK8sNoDeleteWithoutADeliveredSet(t *testing.T) {
 // says the agent's (empty) list is known.
 func TestK8sDeliveredEmptySetReclaims(t *testing.T) {
 	cs := fake.NewSimpleClientset()
-	a := newApplyAgent(cs)
+	c := newTestClock()
+	a := clockedApplyAgent(cs, c)
 	a.onHeartbeat(context.Background(), &api.HeartbeatResponse{Volumes: []api.DesiredVolume{del("d", "exclusive")}, Revision: "r1"})
 	assert.Equal(t, []string{"d"}, a.claimRequest(context.Background()).Volumes)
 	assert.True(t, a.claimRequest(context.Background()).VolumesKnown)
 
 	a.onHeartbeat(context.Background(), &api.HeartbeatResponse{Volumes: []api.DesiredVolume{}, Revision: "r2"})
+	c.advance(reclaimGrace)
+	a.onHeartbeat(context.Background(), &api.HeartbeatResponse{Volumes: []api.DesiredVolume{}, Revision: "r2"})
 	assert.NotContains(t, listPVCs(t, cs), "agent1-d")
 	req := a.claimRequest(context.Background())
 	assert.True(t, req.VolumesKnown)
 	assert.Empty(t, req.Volumes)
+}
+
+// A PVC that is being deleted is not offered: it disappears as soon as its last
+// pod releases it.
+func TestK8sApplyTerminatingPVCNotReady(t *testing.T) {
+	ctx := context.Background()
+	now := metav1.Now()
+	cs := fake.NewSimpleClientset(&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+		Name: "agent1-d", Namespace: testVolNS, DeletionTimestamp: &now, Finalizers: []string{"kubernetes.io/pvc-protection"},
+		Labels: map[string]string{labelVolumeOwner: "agent1", labelVolumeName: "d"},
+	}})
+	a := newApplyAgent(cs)
+	sts := a.applyVolumes(ctx, []api.DesiredVolume{vcfg("d", "exclusive", "1Gi")})
+	assert.Equal(t, api.AgentVolumeStatus{Name: "d", Reason: "create PVC: agent1-d is being deleted"}, statusOf(sts, "d"))
+	assert.Empty(t, a.volumeNames())
+
+	// Once it is gone, the next beat creates a fresh one and offers it.
+	require.NoError(t, cs.Tracker().Delete(corev1.SchemeGroupVersion.WithResource("persistentvolumeclaims"), testVolNS, "agent1-d"))
+	sts = a.applyVolumes(ctx, []api.DesiredVolume{vcfg("d", "exclusive", "1Gi")})
+	assert.True(t, statusOf(sts, "d").Ready)
+	assert.Equal(t, []string{"d"}, a.volumeNames())
 }
 
 func TestK8sClaimRequestVolumesKnown(t *testing.T) {

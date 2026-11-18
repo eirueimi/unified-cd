@@ -20,9 +20,10 @@ rules:
     # controller): the agent looks up and lists its PVCs on every heartbeat
     # (get, list), creates the missing ones (create), takes and releases an
     # exclusive volume by updating the claim's lock annotation (update), records
-    # a volume's reclaim policy on its PVC (patch), and deletes the PVC of a
-    # reclaimPolicy: Delete volume once it left the set and no pod holds it
-    # (delete). It deletes nothing else.
+    # a volume's reclaim policy and when it left the set on its PVC (patch), and
+    # deletes the PVC of a reclaimPolicy: Delete volume once it has been out of
+    # the set for 10 minutes and no pod or lock holds it (delete). It deletes
+    # nothing else.
     verbs: ["create", "get", "list", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
