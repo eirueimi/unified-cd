@@ -45,9 +45,10 @@ delivered to running agents chosen by their labels.
 - **Changing agent labels after enrollment.** Labels stay controller-
   authorized and fixed at enrollment, as today. Moving a machine to another
   group means re-enrolling it (or a later, separate feature).
-- **Deleting data.** Removing a volume declaration, or an agent leaving the
-  selector, never deletes the directory or PVC (same rule as today's
-  "dropping a volume from config deletes nothing").
+- **Deleting data by default.** Removing a volume declaration, or an agent
+  leaving the selector, does not delete the directory or PVC unless the
+  declaration opted in with `reclaimPolicy: Delete` (see 5.8; decided by the
+  user: GC is chosen per declaration).
 
 ## 4. Anti-goals
 
@@ -73,6 +74,7 @@ spec:
   storageClassName: fast-ssd # optional; k8s only; ignored by host agents
   agentSelector:             # labels an agent must all carry; empty = every agent
     - role:unity             # same []string label syntax as a Job's agentSelector
+  reclaimPolicy: Retain      # Retain (default) | Delete; see 5.8
 ```
 
 - `metadata.name` is the volume name. Its rules are the intersection of the
@@ -217,6 +219,50 @@ Name of the kind (`AgentVolume`, to avoid confusion with a Job's
     set. The agent offers no volumes and logs a clear warning that the
     controller does not deliver volumes and must be upgraded. No version
     negotiation beyond that.
+
+### 5.8 Reclaim (GC) per declaration
+
+- `spec.reclaimPolicy` is `Retain` (default when omitted) or `Delete`.
+- An agent **reclaims** a volume when the volume has left its desired set (the
+  declaration was deleted, or its `agentSelector` no longer matches the agent)
+  and no run holds it, and the last policy the agent knew for it is `Delete`.
+  Reclaim deletes the host directory `<workspaceDir>/volumes/<name>` with its
+  contents, or the k8s PVC `<agentName>-<name>`.
+- Because a deleted declaration no longer reaches the agent, the agent keeps
+  the last known policy of every volume it served in a small state file under
+  its workspace (host) or as a PVC annotation (k8s), so a restart between the
+  removal and the reclaim still reclaims (my call).
+- Never reclaimed: while the controller is unreachable (the last set is kept,
+  so nothing has left the desired set); a volume whose policy was changed to
+  `Retain` before it left the set; a volume that comes back into the desired
+  set before the reclaim ran.
+- A reclaim that fails (for example root-owned files left by a rootful
+  container runtime) is logged and reported in the agent's volume status with
+  its reason, and retried on the next heartbeat.
+- Docs must warn prominently that with `Delete`, a mistyped `agentSelector`
+  edit deletes the data on every agent that stops matching.
+
+### 5.8 Reclaim (GC) per declaration
+
+- `spec.reclaimPolicy` is `Retain` (default when omitted) or `Delete`.
+- An agent **reclaims** a volume when the volume has left its desired set (the
+  declaration was deleted, or its `agentSelector` no longer matches the agent)
+  and no run holds it, and the last policy the agent knew for it is `Delete`.
+  Reclaim deletes the host directory `<workspaceDir>/volumes/<name>` with its
+  contents, or the k8s PVC `<agentName>-<name>`.
+- Because a deleted declaration no longer reaches the agent, the agent keeps
+  the last known policy of every volume it served in a small state file under
+  its workspace (host) or as a PVC annotation (k8s), so a restart between the
+  removal and the reclaim still reclaims (my call).
+- Never reclaimed: while the controller is unreachable (the last set is kept,
+  so nothing has left the desired set); a volume whose policy was changed to
+  `Retain` before it left the set; a volume that comes back into the desired
+  set before the reclaim ran.
+- A reclaim that fails (for example root-owned files left by a rootful
+  container runtime) is logged and reported in the agent's volume status with
+  its reason, and retried on the next heartbeat.
+- Docs must warn prominently that with `Delete`, a mistyped `agentSelector`
+  edit deletes the data on every agent that stops matching.
 
 ## 6. Constraints
 

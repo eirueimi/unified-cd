@@ -15,7 +15,7 @@
 - Kind name `AgentVolume`, `apiVersion: unified-cd/v1`; fields `spec.mode` (`exclusive`|`shared`, required), `spec.size` (required, k8s quantity, positive), `spec.storageClassName` (optional), `spec.agentSelector` ([]string, same label syntax as a Job's `agentSelector`, e.g. `role:unity`; empty = every agent). Unknown fields rejected.
 - `metadata.name` = volume name: DNS-1123 label (which also makes it a single path segment).
 - Host path is always `<workspaceDir>/volumes/<name>`; no `path` field anywhere.
-- Existing directory / PVC at the volume's location is used as-is; nothing ever deletes or recreates volume data.
+- Existing directory / PVC at the volume's location is used as-is and never recreated. Volume data is deleted only by reclaim: `spec.reclaimPolicy: Delete` (default `Retain`), after the volume left the agent's desired set and no run holds it (spec 5.8).
 - Desired set is computed from `AgentPrincipal.AuthorizedLabels`, never from the request body or the `agents` row; a delivered set (including empty) is authoritative.
 - Agent sends its first heartbeat immediately at startup; heartbeat interval stays 15s.
 - Controller unreachable / heartbeat error: agent keeps its last known set.
@@ -35,6 +35,7 @@
 3. Agent restarts while the controller is down → it offers no volumes and its claims do not wipe the stored `agents.volumes` list. (Task 4 `TestClaimWithoutVolumesKnownKeepsStoredVolumes`, Task 6 `TestAgentKeepsLastSetOnHeartbeatError`.)
 4. Two AgentVolumes delivered, one of which fails (k8s claim name over 63 characters, or host `MkdirAll` error) → the other is provisioned and advertised; the failed one is reported with its reason in `GET /api/v1/agents`. (Task 5 `TestApplyOneBadVolumeDoesNotBlockOthers`, Task 7 `TestK8sApplyClaimNameTooLong`, Task 4 `TestAgentsListShowsVolumeStatus`.)
 5. A Job references a volume name with no `AgentVolume` → schedulability says it is not declared, distinct from "declared but no matching agent has it ready". (Task 4 `TestSchedulabilityUndeclaredVolume`.)
+6. A `reclaimPolicy: Delete` volume leaves the desired set while held, or the agent restarts before reclaiming → deleted only after the holder releases, and still deleted after a restart; a `Retain` volume and a volume that returns to the set are never deleted. (Task 5 `TestReclaimDeleteAfterRelease`, `TestReclaimSurvivesRestart`, `TestReclaimRetainKeeps`, `TestReclaimNotWhenBackInSet`; Task 7 `TestK8sReclaimDeletesPVC`.)
 
 ---
 
@@ -114,7 +115,8 @@
 **Interfaces:**
 - Consumes: Task 1 `AgentVolumeMatches`; Task 2 `ListAgentVolumes`, `SetAgentVolumeStatus`, `UpsertAgentOnClaim(..., volumesKnown)`.
 - Produces:
-  - `api.DesiredVolume { Name, Mode, Size, StorageClassName string }` (json `name`, `mode`, `size`, `storageClassName,omitempty`).
+  - `dsl.AgentVolumeSpec.ReclaimPolicy string` (yaml/json `reclaimPolicy,omitempty`; `Retain` | `Delete`; empty means `Retain`; anything else rejected by `Validate`). Constants `dsl.ReclaimRetain = "Retain"`, `dsl.ReclaimDelete = "Delete"`. Also reject empty-string `agentSelector` entries (Task 1 deferred minor). Regenerate schema/field-reference.
+  - `api.DesiredVolume { Name, Mode, Size, StorageClassName, ReclaimPolicy string }` (json `name`, `mode`, `size`, `storageClassName,omitempty`, `reclaimPolicy`; the controller always fills `ReclaimPolicy`, defaulting empty to `Retain`).
   - `api.HeartbeatResponse { Volumes []DesiredVolume; Revision string }` (json `volumes`, `revision`); `Volumes` always non-nil (empty array when none), sorted by name; `Revision` = hex SHA-256 of the canonical JSON of `Volumes`.
   - Heartbeat answers `200` + `HeartbeatResponse` (was 204) to every authenticated beat, with or without a request body; if `ListAgentVolumes` fails it answers `503` without a body so the agent keeps its last set (never an empty set on a store error).
   - `api.HeartbeatRequest.VolumeStatus []AgentVolumeStatus` (json `volumeStatus,omitempty`), persisted via `SetAgentVolumeStatus` on every beat (nil clears).
@@ -124,6 +126,7 @@
   - Schedulability reasons: `no AgentVolume "X" is declared` (new) vs existing `no agent declares volume "X"` (keep, now meaning declared but not ready anywhere). Update the doc comment at `schedulability.go:30-34`.
 
 - [ ] **Step 1: Failing tests:**
+  - `TestParseAgentVolume_ReclaimPolicy` (dsl): omitted accepted (delivered as `Retain`); `Delete` accepted; `delete` and `Purge` rejected with an error naming `reclaimPolicy`; selector `[""]` rejected.
   - `TestHeartbeatReturnsDesiredVolumes`: definitions `a` (selector `[role:unity]`), `b` (no selector), `c` (`[role:ios]`); agent principal labels `[role:unity]` → response volumes `[a, b]` in order with mode/size; two beats with no change return the same revision; after changing `a`'s size the revision changes.
   - `TestHeartbeatBodylessStillReturnsSet`: a bodyless beat → 200 with the set.
   - `TestHeartbeatStoreErrorReturns503` (inject a failing `ListAgentVolumes` via the existing store-wrapper test pattern if one exists; otherwise drop this test and note it).
@@ -152,6 +155,7 @@
   - `ownsLinkTarget` / stale-link sweep recognise links into retiring volumes and into any path the manager has ever served this process (keep a set of known paths).
   - All reads of the volume map (`PathOf`, `ModeOf`, `Names`, `CheckUsage`, `ownsLinkTarget`) take `m.mu` (or an RWMutex) — run `go test -race`.
   - `storageSampler.run(ctx, paths func() []string)` — re-read paths every tick.
+  - Reclaim (spec 5.8): the manager records each served volume's last known `ReclaimPolicy` in `<base>/.ucd-volume-reclaim.json` (written atomically: temp file + rename) on every change. When a volume has left the desired set and its last holder has released, Apply forgets it and, if the recorded policy is `Delete`, runs `os.RemoveAll` on `<base>/volumes/<name>`, then drops the record. `NewVolumeManager(base)` loads the file; the first Apply after start reclaims any recorded `Delete` volume that is not in the desired set. A failed RemoveAll keeps the record and Apply's returned statuses include `{Name, Ready: false, Reason: "reclaim: <error>"}` for it (even though the name is not desired); it is retried on every Apply. A volume that is in the desired set again is never reclaimed.
 
 - [ ] **Step 1: Failing tests** (`go test -race`):
   - `TestApplyAddCreatesDirAndKeepsExisting`: pre-create `<base>/volumes/u/keep.txt`; Apply `[u exclusive 1Gi]` → ready, `keep.txt` still present, `Names()==[u]`.
@@ -159,6 +163,11 @@
   - `TestApplyModeChangeWaitsForHolders`: `u` exclusive held by r1; Apply `[u shared]` → status not ready with reason `waiting for 1 run(s) to release before switching to shared`, `Names()` excludes `u`; release, then Apply `[u shared]` again → `u` shared and offered; two runs can then hold it.
   - `TestApplyOneBadVolumeDoesNotBlockOthers`: Apply `[good, bad]` where `bad`'s directory cannot be created (make `<base>/volumes/bad` a regular file) → `good` ready, `bad` not ready with reason prefix `create directory:`.
   - `TestApplyIdempotent`: same set twice → same statuses, no directory changes.
+  - `TestReclaimDeleteAfterRelease`: `u` with `Delete` held by r1; Apply `[]` → directory still present; release, Apply `[]` → directory gone, record dropped.
+  - `TestReclaimRetainKeeps`: `u` with `Retain`; Apply `[]` twice → directory present.
+  - `TestReclaimSurvivesRestart`: `u` with `Delete` applied; new manager on the same base (simulated restart); Apply `[]` → directory gone.
+  - `TestReclaimNotWhenBackInSet`: `u` with `Delete` held; Apply `[]`; Apply `[u]` again before release; release; Apply `[u]` → directory present and offered.
+  - `TestReclaimFailureReported`: inject a failing remove (field seam like `removeLink`) → status reason prefix `reclaim:`, record kept; next Apply retries.
   - `TestLinkCleanupAfterRemoval`: native run with a link into `u`; Apply `[]` while held; run cleanup removes the link (no "replaced by something else" path).
 - [ ] **Step 2:** Run → FAIL.
 - [ ] **Step 3:** Implement; update existing tests that call `NewVolumeManager(base, cfgs)` to `NewVolumeManager(base)` + `Apply`.
@@ -200,8 +209,9 @@
   - Mode change → not offered while any pod holds it; then switch (existing PVC access mode unchanged, warn).
   - `applyVolumes` is called on every successful heartbeat response, like the host agent, so deferred transitions complete at the first beat after the holding pods are gone.
   - `volumesKnown` flag and claim/register payloads as in Task 6.
+  - Reclaim (spec 5.8): on add/update annotate the PVC `unified-cd/reclaim-policy=<policy>`; each Apply lists PVCs labelled `unified-cd/volume-owner=<agentName>`; one whose volume is not in the desired set and that no pod holds is deleted if its annotation is `Delete` (survives agent restarts without a state file). Delete failure → status reason `reclaim: <error>`, retried. Needs RBAC `delete` and `patch`/`update` on `persistentvolumeclaims` in the agent's namespace — check the Helm chart role and add verbs if missing.
 
-- [ ] **Step 1: Failing tests** (fake clientset): `TestK8sApplyCreatesPVC`; `TestK8sApplyKeepsExistingPVC` (pre-existing PVC with data label untouched, no recreate); `TestK8sApplyRemoveWhileHeld` (pod holding the volume → not offered, PVC kept; pod gone → forgotten, PVC still present); `TestK8sApplyClaimNameTooLong` (one long name, one good → good ready); `TestK8sConfigRejectsVolumesKey`.
+- [ ] **Step 1: Failing tests** (fake clientset): `TestK8sApplyCreatesPVC`; `TestK8sApplyKeepsExistingPVC` (pre-existing PVC with data label untouched, no recreate); `TestK8sApplyRemoveWhileHeld` (pod holding the volume → not offered, PVC kept; pod gone → forgotten, PVC still present); `TestK8sApplyClaimNameTooLong` (one long name, one good → good ready); `TestK8sConfigRejectsVolumesKey`; `TestK8sReclaimDeletesPVC` (annotation `Delete`, not in set, no holding pod → PVC deleted; `Retain` → kept; holding pod → kept until the pod is gone).
 - [ ] **Step 2:** Run → FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** `go build ./... && go test -race ./internal/k8sagent/...` → PASS; `helm lint` if the chart changed.
@@ -211,6 +221,7 @@
 
 **Files:**
 - Modify: `docs/user-guide/writing-jobs/volumes.md` (where volumes come from; "Volumes belong to one agent" ~335 now says definitions live on the controller, occupancy on the agent; scheduling section ~290), `docs/operator-manual/agents.md` (`## Named volumes` ~1124, routing ~555), `docs/operator-manual/operations.md` (`## Named-Volume Hygiene` ~185), `docs/troubleshooting/steps-and-execution.md` (entries that mention editing the agent config or restarting to change volumes), `docs/getting-started/concepts.md`, `docs/superpowers/decisions/2026-10-20-agent-named-volumes-rulings.md` (append a note that ruling 55 is superseded for definitions by the 2026-11-18 spec), `TODO.md` if an item covers volume config, release notes/CHANGELOG if the repo keeps one (breaking change for agents).
+- Also: `examples/config/*.yaml` (agent config examples with `volumes:`), `README.md` feature summary, `docs/getting-started/quickstart.md` and `docs/troubleshooting/controller-and-database.md` per AGENTS.md hygiene; `operations.md` Named-Volume Hygiene must describe `reclaimPolicy` with the prominent warning that with `Delete` a mistyped `agentSelector` deletes data.
 - Create: `docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md` (upgrade order controller → agents; per file volume write an `AgentVolume` with same name/mode/size and a selector; ensure agents carry the labels; remove `volumes:`; restart; data is kept because the default path is unchanged; a volume that used a custom `path:` must be moved to `<workspaceDir>/volumes/<name>` first; what the 204 warning means).
 
 - [ ] **Step 1:** `grep -rn -i "volumes:" docs/ examples/ templates/ deploy/ charts/ 2>/dev/null` and `grep -rn -i "agent config" docs/ | grep -i volum` — list every statement now false; fix each.
