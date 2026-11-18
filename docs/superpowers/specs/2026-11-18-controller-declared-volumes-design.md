@@ -72,7 +72,7 @@ spec:
   size: 200Gi                # required; host: advisory (warn on overrun); k8s: PVC request
   storageClassName: fast-ssd # optional; k8s only; ignored by host agents
   agentSelector:             # labels an agent must all carry; empty = every agent
-    role: unity
+    - role:unity             # same []string label syntax as a Job's agentSelector
 ```
 
 - `metadata.name` is the volume name. Its rules are the intersection of the
@@ -85,7 +85,7 @@ spec:
 - `agentSelector` uses the same matching as a job's `agentSelector`: every
   selector label must be present on the agent (`selector <@ agent labels`).
   One machine may serve several purposes by carrying several labels (for
-  example `unity: "true"` and `android: "true"`) and being selected by
+  example `unity` and `android`) and being selected by
   several volumes.
 - Unknown fields are rejected, as for `kind: Vars`.
 
