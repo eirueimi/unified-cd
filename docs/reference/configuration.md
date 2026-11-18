@@ -449,7 +449,7 @@ entries has no sensible flag or environment spelling. Each entry:
 | `size` | string | No | — | Advisory capacity (`200Gi`). The agent warns when a volume exceeds it after a run and never enforces it. |
 | `storageClassName` | string | No | — | Kubernetes only; ignored by a host agent. |
 
-The agent refuses to start on an invalid entry (`volume "<name>": ...`). Dropping a volume from the
+The agent refuses to start on an invalid entry (`invalid volumes in agent config`, naming the volume). Dropping a volume from the
 list stops it being advertised and deletes nothing. See [Agent Labels and Routing: Named
 volumes](../operator-manual/agents.md#named-volumes) and [Operations: Named-Volume
 Hygiene](../operator-manual/operations.md#named-volume-hygiene).
