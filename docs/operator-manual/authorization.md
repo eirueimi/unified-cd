@@ -1,6 +1,6 @@
 # Authorization (RBAC and matrix permissions)
 
-unified-cd authorizes every human caller with a set of **permissions** drawn from a fixed catalogue of 26. The three roles — **admin**, **developer**, **viewer** — still exist and still work exactly as before, but they are now *named bundles* of permissions. For a single-team deployment nothing has to change: `roleMap` / `userMap` / `defaultRole` keep their meaning and produce one global role per caller.
+unified-cd authorizes every human caller with a set of **permissions** drawn from a fixed catalogue of 28. The three roles — **admin**, **developer**, **viewer** — still exist and still work exactly as before, but they are now *named bundles* of permissions. For a single-team deployment nothing has to change: `roleMap` / `userMap` / `defaultRole` keep their meaning and produce one global role per caller.
 
 To let several teams share one deployment without touching each other's jobs, add the optional `oidc.permissions` block. It grants permissions (individually or as role bundles) to OIDC groups and users, globally or **per job folder**, in the style of Jenkins' project-based matrix authorization. A folder is just a path prefix of the qualified job name: `team-a` covers `team-a/build` and `team-a/sub/build`.
 
@@ -24,7 +24,7 @@ There are 28 permissions, written `<resource>.<verb>`. Nine are **folder-scopabl
 | `run.approve` | Approve or reject a waiting `approval` step. | | yes | yes |
 | `schedule.configure` | Create, re-target or delete a Schedule that targets the job. | | yes | yes |
 
-### Global-only (17)
+### Global-only (19)
 
 | Permission | Meaning | viewer | developer | admin |
 |---|---|:--:|:--:|:--:|
@@ -58,7 +58,7 @@ A role used anywhere a permission can be named expands to its bundle:
 |---|---|
 | `viewer` | `job.read`, `vars.read`, `webhook.read`, `appsource.read`, `agent.read`, `agentvolume.read` |
 | `developer` | `viewer` plus `job.configure`, `job.delete`, `run.trigger`, `run.replay`, `run.cancel`, `run.delete`, `run.approve`, `schedule.configure`, `secret.list`, `token.create` |
-| `admin` | all 26 (`authz.read` is only in this bundle) |
+| `admin` | all 28 (`authz.read` is only in this bundle) |
 
 A role resolved by `roleMap` / `userMap` / `defaultRole`, a role-only PAT's role and a pre-upgrade session's role are *global* grants of these bundles. A bundle granted on a **folder** contributes only its folder-scopable members: `admin` on `team-a` means "every one of the nine folder-scopable permissions under `team-a/`", never `secret.write`.
 

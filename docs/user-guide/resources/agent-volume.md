@@ -28,8 +28,6 @@ spec:
 
 Unknown fields are rejected.
 
-Agents whose labels match `spec.agentSelector` receive the volume.
-
 ### Applying and managing
 
 ```bash
