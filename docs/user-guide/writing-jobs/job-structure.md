@@ -16,7 +16,7 @@ spec:
   description: <string>           # optional: human-readable summary of the job
   timeoutMinutes: 60              # job-level timeout in minutes
   native: false                   # true = host-process job, no containers at all (see isolation-and-containers.md)
-  volumes: [ ... ]                # agent-owned named volumes: the only data that survives between runs (see volumes.md)
+  volumes: [ ... ]                # named volumes (kind: AgentVolume): the only data that survives between runs (see volumes.md)
   cleanWorkspace: false           # true = empty a volume mounted at "." before this run (see volumes.md)
   podTemplate: { ... }            # sidecar containers for an isolated job (both agents honor this)
   steps:
@@ -72,7 +72,7 @@ that reference the old flat name before or right after upgrading.
 
 Every run gets a workspace that is **empty when it starts and discarded when it ends**, on host
 and Kubernetes agents alike. Nothing a run writes there is visible to the next run. To keep data
-between runs, mount a named volume that the agent's own config declares:
+between runs, mount a named volume that an operator declares on the controller (`kind: AgentVolume`):
 
 ```yaml
 spec:

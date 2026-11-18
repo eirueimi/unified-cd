@@ -198,8 +198,8 @@ no single agent that provides capability [native] and matches labels [macos] dec
 
 **Cause**
 
-A volume is declared in an *agent's* own config, never in the job, and the controller records
-only the names agents advertise (no definitions, no occupancy), so applying a job that names a
+A volume is declared by an operator-applied `kind: AgentVolume` resource, never in the job, and the
+controller records which names each agent advertises as ready, so applying a job that names a
 volume nobody declares is not an error: the run is queued and simply never claimed. Routing is an AND of ORs. For every `spec.volumes` entry the
 agent must declare at least one candidate name, and one agent must satisfy every entry, because a
 run is claimed by exactly one agent.
@@ -224,12 +224,12 @@ A volume that is declared but currently **busy** is not this: that run is claime
 
 **Fix**
 
-- Check what the agents actually advertise. The volume names an agent declares are in the
-  `volumes` field of `GET /api/v1/agents` and `GET /api/v1/agents/{agentId}` (`unified-cli agent
-  list` does not print them).
-- A name that is simply not declared: add it to an agent's `volumes:` list and restart that agent
-  (the list is read at startup; there is no flag or environment variable form). On a Kubernetes
-  agent the config also needs `agentName` and a `size` for each volume.
+- Check what the agents actually advertise. The volume names an agent offers are in the
+  `volumes` field of `GET /api/v1/agents` and `GET /api/v1/agents/{agentId}`, and why a desired
+  volume is not ready is in `volumeStatus` (`unified-cli agent list` does not print them).
+- A name that is simply not declared: apply an `AgentVolume` with that `metadata.name`. Agents pick
+  it up on their next heartbeat (about 15 seconds); no agent restart. Its `agentSelector` must match
+  the labels of the agent you expect to run the job.
 - A name that differs by spelling or case from the declared one: names are matched exactly.
 - The third form: declare all the volumes on one agent, relax the job's `agentSelector`, or
   mount fewer volumes.

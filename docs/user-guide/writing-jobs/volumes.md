@@ -8,10 +8,11 @@ next run.
 The one way to keep data between runs is a **named volume**. A volume belongs to an *agent*, not
 to a job:
 
-- The **operator** declares it in the agent's own config file: its name, its mode, and (the
-  operator's business only) its size, storage class and location on disk. See
-  [Agent named volumes](../../operator-manual/agents.md#named-volumes) and, for the Kubernetes
-  agent, [Named volumes on Kubernetes](../../operator-manual/kubernetes-integration.md#named-volumes).
+- The **operator** declares it on the controller with a [`kind: AgentVolume`](../resources/agent-volume.md)
+  resource: its name, its mode, and (the operator's business only) its size, storage class and
+  which agents get it. The controller delivers the declaration to the matching agents, which
+  provision it. See [Agent named volumes](../../operator-manual/agents.md#named-volumes) and, for
+  the Kubernetes agent, [Named volumes on Kubernetes](../../operator-manual/kubernetes-integration.md#named-volumes).
 - The **job** names a volume and says where it appears, with `spec.volumes`. It does not say
   where the data lives or how large it is, so the same job YAML runs unchanged on a host agent and
   a Kubernetes agent.
@@ -75,11 +76,11 @@ Two rules that are easy to trip over:
   cap.
 - **A name containing anything other than letters, digits, `-` and `_` needs `as`.** The
   environment variable is built from the alias, so a volume named `unity.main` cannot be its own
-  alias. The agent config allows such a name (it rejects only `.`, `..` and names with a path
-  separator), so the job has to supply a clean alias:
+  alias. Write the alias yourself when the name is not already a clean token:
   `` spec.volumes[0]: the alias "unity.main" (`as`, or the name when there is no `as`) cannot be part of an environment variable name (UNIFIED_VOLUME_UNITY.MAIN): use letters, digits, '-' and '_' ``.
-  A name that is a DNS label (lower-case letters, digits, `-`) is always fine, and is the only
-  form a Kubernetes agent accepts.
+  An `AgentVolume` name is a DNS label (lower-case letters, digits, `-`), which is always fine;
+  only an older name that a job still carries from before the move to `AgentVolume` can fail this
+  check.
 
 A template name is expanded against the run's parameters when the scheduler queues the run, so
 the controller knows the concrete candidates before any agent claims it:
@@ -96,7 +97,7 @@ spec:
 
 ## Modes
 
-The mode is set by the operator in the agent's config, not by the job.
+The mode is set by the operator in the volume's `AgentVolume`, not by the job.
 
 | Mode | Behaviour |
 |---|---|
@@ -107,7 +108,7 @@ A `shared` volume **cannot be mounted at `"."`**: several runs would check out o
 with no exclusion. The agent rejects it when it mounts, because only the agent knows the mode:
 
 ```
-volume mount failed: spec.volumes[0]: volume "go-cache" is shared and cannot be mounted at the workspace root (mountPath "."): several runs would work in one checkout with no exclusion. Declare it exclusive in the agent config, or mount it at a subdirectory
+volume mount failed: spec.volumes[0]: volume "go-cache" is shared and cannot be mounted at the workspace root (mountPath "."): several runs would work in one checkout with no exclusion. Declare it exclusive in its AgentVolume, or mount it at a subdirectory
 ```
 
 ---
@@ -161,8 +162,8 @@ Three consequences for `native: true` jobs, which have no container to bind-moun
 
 Volume mount paths deliberately do **not** go through the escape check that artifact and cache
 paths do (which rejects every absolute path). The operator declared which volumes exist and a job
-can only name one of them, so what an absolute `mountPath` can reach is bounded by the agent's own
-config; and a native job can already run any command as the agent user.
+can only name one of them, so what an absolute `mountPath` can reach is bounded by the operator's
+`AgentVolume` declarations; and a native job can already run any command as the agent user.
 
 ### What the job cannot combine with volumes
 
@@ -210,8 +211,10 @@ Three places where the variable is **not** what you might expect:
 
 ## Wiping a volume: `cleanWorkspace`
 
-The agent never empties a volume on its own initiative, and removing a volume from the agent's
-config deletes nothing. The one deliberate way to destroy a volume's data is the job asking:
+The agent never empties a volume on its own initiative, and removing an `AgentVolume` deletes
+nothing unless the operator set `reclaimPolicy: Delete` on it (see
+[Operations: Named-Volume Hygiene](../../operator-manual/operations.md#named-volume-hygiene)). The
+one way a *job* destroys a volume's data is by asking:
 
 ```yaml
 spec:
@@ -289,16 +292,18 @@ To fill a volume from an artifact on purpose, make the volume's own mount path t
 
 ## Scheduling and diagnosing a run that does not start
 
-The controller records which volume names each agent advertises, but holds no volume definitions and
-no occupancy state (those live in the agent), so an unknown volume name is **not** an apply-time error. The
-run is queued and stays `Queued`, and the job page shows an unschedulable banner naming the
-volume. Routing is an AND of ORs: for every `spec.volumes` entry, the agent must declare at least
+The controller holds the `AgentVolume` definitions and records which volume names each agent
+advertises as ready, but holds no occupancy state (which run holds a volume lives in the agent), so
+an unknown volume name is **not** an apply-time error. The run is queued and stays `Queued`, and the
+job page shows an unschedulable banner naming the volume. Routing is an AND of ORs: for every `spec.volumes` entry, the agent must declare at least
 one of its candidates, and the whole set must be declared by **one** agent, because a run is
 claimed by exactly one agent.
 
 | Reason | Meaning |
 |---|---|
-| `no agent declares volume "unity-main"` | No registered agent advertises that single name. |
+| `no AgentVolume "unity-main" is declared` | No `kind: AgentVolume` resource has that name. Apply one, or fix the spelling in the job. |
+| `no AgentVolume is declared for any of the volumes ["a" "b"]` | None of the candidates has an `AgentVolume`. |
+| `no agent declares volume "unity-main"` | The volume is declared, but no registered agent advertises that single name as ready (its `agentSelector` may not match any agent). |
 | `no agent declares any of the volumes ["a" "b"]` | No registered agent advertises any candidate of the list. |
 | `no single agent that provides capability [...] and matches labels [...] declares all of the volumes [...]` | Every candidate set is declared somewhere, but never all by one agent that also fits the capability and labels. |
 
@@ -334,11 +339,14 @@ headroom](../../operator-manual/operations.md#watching-agent-disk-headroom).
 
 ## Volumes belong to one agent
 
-Two agents declaring the same volume name hold **two independent copies**. A run goes to any agent
-with a free copy; there is no affinity for the agent that ran the job last. In steady state every
-copy stays warm, but a job that relies on the *same* data being there must be pinned to one agent
-with `agentSelector`, or the volume name must be declared by exactly one agent.
+A volume is *declared* once, on the controller, but each agent that receives the declaration holds
+its **own independent copy**. Two agents that both match an `AgentVolume`'s `agentSelector` hold two
+copies of the same name. A run goes to any agent with a free copy; there is no affinity for the
+agent that ran the job last. In steady state every copy stays warm, but a job that relies on the
+*same* data being there must be pinned to one agent with `agentSelector`, or the volume's own
+`agentSelector` must select exactly one agent.
 
-A volume is never shared across agents. The controller stores only the names each agent advertises
-and each run's candidate lists; it holds no volume definitions (mode, size, location are the agent's
-config) and no occupancy state (which run holds a volume is tracked by the agent).
+A volume is never shared across agents. The controller stores the `AgentVolume` definitions (mode,
+size, which agents get it) and the names each agent advertises as ready; it holds no occupancy state
+(which run holds a volume is tracked by the agent). An agent whose labels stop matching the
+`agentSelector` stops advertising the volume, and a run that mounts it is no longer routed there.

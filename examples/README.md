@@ -12,7 +12,7 @@ declared in an agent's config; see Notes).
   - `jobs/team-a/` — a job carrying `annotations.path: team-a`, showing the path-namespaced
     layout an AppSource derives from directory structure.
 - `config/` — sample controller / agent / k8s-agent configuration files.
-- `resources/` — non-job resources (`AppSource`, `GitCredential`).
+- `resources/` — non-job resources (`AppSource`, `GitCredential`, `AgentVolume`).
 
 ## Applying
 
@@ -42,9 +42,9 @@ path-namespaced via `annotations.path: team-a`. The canonical parameterized buil
   targets a host toolchain).
 - A job's workspace is empty at the start of every run and discarded at the end, on host agents
   and k8s-agents alike. `jobs/volumes.yaml` shows the only way to keep files between runs: a
-  named volume declared in the agent's own config and mounted with `spec.volumes`. It runs only
-  on an agent that declares those volumes (`config/agent.yaml` and `config/k8s-agent.yaml` show
-  how); with none, the run stays Queued.
+  named volume declared on the controller (`kind: AgentVolume`, see
+  `resources/agentvolume.yaml`) and mounted with `spec.volumes`. It runs only on an agent that
+  receives those volumes; with none declared, the run stays Queued.
 - `call:` examples (`call-job.yaml`) hold an agent slot while waiting on the jobs they call, so a
   single-agent fleet must allow ≥2 concurrent runs (`--max-concurrent 2`) or provide a second
   agent — otherwise the child runs stay Queued and the parent waits. `agent-routing.yaml` pins its

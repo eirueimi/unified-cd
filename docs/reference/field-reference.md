@@ -53,7 +53,7 @@
 | `steps` | []StepEntry | yes | Steps is the main DAG of steps to execute. (failFast was removed — all started steps run to completion.) |
 | `timeoutMinutes` | number | no |  |
 | `vars` | map[string]string | no | Plain-text variables shared by every step of this job, delivered as environment variables and as {{ .Vars.KEY }} in templates. NOT secrets — see kind: Vars. |
-| `volumes` | []VolumeMount | no | Volumes mounts agent-owned named volumes into the run. The job names a volume and where it appears; the agent's own configuration decides what backs it. See VolumeMount. |
+| `volumes` | []VolumeMount | no | Volumes mounts named volumes into the run. The job names a volume and where it appears; the volume's AgentVolume resource decides what backs it. See VolumeMount. |
 
 ### Concurrency
 
@@ -336,7 +336,7 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 
 ### VolumeMount
 
-VolumeMount mounts an agent-owned named volume into the run's workspace.
+VolumeMount mounts a named volume (declared as an AgentVolume) into the run's workspace.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|

@@ -187,16 +187,31 @@ full flag/env/yaml forms.
 A [named volume](agents.md#named-volumes) holds whatever jobs put in it and **nothing ever
 sweeps it**: not the workspace GC, not the agent's after-run cleanup, not a run finishing. That is
 the point (it is how a 200 GiB Unity `Library/` survives between runs), and it makes volume disk
-usage a new operator responsibility. Removing a volume from the agent's config does not delete it
-either.
+usage a new operator responsibility. Removing an `AgentVolume` (or narrowing its `agentSelector`)
+does not delete the data either, unless the resource sets `reclaimPolicy: Delete`.
+
+> **Warning: `reclaimPolicy: Delete` destroys data.** With `spec.reclaimPolicy: Delete`, an agent
+> deletes a volume's directory (host) or PVC (Kubernetes) as soon as the volume leaves its set and
+> no run holds it. The volume leaves the set when the `AgentVolume` is deleted **or when its
+> `agentSelector` stops matching the agent**, so a mistyped `agentSelector` edit deletes the data on
+> **every agent that stops matching**. Keep the default `Retain` for anything you cannot rebuild, and
+> use `Delete` only for disposable caches. The delete is not undone by re-applying the resource: the
+> agent recreates an empty volume. A reclaim that fails (for example root-owned files left by a
+> rootful container runtime) is reported in the agent's `volumeStatus` and retried on the next
+> heartbeat.
+
+`reclaimPolicy` is `Retain` by default, which keeps the data on disk (or the PVC in the cluster)
+after the volume leaves an agent's set; you remove it yourself when you are done with it. A
+controller that is unreachable never causes a reclaim: the agent keeps its last known set.
 
 **Host agents.**
 
-- Each volume is a directory (`path`, default `<workspaceDir>/volumes/<name>`). Put those
+- Each volume is a directory `<workspaceDir>/volumes/<name>`, created when the controller delivers
+  its `AgentVolume`. Put those
   paths under your normal disk monitoring, separately from `wsBase`'s `working<N>` directories,
   and give a large volume its own filesystem so it cannot fill the one the workspaces and the
   controller's checkouts share.
-- `size` is **advisory**. After each run the agent measures the volume and logs
+- `size` (on the `AgentVolume`) is **advisory**. After each run the agent measures the volume and logs
   `volume usage exceeds its advisory size; the size is not enforced` when it is over; alert on that
   line. It never stops a run. `minFreeDisk` is the guard that does act: a volume whose filesystem
   has less free space than the threshold keeps new runs that mount it queued (the default is `1%` of
@@ -715,7 +730,7 @@ a series that is not there is not a zero. The cases:
 - **A host agent measures every 15s**, in the background, and omits a filesystem whose measurement
   failed or went stale (no fresh answer for about two intervals, which is what a hung network mount
   looks like) rather than reporting a zero or an old number. The workspace and each volume are
-  omitted independently. A volume dropped from the agent's config loses its series on the next
+  omitted independently. A volume that leaves the agent's delivered set loses its series on the next
   heartbeat.
 - **Only live agents are reported.** An agent that has not heartbeated within 90s (the same window as
   `unifiedcd_agents{state="alive"}`), and one that was deleted, has no series at all rather than its

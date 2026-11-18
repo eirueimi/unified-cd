@@ -249,7 +249,7 @@ volumes on Kubernetes](../operator-manual/kubernetes-integration.md#named-volume
 **Symptom:** the Kubernetes agent exits at startup:
 
 ```
-/etc/unified-cd/k8s-agent.yaml: podTemplates["golang"].workspace.pvc: workspace.pvc was removed: the workspace is now ephemeral on every agent, and persistence comes from an agent-owned named volume (declare it in the agent's config and mount it with spec.volumes); see docs/operator-manual/migrations/2026-10-20-named-volumes.md
+/etc/unified-cd/k8s-agent.yaml: podTemplates["golang"].workspace.pvc: workspace.pvc was removed: the workspace is now ephemeral on every agent, and persistence comes from a named volume (declare it on the controller with kind: AgentVolume and mount it with spec.volumes); see docs/operator-manual/migrations/2026-10-20-named-volumes.md
 ```
 
 **Cause:** an entry under `podTemplates` in the agent config still carries `workspace.pvc`. The

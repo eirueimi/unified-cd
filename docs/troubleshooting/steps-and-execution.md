@@ -478,22 +478,21 @@ carries both underlying causes; read them.
 **Symptom**
 
 ```
-spec.volumes[0]: volume "go-cache" is shared and cannot be mounted at the workspace root (mountPath "."): several runs would work in one checkout with no exclusion. Declare it exclusive in the agent config, or mount it at a subdirectory
+spec.volumes[0]: volume "go-cache" is shared and cannot be mounted at the workspace root (mountPath "."): several runs would work in one checkout with no exclusion. Declare it exclusive in its AgentVolume, or mount it at a subdirectory
 ```
 
 (prefixed `volume mount failed: ` on a host agent, `k8s: ` on the Kubernetes agent).
 
 **Cause**
 
-`mode` lives in the agent's config, so apply cannot know it; the same job YAML is valid against an
-agent that declares the volume `exclusive`. Several runs sharing one working tree would overwrite
+`mode` lives in the volume's `AgentVolume`, which apply of the job does not consult; the same job
+YAML is valid when the volume is declared `exclusive`. Several runs sharing one working tree would overwrite
 each other.
 
 **Fix**
 
-Declare the volume `exclusive` in the agent's config and restart the agent, or mount it at a
-subdirectory (`mountPath: .ucd-cache/go`), or route the job to an agent that declares it
-exclusive.
+Set `spec.mode: exclusive` on the volume's `AgentVolume` and apply it (agents pick the change up on
+their next heartbeat; no restart), or mount the volume at a subdirectory (`mountPath: .ucd-cache/go`).
 
 ## A shared volume never binds (RWX unavailable)
 

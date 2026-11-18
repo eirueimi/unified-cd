@@ -84,6 +84,8 @@ func TestExamplesParse(t *testing.T) {
 					_, parseErr = ParseSchedule(strings.NewReader(doc))
 				case "GitCredential":
 					_, parseErr = ParseGitCredential(strings.NewReader(doc))
+				case "AgentVolume":
+					_, parseErr = ParseAgentVolume(strings.NewReader(doc))
 				default:
 					t.Fatalf("doc %d: unknown kind %q", i, kindProbe.Kind)
 				}

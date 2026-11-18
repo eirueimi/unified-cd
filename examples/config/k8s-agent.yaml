@@ -87,7 +87,7 @@ podTemplates:
       mountPath: /workspace
       # The workspace is always an emptyDir: empty at the start of every run, discarded with the
       # Pod. (podTemplate.reuse keeps the Pod, but the agent empties the workspace on every claim.)
-      # To keep data between runs, declare a named volume under `volumes:` above and mount it
+      # To keep data between runs, declare a kind: AgentVolume on the controller and mount it
       # from the job with spec.volumes.
     # workspaceSizeLimit: 40Gi   # overrides the global workspaceSizeLimit for this template
     spec:

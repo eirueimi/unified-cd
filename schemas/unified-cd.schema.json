@@ -921,7 +921,7 @@
           "type": "object"
         },
         "volumes": {
-          "description": "Volumes mounts agent-owned named volumes into the run. The job names a\nvolume and where it appears; the agent's own configuration decides what\nbacks it. See VolumeMount.",
+          "description": "Volumes mounts named volumes into the run. The job names a volume and\nwhere it appears; the volume's AgentVolume resource decides what backs\nit. See VolumeMount.",
           "items": {
             "$ref": "#/definitions/VolumeMount"
           },
@@ -1197,7 +1197,7 @@
     },
     "VolumeMount": {
       "additionalProperties": false,
-      "description": "VolumeMount mounts an agent-owned named volume into the run's workspace.",
+      "description": "VolumeMount mounts a named volume (declared as an AgentVolume) into the run's workspace.",
       "properties": {
         "as": {
           "description": "As is the stable handle steps use to reach the volume. Required when\nName is a list of several candidates or contains a template, because the\nchosen name is not known when the job is written; otherwise it defaults\nto the single literal Name. A step reads the volume's absolute path from\n$UNIFIED_VOLUME_\u003cAS\u003e: upper-cased, with \"-\" as \"_\" (go-cache gives\nUNIFIED_VOLUME_GO_CACHE). Two entries whose aliases give one variable\nare rejected.",

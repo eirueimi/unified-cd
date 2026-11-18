@@ -224,7 +224,7 @@ func planPodVolumes(agentName string, declared map[string]declaredVolume, mounts
 			// Only the agent can know a volume's mode, so this is refused here
 			// and not when the job is applied. Same rule, same words, as the
 			// host agent.
-			return nil, nil, fmt.Errorf("spec.volumes[%d]: volume %q is shared and cannot be mounted at the workspace root (mountPath %q): several runs would work in one checkout with no exclusion. Declare it exclusive in the agent config, or mount it at a subdirectory", i, name, v.MountPath)
+			return nil, nil, fmt.Errorf("spec.volumes[%d]: volume %q is shared and cannot be mounted at the workspace root (mountPath %q): several runs would work in one checkout with no exclusion. Declare it exclusive in its AgentVolume, or mount it at a subdirectory", i, name, v.MountPath)
 		}
 		vols = append(vols, PodVolume{Name: name, ClaimName: claimNameFor(agentName, name), MountPath: mp})
 		switch {

@@ -1,27 +1,17 @@
-# Demonstrates: spec.volumes — agent-owned named volumes, the only thing that survives between runs
+# Demonstrates: spec.volumes — named volumes (kind: AgentVolume), the only thing that survives between runs
 #
 # A workspace with no volume is empty at the start of every run and discarded at the end, on
-# every agent type. A volume is declared in the AGENT's own config (its size, storage class and
-# location are the operator's business), and a job names it and says where it appears.
+# every agent type. A volume is declared on the CONTROLLER with kind: AgentVolume (its mode, size,
+# storage class and which agents get it are the operator's business), and a job names it and says
+# where it appears.
 #
-# These jobs only run on an agent that declares the volumes they name. With no such agent the
-# run stays Queued and the job page shows "no agent declares volume ...". Declare them first:
+# These jobs only run on an agent that has the volumes they name. With no AgentVolume the run stays
+# Queued and the job page shows "no AgentVolume ... is declared". Apply the volumes first:
 #
-#   # host agent (unified-agent.yaml; see examples/config/agent.yaml)
-#   volumes:
-#     - name: go-cache
-#       mode: shared
-#     - name: unity-main
-#       mode: exclusive
-#       size: 200Gi            # advisory on a host agent
+#   unified-cd apply -f examples/resources/agentvolume.yaml   # go-cache (shared), unity-main (exclusive)
 #
-#   # k8s-agent (see examples/config/k8s-agent.yaml): agentName and size are required
-#   agentName: ci-main
-#   volumes:
-#     - name: go-cache
-#       mode: shared           # needs a StorageClass that supports ReadWriteMany
-#       size: 20Gi
-#   # (unity-persistent-workspace below is native, so only a host agent can run it.)
+# (A shared volume on a Kubernetes agent needs a StorageClass that supports ReadWriteMany, and
+# unity-persistent-workspace below is native, so only a host agent can run it.)
 #
 # Usage:
 #   unified-cd apply -f examples/jobs/volumes.yaml
