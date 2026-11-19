@@ -1,0 +1,329 @@
+package controller
+
+import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const relaySecret = "relay-dev-secret-9f3a"
+
+// relayIdP is a fake IdP with discovery, device, token and revocation
+// endpoints. It records the form of every request it receives.
+type relayIdP struct {
+	*testIssuer
+	URL string
+
+	mu         sync.Mutex
+	deviceForm url.Values
+	tokenForms []url.Values
+	revokeForm url.Values
+	tokenFn    func(form url.Values) (int, any)
+}
+
+func newRelayIdP(t *testing.T, withRevoke bool) *relayIdP {
+	t.Helper()
+	p := &relayIdP{testIssuer: newTestIssuer(t)}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		doc := map[string]any{
+			"issuer":                                p.URL,
+			"authorization_endpoint":                p.URL + "/auth",
+			"token_endpoint":                        p.URL + "/token",
+			"device_authorization_endpoint":         p.URL + "/device/code",
+			"jwks_uri":                              p.testIssuer.URL,
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		}
+		if withRevoke {
+			doc["revocation_endpoint"] = p.URL + "/revoke"
+		}
+		_ = json.NewEncoder(w).Encode(doc)
+	})
+	mux.HandleFunc("/device/code", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		p.mu.Lock()
+		p.deviceForm = r.PostForm
+		p.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"device_code": "dc-1", "user_code": "ABCD-EFGH", "verification_uri": p.URL + "/device",
+			"verification_uri_complete": p.URL + "/device?c=ABCD-EFGH", "expires_in": 300, "interval": 5,
+		})
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		p.mu.Lock()
+		p.tokenForms = append(p.tokenForms, r.PostForm)
+		fn := p.tokenFn
+		p.mu.Unlock()
+		code, body := http.StatusOK, any(map[string]any{})
+		if fn != nil {
+			code, body = fn(r.PostForm)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(body)
+	})
+	mux.HandleFunc("/revoke", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		p.mu.Lock()
+		p.revokeForm = r.PostForm
+		p.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	p.URL = srv.URL
+	p.Name = srv.URL
+	return p
+}
+
+func (p *relayIdP) lastToken() url.Values {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.tokenForms[len(p.tokenForms)-1]
+}
+
+func newRelayServer(t *testing.T, p *relayIdP, secret string) *Server {
+	t.Helper()
+	s := NewServer(Config{Token: "t"}, nil)
+	s.SetOIDCConfig(&OIDCConfig{Issuer: p.URL, ClientID: "web", ClientSecret: "web-secret", DeviceClientID: "cli", DeviceClientSecret: secret})
+	return s
+}
+
+func relayPost(s *Server, path string, body any) *httptest.ResponseRecorder {
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(b))
+	req.RemoteAddr = "192.0.2.10:4444"
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestCLIRelay_DeviceStartUsesDeviceClient(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, relaySecret)
+	rec := relayPost(s, "/api/v1/auth/cli/device/start", struct{}{})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var got api.CLIDeviceStartResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, "dc-1", got.DeviceCode)
+	assert.Equal(t, "ABCD-EFGH", got.UserCode)
+	assert.Equal(t, 300, got.ExpiresIn)
+	assert.Equal(t, 5, got.Interval)
+	assert.Equal(t, "cli", p.deviceForm.Get("client_id"))
+	assert.Contains(t, p.deviceForm.Get("scope"), "openid")
+	assert.False(t, strings.Contains(rec.Body.String(), relaySecret))
+}
+
+func TestCLIRelay_DeviceStart404WithoutSecret(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, "")
+	rec := relayPost(s, "/api/v1/auth/cli/device/start", struct{}{})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	rec = relayPost(s, "/api/v1/auth/cli/device/token", api.CLIDeviceTokenRequest{DeviceCode: "x"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestCLIRelay_DeviceTokenSendsSecretAndExpiryFromIDToken(t *testing.T) {
+	p := newRelayIdP(t, false)
+	exp := time.Now().Add(37 * time.Minute).Truncate(time.Second)
+	p.tokenFn = func(url.Values) (int, any) {
+		return 200, map[string]any{
+			"id_token":      p.Sign(map[string]any{"aud": "cli", "sub": "u1", "exp": exp.Unix()}),
+			"refresh_token": "rt-1", "expires_in": 5,
+		}
+	}
+	s := newRelayServer(t, p, relaySecret)
+	rec := relayPost(s, "/api/v1/auth/cli/device/token", api.CLIDeviceTokenRequest{DeviceCode: "dc-1"})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var got api.CLITokenResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, "rt-1", got.RefreshToken)
+	assert.True(t, got.Expiry.Equal(exp), "expiry %v want %v", got.Expiry, exp)
+	form := p.lastToken()
+	assert.Equal(t, relaySecret, form.Get("client_secret"))
+	assert.Equal(t, "cli", form.Get("client_id"))
+	assert.Equal(t, "dc-1", form.Get("device_code"))
+	assert.Equal(t, "urn:ietf:params:oauth:grant-type:device_code", form.Get("grant_type"))
+	assert.Len(t, p.tokenForms, 1, "exactly one upstream token call")
+}
+
+func TestCLIRelay_DeviceTokenPendingPassthrough(t *testing.T) {
+	p := newRelayIdP(t, false)
+	p.tokenFn = func(url.Values) (int, any) {
+		return 400, map[string]any{"error": "authorization_pending"}
+	}
+	s := newRelayServer(t, p, relaySecret)
+	rec := relayPost(s, "/api/v1/auth/cli/device/token", api.CLIDeviceTokenRequest{DeviceCode: "dc-1"})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.JSONEq(t, `{"error":"authorization_pending"}`, rec.Body.String())
+	assert.Len(t, p.tokenForms, 1, "no server-side polling")
+}
+
+func TestCLIRelay_UpstreamErrorBodyNotEchoed(t *testing.T) {
+	p := newRelayIdP(t, false)
+	p.tokenFn = func(form url.Values) (int, any) {
+		return 400, map[string]any{
+			"error": "access_denied", "error_description": "user said no",
+			"debug": "client_secret=" + form.Get("client_secret"), "request_url": p.URL + "/token?client_secret=" + form.Get("client_secret"),
+		}
+	}
+	s := newRelayServer(t, p, relaySecret)
+	rec := relayPost(s, "/api/v1/auth/cli/device/token", api.CLIDeviceTokenRequest{DeviceCode: "dc-1"})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.JSONEq(t, `{"error":"access_denied","errorDescription":"user said no"}`, rec.Body.String())
+	assert.False(t, strings.Contains(rec.Body.String(), relaySecret))
+
+	// A non-OAuth upstream failure never leaks the body or URL either.
+	p.tokenFn = func(form url.Values) (int, any) {
+		return 500, map[string]any{"oops": form.Get("client_secret")}
+	}
+	rec = relayPost(s, "/api/v1/auth/cli/device/token", api.CLIDeviceTokenRequest{DeviceCode: "dc-1"})
+	assert.GreaterOrEqual(t, rec.Code, 400)
+	assert.False(t, strings.Contains(rec.Body.String(), relaySecret))
+	assert.False(t, strings.Contains(rec.Body.String(), p.URL))
+
+	// A secret echoed inside error_description is redacted.
+	p.tokenFn = func(form url.Values) (int, any) {
+		return 400, map[string]any{"error": "invalid_request", "error_description": "bad secret " + form.Get("client_secret")}
+	}
+	rec = relayPost(s, "/api/v1/auth/cli/device/token", api.CLIDeviceTokenRequest{DeviceCode: "dc-1"})
+	assert.False(t, strings.Contains(rec.Body.String(), relaySecret))
+}
+
+func TestCLIRelay_RefreshBrowserUsesWebClient(t *testing.T) {
+	p := newRelayIdP(t, false)
+	p.tokenFn = func(form url.Values) (int, any) {
+		return 200, map[string]any{"id_token": p.Sign(map[string]any{"aud": form.Get("client_id"), "sub": "u1"}), "refresh_token": "rt-2"}
+	}
+	s := newRelayServer(t, p, relaySecret)
+	rec := relayPost(s, "/api/v1/auth/cli/refresh", api.CLIRefreshRequest{RefreshToken: "rt-1", Client: "browser"})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	form := p.lastToken()
+	assert.Equal(t, "web", form.Get("client_id"))
+	assert.Equal(t, "web-secret", form.Get("client_secret"))
+	assert.Equal(t, "refresh_token", form.Get("grant_type"))
+	assert.Equal(t, "rt-1", form.Get("refresh_token"))
+
+	rec = relayPost(s, "/api/v1/auth/cli/refresh", api.CLIRefreshRequest{RefreshToken: "rt-1", Client: "device"})
+	require.Equal(t, http.StatusOK, rec.Code)
+	form = p.lastToken()
+	assert.Equal(t, "cli", form.Get("client_id"))
+	assert.Equal(t, relaySecret, form.Get("client_secret"))
+}
+
+func TestCLIRelay_RefreshWithoutIDToken(t *testing.T) {
+	p := newRelayIdP(t, false)
+	p.tokenFn = func(url.Values) (int, any) { return 200, map[string]any{"access_token": "at"} }
+	s := newRelayServer(t, p, relaySecret)
+	rec := relayPost(s, "/api/v1/auth/cli/refresh", api.CLIRefreshRequest{RefreshToken: "rt-1", Client: "device"})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.JSONEq(t, `{"error":"invalid_grant","errorDescription":"identity provider returned no id_token on refresh"}`, rec.Body.String())
+}
+
+func TestCLIRelay_RefreshNonRotatingEchoesToken(t *testing.T) {
+	p := newRelayIdP(t, false)
+	p.tokenFn = func(url.Values) (int, any) {
+		return 200, map[string]any{"id_token": p.Sign(map[string]any{"aud": "cli", "sub": "u1"})}
+	}
+	s := newRelayServer(t, p, relaySecret)
+	rec := relayPost(s, "/api/v1/auth/cli/refresh", api.CLIRefreshRequest{RefreshToken: "rt-keep", Client: "device"})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got api.CLITokenResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, "rt-keep", got.RefreshToken)
+}
+
+func TestCLIRelay_RejectsWrongAudience(t *testing.T) {
+	p := newRelayIdP(t, false)
+	p.tokenFn = func(url.Values) (int, any) {
+		return 200, map[string]any{"id_token": p.Sign(map[string]any{"aud": "someone-else", "sub": "u1"}), "refresh_token": "rt-new"}
+	}
+	s := newRelayServer(t, p, relaySecret)
+	rec := relayPost(s, "/api/v1/auth/cli/refresh", api.CLIRefreshRequest{RefreshToken: "rt-1", Client: "device"})
+	assert.GreaterOrEqual(t, rec.Code, 400)
+	assert.NotContains(t, rec.Body.String(), "rt-new")
+	assert.NotContains(t, rec.Body.String(), "idToken")
+}
+
+func TestCLIRelay_Revoke(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, relaySecret)
+	rec := relayPost(s, "/api/v1/auth/cli/revoke", api.CLIRefreshRequest{RefreshToken: "rt-1", Client: "device"})
+	assert.Equal(t, http.StatusNotFound, rec.Code, "no revocation endpoint")
+
+	p2 := newRelayIdP(t, true)
+	s2 := newRelayServer(t, p2, relaySecret)
+	rec = relayPost(s2, "/api/v1/auth/cli/revoke", api.CLIRefreshRequest{RefreshToken: "rt-1", Client: "device"})
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	assert.Equal(t, "rt-1", p2.revokeForm.Get("token"))
+	assert.Equal(t, "refresh_token", p2.revokeForm.Get("token_type_hint"))
+	assert.Equal(t, "cli", p2.revokeForm.Get("client_id"))
+	assert.Equal(t, relaySecret, p2.revokeForm.Get("client_secret"))
+}
+
+func TestCLIRelay_RateLimit(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, relaySecret)
+	for i := 0; i < 20; i++ {
+		rec := relayPost(s, "/api/v1/auth/cli/device/start", struct{}{})
+		require.Equal(t, http.StatusOK, rec.Code, "request %d", i+1)
+	}
+	rec := relayPost(s, "/api/v1/auth/cli/device/start", struct{}{})
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
+}
+
+type lockedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func TestCLIRelay_LogsCarryNoSecretsOrTokens(t *testing.T) {
+	buf := &lockedBuf{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	p := newRelayIdP(t, true)
+	var idTok string
+	p.tokenFn = func(url.Values) (int, any) {
+		idTok = p.Sign(map[string]any{"aud": "cli", "sub": "u1"})
+		return 200, map[string]any{"id_token": idTok, "refresh_token": "rt-secret-value"}
+	}
+	s := newRelayServer(t, p, relaySecret)
+	rec := relayPost(s, "/api/v1/auth/cli/device/token", api.CLIDeviceTokenRequest{DeviceCode: "dc-secret-code"})
+	require.Equal(t, http.StatusOK, rec.Code)
+	p.tokenFn = func(form url.Values) (int, any) {
+		return 400, map[string]any{"error": "invalid_grant", "debug": form.Get("client_secret") + form.Get("refresh_token")}
+	}
+	relayPost(s, "/api/v1/auth/cli/refresh", api.CLIRefreshRequest{RefreshToken: "rt-secret-value", Client: "device"})
+	relayPost(s, "/api/v1/auth/cli/revoke", api.CLIRefreshRequest{RefreshToken: "rt-secret-value", Client: "device"})
+
+	logs := buf.String()
+	for _, needle := range []string{relaySecret, "rt-secret-value", idTok, "dc-secret-code"} {
+		assert.False(t, strings.Contains(logs, needle), "log leaked a secret")
+	}
+}

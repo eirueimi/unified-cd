@@ -937,3 +937,40 @@ type AuthzExplainResponse struct {
 	LoginAllowed bool                       `json:"loginAllowed"`
 	Permissions  []AuthzExplainedPermission `json:"permissions"`
 }
+
+// CLIDeviceStartResponse is returned by POST /api/v1/auth/cli/device/start.
+type CLIDeviceStartResponse struct {
+	DeviceCode              string `json:"deviceCode"`
+	UserCode                string `json:"userCode"`
+	VerificationURI         string `json:"verificationUri"`
+	VerificationURIComplete string `json:"verificationUriComplete,omitempty"`
+	ExpiresIn               int    `json:"expiresIn"`
+	Interval                int    `json:"interval"`
+}
+
+// CLIDeviceTokenRequest is the body of POST /api/v1/auth/cli/device/token.
+type CLIDeviceTokenRequest struct {
+	DeviceCode string `json:"deviceCode"`
+}
+
+// CLIRefreshRequest is the body of POST /api/v1/auth/cli/refresh and
+// /api/v1/auth/cli/revoke. Client is "device" or "browser".
+type CLIRefreshRequest struct {
+	RefreshToken string `json:"refreshToken"`
+	Client       string `json:"client"`
+}
+
+// CLITokenResponse carries the tokens relayed to the CLI. Expiry is the
+// id_token exp claim.
+type CLITokenResponse struct {
+	IDToken      string    `json:"idToken"`
+	RefreshToken string    `json:"refreshToken,omitempty"`
+	Expiry       time.Time `json:"expiry"`
+}
+
+// CLIOAuthError is an OAuth error relayed from the identity provider: only the
+// error code and description, never the raw upstream body.
+type CLIOAuthError struct {
+	Error            string `json:"error"`
+	ErrorDescription string `json:"errorDescription,omitempty"`
+}
