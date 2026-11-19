@@ -208,6 +208,7 @@ func main() {
 	s3Secret := flag.String("s3-secret", eff.S3Secret, "S3 secret key (env: UNIFIED_S3_SECRET)")
 	s3UseSSL := flag.Bool("s3-use-ssl", eff.S3UseSSL, "reach the S3 endpoint over https; required for presigned URLs on AWS S3 and GCS (env: UNIFIED_S3_USE_SSL)")
 	s3Region := flag.String("s3-region", eff.S3Region, "S3 bucket region; \"auto\" for GCS (env: UNIFIED_S3_REGION)")
+	artifactDownload := flag.String("artifact-download", eff.ArtifactDownloadMode(), "how human artifact downloads are served: \"proxy\" streams through the controller, \"redirect\" answers with a 15-minute presigned GET URL (S3-compatible store only); agents are always proxied (env: UNIFIED_ARTIFACT_DOWNLOAD)")
 	dataDir := flag.String("data-dir", eff.DataDir, "local object store directory (env: UNIFIED_DATA_DIR)")
 	webDir := flag.String("web-dir", eff.WebDir, "static web assets directory; if empty /ui/* returns 404 (env: UNIFIED_WEB_DIR)")
 	uiProxyTarget := flag.String("ui-proxy-target", eff.UIProxyTarget, "Vite dev server URL to reverse-proxy /ui/* to when --web-dir is empty, e.g. http://localhost:5173 (env: UNIFIED_UI_PROXY_TARGET)")
@@ -412,6 +413,12 @@ func main() {
 		slog.Warn("no object store configured — log archival disabled")
 	}
 
+	_, canPresign := obj.(objectstore.Presigner)
+	if err := config.CheckArtifactDownload(*artifactDownload, canPresign); err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
+
 	verifiers := make(map[string]controller.KubernetesEnrollmentVerifier, len(eff.AgentAuth.KubernetesClusters))
 	// clusterClients is keyed the same as verifiers (by cluster name) and
 	// reuses the SAME kubernetes.Interface built below for each cluster —
@@ -456,7 +463,7 @@ func main() {
 		}
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StoreCredentialRateBurst: *storeCredBurst, StoreCredentialRatePerSecond: *storeCredPerSecond, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
+	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StoreCredentialRateBurst: *storeCredBurst, StoreCredentialRatePerSecond: *storeCredPerSecond, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, ArtifactDownload: *artifactDownload}, st)
 	// Stops the shared log-notify listener goroutine (started lazily on the
 	// first SSE viewer — see (*controller.Server).subscribeLogNotify) if it
 	// was ever started. A no-op otherwise. Deferred here rather than left to

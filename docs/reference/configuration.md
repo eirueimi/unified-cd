@@ -19,6 +19,7 @@ unified-cd-controller [FLAGS]
   --s3-secret             string   S3 secret access key (env: UNIFIED_S3_SECRET)
   --s3-use-ssl            bool     Reach the S3 endpoint over https (env: UNIFIED_S3_USE_SSL)
   --s3-region             string   S3 bucket region; "auto" for GCS (env: UNIFIED_S3_REGION)
+  --artifact-download     string   Human artifact downloads: "proxy" (default) or "redirect" (env: UNIFIED_ARTIFACT_DOWNLOAD)
   --data-dir              string   Local object store directory (env: UNIFIED_DATA_DIR)
   --web-dir               string   Static web assets directory (env: UNIFIED_WEB_DIR)
   --ui-proxy-target       string   Vite dev server URL to proxy /ui/* (env: UNIFIED_UI_PROXY_TARGET)
@@ -69,6 +70,7 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_S3_SECRET` | No | S3 secret access key |
 | `UNIFIED_S3_USE_SSL` | No | `true` to reach the object store over https. Default `false`. Presigned object URLs travel to clients, so AWS S3 and GCS need `true`. Flag: `--s3-use-ssl`; config key `s3UseSSL`. |
 | `UNIFIED_S3_REGION` | No | Bucket region (e.g. `us-east-1`; `auto` for GCS; `garage` for the bundled Garage). Set it: with an empty region the client looks up the bucket location (a network round trip) on the first presign, and presigning fails if that lookup does. Flag: `--s3-region`; config key `s3Region`. |
+| `UNIFIED_ARTIFACT_DOWNLOAD` | No | How a human (UI, CLI) artifact download is served after the usual authentication, permission check and audit. `proxy` (default): the controller streams the bytes. `redirect`: the controller answers with a 15-minute presigned GET URL (`302` for the CLI; `?as=url` JSON for the Web UI, which then navigates to it), with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. Agents are always proxied. `redirect` needs an S3-compatible store: the controller refuses to start with `objectStore.artifactDownload: redirect requires an S3-compatible object store` on the local filesystem store or without a store, and with `objectStore.artifactDownload: must be "proxy" or "redirect", got "<value>"` for any other value. The store endpoint must then be reachable from users' browsers and CLIs (see [Operations](../operator-manual/operations.md#networking-and-cost-of-object-transfers)). Flag: `--artifact-download`; config key `objectStore.artifactDownload`. |
 | `UNIFIED_DATA_DIR` | No | Local directory used as object store fallback (alternative to S3, development only) |
 | `UNIFIED_WEB_DIR` | No | Path to static web assets directory. If unset, `/ui/*` returns 404. |
 | `UNIFIED_UI_PROXY_TARGET` | No | Proxy `/ui/*` to a Vite dev server (e.g. `http://localhost:5173`). Used during frontend development. |
@@ -116,6 +118,8 @@ s3Key: garageadmin
 s3Secret: garageadmin12345
 s3UseSSL: false                 # true for AWS S3 / GCS
 s3Region: garage                # "auto" for GCS
+objectStore:
+  artifactDownload: proxy       # proxy | redirect (presigned GET for humans; S3-compatible store only)
 dataDir: /var/lib/unified-cd    # local object-store fallback (dev; alternative to S3)
 
 webDir: /srv/unified-cd/web         # static web assets; unset => /ui/* returns 404

@@ -105,6 +105,8 @@ Agents and job Pods move artifact and cache bytes straight to the object store w
 - **Keep the traffic off the NAT gateway.** Agents and job Pods in private subnets reach S3 through a NAT gateway unless you add an S3 gateway VPC endpoint (no hourly or per-GB charge for the endpoint itself); on GCP, enable Private Google Access on their subnets. Without them every archive is billed as NAT data processing.
 - **Client temp space.** A large upload is sent in multipart parts and the client holds one part in its temp directory at a time: 64 MiB at first, doubling every 1,000 parts, so about 4 GiB when an object reaches roughly 5 TB. A store without multipart presign (GCS) makes the client spool the whole archive to a temp file before one PUT, so the temp directory needs room for the largest archive.
 
+- **Human downloads (`objectStore.artifactDownload`).** By default the controller streams artifact downloads for the UI and CLI (`proxy`). With `redirect` (`UNIFIED_ARTIFACT_DOWNLOAD`) it answers, after the usual authorization and audit, with a presigned GET valid for 15 minutes, so the bytes bypass the controller. The store endpoint must then be reachable from users' browsers and workstations under the name in `UNIFIED_S3_ENDPOINT`; keep `proxy` when the store has an internal-only hostname (for example a private Garage address). Agents are always proxied. A download interrupted after the URL has expired cannot resume: start it again from the UI (or rerun `artifact download`), which fetches a fresh URL. The controller refuses to start with `redirect` on the local filesystem store.
+
 See the [migration guide](migrations/2026-11-20-run-scoped-object-access.md) for the upgrade steps.
 
 ### The controller's master key (critical)

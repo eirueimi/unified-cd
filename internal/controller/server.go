@@ -82,6 +82,11 @@ type Config struct {
 	// why this is server configuration rather than a database-backed policy.
 	// nil/empty means no sidecar is accepted: a non-agent bearer gets 401.
 	StoreCredentialClusters []StoreCredentialCluster
+
+	// ArtifactDownload is "proxy" (default; empty means proxy) or "redirect":
+	// human artifact downloads answer with a presigned GET after the usual
+	// checks. Agents are always proxied. See config.ArtifactDownloadRedirect.
+	ArtifactDownload string
 }
 
 // OIDCConfig holds the OIDC provider configuration.

@@ -188,6 +188,55 @@ type ControllerConfig struct {
 	// body gets 413. 0 means the built-in default, 1 MiB
 	// (env: UNIFIED_MAX_REQUEST_BODY_BYTES).
 	MaxRequestBodyBytes int64 `yaml:"maxRequestBodyBytes"`
+	// ObjectStore holds settings about how the controller uses its object store
+	// beyond the connection (S3*) settings.
+	ObjectStore *ControllerObjectStoreConfig `yaml:"objectStore"`
+}
+
+// Artifact download modes for objectStore.artifactDownload.
+const (
+	ArtifactDownloadProxy    = "proxy"
+	ArtifactDownloadRedirect = "redirect"
+)
+
+// ControllerObjectStoreConfig holds the objectStore block of the controller config.
+type ControllerObjectStoreConfig struct {
+	// ArtifactDownload chooses how human artifact downloads are served after
+	// the usual authentication, permission check and audit: "proxy" (default)
+	// streams the bytes through the controller, "redirect" answers with a
+	// 15-minute presigned GET URL. Agents are always proxied.
+	// Env: UNIFIED_ARTIFACT_DOWNLOAD.
+	ArtifactDownload string `yaml:"artifactDownload"`
+}
+
+// ArtifactDownloadMode returns the effective artifact download mode ("proxy"
+// when unset).
+func (c *ControllerConfig) ArtifactDownloadMode() string {
+	if c.ObjectStore == nil || c.ObjectStore.ArtifactDownload == "" {
+		return ArtifactDownloadProxy
+	}
+	return c.ObjectStore.ArtifactDownload
+}
+
+func validateArtifactDownload(mode string) error {
+	switch mode {
+	case "", ArtifactDownloadProxy, ArtifactDownloadRedirect:
+		return nil
+	}
+	return fmt.Errorf("objectStore.artifactDownload: must be %q or %q, got %q", ArtifactDownloadProxy, ArtifactDownloadRedirect, mode)
+}
+
+// CheckArtifactDownload validates an artifact download mode against the object
+// store in use. canPresign is true when the store issues presigned URLs (an
+// S3-compatible store); "redirect" is refused without one.
+func CheckArtifactDownload(mode string, canPresign bool) error {
+	if err := validateArtifactDownload(mode); err != nil {
+		return err
+	}
+	if mode == ArtifactDownloadRedirect && !canPresign {
+		return fmt.Errorf("objectStore.artifactDownload: redirect requires an S3-compatible object store")
+	}
+	return nil
 }
 
 // RequireRunBindingDeprecatedWarning is the startup warning for the
@@ -305,6 +354,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		TrustedProxies:                   SplitCSV(os.Getenv("UNIFIED_TRUSTED_PROXIES")),
 		AgentAuth:                        &ControllerAgentAuthConfig{},
 	}
+	if v := strings.TrimSpace(os.Getenv("UNIFIED_ARTIFACT_DOWNLOAD")); v != "" {
+		eff.ObjectStore = &ControllerObjectStoreConfig{ArtifactDownload: v}
+	}
 	if v := strings.TrimSpace(os.Getenv("UNIFIED_STORE_CREDENTIAL_RATE_BURST")); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n <= 0 {
@@ -349,6 +401,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 
 	if err := eff.KeySource.Validate(); err != nil {
 		return nil, err
+	}
+	if err := validateArtifactDownload(eff.ArtifactDownloadMode()); err != nil {
+		return nil, fmt.Errorf("UNIFIED_ARTIFACT_DOWNLOAD: %w", err)
 	}
 	if filePath == "" {
 		if err := validateOIDCDevice(eff.OIDC); err != nil {
@@ -418,6 +473,12 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.StoreCredentialRateLimit.PerSecond > 0 {
 		eff.StoreCredentialRateLimit.PerSecond = file.StoreCredentialRateLimit.PerSecond
+	}
+	if file.ObjectStore != nil && file.ObjectStore.ArtifactDownload != "" {
+		if err := validateArtifactDownload(file.ObjectStore.ArtifactDownload); err != nil {
+			return nil, err
+		}
+		eff.ObjectStore = &ControllerObjectStoreConfig{ArtifactDownload: file.ObjectStore.ArtifactDownload}
 	}
 	if file.MaxRequestBodyBytes < 0 {
 		return nil, fmt.Errorf("maxRequestBodyBytes must not be negative")
