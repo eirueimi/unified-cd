@@ -136,6 +136,24 @@ The identity authenticated, but nothing in the **current** config grants it anyt
 
 Restore the grant, or have the user log in again if their groups changed at the IdP (a browser login refreshes the group snapshot of their PATs). Check with `unified-cli authz explain`.
 
+## Controller logs `the identity provider reported a groups overage`
+
+**Symptom**
+
+The controller log shows a warning (attributes `sub` and `rolesClaim`), and the user gets no group-based role or permissions:
+
+```
+oidc: the identity provider reported a groups overage; group-based roles and permissions are not applied for this login (see identity-providers.md "Entra ID")
+```
+
+**Cause**
+
+Microsoft Entra ID replaced the `groups` claim with an overage marker because the user belongs to more than 200 groups. The login continues without group values.
+
+**Fix**
+
+Use App Roles, or limit the token to groups assigned to the application. See [Microsoft Entra ID](../operator-manual/identity-providers.md#microsoft-entra-id).
+
 ## `403 forbidden: no role` / `forbidden: no role assigned`
 
 **Symptom**
