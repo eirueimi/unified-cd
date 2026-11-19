@@ -214,8 +214,11 @@ each matching agent in its heartbeat answer.
 
 **Fix:** delete the `volumes:` key from the k8s-agent config, apply an `AgentVolume` for each volume
 (`unified-cd apply -f volume.yaml`) and restart the agent. An existing PVC named
-`<agentName>.<volume>` is used as it is, so data is kept. Keep `agentName` as it was: a new
-`agentName` provisions new, empty PVCs and leaves the old ones behind.
+`<agentName>.<volume>` is used as it is. Old PVCs named `<agentName>-<volume>` (from 0.16 and
+earlier) are ignored from 0.17: the data in them is not picked up, so copy it over first (see
+[Kubernetes volume PVC names](../operator-manual/migrations/2026-11-20-k8s-volume-pvc-names.md)).
+Keep `agentName` as it was: a new `agentName` provisions new, empty PVCs and leaves the old ones
+behind.
 
 ### A Kubernetes volume is empty after upgrading to 0.17
 

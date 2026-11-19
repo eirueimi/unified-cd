@@ -203,8 +203,12 @@ func TestReclaimDelete_PreconditionConflict(t *testing.T) {
 	var conflict atomic.Bool
 	conflict.Store(true)
 	var attempts atomic.Int32
+	var sawPrecondition atomic.Bool
 	cs.PrependReactor("delete", "persistentvolumeclaims", func(act k8stesting.Action) (bool, runtime.Object, error) {
 		attempts.Add(1)
+		if p := act.(k8stesting.DeleteActionImpl).DeleteOptions.Preconditions; p != nil && p.ResourceVersion != nil {
+			sawPrecondition.Store(true)
+		}
 		if conflict.Load() {
 			return true, nil, apierrors.NewConflict(pvcResource.GroupResource(), act.(k8stesting.DeleteAction).GetName(), assert.AnError)
 		}
@@ -219,6 +223,7 @@ func TestReclaimDelete_PreconditionConflict(t *testing.T) {
 	var sts []api.AgentVolumeStatus
 	require.NotPanics(t, func() { sts = a.applyVolumes(ctx, nil) })
 	assert.Equal(t, int32(1), attempts.Load())
+	assert.True(t, sawPrecondition.Load(), "the delete carries a resourceVersion precondition")
 	assert.Contains(t, listPVCs(t, cs), "agent1.d", "a conflicting delete leaves the PVC")
 	assert.Empty(t, sts, "a conflict is not a reclaim failure; it is decided again next time")
 
@@ -226,4 +231,28 @@ func TestReclaimDelete_PreconditionConflict(t *testing.T) {
 	a.applyVolumes(ctx, nil)
 	assert.Equal(t, int32(2), attempts.Load(), "the next apply retries")
 	assert.NotContains(t, listPVCs(t, cs), "agent1.d")
+}
+
+// A volume that left the set must already be un-offered when its PVC is deleted,
+// or a pod create could mount a claim that is being removed.
+func TestReclaim_VolumeNotOfferedWhenPVCDeleteIsIssued(t *testing.T) {
+	ctx := context.Background()
+	cs := fake.NewSimpleClientset()
+	c := newTestClock()
+	a := clockedApplyAgent(cs, c)
+	var offeredAtDelete atomic.Bool
+	var deletes atomic.Int32
+	cs.PrependReactor("delete", "persistentvolumeclaims", func(k8stesting.Action) (bool, runtime.Object, error) {
+		deletes.Add(1)
+		_, ok := a.declaredVolumes()["d"]
+		offeredAtDelete.Store(ok)
+		return false, nil, nil
+	})
+	a.applyVolumes(ctx, []api.DesiredVolume{del("d", "exclusive")})
+	require.Contains(t, a.declaredVolumes(), "d")
+	a.applyVolumes(ctx, nil)
+	c.advance(reclaimGrace)
+	a.applyVolumes(ctx, nil)
+	require.Equal(t, int32(1), deletes.Load())
+	assert.False(t, offeredAtDelete.Load(), "the volume is still offered when its PVC is deleted")
 }

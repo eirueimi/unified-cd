@@ -20,9 +20,11 @@ are not affected.
 After the upgrade, the agent creates the new claim **empty**. The old claim keeps its data, is never
 reclaimed, and keeps costing storage until you delete it.
 
-The pod label changed with the name, so a run pod created by an older agent is not recognised as
-holding a volume by a new one. Let the runs that are in flight finish before you roll the agent,
-or accept that a new run may start on a volume an old pod still holds.
+Do not run old and new agent replicas side by side. During a mixed rollout the old replicas keep
+writing to the legacy claim while the new ones use the new, empty claim, so anything written to the
+legacy claim after you copy the data is lost. Scaling the Deployment to zero before the upgrade
+(step 3) avoids this. The pod label changed with the name too, so a new agent does not recognise a
+run pod of an old agent as holding a volume.
 
 ## What you must do
 
@@ -37,11 +39,30 @@ or accept that a new run may start on a volume an old pod still holds.
 
    Old claims are the ones named `<agentName>-<volume>`. After the upgrade the new ones appear next
    to them as `<agentName>.<volume>`.
-3. **Stop the runs that use the volume**, for example by scaling the k8s-agent Deployment to zero
-   after the in-flight runs have finished, so nothing holds either claim. Then let the upgraded
-   agent create the new claim (scale it back up and wait until the volume is ready, or create the
-   PVC yourself with the same size, access mode and storage class, then scale the agent down
-   again).
+3. **Stop the agent**: let the in-flight runs finish, then scale the k8s-agent Deployment to zero
+   so nothing holds either claim and no new run can start. Do not scale the upgraded agent up just
+   to create the new claim: it could hand a queued run the empty volume before the copy. Create the
+   new claim yourself instead, with the same size, access mode and storage class as the old one and
+   these labels and annotation (the agent uses an existing claim as it is, and reclaims it later
+   only if it carries the owner label):
+
+   ```yaml
+   apiVersion: v1
+   kind: PersistentVolumeClaim
+   metadata:
+     name: ci-main.go-cache
+     namespace: <namespace>
+     labels:
+       unified-cd/volume-owner: ci-main      # the agentName
+       unified-cd/volume: go-cache           # the volume name
+     annotations:
+       unified-cd/reclaim-policy: Retain     # or Delete, as in the AgentVolume
+   spec:
+     accessModes: [ReadWriteOnce]            # ReadWriteMany for a shared volume
+     resources:
+       requests:
+         storage: 200Gi
+   ```
 4. **Copy the data** with a one-off pod that mounts both claims. A `ReadWriteOnce` claim can only be
    mounted by pods on one node at a time, so if the two claims live on different nodes the pod may
    stay `Pending`; in that case copy through a pod pinned to the node that holds the old claim, or
@@ -70,9 +91,10 @@ or accept that a new run may start on a volume an old pod still holds.
    ```
 
    Apply it, wait for `kubectl -n <namespace> logs ucd-volume-copy` to print `copied`, check the
-   data, and delete the pod. Run the copy as the user that owns the files (add a `securityContext`
-   if your jobs run as a non-root user and the files must keep their owner; `cp -a` preserves
-   ownership only when run as root).
+   data, and delete the pod. Run the copy as root (the busybox default, as in the manifest) so `cp -a`
+   preserves file ownership. If Pod Security forbids root, set `securityContext.runAsUser` to the
+   UID your jobs use and `fsGroup` to match; ownership is then not preserved, only readable by that
+   user. Scale the upgraded agent up only after the copy is done.
 5. **Delete the old claims** once the new volume is verified:
 
    ```bash
@@ -83,8 +105,10 @@ or accept that a new run may start on a volume an old pod still holds.
    not complete until the pod is gone.
 6. **Update anything that names the claim.** A `jobPodPolicy.allowPersistentVolumeClaims` entry,
    monitoring, or a backup job that referred to `<agentName>-<volume>` must now use
-   `<agentName>.<volume>`. A job pod that mounts a named-volume claim directly is still refused
-   (`k8s: job pod policy: ...`), whichever spelling it uses.
+   `<agentName>.<volume>`. Only the current `<agentName>.<volume>` claims are reserved for named volumes
+   (a job that mounts one directly is refused with `k8s: job pod policy: ...`). From 0.17 a
+   legacy `<agentName>-<volume>` claim is an ordinary PVC: a job can mount it only if it is listed
+   in `allowPersistentVolumeClaims`.
 
 ## How to tell the migration is needed
 

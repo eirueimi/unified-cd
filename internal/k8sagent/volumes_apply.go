@@ -277,11 +277,9 @@ func (a *K8sAgent) applyVolumes(ctx context.Context, desired []api.DesiredVolume
 		graceOver = a.markAbsent(ctx, mentioned, owned)
 	}
 
-	// Second pass, under volMu where it can be had.
-	statuses := a.decide(ctx, staged, mentioned, owned, graceOver)
-	statuses = append(statuses, dups...)
-
-	// A volume that left the set stops being offered at once.
+	// A volume that left the set stops being offered at once, and before any
+	// reclaim below can delete its PVC: a pod create that takes volMu in between
+	// must not see it offered. This needs no volMu.
 	s.mu.Lock()
 	for name := range s.vols {
 		if !mentioned[name] {
@@ -289,6 +287,10 @@ func (a *K8sAgent) applyVolumes(ctx context.Context, desired []api.DesiredVolume
 		}
 	}
 	s.mu.Unlock()
+
+	// Second pass, under volMu where it can be had.
+	statuses := a.decide(ctx, staged, mentioned, owned, graceOver)
+	statuses = append(statuses, dups...)
 
 	// Remember which claims are named volumes', for the pod policy.
 	reserved := map[string]string{}
