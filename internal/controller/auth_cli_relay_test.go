@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
@@ -325,5 +326,65 @@ func TestCLIRelay_LogsCarryNoSecretsOrTokens(t *testing.T) {
 	logs := buf.String()
 	for _, needle := range []string{relaySecret, "rt-secret-value", idTok, "dc-secret-code"} {
 		assert.False(t, strings.Contains(logs, needle), "log leaked a secret")
+	}
+}
+
+func TestCLIRelay_ErrorDescriptionEchoingTokensIsDropped(t *testing.T) {
+	p := newRelayIdP(t, true)
+	s := newRelayServer(t, p, relaySecret)
+
+	// (1) refresh: description echoes the presented refresh token.
+	p.tokenFn = func(form url.Values) (int, any) {
+		return 400, map[string]any{"error": "invalid_grant", "error_description": "refresh token " + form.Get("refresh_token") + " is expired"}
+	}
+	rec := relayPost(s, "/api/v1/auth/cli/refresh", api.CLIRefreshRequest{RefreshToken: "rt-echo-123", Client: "device"})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.JSONEq(t, `{"error":"invalid_grant"}`, rec.Body.String())
+
+	// (2) device/token: description echoes the device code.
+	p.tokenFn = func(form url.Values) (int, any) {
+		return 400, map[string]any{"error": "expired_token", "error_description": "code " + form.Get("device_code") + " expired"}
+	}
+	rec = relayPost(s, "/api/v1/auth/cli/device/token", api.CLIDeviceTokenRequest{DeviceCode: "dc-echo-456"})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.JSONEq(t, `{"error":"expired_token"}`, rec.Body.String())
+
+	// Revoke failures are held to the same rule.
+	p.tokenFn = nil
+
+	// (3) a secret with +/= echoed form-encoded.
+	const odd = "ab+cd/ef=="
+	s3 := newRelayServer(t, p, odd)
+	p.tokenFn = func(form url.Values) (int, any) {
+		return 400, map[string]any{"error": "invalid_client", "error_description": "bad client_secret=" + url.QueryEscape(form.Get("client_secret"))}
+	}
+	rec = relayPost(s3, "/api/v1/auth/cli/refresh", api.CLIRefreshRequest{RefreshToken: "rt-1", Client: "device"})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.JSONEq(t, `{"error":"invalid_client"}`, rec.Body.String())
+	assert.NotContains(t, rec.Body.String(), odd)
+	assert.NotContains(t, rec.Body.String(), url.QueryEscape(odd))
+
+	// A harmless description is kept and truncated on a rune boundary.
+	p.tokenFn = func(url.Values) (int, any) {
+		return 400, map[string]any{"error": "invalid_request", "error_description": strings.Repeat("é", 400)}
+	}
+	rec = relayPost(s, "/api/v1/auth/cli/refresh", api.CLIRefreshRequest{RefreshToken: "rt-1", Client: "device"})
+	var got api.CLIOAuthError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.LessOrEqual(t, len(got.ErrorDescription), 512)
+	assert.True(t, utf8.ValidString(got.ErrorDescription))
+	assert.NotEmpty(t, got.ErrorDescription)
+}
+
+func TestCLIRelay_ErrorCodeRestrictedToLowerUnderscore(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, relaySecret)
+	for _, bad := range []string{"Invalid-Grant", "oops rt-1", "a/b", "ünï"} {
+		p.tokenFn = func(url.Values) (int, any) {
+			return 400, map[string]any{"error": bad, "error_description": "x"}
+		}
+		rec := relayPost(s, "/api/v1/auth/cli/refresh", api.CLIRefreshRequest{RefreshToken: "rt-1", Client: "device"})
+		assert.NotContains(t, rec.Body.String(), bad)
+		assert.Contains(t, rec.Body.String(), "server_error")
 	}
 }

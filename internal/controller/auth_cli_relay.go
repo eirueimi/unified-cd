@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"golang.org/x/oauth2"
@@ -146,25 +147,54 @@ func num(m map[string]any, k string) int {
 }
 
 // relayUpstreamError writes the OAuth error from an upstream failure: only the
-// error and error_description fields, with the client secret redacted. A
-// failure that carries no OAuth error becomes a generic 502.
-func relayUpstreamError(w http.ResponseWriter, res *upstreamResult, secret, what string) {
+// error and error_description fields. The description is dropped entirely when
+// it contains any sensitive value of the request (client secret, refresh token,
+// device code), raw or form-encoded. An error code outside [a-z_] or a failure
+// that carries no OAuth error becomes a generic 502.
+func relayUpstreamError(w http.ResponseWriter, res *upstreamResult, what string, sensitive ...string) {
 	code := str(res.body, "error")
-	if code == "" || len(code) > 64 {
+	if !validOAuthErrorCode(code) {
 		slog.Warn("cli relay: unexpected identity provider response", "what", what, "status", res.status)
 		writeJSON(w, http.StatusBadGateway, api.CLIOAuthError{Error: "server_error", ErrorDescription: "unexpected response from identity provider"})
 		return
 	}
 	desc := str(res.body, "error_description")
-	if secret != "" {
-		desc = strings.ReplaceAll(desc, secret, "[redacted]")
-		code = strings.ReplaceAll(code, secret, "[redacted]")
+	for _, v := range sensitive {
+		if v == "" {
+			continue
+		}
+		if strings.Contains(desc, v) || strings.Contains(desc, url.QueryEscape(v)) {
+			desc = ""
+			break
+		}
 	}
-	if len(desc) > cliRelayMaxErrDesc {
-		desc = desc[:cliRelayMaxErrDesc]
-	}
+	desc = truncateUTF8(desc, cliRelayMaxErrDesc)
 	slog.Info("cli relay: identity provider returned an error", "what", what, "status", res.status, "error", code)
 	writeJSON(w, http.StatusBadRequest, api.CLIOAuthError{Error: code, ErrorDescription: desc})
+}
+
+// validOAuthErrorCode accepts 1-64 characters of [a-z_].
+func validOAuthErrorCode(code string) bool {
+	if code == "" || len(code) > 64 {
+		return false
+	}
+	for _, r := range code {
+		if (r < 'a' || r > 'z') && r != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// truncateUTF8 cuts s to at most max bytes on a rune boundary.
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
 }
 
 // relayTokens turns a successful upstream token response into the CLI response:
@@ -222,7 +252,7 @@ func (s *Server) handleCLIDeviceStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if res.status != http.StatusOK {
-		relayUpstreamError(w, res, c.secret, "device_start")
+		relayUpstreamError(w, res, "device_start", c.secret)
 		return
 	}
 	verification := str(res.body, "verification_uri")
@@ -282,7 +312,7 @@ func (s *Server) handleCLIDeviceToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if res.status != http.StatusOK {
-		relayUpstreamError(w, res, c.secret, "device_token")
+		relayUpstreamError(w, res, "device_token", c.secret, req.DeviceCode)
 		return
 	}
 	s.relayTokens(ctx, w, res, "", "identity provider returned no id_token")
@@ -329,7 +359,7 @@ func (s *Server) handleCLIRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if res.status != http.StatusOK {
-		relayUpstreamError(w, res, c.secret, "refresh")
+		relayUpstreamError(w, res, "refresh", c.secret, req.RefreshToken)
 		return
 	}
 	s.relayTokens(ctx, w, res, req.RefreshToken, "identity provider returned no id_token on refresh")
@@ -383,7 +413,7 @@ func (s *Server) handleCLIRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if res.status < 200 || res.status > 299 {
-		relayUpstreamError(w, res, c.secret, "revoke")
+		relayUpstreamError(w, res, "revoke", c.secret, req.RefreshToken)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
