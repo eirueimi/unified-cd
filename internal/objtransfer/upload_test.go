@@ -2,6 +2,7 @@ package objtransfer
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -270,5 +271,80 @@ func TestCacheSave_NoCommitWhenUploadFails(t *testing.T) {
 	}
 	if len(e.requestsOf(api.ObjectOpCommit)) != 0 {
 		t.Fatal("committed a failed upload")
+	}
+}
+
+func TestUpload_SinglePutRetries5xxAndTransportErrors(t *testing.T) {
+	for name, fail := range map[string]func(http.ResponseWriter){
+		"503":       func(w http.ResponseWriter) { w.WriteHeader(http.StatusServiceUnavailable) },
+		"transport": func(http.ResponseWriter) { panic(http.ErrAbortHandler) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			sleeps := noSleep(t)
+			e := newFakeEnv(t)
+			failed := false
+			e.s3Hook = func(w http.ResponseWriter, _ *http.Request, _ []byte) bool {
+				if !failed {
+					failed = true
+					fail(w)
+					return true
+				}
+				return false
+			}
+			if err := e.client.Artifacts().Put(t.Context(), testKey, strings.NewReader("hello"), -1); err != nil {
+				t.Fatal(err)
+			}
+			if string(e.objects[testKey]) != "hello" || len(*sleeps) != 1 {
+				t.Fatalf("object = %q sleeps = %v", e.objects[testKey], *sleeps)
+			}
+			// Same URL, so no new presign.
+			if got := e.ops(); !slicesEqual(got, []string{"artifact/put"}) {
+				t.Fatalf("ops = %v", got)
+			}
+		})
+	}
+}
+
+func TestUpload_ForbiddenOnLastAttemptDoesNotRefresh(t *testing.T) {
+	noSleep(t)
+	e := newFakeEnv(t)
+	e.s3Hook = func(w http.ResponseWriter, _ *http.Request, _ []byte) bool {
+		w.WriteHeader(http.StatusForbidden)
+		return true
+	}
+	if err := e.client.Artifacts().Put(t.Context(), testKey, strings.NewReader("hello"), -1); err == nil {
+		t.Fatal("want an error")
+	}
+	if n := len(e.requestsOf(api.ObjectOpPut)); n != partAttempts {
+		t.Fatalf("put presigns = %d, want %d (one per attempt, none after the last)", n, partAttempts)
+	}
+}
+
+type cancelingReader struct {
+	data   []byte
+	cancel context.CancelFunc
+}
+
+func (r *cancelingReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		r.cancel()
+		return 0, context.Canceled
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+func TestUpload_CancelMidMultipartStillAborts(t *testing.T) {
+	tinyParts(t, 4, 2)
+	e := newFakeEnv(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	err := e.client.Artifacts().Put(ctx, testKey, &cancelingReader{data: []byte("0123456789"), cancel: cancel}, -1)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if aborts := e.requestsOf(api.ObjectOpMultipartAbort); len(aborts) != 1 {
+		t.Fatalf("aborts = %+v, want one even though the context was canceled", aborts)
 	}
 }

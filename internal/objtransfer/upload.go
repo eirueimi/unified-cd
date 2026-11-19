@@ -279,6 +279,9 @@ func (c *Client) sendPart(ctx context.Context, f *os.File, size int64, pr api.Pr
 			return resp.Header.Get("ETag"), nil
 		case resp.StatusCode == http.StatusForbidden:
 			lastErr = fmt.Errorf("store answered %s", resp.Status)
+			if attempt == partAttempts-1 {
+				break
+			}
 			next, err := refresh()
 			if err != nil {
 				return "", err

@@ -70,8 +70,17 @@ func (c *Client) httpClient() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return http.DefaultClient
+	return defaultHTTP
 }
+
+// defaultHTTP is used when the caller supplies no client: it bounds the wait
+// for response headers but not the whole request, which can legitimately last
+// as long as a large transfer.
+var defaultHTTP = func() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = 60 * time.Second
+	return &http.Client{Transport: tr}
+}()
 
 // redactURL drops the query string and userinfo of raw: presigned URLs carry
 // their credential there.

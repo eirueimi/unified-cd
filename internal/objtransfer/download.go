@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
@@ -26,7 +27,7 @@ func (c *Client) openDownload(ctx context.Context, req api.PresignRequest) (io.R
 		return nil, api.PresignResponse{}, errors.New("presign get: the controller returned no request")
 	}
 	r := &resumingReader{ctx: ctx, c: c, req: req, etag: resp.ETag, size: resp.Size}
-	if err := r.open(*resp.Request); err != nil {
+	if err := r.connect(resp.Request); err != nil {
 		return nil, api.PresignResponse{}, err
 	}
 	return r, resp, nil
@@ -66,13 +67,16 @@ func (r *resumingReader) open(pr api.PresignedRequest) error {
 	}
 	if r.off > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", r.off))
-		if r.etag != "" {
-			req.Header.Set("If-Match", quoteETag(r.etag))
-		}
+	}
+	if r.etag != "" {
+		req.Header.Set("If-Match", quoteETag(r.etag))
 	}
 	resp, err := r.c.httpClient().Do(req)
 	if err != nil {
-		return fmt.Errorf("download: %w", redactErr(err))
+		if r.ctx.Err() != nil {
+			return r.ctx.Err()
+		}
+		return &retryableErr{err: fmt.Errorf("download: %w", redactErr(err))}
 	}
 	switch {
 	case resp.StatusCode == http.StatusPartialContent && r.off > 0:
@@ -90,6 +94,13 @@ func (r *resumingReader) open(pr api.PresignedRequest) error {
 	case resp.StatusCode == http.StatusNotFound:
 		resp.Body.Close()
 		return fmt.Errorf("download: %w", objectstore.ErrNotFound)
+	case resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden:
+		// 403 is an expired or rejected URL: presigning again fixes it.
+		resp.Body.Close()
+		return &retryableErr{
+			err:        fmt.Errorf("download: store answered %s", resp.Status),
+			retryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		}
 	default:
 		resp.Body.Close()
 		return fmt.Errorf("download: store answered %s", resp.Status)
@@ -98,19 +109,49 @@ func (r *resumingReader) open(pr api.PresignedRequest) error {
 	return nil
 }
 
-// reopen presigns again and resumes at the current offset.
-func (r *resumingReader) reopen() error {
-	resp, err := r.c.presign(r.ctx, r.req)
-	if err != nil {
-		return err
+// retryableErr marks a failed GET that presigning again and retrying may fix.
+type retryableErr struct {
+	err        error
+	retryAfter time.Duration
+}
+
+func (e *retryableErr) Error() string { return e.err.Error() }
+func (e *retryableErr) Unwrap() error { return e.err }
+
+// connect opens the body from the current offset. first is the already
+// presigned request for the initial GET; nil means presign now. Transport
+// errors, 5xx, 429 and 403 are retried with a fresh presign and backoff until
+// the failure budget (maxResumes) is used up; 412, 404 and other statuses fail.
+func (r *resumingReader) connect(first *api.PresignedRequest) error {
+	pr := first
+	for {
+		if pr == nil {
+			resp, err := r.c.presign(r.ctx, r.req)
+			if err != nil {
+				return err
+			}
+			if resp.Request == nil {
+				return errors.New("presign get: the controller returned no request")
+			}
+			if r.etag != "" && resp.ETag != "" && resp.ETag != r.etag {
+				return fmt.Errorf("object changed during download (at byte %d)", r.off)
+			}
+			pr = resp.Request
+		}
+		err := r.open(*pr)
+		var re *retryableErr
+		if err == nil || !errors.As(err, &re) {
+			return err
+		}
+		r.failures++
+		if r.failures > maxResumes {
+			return fmt.Errorf("download: giving up after %d attempts: %w", maxResumes, re.err)
+		}
+		if err := sleep(r.ctx, backoff(r.failures-1, re.retryAfter)); err != nil {
+			return err
+		}
+		pr = nil
 	}
-	if resp.Request == nil {
-		return errors.New("presign get: the controller returned no request")
-	}
-	if r.etag != "" && resp.ETag != "" && resp.ETag != r.etag {
-		return fmt.Errorf("object changed during download (at byte %d)", r.off)
-	}
-	return r.open(*resp.Request)
 }
 
 // Read implements io.Reader.
@@ -131,7 +172,7 @@ func (r *resumingReader) Read(p []byte) (int, error) {
 					return 0, err
 				}
 			}
-			if err := r.reopen(); err != nil {
+			if err := r.connect(nil); err != nil {
 				return 0, err
 			}
 		}
