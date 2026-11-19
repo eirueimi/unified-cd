@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -47,7 +50,28 @@ func NewRoot() *cobra.Command {
 		}
 		return c, nil
 	}
-	resolve := func() (Config, error) { return resolveWith(true) }
+	// resolve is the single place commands obtain their Config. It also
+	// refreshes a stored SSO token that is about to expire (never one from
+	// --token or $UNIFIED_TOKEN), warning once on failure.
+	var refreshWarned bool
+	resolve := func() (Config, error) {
+		c, err := resolveWith(true)
+		if err != nil || refreshWarned {
+			return c, err
+		}
+		path := configPath
+		if path == "" {
+			path = DefaultConfigPath()
+		}
+		overridden := os.Getenv("UNIFIED_TOKEN") != "" || tokenOverride != ""
+		var warn bytes.Buffer
+		c = applyRefresh(context.Background(), path, c, overridden, time.Now(), &warn)
+		if warn.Len() > 0 {
+			refreshWarned = true
+			_, _ = os.Stderr.Write(warn.Bytes())
+		}
+		return c, nil
+	}
 
 	// Install the extra-header transport once, before any command runs. Done
 	// leniently (no server required — e.g. `login`, `keygen`) and scoped to the

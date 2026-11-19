@@ -16,7 +16,12 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
 	"golang.org/x/term"
+
+	"github.com/eirueimi/unified-cd/internal/api"
 )
+
+// noRefreshTokenWarning is printed when the IdP issued no refresh token.
+const noRefreshTokenWarning = "the identity provider issued no refresh token; you will need to log in again when the token expires"
 
 // errOIDCNotConfigured is returned by fetchServerOIDCConfig when the server
 // has no OIDC provider configured (HTTP 404).
@@ -70,6 +75,11 @@ func newLoginCmd() *cobra.Command {
 			// cancels the OIDC device-flow polling (DeviceAuth/DeviceAccessToken)
 			// promptly instead of leaving `login` hung waiting for browser approval.
 			ctx := cmdCtx(cmd)
+			// A controller that holds the device client secret relays the device
+			// flow; the CLI must not talk to the IdP directly then.
+			if serverCfg != nil && serverCfg.DeviceRelay {
+				return relayDeviceLogin(ctx, cmd, serverURL)
+			}
 			// Use the endpoints provided by the server if it has already performed discovery
 			// (the Dex device authorization endpoint is implementation-specific, e.g. /device/code,
 			//  so trust the discovery result rather than hardcoding it).
@@ -115,20 +125,26 @@ func newLoginCmd() *cobra.Command {
 				apiToken = token.AccessToken
 			}
 
-			// Save the token to the config file
-			configPath := DefaultConfigPath()
-			if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-				return err
+			// Expiry is the id_token's exp, never the access token's.
+			expiry := token.Expiry
+			if exp, err := idTokenExpiry(apiToken); err == nil {
+				expiry = exp
 			}
-			if err := SaveConfig(configPath, Config{
-				Server: serverURL,
-				Token:  apiToken,
-			}); err != nil {
+			refresh := token.RefreshToken
+			configPath := DefaultConfigPath()
+			if err := saveLogin(configPath, Config{Server: serverURL}, api.CLITokenResponse{
+				IDToken:      apiToken,
+				RefreshToken: refresh,
+				Expiry:       expiry,
+			}, "device", false); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "\nLogged in. Token saved to %s\n", configPath)
-			if !token.Expiry.IsZero() {
-				fmt.Fprintf(cmd.OutOrStdout(), "Expires: %s\n", token.Expiry.Format(time.RFC3339))
+			if !expiry.IsZero() {
+				fmt.Fprintf(cmd.OutOrStdout(), "Expires: %s\n", expiry.Format(time.RFC3339))
+			}
+			if refresh == "" {
+				fmt.Fprintln(cmd.ErrOrStderr(), noRefreshTokenWarning)
 			}
 			return nil
 		},
@@ -148,6 +164,10 @@ type serverOIDCConfig struct {
 	DeviceClientID     string `json:"deviceClientId"`
 	DeviceAuthEndpoint string `json:"deviceAuthEndpoint"`
 	TokenEndpoint      string `json:"tokenEndpoint"`
+	// DeviceRelay is true when the controller relays the device flow and
+	// refresh (it holds the device client secret). Absent on older servers.
+	DeviceRelay        bool   `json:"deviceRelay"`
+	RevocationEndpoint string `json:"revocationEndpoint"`
 	// Scopes are the scopes the server wants the device flow to request
 	// (including the roles claim). Absent on older servers.
 	Scopes []string `json:"scopes"`
@@ -280,4 +300,65 @@ func discoverOIDCEndpoint(issuer string) (oauth2.Endpoint, error) {
 		DeviceAuthURL: discovery.DeviceAuthorizationEndpoint,
 		TokenURL:      discovery.TokenEndpoint,
 	}, nil
+}
+
+// relayDeviceLogin runs the device flow through the controller's relay
+// endpoints, using the shared default HTTP client so extra headers apply.
+func relayDeviceLogin(ctx context.Context, cmd *cobra.Command, serverURL string) error {
+	var start api.CLIDeviceStartResponse
+	if err := postRelay(ctx, serverURL, "/api/v1/auth/cli/device/start", nil, &start); err != nil {
+		return fmt.Errorf("device authentication error: %w", err)
+	}
+	link := start.VerificationURIComplete
+	if link == "" {
+		link = start.VerificationURI
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "\nOpen the following URL in your browser:\n  %s\n\nWaiting (user code: %s)...\n", link, start.UserCode)
+
+	interval := time.Duration(start.Interval) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	var deadline time.Time
+	if start.ExpiresIn > 0 {
+		deadline = time.Now().Add(time.Duration(start.ExpiresIn) * time.Second)
+	}
+	body, _ := json.Marshal(api.CLIDeviceTokenRequest{DeviceCode: start.DeviceCode})
+	for {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return fmt.Errorf("device access token error: expired_token")
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("device access token error: %w", ctx.Err())
+		case <-time.After(interval):
+		}
+		var tok api.CLITokenResponse
+		err := postRelay(ctx, serverURL, "/api/v1/auth/cli/device/token", body, &tok)
+		if err == nil {
+			return finishRelayLogin(cmd, serverURL, tok)
+		}
+		switch err.Error() {
+		case "authorization_pending":
+		case "slow_down", "server returned 429":
+			interval += 5 * time.Second
+		default:
+			return fmt.Errorf("device access token error: %w", err)
+		}
+	}
+}
+
+func finishRelayLogin(cmd *cobra.Command, serverURL string, tok api.CLITokenResponse) error {
+	configPath := DefaultConfigPath()
+	if err := saveLogin(configPath, Config{Server: serverURL}, tok, "device", true); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "\nLogged in. Token saved to %s\n", configPath)
+	if !tok.Expiry.IsZero() {
+		fmt.Fprintf(cmd.OutOrStdout(), "Expires: %s\n", tok.Expiry.Format(time.RFC3339))
+	}
+	if tok.RefreshToken == "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), noRefreshTokenWarning)
+	}
+	return nil
 }

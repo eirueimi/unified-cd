@@ -76,6 +76,7 @@ var requestConstructors = map[string]int{
 	"gitcredential.go":    2,
 	"jobs.go":             4,
 	"login.go":            3,
+	"oidc_refresh.go":     2,
 	"logs.go":             1,
 	"run.go":              12,
 	"schedule.go":         2,
@@ -273,6 +274,15 @@ func contractRows(t *testing.T) []contractRow {
 			_, err := discoverOIDCEndpoint("http://issuer.test")
 			return err
 		}, status: map[string]int{"GET /.well-known/openid-configuration": 500}, want: []string{get + " /.well-known/openid-configuration"}},
+		{name: "refresh through the controller relay", wantErr: true, call: func(ctx context.Context) error {
+			_, err := relayRefresh(ctx, "http://controller.test", "rt", "device")
+			return err
+		}, want: []string{post + " /api/v1/auth/cli/refresh"}},
+		{name: "refresh directly against the IdP", wantErr: true, call: func(ctx context.Context) error {
+			_, err := directRefresh(ctx, "http://controller.test", "rt")
+			return err
+		}, resp: map[string]string{"GET /api/v1/auth/oidc-config": `{"deviceClientId":"cli","tokenEndpoint":"http://idp.test/token"}`},
+			want: []string{get + " /api/v1/auth/oidc-config", post + " /token"}},
 	}
 }
 
