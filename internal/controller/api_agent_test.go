@@ -939,42 +939,125 @@ func TestAgentHeartbeat_RecordsPodBindings(t *testing.T) {
 	assert.Equal(t, "pod-uid-xyz", binding.PodUID)
 }
 
-// TestAgentHeartbeat_PodBindingsOverwritesOnReclaim verifies a second
-// heartbeat reporting a DIFFERENT Pod for the same run replaces the earlier
-// binding rather than erroring or keeping the stale one — the shape a
-// stuck-run reconcile or an agent restart produces (see the migration's
-// comment on why no history is kept).
+// TestAgentHeartbeat_PodBindingsOverwritesOnReclaim verifies that after a run
+// is requeued and re-claimed by a different agent, the new owner's heartbeat
+// replaces the binding and a late heartbeat from the previous owner is
+// dropped (it no longer owns the run).
 func TestAgentHeartbeat_PodBindingsOverwritesOnReclaim(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
 	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
-	claimRunForTest(t, pg, "agent-hb-reclaim", run.ID)
-	token := issueAgentAccessForTest(t, pg, "agent-hb-reclaim", nil, nil)
+	claimRunForTest(t, pg, "agent-hb-old", run.ID)
+	tokenOld := issueAgentAccessForTest(t, pg, "agent-hb-old", nil, nil)
+	tokenNew := issueAgentAccessForTest(t, pg, "agent-hb-new", nil, nil)
 
-	beat := func(podName, podUID string) {
+	beat := func(agentID, token, podName, podUID string) {
 		body, err := json.Marshal(api.HeartbeatRequest{
 			ActiveRunIDs: []string{run.ID},
 			PodBindings:  map[string]api.PodBinding{run.ID: {PodName: podName, PodUID: podUID}},
 		})
 		require.NoError(t, err)
 		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb-reclaim/heartbeat", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/"+agentID+"/heartbeat", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Content-Type", "application/json")
 		s.Router().ServeHTTP(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 	}
 
-	beat("ucd-run-first", "pod-uid-first")
-	beat("ucd-run-second", "pod-uid-second")
+	beat("agent-hb-old", tokenOld, "ucd-run-first", "pod-uid-first")
 
-	binding, ok, err := pg.GetRunPodBinding(t.Context(), run.ID)
+	// Requeue and re-claim by a different agent.
+	ok, err := pg.RequeueClaimedRun(t.Context(), run.ID, "agent-hb-old")
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.Equal(t, "ucd-run-second", binding.PodName)
-	assert.Equal(t, "pod-uid-second", binding.PodUID)
+	claimed, err := pg.ClaimNextRun(t.Context(), "agent-hb-new", nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, run.ID, claimed.ID)
+
+	beat("agent-hb-new", tokenNew, "ucd-run-second", "pod-uid-second")
+	// A late heartbeat from the previous owner must not touch the binding.
+	beat("agent-hb-old", tokenOld, "ucd-run-first", "pod-uid-first")
+
+	list, err := pg.ListRunPodBindings(t.Context(), run.ID)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, "ucd-run-second", list[0].PodName)
+	assert.Equal(t, "pod-uid-second", list[0].PodUID)
+}
+
+// TestAgentHeartbeat_PodBindingsRequireRunOwnership: an agent that has not
+// claimed a run cannot bind a Pod to it or replace the owner's bindings, via
+// either PodBindings or PodBindingSets.
+func TestAgentHeartbeat_PodBindingsRequireRunOwnership(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "agent-owner", run.ID)
+	tokenA := issueAgentAccessForTest(t, pg, "agent-owner", nil, nil)
+	tokenB := issueAgentAccessForTest(t, pg, "agent-intruder", nil, nil)
+
+	send := func(agentID, token string, hb api.HeartbeatRequest) {
+		body, err := json.Marshal(hb)
+		require.NoError(t, err)
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/"+agentID+"/heartbeat", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		s.Router().ServeHTTP(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+	}
+	uids := func() []string {
+		list, err := pg.ListRunPodBindings(t.Context(), run.ID)
+		require.NoError(t, err)
+		var out []string
+		for _, b := range list {
+			out = append(out, b.PodUID)
+		}
+		return out
+	}
+
+	send("agent-owner", tokenA, api.HeartbeatRequest{
+		ActiveRunIDs:   []string{run.ID},
+		PodBindingSets: map[string][]api.PodBinding{run.ID: {{PodName: "legit", PodUID: "legit-uid"}}},
+	})
+	require.Equal(t, []string{"legit-uid"}, uids())
+
+	evil := api.PodBinding{PodName: "evil", PodUID: "evil-uid"}
+	send("agent-intruder", tokenB, api.HeartbeatRequest{PodBindingSets: map[string][]api.PodBinding{run.ID: {evil}}})
+	assert.Equal(t, []string{"legit-uid"}, uids(), "a non-owner must not replace the owner's bindings")
+	send("agent-intruder", tokenB, api.HeartbeatRequest{PodBindings: map[string]api.PodBinding{run.ID: evil}})
+	assert.Equal(t, []string{"legit-uid"}, uids(), "a non-owner must not bind a Pod through PodBindings")
+
+	// A run that does not exist is dropped too.
+	send("agent-intruder", tokenB, api.HeartbeatRequest{PodBindings: map[string]api.PodBinding{"no-such-run": evil}})
+}
+
+// TestAgentFinishRun_DeletesPodBindings: finishing a run unbinds its Pods.
+func TestAgentFinishRun_DeletesPodBindings(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "agent-fin", run.ID)
+	token := issueAgentAccessForTest(t, pg, "agent-fin", nil, nil)
+	require.NoError(t, pg.ReplaceRunPodBindings(t.Context(), run.ID, []store.RunPodBinding{{PodName: "p", PodUID: "u"}}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-fin/runs/"+run.ID+"/finish", strings.NewReader(`{"status":"Succeeded"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+
+	list, err := pg.ListRunPodBindings(t.Context(), run.ID)
+	require.NoError(t, err)
+	assert.Empty(t, list)
 }
 
 func TestBuildClaimStep_MatrixAndForeachNormalization(t *testing.T) {

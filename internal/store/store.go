@@ -416,6 +416,9 @@ type Store interface {
 	// ListRunPodBindings returns every Pod bound to runID; the presign
 	// endpoint accepts a caller whose Pod UID is any of them.
 	ListRunPodBindings(ctx context.Context, runID string) ([]RunPodBinding, error)
+	// DeleteRunPodBindings removes every Pod binding of runID. Called when the
+	// run finishes so a pooled Pod's sidecar can no longer presign for it.
+	DeleteRunPodBindings(ctx context.Context, runID string) error
 	// UpsertAgent is the REGISTRATION path: it replaces the agent's labels/hostname/
 	// os/version/env wholesale (a registration is the authoritative identity).
 	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, volumes []string, env map[string]string) error

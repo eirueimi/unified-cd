@@ -178,7 +178,7 @@ audit row directly (it is outside the audit middleware):
 | `action` | `objects.presign` |
 | `actor` / `actorId` | `agent` / `agent:<agent id>` for an agent; `agent` with an empty `actorId` for a sidecar (its Pod UID is in `details.podUid`) |
 | `method` / `path` | `POST` / `/api/v1/runs/<run id>/objects/presign` |
-| `resource` | `artifact:<run id>/<artifact name>` or `cache:<job name>/<cache key>` for an operation; the run ID for a `403` refusal |
+| `resource` | `artifact:<run id>/<artifact name>` or `cache:<job name>/<cache key>` for an operation (cut to 256 bytes); the run ID for a `403` refusal |
 | `status` | The status the requester saw |
 | `details` | `runId`, `kind` and `op` for an operation; `podUid` for a sidecar |
 

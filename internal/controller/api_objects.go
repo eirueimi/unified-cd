@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/artifact"
@@ -406,5 +407,22 @@ func (s *Server) auditPresignAction(r *http.Request, rq objectRequester, action,
 		}
 		details["podUid"] = rq.PodUID
 	}
-	s.auditAgentEvent(r, rq.AgentID, action, resource, status, details)
+	s.auditAgentEvent(r, rq.AgentID, action, truncateAuditResource(resource), status, details)
+}
+
+// maxAuditResourceBytes bounds the audit resource string: it embeds names and
+// keys the client chose, which are not validated yet when a denial is audited.
+const maxAuditResourceBytes = 256
+
+// truncateAuditResource cuts resource to maxAuditResourceBytes without
+// splitting a UTF-8 sequence.
+func truncateAuditResource(resource string) string {
+	if len(resource) <= maxAuditResourceBytes {
+		return resource
+	}
+	cut := maxAuditResourceBytes
+	for cut > 0 && !utf8.RuneStart(resource[cut]) {
+		cut--
+	}
+	return resource[:cut]
 }

@@ -88,6 +88,8 @@ retries a `429` up to 6 times with a bounded wait that honours `Retry-After`, so
 delays the step instead of failing it. Sidecars that use the in-cluster Service URL arrive from
 their own Pod IPs and do not share a bucket.
 
+The limit is keyed by client IP. Behind an Ingress without `trustedProxies`, every sidecar in the cluster shares the Ingress's address and therefore one bucket, so set `trustedProxies` (above) or size `UNIFIED_STORE_CREDENTIAL_RATE_BURST` and `UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND` for the combined presign volume of all concurrent jobs. Count every presign call: `get`, `head`, `put`, `commit` and each multipart batch, plus retries after a `429`.
+
 ## Request body limits
 
 Every request body is capped, so an unauthenticated caller cannot make the controller buffer an

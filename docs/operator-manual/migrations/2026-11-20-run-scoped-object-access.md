@@ -64,6 +64,19 @@ cannot work against the new controller (see below).
 `objectStore.artifactDownload` arrives in this same release; until you set it, human downloads behave as
 before (`proxy`).
 
+## Release notes
+
+- **Caches without a `.meta` object are now misses.** A cache entry whose archive has no `.meta` object is
+  treated as a miss, and such archives are removed after 24 hours. Entries written by earlier releases
+  always have a `.meta`, so this affects only incomplete uploads.
+- **Rolling upgrade of several controller replicas.** Migration `033` changes `run_pod_bindings` to one row
+  per Pod. An old controller replica that is still running writes a single binding with
+  `ON CONFLICT (run_id)`, which fails once `033` has run. The failure is best-effort and logged, and the
+  heartbeat itself still succeeds, but the run's sidecar gets `409 binding-pending` until a new replica
+  serves the heartbeat. Upgrade all replicas promptly.
+- **Pod bindings are tied to the claiming agent and removed at run end.** The controller records a Pod
+  binding only from the agent that currently owns the run, and deletes a run's bindings when it finishes.
+
 ## Rollback
 
 - **Roll back the controller and the Kubernetes agents together.** The sidecar image ships with the agent,
@@ -136,7 +149,10 @@ error reaches the step only if that never arrives. Other messages (`403 forbidde
   subnets leaves through a NAT gateway and is billed per GB.
 - **Temp space on the client.** A large upload is sent in multipart parts, and the client buffers one part
   in its temp directory at a time. The first parts are 64 MiB and the size doubles every 1,000 parts, up to
-  4 GiB at roughly 5 TB. A stream that ends within the first part is sent as one PUT.
+  4 GiB at roughly 5 TB. A stream that ends within the first part is sent as one PUT. On Kubernetes the
+  sidecar buffers in a dedicated `emptyDir` volume (`sidecar-spool`, `TMPDIR`), which counts toward the
+  Pod's ephemeral storage. Where multipart upload is unavailable (GCS, below) the whole archive is spooled
+  there before the single PUT, so size the Pod's ephemeral storage for your largest archive.
 
 ## Object store notes
 

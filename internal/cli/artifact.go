@@ -65,18 +65,17 @@ func newArtifactListCmd(resolve func() (Config, error), httpClient *http.Client)
 	}
 }
 
-// withoutCrossHostCredentials returns a copy of c that drops the Authorization
-// header whenever a redirect leaves the host the request started on. The
-// controller may redirect a download to a presigned object-store URL, which
-// carries its own credentials in the query string; Go's default policy would
-// still forward the bearer token to a subdomain of the controller's host.
-func withoutCrossHostCredentials(c *http.Client) *http.Client {
+// withoutRedirectCredentials returns a copy of c that drops the Authorization
+// header on EVERY redirect. The controller may redirect a download to a
+// presigned object-store URL, which carries its own credentials in the query
+// string; the redirect target never needs the controller bearer token, and
+// Go's default policy would still forward it to a same-host or subdomain
+// target. This client is download-only, so no redirect legitimately needs it.
+func withoutRedirectCredentials(c *http.Client) *http.Client {
 	clone := *c
 	prev := c.CheckRedirect
 	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) > 0 && req.URL.Host != via[0].URL.Host {
-			req.Header.Del("Authorization")
-		}
+		req.Header.Del("Authorization")
 		if prev != nil {
 			return prev(req, via)
 		}
@@ -119,7 +118,7 @@ func newArtifactDownloadCmd(resolve func() (Config, error), httpClient *http.Cli
 				return err
 			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
-			resp, err := withoutCrossHostCredentials(httpClient).Do(req)
+			resp, err := withoutRedirectCredentials(httpClient).Do(req)
 			if err != nil {
 				return redactURLError(err)
 			}

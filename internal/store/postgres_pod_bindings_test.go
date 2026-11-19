@@ -83,3 +83,15 @@ func TestMigration033RunPodBindingsMultiUpDown(t *testing.T) {
 	assert.Len(t, list, 1, "the surviving old-format row is still read")
 	require.NoError(t, pg.ReplaceRunPodBindings(ctx, runID, []RunPodBinding{{PodName: "a", PodUID: "n1"}, {PodName: "b", PodUID: "n2"}}))
 }
+
+func TestRunPodBindings_Delete(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	runID := seedBindingRun(t, pg)
+	require.NoError(t, pg.ReplaceRunPodBindings(ctx, runID, []RunPodBinding{{PodName: "a", PodUID: "d1"}, {PodName: "b", PodUID: "d2"}}))
+	require.NoError(t, pg.DeleteRunPodBindings(ctx, runID))
+	list, err := pg.ListRunPodBindings(ctx, runID)
+	require.NoError(t, err)
+	assert.Empty(t, list)
+	require.NoError(t, pg.DeleteRunPodBindings(ctx, runID), "deleting when none exist is a no-op")
+}

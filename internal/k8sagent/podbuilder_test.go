@@ -776,3 +776,52 @@ func TestBuildPod_AutomountDefaultKeptWhenServiceAccountNamed(t *testing.T) {
 		})
 	}
 }
+
+// The sidecar spools upload parts through os.TempDir(), which honors TMPDIR:
+// the container spec must point it at a mounted emptyDir so the spool does not
+// land in the container's writable layer (or fail on a read-only root fs).
+func TestArtifactSidecar_SpoolsToDedicatedVolume(t *testing.T) {
+	check := func(t *testing.T, spec corev1.PodSpec) {
+		t.Helper()
+		var sc *corev1.Container
+		for i := range spec.Containers {
+			if spec.Containers[i].Name == artifactSidecarName {
+				sc = &spec.Containers[i]
+			}
+		}
+		require.NotNil(t, sc)
+		var tmpdir string
+		for _, e := range sc.Env {
+			if e.Name == "TMPDIR" {
+				tmpdir = e.Value
+			}
+		}
+		require.Equal(t, sidecarSpoolMountPath, tmpdir)
+		var mountedVol string
+		for _, m := range sc.VolumeMounts {
+			if m.MountPath == tmpdir {
+				mountedVol = m.Name
+				assert.False(t, m.ReadOnly)
+			}
+		}
+		require.NotEmpty(t, mountedVol, "TMPDIR must be a mounted path")
+		found := false
+		for _, v := range spec.Volumes {
+			if v.Name == mountedVol {
+				found = true
+				assert.NotNil(t, v.EmptyDir, "the spool volume must be an emptyDir")
+			}
+		}
+		assert.True(t, found, "the mounted spool volume must exist in the Pod")
+	}
+	sidecar := SidecarSpec{Image: "sidecar:latest", ControllerURL: "https://controller.example"}
+	t.Run("BuildPod", func(t *testing.T) {
+		pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest", sidecar, testShimImage, nil)
+		require.NoError(t, err)
+		check(t, pod.Spec)
+	})
+	t.Run("scope pod", func(t *testing.T) {
+		pod := buildScopePod("run1", "ns", "scope:x", "golang:1.22", nil, sidecar, testShimImage, corev1.ResourceRequirements{})
+		check(t, pod.Spec)
+	})
+}

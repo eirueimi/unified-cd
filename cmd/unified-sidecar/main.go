@@ -47,6 +47,9 @@ func newClient(runID string) (*objtransfer.Client, error) {
 			r.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tok)))
 			return nil
 		},
+		// os.TempDir() honors TMPDIR, which the k8s agent points at a dedicated
+		// emptyDir mounted into the sidecar (see internal/k8sagent/podbuilder.go),
+		// so upload part files never land in the container's writable layer.
 		TempDir: os.TempDir(),
 	}, nil
 }

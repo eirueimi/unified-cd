@@ -1256,6 +1256,12 @@ func (p *Postgres) ReplaceRunPodBindings(ctx context.Context, runID string, pods
 	return tx.Commit(ctx)
 }
 
+// DeleteRunPodBindings removes every Pod binding of runID (no-op when none).
+func (p *Postgres) DeleteRunPodBindings(ctx context.Context, runID string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM run_pod_bindings WHERE run_id=$1`, runID)
+	return err
+}
+
 // ListRunPodBindings returns every Pod bound to runID (empty when none).
 func (p *Postgres) ListRunPodBindings(ctx context.Context, runID string) ([]RunPodBinding, error) {
 	rows, err := p.pool.Query(ctx, `SELECT pod_name, pod_uid FROM run_pod_bindings WHERE run_id=$1 ORDER BY updated_at, pod_uid`, runID)

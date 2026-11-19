@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -141,7 +142,8 @@ func (s *Server) redirectArtifactDownload(w http.ResponseWriter, r *http.Request
 			http.Error(w, msgArtifactNotFound, http.StatusNotFound)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Warn("artifact download redirect: stat failed", "runId", runID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	u, err := s.presigner.PresignGet(r.Context(), key, name+".tar.gz")
@@ -150,7 +152,8 @@ func (s *Server) redirectArtifactDownload(w http.ResponseWriter, r *http.Request
 			http.Error(w, msgArtifactNotFound, http.StatusNotFound)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Warn("artifact download redirect: presign failed", "runId", runID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")

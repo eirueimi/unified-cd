@@ -62,6 +62,16 @@ const sidecarTokenVolumeName = "sidecar-store-credential-token"
 const sidecarTokenMountPath = "/var/run/secrets/unified-cd-store-credentials"
 const sidecarTokenFile = "token"
 
+// sidecarSpoolVolumeName names the emptyDir the sidecar spools upload parts
+// (and, where multipart is unavailable, a whole archive) into, mounted at
+// sidecarSpoolMountPath and exported as TMPDIR. Without it the spool lands in
+// the container's writable layer, which fails on a read-only root filesystem
+// and is accounted to the container rather than to a volume. A dedicated
+// volume rather than the workspace, so spooled parts can never be picked up as
+// workspace files by an artifact upload.
+const sidecarSpoolVolumeName = "sidecar-spool"
+const sidecarSpoolMountPath = "/var/lib/unified-sidecar/spool"
+
 // sidecarTokenExpirationSeconds bounds how long the kubelet-projected token is
 // valid for. The kubelet keeps the mounted file refreshed well before expiry
 // for as long as the Pod runs (the same mechanism that makes the enrollment
@@ -95,7 +105,7 @@ type SidecarSpec struct {
 // audience (api.KubernetesStoreCredentialAudience) differs from the agent's
 // enrollment token (KubernetesEnrollmentAudience): if a job Pod's token were
 // accepted for enrollment, any job could register itself as an agent.
-func buildArtifactSidecarContainer(sidecar SidecarSpec) (corev1.Container, *corev1.Volume) {
+func buildArtifactSidecarContainer(sidecar SidecarSpec) (corev1.Container, []corev1.Volume) {
 	sc := corev1.Container{
 		Name:    artifactSidecarName,
 		Image:   sidecar.Image,
@@ -103,14 +113,20 @@ func buildArtifactSidecarContainer(sidecar SidecarSpec) (corev1.Container, *core
 		Env: []corev1.EnvVar{
 			{Name: "UNIFIED_CONTROLLER_URL", Value: sidecar.ControllerURL},
 			{Name: "UNIFIED_POD_TOKEN_FILE", Value: sidecarTokenMountPath + "/" + sidecarTokenFile},
+			// os.TempDir() honors TMPDIR: the sidecar's upload spool goes to the
+			// dedicated volume below, not the container's writable layer.
+			{Name: "TMPDIR", Value: sidecarSpoolMountPath},
 		},
-		VolumeMounts: []corev1.VolumeMount{{
-			Name:      sidecarTokenVolumeName,
-			MountPath: sidecarTokenMountPath,
-			ReadOnly:  true,
-		}},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      sidecarTokenVolumeName,
+				MountPath: sidecarTokenMountPath,
+				ReadOnly:  true,
+			},
+			{Name: sidecarSpoolVolumeName, MountPath: sidecarSpoolMountPath},
+		},
 	}
-	vol := &corev1.Volume{
+	tokenVol := corev1.Volume{
 		Name: sidecarTokenVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			Projected: &corev1.ProjectedVolumeSource{
@@ -124,7 +140,11 @@ func buildArtifactSidecarContainer(sidecar SidecarSpec) (corev1.Container, *core
 			},
 		},
 	}
-	return sc, vol
+	spoolVol := corev1.Volume{
+		Name:         sidecarSpoolVolumeName,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}
+	return sc, []corev1.Volume{tokenVol, spoolVol}
 }
 
 // BuildPod constructs a Pod object from the agent template and Job template.
@@ -225,11 +245,9 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 		}
 	}
 	if sidecar.Image != "" {
-		sc, vol := buildArtifactSidecarContainer(sidecar)
+		sc, vols := buildArtifactSidecarContainer(sidecar)
 		podSpec.Containers = append(podSpec.Containers, sc)
-		if vol != nil {
-			podSpec.Volumes = append(podSpec.Volumes, *vol)
-		}
+		podSpec.Volumes = append(podSpec.Volumes, vols...)
 	}
 
 	if err := injectWorkspace(podSpec, wsCfg); err != nil {

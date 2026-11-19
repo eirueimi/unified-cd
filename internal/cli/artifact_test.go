@@ -71,3 +71,37 @@ func TestArtifactDownload_ExtractsToDest(t *testing.T) {
 		t.Fatalf("hello.txt = %q, %v", got, err)
 	}
 }
+
+// TestArtifactDownload_NoAuthorizationOnAnyRedirect: the controller bearer
+// token is sent to the controller only, never to a redirect target, including
+// a same-host redirect.
+func TestArtifactDownload_NoAuthorizationOnAnyRedirect(t *testing.T) {
+	payload := tarZstd(t, "hello.txt", "hi")
+	var sawAuth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/runs/run1/artifacts/build":
+			if r.Header.Get("Authorization") == "" {
+				t.Error("initial request must carry Authorization")
+			}
+			http.Redirect(w, r, "/presigned/obj?sig=x", http.StatusTemporaryRedirect)
+		case "/presigned/obj":
+			sawAuth = append(sawAuth, r.Header.Get("Authorization"))
+			_, _ = w.Write(payload)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	dest := t.TempDir()
+	resolve := func() (Config, error) { return Config{Server: srv.URL, Token: "secret-token"}, nil }
+	cmd := newArtifactCmdWithClient(resolve, srv.Client())
+	cmd.SetArgs([]string{"download", "run1", "build", "--dest", dest})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if len(sawAuth) != 1 || sawAuth[0] != "" {
+		t.Fatalf("redirect target saw Authorization %q, want none", sawAuth)
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -610,4 +611,34 @@ func TestPresign_AuditsWritesAndDenials(t *testing.T) {
 		}
 	}
 	assert.Contains(t, statuses, http.StatusForbidden)
+}
+
+func TestTruncateAuditResource(t *testing.T) {
+	assert.Equal(t, "artifact:r/a", truncateAuditResource("artifact:r/a"))
+	long := strings.Repeat("a", 1000)
+	assert.Len(t, truncateAuditResource(long), maxAuditResourceBytes)
+	// A multi-byte rune straddling the limit is dropped whole.
+	multi := strings.Repeat("a", maxAuditResourceBytes-1) + "é"
+	got := truncateAuditResource(multi)
+	assert.LessOrEqual(t, len(got), maxAuditResourceBytes)
+	assert.True(t, utf8.ValidString(got))
+}
+
+func TestPresign_AuditResourceIsBounded(t *testing.T) {
+	s, st, _ := presignTestServer(t, Config{})
+	token := issueAgentAccessForTest(t, st, "agent-a", nil, nil)
+	runID := seedClaimedRun(t, st, "job-a", "agent-a", "")
+	doPresign(t, s, token, runID, api.PresignRequest{Kind: "artifact", Op: "put", Name: strings.Repeat("n", 2000)})
+	doPresign(t, s, token, runID, api.PresignRequest{Kind: "cache", Op: "commit", Key: strings.Repeat("k", 2000)})
+
+	rows, err := st.ListAuditLogs(t.Context(), 1000, 0)
+	require.NoError(t, err)
+	seen := 0
+	for _, row := range rows {
+		if row.Action == "objects.presign" {
+			seen++
+			assert.LessOrEqual(t, len(row.Resource), maxAuditResourceBytes)
+		}
+	}
+	assert.Equal(t, 2, seen, "both oversized requests must be audited")
 }
