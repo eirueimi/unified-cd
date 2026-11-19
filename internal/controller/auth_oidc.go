@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -514,11 +515,111 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, savedState.RedirectTo, http.StatusFound)
 }
 
+// groupsOverageMessage is the warning logged when the IdP replaced the groups
+// claim with an overage marker (Entra ID). It is a fixed string so operators can
+// grep for it; docs/operator-manual/identity-providers.md quotes it verbatim.
+const groupsOverageMessage = `oidc: the identity provider reported a groups overage; group-based roles and permissions are not applied for this login (see identity-providers.md "Entra ID")`
+
+// overageWarnInterval is the minimum gap between two overage warnings for the
+// same subject on the bearer path, which evaluates claims on every request.
+const overageWarnInterval = 10 * time.Minute
+
+// verifiedEmail returns the id_token e-mail, or "" when it is absent or the IdP
+// reports it as unverified (email_verified is the JSON boolean false or the
+// string "false"). Any other type of email_verified counts as absent. Every
+// path that matches on e-mail must use this instead of reading claims["email"].
+func verifiedEmail(claims map[string]any) string {
+	email, _ := claims["email"].(string)
+	switch v := claims["email_verified"].(type) {
+	case bool:
+		if !v {
+			return ""
+		}
+	case string:
+		if strings.EqualFold(v, "false") {
+			return ""
+		}
+	}
+	return email
+}
+
+// hasGroupsOverage reports whether the claims carry an Entra ID groups overage
+// marker: a "groups" key in _claim_names, or hasgroups set to true.
+func hasGroupsOverage(claims map[string]any) bool {
+	if names, ok := claims["_claim_names"].(map[string]any); ok {
+		if _, ok := names["groups"]; ok {
+			return true
+		}
+	}
+	switch v := claims["hasgroups"].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(v, "true")
+	}
+	return false
+}
+
+// warnGroupsOverage logs groupsOverageMessage when the token has no roles-claim
+// values but carries an overage marker. It logs only the subject and the claim
+// name, never the e-mail or any token. With limited set, a subject is warned
+// about at most once per overageWarnInterval.
+func (s *Server) warnGroupsOverage(claims map[string]any, values []string, limited bool) {
+	if len(values) > 0 || !hasGroupsOverage(claims) {
+		return
+	}
+	sub, _ := claims["sub"].(string)
+	if limited && !s.overageWarn.allow(sub, time.Now()) {
+		return
+	}
+	rolesClaim := s.oidcCfg.RolesClaim
+	if rolesClaim == "" {
+		rolesClaim = "groups"
+	}
+	slog.Warn(groupsOverageMessage, "sub", sub, "rolesClaim", rolesClaim)
+}
+
+// overageLimiter allows one event per key per overageWarnInterval.
+type overageLimiter struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+func (l *overageLimiter) allow(key string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if t, ok := l.last[key]; ok && now.Sub(t) < overageWarnInterval {
+		return false
+	}
+	if l.last == nil {
+		l.last = map[string]time.Time{}
+	}
+	if len(l.last) >= 4096 { // drop expired entries so the map stays bounded
+		for k, t := range l.last {
+			if now.Sub(t) >= overageWarnInterval {
+				delete(l.last, k)
+			}
+		}
+	}
+	l.last[key] = now
+	return true
+}
+
 // oidcIdentity extracts the subject, e-mail (falling back to the subject) and
-// roles-claim values from verified id_token claims.
+// roles-claim values from verified id_token claims. An e-mail the IdP reports as
+// unverified is treated as empty, so matching falls back to the subject. A
+// groups overage is logged here (once per call).
 func oidcIdentity(s *Server, claims map[string]any) (sub, email string, values []string) {
+	sub, email, values = oidcIdentityQuiet(s, claims)
+	s.warnGroupsOverage(claims, values, false)
+	return sub, email, values
+}
+
+// oidcIdentityQuiet is oidcIdentity without the overage warning, for callers
+// that already evaluated the same claims.
+func oidcIdentityQuiet(s *Server, claims map[string]any) (sub, email string, values []string) {
 	sub, _ = claims["sub"].(string)
-	email, _ = claims["email"].(string)
+	email = verifiedEmail(claims)
 	if email == "" {
 		email = sub
 	}
@@ -553,7 +654,8 @@ func (s *Server) completeOIDCLogin(ctx context.Context, claims map[string]any, r
 	if status, msg := s.admitOIDCClaims(ctx, claims); status != 0 {
 		return "", time.Time{}, status, msg
 	}
-	sub, email, values := oidcIdentity(s, claims)
+	// admitOIDCClaims already evaluated (and warned about) these claims.
+	sub, email, values := oidcIdentityQuiet(s, claims)
 	role, _, _ := s.identityGrants(values, email, sub)
 
 	if s.km == nil {
@@ -686,12 +788,10 @@ func (s *Server) refreshedClaims(ctx context.Context, rawIDToken string) ([]stri
 	if err != nil {
 		return nil, false
 	}
-	rolesClaim := s.oidcCfg.RolesClaim
-	if rolesClaim == "" {
-		rolesClaim = "groups"
-	}
-	if _, present := claims[rolesClaim]; !present {
+	values := extractRoleValues(claims, s.oidcCfg.RolesClaim)
+	s.warnGroupsOverage(claims, values, false)
+	if _, present := lookupClaim(claims, s.oidcCfg.RolesClaim); !present {
 		return nil, false
 	}
-	return nonNilClaims(extractRoleValues(claims, s.oidcCfg.RolesClaim)), true
+	return nonNilClaims(values), true
 }

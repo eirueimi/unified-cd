@@ -146,13 +146,16 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 				// 1b. OIDC id_token (token obtained via the CLI device flow)
 				if srv != nil && srv.oidcCfg != nil {
 					if claims, err := srv.verifyBearerClaims(r.Context(), token); err == nil {
-						email, _ := claims["email"].(string)
+						email := verifiedEmail(claims)
 						sub, _ := claims["sub"].(string)
 						name := email
 						if name == "" {
 							name = sub
 						}
 						values := extractRoleValues(claims, srv.oidcCfg.RolesClaim)
+						// Bearer requests evaluate claims every time, so the
+						// overage warning is rate-limited per subject.
+						srv.warnGroupsOverage(claims, values, true)
 						role, grants, admitted := srv.identityGrants(values, email, sub)
 						if !admitted {
 							http.Error(w, "forbidden: no role", http.StatusForbidden)
