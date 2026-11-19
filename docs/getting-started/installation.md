@@ -67,9 +67,9 @@ namespace, and an in-cluster PostgreSQL and Garage (S3) with fixed development
 credentials. **This is for evaluation only; do not use it in production.** The
 chart refuses to render an Ingress while those credentials are in use. The
 controller may restart a few times while PostgreSQL and Garage start, which is
-expected. Artifacts work out of the box: the agent uses
-`sidecarS3SecretMode: broker`, so the artifact sidecar obtains S3 credentials
-from the controller's [store-credential broker](../operator-manual/kubernetes-integration.md#s3-credential-delivery-mode-sidecars3secretmode).
+expected. Artifacts and caches work out of the box: the artifact sidecar holds no
+store credentials and asks the controller for presigned URLs ([how the sidecar
+reaches the object store](../operator-manual/kubernetes-integration.md#how-the-sidecar-reaches-the-object-store)).
 
 The secret-encryption key (KEK) is generated once, in the cluster, by a Job
 (`unified-cd-kek-init`). It is never replaced by a re-install or

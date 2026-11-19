@@ -140,6 +140,15 @@ first; see `docs/operator-manual/kubernetes-integration.md`.
   value always wins, including `false`, `0` and `""`. A list you supply
   replaces the computed list entirely (for example
   `agentAuth.kubernetesEnrollmentPolicies`, or the agent `labels`).
+- **The artifact sidecar needs no Secret.** It asks the controller for presigned
+  object URLs with a projected ServiceAccount token, so neither the chart nor
+  `agent.config` sets any sidecar credentials. `sidecarS3SecretName` and
+  `sidecarS3SecretMode` were removed: the agent refuses to start with either, so
+  delete them from `agent.config` when upgrading. Job Pods must be able to reach
+  the object store endpoint the controller advertises. The controller's
+  `kubernetesStoreCredentialPolicies` is rendered with the controller, whether or not
+  `bundledStores.enabled`; list another ServiceAccount there through
+  `controller.config` if your jobs do not run under `default`.
 - **Config changes restart Pods.** The Deployments carry `checksum/config`
   annotations, so editing `controller.config` or `agent.config` rolls the Pods.
 - **KEK Job.** With the bundled stores (or `controller.kek.generate=true`) a
@@ -160,7 +169,8 @@ first; see `docs/operator-manual/kubernetes-integration.md`.
   `helm.sh/resource-policy: keep`, so uninstalling never deletes running job
   Pods or their volumes. It is rendered whenever `jobNamespace.create` is
   `true`, even with `agent.enabled=false`, because the controller's
-  store-credential policy references it. The release namespace is never
+  `kubernetesStoreCredentialPolicies` (the policy that lets job Pods ask for
+  presigned object URLs) references it. The release namespace is never
   created by the chart: use `--create-namespace`.
 - **Trial data goes with the release.** The bundled stores' PersistentVolumeClaims
   (`postgres-data`, `garage-data`) are Helm-owned and are deleted by

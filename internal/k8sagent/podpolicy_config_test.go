@@ -20,10 +20,6 @@ func TestJobPodPolicyConfigValidate(t *testing.T) {
 			`jobPodPolicy: allowSecrets: "*": wildcards are not supported; list each name`},
 		{"bad service account name", func(c *Config) { c.JobPodPolicy.AllowServiceAccounts = []string{"Bad_Name"} },
 			`is not a valid Kubernetes object name`},
-		{"sidecar secret allowed", func(c *Config) {
-			c.SidecarS3SecretName = "ucd-s3"
-			c.JobPodPolicy.AllowSecrets = []string{"ucd-s3"}
-		}, `is sidecarS3SecretName`},
 		{"opt-in PodSpec field", func(c *Config) { c.JobPodPolicy.AllowPodSpecFields = []string{"runtimeClassName"} }, ""},
 		{"always-allowed PodSpec field", func(c *Config) { c.JobPodPolicy.AllowPodSpecFields = []string{"containers"} },
 			`"containers" is always allowed; remove it`},

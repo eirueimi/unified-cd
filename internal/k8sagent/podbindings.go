@@ -22,11 +22,18 @@ import (
 type podBindingSet struct {
 	mu sync.Mutex
 	m  map[string]api.PodBinding
+
+	// kick has capacity 1. Add sends on it without blocking, so the heartbeat
+	// loop (agentlib.StartHeartbeatKicked) beats at once instead of at the next
+	// tick: a new binding is what lets the Pod's sidecar get presigned URLs,
+	// and the next tick may be 15s away. Several Adds before the loop wakes
+	// coalesce into one beat, which carries all of them.
+	kick chan struct{}
 }
 
 // newPodBindingSet returns an empty podBindingSet ready to use.
 func newPodBindingSet() *podBindingSet {
-	return &podBindingSet{m: make(map[string]api.PodBinding)}
+	return &podBindingSet{m: make(map[string]api.PodBinding), kick: make(chan struct{}, 1)}
 }
 
 // Add records that binding is the Pod executing runID. A nil receiver is a
@@ -39,8 +46,21 @@ func (s *podBindingSet) Add(runID string, binding api.PodBinding) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.m[runID] = binding
+	s.mu.Unlock()
+	select {
+	case s.kick <- struct{}{}:
+	default:
+	}
+}
+
+// Kicks returns the channel Add signals on, for StartHeartbeatKicked. A nil
+// receiver yields a nil channel, which never fires.
+func (s *podBindingSet) Kicks() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	return s.kick
 }
 
 // Remove drops runID's binding, called once its claim has fully returned

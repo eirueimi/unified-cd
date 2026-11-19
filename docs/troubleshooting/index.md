@@ -38,7 +38,9 @@ covers it.
 
 **Artifacts and Storage**
 
-- [Step fails with `requires S3 configuration (UNIFIED_S3_*)`](artifacts-and-storage.md#step-fails-with-requires-s3-configuration-unified_s3_)
+- [Kubernetes: a transfer fails with `requires UNIFIED_CONTROLLER_URL and UNIFIED_POD_TOKEN_FILE`, `403 forbidden` or `409 binding-pending`](artifacts-and-storage.md#kubernetes-a-transfer-fails-with-requires-unified_controller_url-and-unified_pod_token_file-403-forbidden-or-409-binding-pending)
+- [Kubernetes: the sidecar fails with `artifact requires S3 configuration (UNIFIED_S3_*)` after an upgrade](artifacts-and-storage.md#kubernetes-the-sidecar-fails-with-artifact-requires-s3-configuration-unified_s3_-after-an-upgrade)
+- [Kubernetes: the agent refuses to start with `sidecarS3SecretName and sidecarS3SecretMode are no longer supported`](artifacts-and-storage.md#kubernetes-the-agent-refuses-to-start-with-sidecars3secretname-and-sidecars3secretmode-are-no-longer-supported)
 - [Job pods never start with `CreateContainerConfigError` (`secret "…" not found`)](artifacts-and-storage.md#job-pods-never-start-with-createcontainerconfigerror)
 - [Kubernetes run fails: pod was evicted: Usage of EmptyDir volume "workspace" exceeds the limit](artifacts-and-storage.md#kubernetes-run-fails-pod-was-evicted-usage-of-emptydir-volume-workspace-exceeds-the-limit)
 - [k8s pod `ImagePullBackOff` on `unified-artifact`](artifacts-and-storage.md#k8s-pod-imagepullbackoff-on-unified-artifact)

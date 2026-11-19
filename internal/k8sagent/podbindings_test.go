@@ -121,3 +121,27 @@ func TestExecuteRun_RecordsPodBinding(t *testing.T) {
 	assert.Equal(t, pm.createdNm, got[runID].PodName)
 	assert.NotEmpty(t, got[runID].PodUID, "the created Pod's UID must be recorded, not left empty")
 }
+
+// TestPodBindingSet_AddKicksWithoutBlocking: Add signals the heartbeat loop,
+// several Adds before it wakes coalesce into one pending kick, and a nil set
+// (bare-struct test agents) neither panics nor kicks.
+func TestPodBindingSet_AddKicksWithoutBlocking(t *testing.T) {
+	s := newPodBindingSet()
+	s.Add("r1", api.PodBinding{PodName: "p1", PodUID: "u1"})
+	s.Add("r2", api.PodBinding{PodName: "p2", PodUID: "u2"}) // must not block on a full kick channel
+	select {
+	case <-s.Kicks():
+	default:
+		t.Fatal("Add did not kick")
+	}
+	select {
+	case <-s.Kicks():
+		t.Fatal("two Adds must coalesce into one kick")
+	default:
+	}
+	assert.Len(t, s.Snapshot(), 2)
+
+	var nilSet *podBindingSet
+	nilSet.Add("r", api.PodBinding{})
+	assert.Nil(t, nilSet.Kicks())
+}

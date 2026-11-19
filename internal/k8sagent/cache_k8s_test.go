@@ -4,29 +4,31 @@ package k8sagent
 
 // TestK8sAgent_CacheRoundTrip_Integration verifies that a cache step works
 // end-to-end via the unified-artifact sidecar in a real Kubernetes cluster,
-// using the direct-S3 model: the sidecar execs the unified-sidecar binary
-// against an S3-compatible bucket (no controller involvement in the transfer
-// itself). Cache restore happens at step time (best-effort); cache save is
+// using controller-issued URLs: the sidecar execs the unified-sidecar
+// binary, which asks the (mock) controller where to transfer. Cache restore happens at step time (best-effort); cache save is
 // deferred until the end of the run (matching the standard agent's cache
 // semantics).
 //
 // Because save is deferred to end-of-run, a single run cannot observe its
 // own save being restored. This test therefore runs the job TWICE with the
 // same cache key: the first run seeds the cache path and lets the deferred
-// save upload it to S3; the second run (a fresh pod) restores from that key
+// save upload it; the second run (a fresh pod) restores from that key
 // and asserts the file is back.
 //
 // Prerequisites:
-//   - A reachable Kubernetes cluster (via default kubeconfig).
-//   - The pod image (ubuntu:22.04) and the sidecar image
-//     (ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest) must be pullable
-//     from within the cluster. If the sidecar image is not yet available on the
-//     cluster, pre-load it (e.g. `kind load docker-image …`) before running.
-//   - A Kubernetes Secret providing UNIFIED_S3_ENDPOINT/UNIFIED_S3_BUCKET/
-//     UNIFIED_S3_KEY/UNIFIED_S3_SECRET/UNIFIED_S3_USE_SSL/UNIFIED_S3_REGION
-//     must already exist in the test namespace; its name is passed via the
-//     UNIFIED_TEST_S3_SECRET env var. Without it, this test skips (it cannot
-//     fabricate S3 credentials for a real cluster run).
+//   - A reachable Kubernetes cluster (via default kubeconfig), e.g. kind.
+//   - The pod image (ubuntu:22.04) must be pullable from within the cluster.
+//   - A sidecar image built from this tree (docker/artifact-sidecar.Dockerfile, or the
+//     repository's Makefile target) and loaded into the cluster (e.g.
+//     `kind load docker-image ...`); its name is passed via
+//     UNIFIED_TEST_SIDECAR_IMAGE. The published image may predate the
+//     controller-issued-URL protocol, so there is no default.
+//   - UNIFIED_TEST_HOST_ADDR: an address of this machine that the cluster's
+//     Pods can reach (for kind, the Docker network gateway). The test serves a
+//     mock controller there: it answers presign requests with mode
+//     "controller" and streams archives through its own routes, so no object
+//     store and no Secret are needed.
+//   Without these variables the test skips.
 //
 // For CI without a cluster, skip this file by not passing -tags k8s.
 // This test is intentionally skipped when -short is set.
@@ -36,8 +38,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -54,10 +54,7 @@ func TestK8sAgent_CacheRoundTrip_Integration(t *testing.T) {
 		t.Skip("skipping cache round-trip integration test in -short mode")
 	}
 
-	s3Secret := os.Getenv("UNIFIED_TEST_S3_SECRET")
-	if s3Secret == "" {
-		t.Skip("UNIFIED_TEST_S3_SECRET not set; skipping direct-S3 cache round-trip (needs a pre-created Secret with UNIFIED_S3_* env in the test namespace)")
-	}
+	sidecarImage, hostAddr := sidecarTestEnvOrSkip(t)
 	shimImage := testShimImageOrSkip(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -74,10 +71,10 @@ func TestK8sAgent_CacheRoundTrip_Integration(t *testing.T) {
 	finishStatuses := map[string]api.RunStatus{}
 	finishCh := make(chan struct{}, 2)
 
-	// The mock controller in this test only needs to serve run/step/log
-	// bookkeeping endpoints — cache bytes now flow directly between the
-	// sidecar and S3, never through the controller.
+	// The mock controller serves run/step/log bookkeeping plus the object
+	// routes the sidecar uses (mode "controller": archives stream through it).
 	mux := http.NewServeMux()
+	newMockObjects().register(mux)
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
 		var req api.StepReportRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.StepName != "" {
@@ -121,22 +118,20 @@ func TestK8sAgent_CacheRoundTrip_Integration(t *testing.T) {
 	registerFinish(runID1)
 	registerFinish(runID2)
 
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	srvURL := serveReachable(t, mux, hostAddr)
 
 	pm := NewPodManager(client, ns, testImage)
 	exec := NewExecutor(client, restCfg, ns)
 	pool := NewPodPool(client, ns, pm)
-	agentClient := agentlib.NewClient(srv.URL, "tok")
+	agentClient := agentlib.NewClient(srvURL, "tok")
 
 	cfg := Config{
-		AgentID:             agentID,
-		Namespace:           ns,
-		PodImage:            testImage,
-		ShimImage:           shimImage,
-		SidecarImage:        "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
-		Server:              srv.URL,
-		SidecarS3SecretName: s3Secret,
+		AgentID:      agentID,
+		Namespace:    ns,
+		PodImage:     testImage,
+		ShimImage:    shimImage,
+		SidecarImage: sidecarImage,
+		Server:       srvURL,
 	}
 	a := NewK8sAgent(cfg, agentClient, pm, exec, pool)
 
@@ -157,7 +152,7 @@ func TestK8sAgent_CacheRoundTrip_Integration(t *testing.T) {
 
 	// Run 1 (seed): write a file into the cache path, then a cache step
 	// restores (miss, since nothing is cached yet under this key) and
-	// registers a deferred save. The save uploads the cache path to S3 after
+	// registers a deferred save. The save uploads the cache path after
 	// the main stages complete.
 	seedClaim := api.ClaimResponse{
 		RunID:   runID1,

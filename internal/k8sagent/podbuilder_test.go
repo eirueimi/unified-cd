@@ -260,7 +260,7 @@ func TestInjectWorkspace_AllContainers(t *testing.T) {
 
 func TestBuildPod_InjectsArtifactSidecar(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"}, testShimImage, nil)
+		SidecarSpec{Image: "sidecar:latest", ControllerURL: "https://controller.example"}, testShimImage, nil)
 	require.NoError(t, err)
 
 	var sidecar *corev1.Container
@@ -281,16 +281,14 @@ func TestBuildPod_InjectsArtifactSidecar(t *testing.T) {
 	}
 	assert.True(t, hasWorkspace, "sidecar must mount the workspace volume")
 
-	// Sidecar gets its S3 credentials via EnvFrom the Secret (direct-S3 model);
-	// no controller URL/token env is injected.
-	require.Len(t, sidecar.EnvFrom, 1)
-	require.NotNil(t, sidecar.EnvFrom[0].SecretRef)
-	assert.Equal(t, "ucd-s3", sidecar.EnvFrom[0].SecretRef.Name)
+	// The sidecar holds no store credentials: no envFrom Secret, only the
+	// controller URL and the path of its projected token.
+	assert.Empty(t, sidecar.EnvFrom, "the sidecar must not receive a Secret through envFrom")
 }
 
-func TestBuildPod_SidecarSecretEnvAndIdle(t *testing.T) {
+func TestBuildPod_SidecarCommandIsIdle(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"}, testShimImage, nil)
+		SidecarSpec{Image: "sidecar:latest"}, testShimImage, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,17 +301,12 @@ func TestBuildPod_SidecarSecretEnvAndIdle(t *testing.T) {
 	if sc == nil {
 		t.Fatal("sidecar container not found")
 	}
-	if len(sc.EnvFrom) != 1 || sc.EnvFrom[0].SecretRef == nil || sc.EnvFrom[0].SecretRef.Name != "ucd-s3" {
-		t.Fatalf("expected EnvFrom secretRef ucd-s3, got %+v", sc.EnvFrom)
-	}
 	if len(sc.Command) < 2 || sc.Command[0] != "/usr/local/bin/unified-sidecar" || sc.Command[1] != "idle" {
 		t.Fatalf("expected command [/usr/local/bin/unified-sidecar idle], got %v", sc.Command)
 	}
 }
 
 // findContainer returns a pointer to the named container in pod, or nil.
-// Shared by the SidecarSecret* tests below so each doesn't repeat the same
-// lookup loop.
 func findContainer(pod *corev1.Pod, name string) *corev1.Container {
 	for i := range pod.Spec.Containers {
 		if pod.Spec.Containers[i].Name == name {
@@ -323,111 +316,17 @@ func findContainer(pod *corev1.Pod, name string) *corev1.Container {
 	return nil
 }
 
-// Default is unchanged: envFrom, no volume. Existing deployments must see
-// byte-identical Pod specs.
-func TestBuildPod_SidecarSecretDefaultsToEnvFrom(t *testing.T) {
-	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"}, testShimImage, nil)
-	require.NoError(t, err)
-
-	sc := findContainer(pod, artifactSidecarName)
-	require.NotNil(t, sc, "pod must include the artifact sidecar")
-
-	require.Len(t, sc.EnvFrom, 1)
-	require.NotNil(t, sc.EnvFrom[0].SecretRef)
-	assert.Equal(t, "ucd-s3", sc.EnvFrom[0].SecretRef.Name)
-
-	for _, ev := range sc.Env {
-		assert.NotEqual(t, "UNIFIED_S3_CREDENTIAL_FILE", ev.Name,
-			"default (env) mode must not set UNIFIED_S3_CREDENTIAL_FILE")
-	}
-	for _, m := range sc.VolumeMounts {
-		assert.NotEqual(t, sidecarS3CredentialsVolumeName, m.Name,
-			"default (env) mode must not mount a credentials volume")
-	}
-	for _, v := range pod.Spec.Volumes {
-		assert.NotEqual(t, sidecarS3CredentialsVolumeName, v.Name,
-			"default (env) mode must not add a credentials volume to the pod at all")
-	}
-}
-
-// Opted in: a volume, a mount, UNIFIED_S3_CREDENTIAL_FILE pointing at it, and
-// NO envFrom for that Secret — carrying both would leave the snapshotted env
-// values as a silent fallback that masks a broken mount.
-func TestBuildPod_SidecarSecretAsVolume(t *testing.T) {
-	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3", S3SecretMode: SidecarS3SecretModeFile}, testShimImage, nil)
-	require.NoError(t, err)
-
-	sc := findContainer(pod, artifactSidecarName)
-	require.NotNil(t, sc, "pod must include the artifact sidecar")
-
-	assert.Empty(t, sc.EnvFrom, "file mode must not carry envFrom for the Secret: a stale snapshot must not silently mask a broken mount")
-
-	var credEnv *corev1.EnvVar
-	for i := range sc.Env {
-		if sc.Env[i].Name == "UNIFIED_S3_CREDENTIAL_FILE" {
-			credEnv = &sc.Env[i]
-		}
-	}
-	require.NotNil(t, credEnv, "file mode must set UNIFIED_S3_CREDENTIAL_FILE")
-	require.NotEmpty(t, credEnv.Value)
-
-	var mount *corev1.VolumeMount
-	for i := range sc.VolumeMounts {
-		if sc.VolumeMounts[i].Name == sidecarS3CredentialsVolumeName {
-			mount = &sc.VolumeMounts[i]
-		}
-	}
-	require.NotNil(t, mount, "sidecar must mount the credentials volume")
-	assert.True(t, mount.ReadOnly, "the credential mount must be read-only")
-	assert.Equal(t, credEnv.Value, mount.MountPath, "UNIFIED_S3_CREDENTIAL_FILE must point at the mounted path")
-
-	var vol *corev1.Volume
-	for i := range pod.Spec.Volumes {
-		if pod.Spec.Volumes[i].Name == sidecarS3CredentialsVolumeName {
-			vol = &pod.Spec.Volumes[i]
-		}
-	}
-	require.NotNil(t, vol, "pod must declare the credentials volume")
-	require.NotNil(t, vol.Secret, "the credentials volume must be a Secret source")
-	assert.Equal(t, "ucd-s3", vol.Secret.SecretName)
-}
-
-// The volume is optional, so a missing or misplaced Secret does not make the
-// kubelet fail the whole Pod with CreateContainerConfigError. That failure
-// breaks every job, not just artifacts, and reports itself as a five-minute
-// timeout with the real cause never surfaced.
-func TestBuildPod_SidecarSecretVolumeIsOptional(t *testing.T) {
-	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3", S3SecretMode: SidecarS3SecretModeFile}, testShimImage, nil)
-	require.NoError(t, err)
-
-	var vol *corev1.Volume
-	for i := range pod.Spec.Volumes {
-		if pod.Spec.Volumes[i].Name == sidecarS3CredentialsVolumeName {
-			vol = &pod.Spec.Volumes[i]
-		}
-	}
-	require.NotNil(t, vol)
-	require.NotNil(t, vol.Secret)
-	require.NotNil(t, vol.Secret.Optional, "the Secret volume source must set Optional so a missing/misplaced Secret degrades instead of failing the whole Pod")
-	assert.True(t, *vol.Secret.Optional)
-	require.NotNil(t, vol.Secret.DefaultMode)
-	assert.Equal(t, int32(0o400), *vol.Secret.DefaultMode)
-}
-
 // The token is mounted into the sidecar container ONLY. The job container
-// runs user code; a store credential reachable from it defeats the container
-// boundary that protects today's Secret.
-func TestBuildPod_BrokerTokenIsSidecarOnly(t *testing.T) {
+// runs user code; a token reachable from it would let a job ask the
+// controller for presigned URLs outside its own steps.
+func TestBuildPod_SidecarTokenIsSidecarOnly(t *testing.T) {
 	jobTmpl := &dsl.PodTemplate{Spec: map[string]any{
 		"containers": []any{
 			map[string]any{"name": "job", "image": "golang:1.24-alpine"},
 		},
 	}}
 	pod, err := BuildPod("run1", "ns", nil, jobTmpl, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "https://controller.example"}, testShimImage, nil)
+		SidecarSpec{Image: "sidecar:latest", ControllerURL: "https://controller.example"}, testShimImage, nil)
 	require.NoError(t, err)
 
 	sc := findContainer(pod, artifactSidecarName)
@@ -437,77 +336,73 @@ func TestBuildPod_BrokerTokenIsSidecarOnly(t *testing.T) {
 
 	var mount *corev1.VolumeMount
 	for i := range sc.VolumeMounts {
-		if sc.VolumeMounts[i].Name == sidecarBrokerTokenVolumeName {
+		if sc.VolumeMounts[i].Name == sidecarTokenVolumeName {
 			mount = &sc.VolumeMounts[i]
 		}
 	}
-	require.NotNil(t, mount, "the sidecar container must mount the broker token volume")
-	assert.True(t, mount.ReadOnly, "the broker token mount must be read-only")
+	require.NotNil(t, mount, "the sidecar container must mount the token volume")
+	assert.True(t, mount.ReadOnly, "the token mount must be read-only")
 
 	for _, m := range job.VolumeMounts {
-		assert.NotEqual(t, sidecarBrokerTokenVolumeName, m.Name, "the job container must never mount the broker token volume")
+		assert.NotEqual(t, sidecarTokenVolumeName, m.Name, "the job container must never mount the token volume")
 	}
 
-	var brokerURLEnv, tokenFileEnv *corev1.EnvVar
+	var controllerURLEnv, tokenFileEnv *corev1.EnvVar
 	for i := range sc.Env {
 		switch sc.Env[i].Name {
-		case "UNIFIED_S3_BROKER_URL":
-			brokerURLEnv = &sc.Env[i]
-		case "UNIFIED_S3_BROKER_TOKEN_FILE":
+		case "UNIFIED_CONTROLLER_URL":
+			controllerURLEnv = &sc.Env[i]
+		case "UNIFIED_POD_TOKEN_FILE":
 			tokenFileEnv = &sc.Env[i]
 		}
 	}
-	require.NotNil(t, brokerURLEnv, "the sidecar must be told the controller URL")
-	assert.Equal(t, "https://controller.example", brokerURLEnv.Value)
+	require.NotNil(t, controllerURLEnv, "the sidecar must be told the controller URL")
+	assert.Equal(t, "https://controller.example", controllerURLEnv.Value)
 	require.NotNil(t, tokenFileEnv, "the sidecar must be told where the token was mounted")
-	assert.Equal(t, mount.MountPath+"/"+sidecarBrokerTokenFile, tokenFileEnv.Value)
+	assert.Equal(t, mount.MountPath+"/"+sidecarTokenFile, tokenFileEnv.Value)
 	for _, ev := range job.Env {
-		assert.NotEqual(t, "UNIFIED_S3_BROKER_URL", ev.Name, "the job container must never see the broker URL")
-		assert.NotEqual(t, "UNIFIED_S3_BROKER_TOKEN_FILE", ev.Name, "the job container must never see the broker token path")
+		assert.NotEqual(t, "UNIFIED_CONTROLLER_URL", ev.Name, "the job container must never see the controller URL")
+		assert.NotEqual(t, "UNIFIED_POD_TOKEN_FILE", ev.Name, "the job container must never see the token path")
 	}
 }
 
-// The audience on the projected volume must be the store-credential one. A
-// volume minted with the enrollment audience would hand every job a token
-// that can register an agent.
-func TestBuildPod_BrokerTokenUsesTheStoreAudience(t *testing.T) {
+// TestBuildPod_SidecarAlwaysGetsProjectedToken: whatever the config, the
+// sidecar gets the projected token with the store-credential audience and no
+// envFrom Secret. A volume minted with the enrollment audience would hand
+// every job a token that can register an agent.
+func TestBuildPod_SidecarAlwaysGetsProjectedToken(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "https://controller.example"}, testShimImage, nil)
+		SidecarSpec{Image: "sidecar:latest", ControllerURL: "https://controller.example"}, testShimImage, nil)
 	require.NoError(t, err)
 
 	var vol *corev1.Volume
 	for i := range pod.Spec.Volumes {
-		if pod.Spec.Volumes[i].Name == sidecarBrokerTokenVolumeName {
+		if pod.Spec.Volumes[i].Name == sidecarTokenVolumeName {
 			vol = &pod.Spec.Volumes[i]
 		}
 	}
-	require.NotNil(t, vol, "pod must declare the broker token volume")
-	require.NotNil(t, vol.Projected, "the broker token volume must be a projected source")
+	require.NotNil(t, vol, "pod must declare the token volume")
+	require.NotNil(t, vol.Projected, "the token volume must be a projected source")
 	require.Len(t, vol.Projected.Sources, 1)
 	sat := vol.Projected.Sources[0].ServiceAccountToken
 	require.NotNil(t, sat, "the projected source must be a ServiceAccountToken")
 	assert.Equal(t, api.KubernetesStoreCredentialAudience, sat.Audience)
-	assert.NotEqual(t, "unified-cd-agent-enrollment", sat.Audience, "must never reuse the enrollment audience — that would let any job Pod's token enroll an agent")
+	assert.NotEqual(t, "unified-cd-agent-enrollment", sat.Audience, "must never reuse the enrollment audience: that would let any job Pod's token enroll an agent")
 	require.NotNil(t, sat.ExpirationSeconds)
-}
-
-// Default off: an existing deployment's Pod spec is byte-identical.
-func TestBuildPod_BrokerTokenAbsentByDefault(t *testing.T) {
-	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest"}, testShimImage, nil)
-	require.NoError(t, err)
 
 	sc := findContainer(pod, artifactSidecarName)
 	require.NotNil(t, sc)
-	for _, m := range sc.VolumeMounts {
-		assert.NotEqual(t, sidecarBrokerTokenVolumeName, m.Name, "default mode must not mount a broker token volume")
+	assert.Empty(t, sc.EnvFrom, "no Secret may reach the sidecar through envFrom")
+	for _, c := range pod.Spec.Containers {
+		if c.Name == artifactSidecarName {
+			continue
+		}
+		for _, m := range c.VolumeMounts {
+			assert.NotEqual(t, sidecarTokenVolumeName, m.Name, "container %s must not mount the token", c.Name)
+		}
 	}
 	for _, v := range pod.Spec.Volumes {
-		assert.NotEqual(t, sidecarBrokerTokenVolumeName, v.Name, "default mode must not add a broker token volume to the pod at all")
-	}
-	for _, ev := range sc.Env {
-		assert.NotEqual(t, "UNIFIED_S3_BROKER_URL", ev.Name)
-		assert.NotEqual(t, "UNIFIED_S3_BROKER_TOKEN_FILE", ev.Name)
+		assert.Nil(t, v.Secret, "no Secret volume may be added for the sidecar (volume %s)", v.Name)
 	}
 }
 
@@ -721,9 +616,7 @@ func TestBuildPod_ArtifactSidecarHasNoContainerSecurityContext(t *testing.T) {
 	}}
 	for _, sc := range []SidecarSpec{
 		{Image: "sidecar:latest"},
-		{Image: "sidecar:latest", S3SecretName: "ucd-s3"},
-		{Image: "sidecar:latest", S3SecretName: "ucd-s3", S3SecretMode: SidecarS3SecretModeFile},
-		{Image: "sidecar:latest", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "http://broker"},
+		{Image: "sidecar:latest", ControllerURL: "http://controller"},
 	} {
 		pod, err := BuildPod("run1", "ns", nil, tpl, "job-image:latest", sc, testShimImage, nil)
 		require.NoError(t, err)
@@ -844,16 +737,16 @@ func TestBuildPod_AutomountServiceAccountTokenExplicitValueKept(t *testing.T) {
 
 // Disabling the automount must not take the sidecar's store-credential token
 // with it: that one is an explicit projected volume, not the automounted one.
-func TestBuildPod_BrokerTokenSurvivesAutomountDisabled(t *testing.T) {
+func TestBuildPod_SidecarTokenSurvivesAutomountDisabled(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "https://controller.example"}, testShimImage, nil)
+		SidecarSpec{Image: "sidecar:latest", ControllerURL: "https://controller.example"}, testShimImage, nil)
 	require.NoError(t, err)
 	require.NotNil(t, pod.Spec.AutomountServiceAccountToken)
 	assert.False(t, *pod.Spec.AutomountServiceAccountToken)
 
 	var found bool
 	for _, v := range pod.Spec.Volumes {
-		if v.Name != sidecarBrokerTokenVolumeName {
+		if v.Name != sidecarTokenVolumeName {
 			continue
 		}
 		require.NotNil(t, v.Projected)
@@ -862,7 +755,7 @@ func TestBuildPod_BrokerTokenSurvivesAutomountDisabled(t *testing.T) {
 		assert.Equal(t, api.KubernetesStoreCredentialAudience, v.Projected.Sources[0].ServiceAccountToken.Audience)
 		found = true
 	}
-	assert.True(t, found, "the broker token projected volume must still be present")
+	assert.True(t, found, "the token projected volume must still be present")
 	sc := findContainer(pod, artifactSidecarName)
 	require.NotNil(t, sc)
 	assert.NotNil(t, sc.VolumeMounts)

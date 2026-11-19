@@ -11,7 +11,7 @@
 #
 # To keep files between runs, use one of:
 #   - cache: (examples/jobs/cache.yaml) for dependency directories, as below. Needs the
-#     k8s-agent's sidecarS3SecretName to be set.
+#     object store configured on the controller (the k8s-agent needs no setting).
 #   - a named volume (examples/jobs/volumes.yaml). A job that mounts one cannot also set
 #     reuse: true; apply rejects the combination, because a pooled Pod keeps the volumes it was
 #     created with.

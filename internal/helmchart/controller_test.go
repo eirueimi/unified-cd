@@ -96,11 +96,17 @@ func TestControllerObjectsMatchBase(t *testing.T) {
 	assert.Equal(t, []any{"default"}, dig(t, store, "serviceAccounts"))
 }
 
-func TestControllerStoreCredentialPolicyFollowsBundledStores(t *testing.T) {
+// The policy that lets job Pods ask for presigned object URLs is rendered
+// whenever the controller is, not only with the bundled stores: a production
+// install with its own store needs it just as much.
+func TestControllerConfig_StoreCredentialPoliciesWithoutBundledStores(t *testing.T) {
 	objs := Render(t, "unified-cd",
 		"bundledStores.enabled=false", "controller.existingSecret=my-secret", "agent.server=https://cd.example.com")
 	cfg := controllerConfig(t, objs)
-	assert.Nil(t, dig(t, cfg, "agentAuth", "kubernetesStoreCredentialPolicies"))
+	store := dig(t, cfg, "agentAuth", "kubernetesStoreCredentialPolicies", 0)
+	assert.Equal(t, "in-cluster", dig(t, store, "cluster"))
+	assert.Equal(t, []any{"ci"}, dig(t, store, "namespaces"))
+	assert.Equal(t, []any{"default"}, dig(t, store, "serviceAccounts"))
 	dep := map[string]any(Find(objs, "Deployment", "unified-cd-controller"))
 	assert.Equal(t, "my-secret", dig(t, dep, "spec", "template", "spec", "containers", 0, "envFrom", 0, "secretRef", "name"))
 }

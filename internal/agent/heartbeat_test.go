@@ -156,3 +156,43 @@ func TestStartHeartbeat_SendsPodBindingsFromProvider(t *testing.T) {
 		}
 	}
 }
+
+// TestStartHeartbeatKicked_KickSendsBeatOutsideTheTicker: a receive on kick
+// sends a beat at once even though the ticker interval is far longer; a nil
+// kick (StartHeartbeat) never does.
+func TestStartHeartbeatKicked_KickSendsBeatOutsideTheTicker(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/agents/a1/heartbeat" {
+			atomic.AddInt32(&hits, 1)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	kick := make(chan struct{}, 1)
+	done := StartHeartbeatKicked(ctx, NewClient(srv.URL, "t"), "a1", time.Hour,
+		BuildHeartbeat(func() []string { return nil }, nil, nil), nil, kick)
+
+	waitHits := func(want int32) bool {
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			if atomic.LoadInt32(&hits) >= want {
+				return true
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		return false
+	}
+	if !waitHits(1) {
+		t.Fatal("the initial beat was not sent")
+	}
+	kick <- struct{}{}
+	if !waitHits(2) {
+		t.Fatal("a kick did not send a beat before the ticker")
+	}
+	cancel()
+	<-done
+}

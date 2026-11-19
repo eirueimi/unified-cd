@@ -29,10 +29,9 @@ func waitingPod(name, container, reason, message string) *corev1.Pod {
 }
 
 // TestWaitForPodRunning_SurfacesWaitingReason is the regression test for the
-// operator's second failure. `sidecarS3SecretName` named a Secret that existed
-// in the AGENT's namespace but not in the job Pod's, so the kubelet failed the
-// unified-artifact container with CreateContainerConfigError (envFrom.secretRef
-// carries no `optional: true`). The wait polled phase only, so the operator got
+// operator's second failure. A Secret referenced by the Pod existed
+// in the AGENT's namespace but not in the job Pod's, so the kubelet failed a
+// container with CreateContainerConfigError. The wait polled phase only, so the operator got
 // five minutes of silence followed by a bare "context deadline exceeded" — the
 // one string that would have explained everything, `secret "..." not found`,
 // never reached them.

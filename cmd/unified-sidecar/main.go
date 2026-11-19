@@ -2,73 +2,62 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
-	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/objtransfer"
 )
 
-// UNIFIED_S3_BROKER_URL / UNIFIED_S3_BROKER_TOKEN_FILE select the §5.6
-// controller-brokered credential path (internal/k8sagent's podbuilder.go
-// sets both when SidecarS3SecretMode is "broker"). See
-// docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md
-// §5.6.
+// The k8s agent sets both on the sidecar container: the controller's base URL
+// and the path of the projected ServiceAccount token (audience
+// api.KubernetesStoreCredentialAudience). Neither is a store credential: the
+// sidecar asks the controller for presigned URLs and holds no store secret.
 const (
-	envBrokerURL       = "UNIFIED_S3_BROKER_URL"
-	envBrokerTokenFile = "UNIFIED_S3_BROKER_TOKEN_FILE"
+	envControllerURL  = "UNIFIED_CONTROLLER_URL"
+	envPodTokenFile   = "UNIFIED_POD_TOKEN_FILE"
+	missingEnvMessage = envControllerURL + " and " + envPodTokenFile + " (set by the k8s agent)"
 )
 
-// s3ConfigFromEnv resolves the sidecar's object-store configuration, broker
-// first. This precedence lives here rather than inside
-// objectstore.S3ConfigFromEnv itself because the broker path needs a
-// context and makes a network call to learn Endpoint/Bucket (see
-// objectstore.BrokerConfig's doc comment on why that can't be deferred the
-// way the file/static providers' lookups are), while S3ConfigFromEnv
-// deliberately stays synchronous and local-only — every one of its existing
-// callers and tests keeps working exactly as today when the broker env vars
-// are unset, which is every deployment before this mode existed.
-//
-// Both broker env vars are required together: a deployment that sets one
-// without the other has a configuration bug, not a "fall through to the
-// next mode" situation — silently falling back to file/static credentials
-// when an operator meant to opt into the broker would serve the WRONG
-// credential shape without any error at all.
-//
-// runID is passed straight through to objectstore.BrokerConfig and ignored
-// by every other branch (file/static credentials carry no notion of "which
-// run" — see run.go's extractBrokerRunID for where it comes from).
-func s3ConfigFromEnv(ctx context.Context, runID string) (objectstore.S3Config, error) {
-	brokerURL := os.Getenv(envBrokerURL)
-	tokenFile := os.Getenv(envBrokerTokenFile)
-	switch {
-	case brokerURL != "" && tokenFile != "":
-		return objectstore.BrokerConfig(ctx, brokerURL, tokenFile, runID)
-	case brokerURL != "" || tokenFile != "":
-		return objectstore.S3Config{}, fmt.Errorf("%s and %s must both be set to use the store-credential broker (got %s=%q, %s=%q)", envBrokerURL, envBrokerTokenFile, envBrokerURL, brokerURL, envBrokerTokenFile, tokenFile)
-	default:
-		return objectstore.S3ConfigFromEnv()
+// errNoControllerEnv means the sidecar was started without the settings the
+// k8s agent provides.
+var errNoControllerEnv = errors.New("missing " + missingEnvMessage)
+
+// newClient builds the presign client for the Pod's own run. The token file is
+// re-read on every request, so a rotation of the projected token is picked up.
+// The token is never logged.
+func newClient(runID string) (*objtransfer.Client, error) {
+	baseURL := strings.TrimSpace(os.Getenv(envControllerURL))
+	tokenFile := os.Getenv(envPodTokenFile)
+	if baseURL == "" || tokenFile == "" {
+		return nil, errNoControllerEnv
 	}
+	return &objtransfer.Client{
+		BaseURL: baseURL,
+		RunID:   runID,
+		Auth: func(_ context.Context, r *http.Request) error {
+			tok, err := os.ReadFile(tokenFile)
+			if err != nil {
+				return fmt.Errorf("read pod token file: %w", err)
+			}
+			r.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tok)))
+			return nil
+		},
+		TempDir: os.TempDir(),
+	}, nil
 }
 
 func main() {
 	ctx, stop := rootContext()
 	defer stop()
-	// Build the S3 store lazily: idle (degraded mode, no S3 EnvFrom) must
-	// stay resident even when S3 configuration is absent. Only cache/artifact
-	// subcommands actually need the store, so they invoke this provider
-	// themselves and fail loudly if it errors. runID (see run.go's
-	// extractBrokerRunID) is the Pod's own executing run, threaded through to
-	// the broker path only.
-	prov := func(ctx context.Context, runID string) (objectstore.ObjectStore, error) {
-		cfg, err := s3ConfigFromEnv(ctx, runID)
-		if err != nil {
-			return nil, err
-		}
-		return objectstore.NewS3ObjectStore(ctx, cfg)
-	}
-	os.Exit(run(ctx, prov, os.Args[1:], os.Stderr))
+	// The client is built lazily: idle must stay resident even when the
+	// controller settings are absent. Only cache/artifact subcommands need it,
+	// so they call newClient themselves and fail loudly if it errors.
+	os.Exit(run(ctx, newClient, os.Args[1:], os.Stderr))
 }
 
 // rootContext returns the process context, cancelled on SIGINT/SIGTERM.
