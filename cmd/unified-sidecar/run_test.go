@@ -521,3 +521,55 @@ func TestRunCache_RestoreNoWarningWithoutLinks(t *testing.T) {
 		t.Fatalf("unexpected warning: %q", stderr.String())
 	}
 }
+
+// TestNewClient_SendsTokenFileAndPicksUpRotation drives the production
+// newClient: the controller receives the token file's contents as the bearer,
+// and rewriting the file (the kubelet rotates the projected token) is picked up
+// by the next request of the SAME client.
+func TestNewClient_SendsTokenFileAndPicksUpRotation(t *testing.T) {
+	fc := newFakeController(t, objectstore.NewLocalObjectStore(t.TempDir()))
+	prov := fc.provider(t, "token-one\n")
+	client, err := prov("run-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := func() {
+		t.Helper()
+		// A cache miss is fine: only the presign request's header matters.
+		if rc, _, err := client.Caches().Open(context.Background(), "k", nil); err == nil {
+			rc.Close()
+		}
+	}
+	lastAuth := func() string {
+		t.Helper()
+		var auth string
+		for _, r := range fc.requests() {
+			if r.Presign != nil || strings.Contains(r.Path, "/objects/") {
+				auth = r.Auth
+			}
+		}
+		return auth
+	}
+
+	open()
+	if got := lastAuth(); got != "Bearer token-one" {
+		t.Fatalf("first request Authorization = %q, want the token file's contents", got)
+	}
+	if err := os.WriteFile(fc.tokenFile, []byte("token-two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	open()
+	if got := lastAuth(); got != "Bearer token-two" {
+		t.Fatalf("after rotation Authorization = %q, want the new token", got)
+	}
+
+	if err := os.Remove(fc.tokenFile); err != nil {
+		t.Fatal(err)
+	}
+	if rc, _, err := client.Caches().Open(context.Background(), "k", nil); err == nil {
+		rc.Close()
+		t.Fatal("a missing token file must fail the request")
+	} else if strings.Contains(err.Error(), "token-") {
+		t.Fatalf("error leaks the token: %v", err)
+	}
+}

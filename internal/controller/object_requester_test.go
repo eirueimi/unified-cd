@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -84,4 +85,35 @@ func TestPresign_RequireRunBindingSettingIsIgnored(t *testing.T) {
 	runID := seedRun(t, st, "job-a", "")
 	rec := doPresign(t, s, sidecarToken(), runID, api.PresignRequest{Kind: "cache", Op: "put", Key: "k"})
 	requireObjectError(t, rec, http.StatusConflict, "binding-pending")
+}
+
+// A run holds its claim Pod plus its scope Pods: the sidecar of any of them
+// presigns for the run.
+func TestPresign_ScopePodBoundAlongsideClaimPodSucceeds(t *testing.T) {
+	s, st, _ := presignTestServer(t, sidecarPresignConfig([]string{"ci"}))
+	runID := seedRun(t, st, "job-a", "")
+	require.NoError(t, st.ReplaceRunPodBindings(t.Context(), runID, []store.RunPodBinding{
+		{PodName: "ucd-run-claim", PodUID: "claim-pod-uid"},
+		{PodName: "ucd-scope-1", PodUID: "job-pod-uid"}, // the presenting sidecar's Pod
+	}))
+	out := decodePresign(t, doPresign(t, s, sidecarToken(), runID, api.PresignRequest{Kind: "artifact", Op: "put", Name: "a"}))
+	require.NotNil(t, out.Request)
+}
+
+// A Pod bound to run A stays unable to presign for run B, whether B has no
+// binding yet (409) or other Pods bound (403).
+func TestPresign_PodBoundToRunACannotPresignRunB(t *testing.T) {
+	s, st, _ := presignTestServer(t, sidecarPresignConfig([]string{"ci"}))
+	runA := seedRun(t, st, "job-a", "")
+	runB := seedRun(t, st, "job-b", "")
+	require.NoError(t, st.UpsertRunPodBinding(t.Context(), runA, "ucd-run-a", "job-pod-uid"))
+
+	rec := doPresign(t, s, sidecarToken(), runB, api.PresignRequest{Kind: "artifact", Op: "put", Name: "a"})
+	requireObjectError(t, rec, http.StatusConflict, "binding-pending")
+
+	require.NoError(t, st.ReplaceRunPodBindings(t.Context(), runB, []store.RunPodBinding{
+		{PodName: "ucd-run-b", PodUID: "b-uid"}, {PodName: "ucd-scope-b", PodUID: "b-scope-uid"},
+	}))
+	rec = doPresign(t, s, sidecarToken(), runB, api.PresignRequest{Kind: "artifact", Op: "put", Name: "a"})
+	requireObjectError(t, rec, http.StatusForbidden, "forbidden")
 }

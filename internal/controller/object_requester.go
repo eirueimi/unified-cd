@@ -130,18 +130,25 @@ func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Reques
 	if !s.resolveRequesterRun(w, r, runID, &req) {
 		return objectRequester{}, false
 	}
-	binding, ok, err := s.store.GetRunPodBinding(r.Context(), runID)
+	bindings, err := s.store.ListRunPodBindings(r.Context(), runID)
 	if err != nil {
 		slog.Warn("presign: run/pod binding lookup failed", "runId", runID, "error", err)
 		writeObjectError(w, http.StatusInternalServerError, api.ObjectErrInternal, "run/pod binding lookup failed")
 		return objectRequester{}, false
 	}
-	if !ok {
+	if len(bindings) == 0 {
 		w.Header().Set("Retry-After", "1")
 		writeObjectError(w, http.StatusConflict, api.ObjectErrBindingPending, "no pod is bound to this run yet; retry")
 		return objectRequester{}, false
 	}
-	if binding.PodUID != identity.PodUID {
+	bound := false
+	for _, b := range bindings {
+		if b.PodUID == identity.PodUID {
+			bound = true
+			break
+		}
+	}
+	if !bound {
 		s.auditPresignAction(r, req, action, runID, nil, http.StatusForbidden)
 		writeObjectError(w, http.StatusForbidden, api.ObjectErrForbidden, "the presented pod is not the one bound to this run")
 		return objectRequester{}, false

@@ -391,7 +391,7 @@ type Store interface {
 	// ordered by idx.
 	GetSidecarStatuses(ctx context.Context, runID string) ([]api.SidecarStatusRequest, error)
 	// UpsertRunPodBinding records that podName/podUID is the Kubernetes Pod
-	// currently executing runID, as reported by a Kubernetes agent's
+	// executing runID (replacing any others), as reported by a Kubernetes agent's
 	// heartbeat (api.HeartbeatRequest.PodBindings). This is what the
 	// store-credentials broker (internal/controller/api_store_credentials.go)
 	// checks a requesting Pod's verified identity against before handing out
@@ -409,6 +409,13 @@ type Store interface {
 	// yet. The store-credentials broker treats ok=false as "unknown", not as
 	// "rejected" — see its RequireRunBinding config knob.
 	GetRunPodBinding(ctx context.Context, runID string) (binding RunPodBinding, ok bool, err error)
+	// ReplaceRunPodBindings makes pods the complete set of Pods bound to runID:
+	// a run may hold its claim Pod plus the isolated scope Pods the same agent
+	// created for it. Pods not listed are unbound. An empty set is a no-op.
+	ReplaceRunPodBindings(ctx context.Context, runID string, pods []RunPodBinding) error
+	// ListRunPodBindings returns every Pod bound to runID; the presign
+	// endpoint accepts a caller whose Pod UID is any of them.
+	ListRunPodBindings(ctx context.Context, runID string) ([]RunPodBinding, error)
 	// UpsertAgent is the REGISTRATION path: it replaces the agent's labels/hostname/
 	// os/version/env wholesale (a registration is the authoritative identity).
 	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, volumes []string, env map[string]string) error

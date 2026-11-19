@@ -193,7 +193,21 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 			// write self-heals within one more interval. See
 			// internal/controller/api_store_credentials.go's
 			// runBindingRejects for the reader side.
+			// PodBindingSets (every Pod of a run) wins over PodBindings (the old
+			// one-Pod report) for a run present in both.
+			for runID, pods := range req.PodBindingSets {
+				bindings := make([]store.RunPodBinding, 0, len(pods))
+				for _, pod := range pods {
+					bindings = append(bindings, store.RunPodBinding{PodName: pod.PodName, PodUID: pod.PodUID})
+				}
+				if err := s.store.ReplaceRunPodBindings(r.Context(), runID, bindings); err != nil {
+					slog.Warn("heartbeat: failed to record run/pod bindings", "runId", runID, "error", err)
+				}
+			}
 			for runID, binding := range req.PodBindings {
+				if _, ok := req.PodBindingSets[runID]; ok {
+					continue
+				}
 				if err := s.store.UpsertRunPodBinding(r.Context(), runID, binding.PodName, binding.PodUID); err != nil {
 					slog.Warn("heartbeat: failed to record run/pod binding", "runId", runID, "pod", binding.PodName, "error", err)
 				}

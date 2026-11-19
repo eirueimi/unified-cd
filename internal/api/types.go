@@ -109,6 +109,14 @@ type HeartbeatRequest struct {
 	// that window in mind.
 	PodBindings map[string]PodBinding `json:"podBindings,omitempty"`
 
+	// PodBindingSets maps a runID to EVERY Pod bound to it: its claim Pod plus
+	// each isolated scope Pod the agent created for it (each runs its own
+	// artifact sidecar). A run listed here has its stored bindings replaced by
+	// exactly this set. PodBindings carries the same runs' first Pod for a
+	// controller that predates this field; a controller that knows both uses
+	// PodBindingSets for a run present in both.
+	PodBindingSets map[string][]PodBinding `json:"podBindingSets,omitempty"`
+
 	// Storage is the agent's latest disk-headroom reading, replaced wholesale
 	// on every beat. nil means the agent reported none (a legacy agent, or one
 	// whose measurement gave up): the controller then drops whatever it held,

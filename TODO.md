@@ -35,7 +35,7 @@ No active items.
 ### 47. Strict config loading in the Kubernetes agent
 
 - **Status:** Open
-- **Impact:** A misspelled key in the k8s agent config (`sidecarS3SecretName`, `maxConcurrent`, `podStartTimeout`, `workspaceSizeLimit`, `minFreeDisk`) is silently ignored and the default applies, so for example all cache steps no-op with no startup error. The host agent rejects unknown keys. An unparseable `UNIFIED_K8S_MAX_DETACHED` is also silently ignored, unlike the `UNIFIED_K8S_*_TIMEOUT` variables, which abort startup.
+- **Impact:** A misspelled key in the k8s agent config (`maxConcurrent`, `podStartTimeout`, `workspaceSizeLimit`, `minFreeDisk`) is silently ignored and the default applies, so for example a misspelled `maxConcurrent` quietly runs with the default of 100. (The removed `sidecarS3SecretName` and `sidecarS3SecretMode` are the exception: they are refused at startup.) The host agent rejects unknown keys. An unparseable `UNIFIED_K8S_MAX_DETACHED` is also silently ignored, unlike the `UNIFIED_K8S_*_TIMEOUT` variables, which abort startup.
 - **Evidence:** `internal/k8sagent/config.go` `loadYAML` uses `yaml.Unmarshal` (only `jobPodPolicy` is checked, via `KnownFields`); `config.LoadAgent` (`internal/config/agent.go:188`) uses `KnownFields(true)`. `UNIFIED_K8S_MAX_DETACHED` parse failure is skipped in `Validate` (`config.go:418-422`).
 - **Done when:** `loadYAML` decodes the agent config with `KnownFields(true)` (the chart-rendered config and every example still load, and the already tolerated `podTemplates[*].workspace.pvc` handling is kept), a test shows a typo'd key fails startup, and an unparseable `UNIFIED_K8S_MAX_DETACHED` aborts startup; both are documented in `docs/reference/configuration.md`.
 

@@ -66,6 +66,8 @@ var schemaSentinels = []sentinel{
 	{version: 31, migration: "031_agent_volumes", table: "agent_volume_defs"},
 	// The same file also adds oidc_states.cli_redirect, cli_challenge, cli_confirm_hash and cli_callback_hash.
 	{version: 32, migration: "032_cli_login_codes", table: "cli_login_codes"},
+	// A run may hold several pod bindings: the primary key becomes (run_id, pod_uid), probed through the unique index that replaces it.
+	{version: 33, migration: "033_run_pod_bindings_multi", table: "run_pod_bindings", index: "run_pod_bindings_run_pod_uid_key"},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel

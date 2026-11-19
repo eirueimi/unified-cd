@@ -1555,3 +1555,57 @@ func TestBuildOneClaimStep_DownloadArtifactRunID(t *testing.T) {
 	assert.Equal(t, "artifacts", cs.DownloadArtifact.DestDir)
 	assert.Equal(t, "{{ .Steps.build_app.ChildRunID }}", cs.DownloadArtifact.RunID)
 }
+
+// TestAgentHeartbeat_PodBindingSetsRecordEveryPod: a heartbeat's
+// PodBindingSets binds all of a run's Pods (claim plus scope), a later beat
+// with fewer Pods unbinds the missing one, and PodBindingSets wins over the
+// old PodBindings for the same run.
+func TestAgentHeartbeat_PodBindingSetsRecordEveryPod(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "agent-hb-sets", run.ID)
+	token := issueAgentAccessForTest(t, pg, "agent-hb-sets", nil, nil)
+
+	beat := func(hb api.HeartbeatRequest) {
+		body, err := json.Marshal(hb)
+		require.NoError(t, err)
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb-sets/heartbeat", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		s.Router().ServeHTTP(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+	}
+	uids := func() []string {
+		list, err := pg.ListRunPodBindings(t.Context(), run.ID)
+		require.NoError(t, err)
+		var out []string
+		for _, b := range list {
+			out = append(out, b.PodUID)
+		}
+		return out
+	}
+	claim := api.PodBinding{PodName: "claim", PodUID: "claim-uid"}
+	scope := api.PodBinding{PodName: "scope", PodUID: "scope-uid"}
+
+	beat(api.HeartbeatRequest{
+		ActiveRunIDs:   []string{run.ID},
+		PodBindings:    map[string]api.PodBinding{run.ID: claim},
+		PodBindingSets: map[string][]api.PodBinding{run.ID: {claim, scope}},
+	})
+	assert.ElementsMatch(t, []string{"claim-uid", "scope-uid"}, uids())
+
+	beat(api.HeartbeatRequest{
+		ActiveRunIDs:   []string{run.ID},
+		PodBindings:    map[string]api.PodBinding{run.ID: claim},
+		PodBindingSets: map[string][]api.PodBinding{run.ID: {claim}},
+	})
+	assert.Equal(t, []string{"claim-uid"}, uids(), "a Pod missing from the set is unbound")
+
+	// An old agent reports one Pod through PodBindings only.
+	beat(api.HeartbeatRequest{ActiveRunIDs: []string{run.ID}, PodBindings: map[string]api.PodBinding{run.ID: {PodName: "old", PodUID: "old-uid"}}})
+	assert.Equal(t, []string{"old-uid"}, uids())
+}

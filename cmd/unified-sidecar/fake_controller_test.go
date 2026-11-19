@@ -45,6 +45,8 @@ type fakeController struct {
 	direct bool
 	// blobs serves a direct-mode get: it maps a cache key to the archive.
 	blobs map[string][]byte
+	// tokenFile is the pod token file provider created.
+	tokenFile string
 
 	mu   sync.Mutex
 	seen []seenRequest
@@ -192,30 +194,24 @@ func (f *fakeController) cache(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// provider returns a clientProvider for this fake. The token is what the
-// token file holds.
+// provider returns the PRODUCTION newClient, configured the way the k8s agent
+// configures the sidecar: UNIFIED_CONTROLLER_URL points at this fake and
+// UNIFIED_POD_TOKEN_FILE at a file holding token. So the real auth path (token
+// file read, bearer header) is what the tests exercise. The file is
+// f.tokenFile; rewriting it rotates the token.
 func (f *fakeController) provider(t *testing.T, token string) clientProvider {
 	t.Helper()
-	tokenFile := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenFile, []byte(token), 0o600); err != nil {
+	f.tokenFile = filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(f.tokenFile, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(envControllerURL, f.srv.URL)
+	t.Setenv(envPodTokenFile, f.tokenFile)
 	return func(runID string) (*objtransfer.Client, error) {
 		if runID == "" {
 			runID = defaultPodRun
 		}
-		return &objtransfer.Client{
-			BaseURL: f.srv.URL,
-			RunID:   runID,
-			Auth: func(_ context.Context, r *http.Request) error {
-				b, err := os.ReadFile(tokenFile)
-				if err != nil {
-					return err
-				}
-				r.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(b)))
-				return nil
-			},
-		}, nil
+		return newClient(runID)
 	}
 }
 

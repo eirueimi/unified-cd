@@ -476,10 +476,19 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	// same one that covers the other documented leak paths here, and the
 	// orchestrator records the truncation to the agent log.
 	for key, name := range entries {
-		if err := b.a.pm.DeletePod(ctx, name); err != nil {
+		if err := b.deleteScopePod(ctx, name); err != nil {
 			slog.Warn("k8s: failed to delete scope pod", "scopeKey", key, "pod", name, "error", err)
 		}
 	}
+}
+
+// deleteScopePod deletes a scope Pod and unbinds it from the run. The binding is
+// removed even when the delete fails: a Pod being deleted must not stay
+// authorized, and a failed delete is left to the label GC.
+func (b *k8sBackend) deleteScopePod(ctx context.Context, name string) error {
+	err := b.a.pm.DeletePod(ctx, name)
+	b.a.podBindings.RemoveScope(b.runID, name)
+	return err
 }
 
 // ensureScopePod lazily creates (or returns the in-flight/completed) scope
@@ -610,7 +619,7 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 		}
 		b.scopesMu.Unlock()
 		if selfDeleteName != "" {
-			if delErr := b.a.pm.DeletePod(context.WithoutCancel(createCtx), selfDeleteName); delErr != nil {
+			if delErr := b.deleteScopePod(context.WithoutCancel(createCtx), selfDeleteName); delErr != nil {
 				slog.Warn("k8s: failed to delete abandoned scope pod", "scopeKey", key, "pod", selfDeleteName, "error", delErr)
 			}
 		}
@@ -880,6 +889,10 @@ func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env
 		return "", fmt.Errorf("uses-scope %q (image %q): create pod: %w", step.ScopeID, step.ScopeImage, err)
 	}
 	name := created.Name
+	// The scope Pod runs its own artifact sidecar, which authenticates with this
+	// Pod's token: bind it to the run too (the controller accepts any Pod bound
+	// to the run). Removed again by deleteScopePod.
+	b.a.podBindings.AddScope(b.runID, api.PodBinding{PodName: created.Name, PodUID: string(created.UID)})
 	// Record the name as soon as the Pod exists, before waiting for Running,
 	// so CloseScopes can always name what exists. From here until this
 	// function returns, a real Pod is running in the cluster; if we only
@@ -925,7 +938,7 @@ func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env
 		owned := claimEntry(e)
 		b.scopesMu.Unlock()
 		if owned {
-			_ = b.a.pm.DeletePod(context.WithoutCancel(ctx), name)
+			_ = b.deleteScopePod(context.WithoutCancel(ctx), name)
 		}
 		// DeadlineExceeded means the attempt genuinely spent its whole
 		// PodStartTimeout budget waiting — reporting that budget is accurate.
