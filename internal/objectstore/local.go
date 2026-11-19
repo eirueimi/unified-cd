@@ -68,6 +68,21 @@ func (s *LocalObjectStore) Get(_ context.Context, key string) (io.ReadCloser, er
 	return f, nil
 }
 
+// Stat reports the size and modification time of the file stored under key.
+func (s *LocalObjectStore) Stat(_ context.Context, key string) (ObjectInfo, error) {
+	fi, err := os.Stat(filepath.Join(s.baseDir, filepath.FromSlash(key)))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return ObjectInfo{}, fmt.Errorf("stat %q: %w", key, ErrNotFound)
+		}
+		return ObjectInfo{}, fmt.Errorf("stat %q: %w", key, err)
+	}
+	if fi.IsDir() {
+		return ObjectInfo{}, fmt.Errorf("stat %q: %w", key, ErrNotFound)
+	}
+	return ObjectInfo{Key: key, Size: fi.Size(), LastModified: fi.ModTime()}, nil
+}
+
 func (s *LocalObjectStore) Delete(_ context.Context, key string) error {
 	path := filepath.Join(s.baseDir, filepath.FromSlash(key))
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

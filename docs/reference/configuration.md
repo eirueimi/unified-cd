@@ -17,6 +17,8 @@ unified-cd-controller [FLAGS]
   --s3-bucket             string   S3 bucket name (env: UNIFIED_S3_BUCKET)
   --s3-key                string   S3 access key ID (env: UNIFIED_S3_KEY)
   --s3-secret             string   S3 secret access key (env: UNIFIED_S3_SECRET)
+  --s3-use-ssl            bool     Reach the S3 endpoint over https (env: UNIFIED_S3_USE_SSL)
+  --s3-region             string   S3 bucket region; "auto" for GCS (env: UNIFIED_S3_REGION)
   --data-dir              string   Local object store directory (env: UNIFIED_DATA_DIR)
   --web-dir               string   Static web assets directory (env: UNIFIED_WEB_DIR)
   --ui-proxy-target       string   Vite dev server URL to proxy /ui/* (env: UNIFIED_UI_PROXY_TARGET)
@@ -64,6 +66,8 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_S3_BUCKET` | No | S3 bucket name |
 | `UNIFIED_S3_KEY` | No | S3 access key ID |
 | `UNIFIED_S3_SECRET` | No | S3 secret access key |
+| `UNIFIED_S3_USE_SSL` | No | `true` to reach the object store over https. Default `false`. Presigned object URLs travel to clients, so AWS S3 and GCS need `true`. Flag: `--s3-use-ssl`; config key `s3UseSSL`. |
+| `UNIFIED_S3_REGION` | No | Bucket region (e.g. `us-east-1`; `auto` for GCS; `garage` for the bundled Garage). With a region set, the controller signs presigned URLs without a lookup round trip. Flag: `--s3-region`; config key `s3Region`. |
 | `UNIFIED_DATA_DIR` | No | Local directory used as object store fallback (alternative to S3, development only) |
 | `UNIFIED_WEB_DIR` | No | Path to static web assets directory. If unset, `/ui/*` returns 404. |
 | `UNIFIED_UI_PROXY_TARGET` | No | Proxy `/ui/*` to a Vite dev server (e.g. `http://localhost:5173`). Used during frontend development. |
@@ -108,6 +112,8 @@ s3Endpoint: garage.internal:3900
 s3Bucket: unified-cd
 s3Key: garageadmin
 s3Secret: garageadmin12345
+s3UseSSL: false                 # true for AWS S3 / GCS
+s3Region: garage                # "auto" for GCS
 dataDir: /var/lib/unified-cd    # local object-store fallback (dev; alternative to S3)
 
 webDir: /srv/unified-cd/web         # static web assets; unset => /ui/* returns 404

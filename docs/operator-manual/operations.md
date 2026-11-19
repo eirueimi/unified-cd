@@ -68,6 +68,25 @@ Artifacts, cache entries, and log archives live in the configured bucket. Use yo
 
 **Sweep failure backoff.** The log archiver, run-retention sweeper, and git resolver retry a persistently failing candidate with exponential backoff (1 min doubling to 1 h) instead of letting it occupy the head of every oldest-first batch — a handful of broken runs can no longer starve archival, deletion, or resolution for everything newer. The backoff state is held by the current leader only and resets on failover (each problem candidate is retried once, then re-excluded).
 
+### Object store compatibility
+
+Presigned object URLs and multipart uploads depend on the backend. The controller reads `s3UseSSL` and `s3Region` ([configuration](../reference/configuration.md)); set both for AWS S3 and GCS, because presigned URLs travel to clients.
+
+| Backend | Presigned GET/PUT/HEAD | Presigned multipart upload parts | Status |
+|---|---|---|---|
+| AWS S3 | yes | yes | Standard S3 behavior. |
+| Garage | yes | yes | Verified by the `garage` job in `.github/workflows/ci.yml` (Garage v2.3.0). |
+| GCS (S3-compatible XML API, `storage.googleapis.com`, region `auto`) | yes | not yet verified | Treated as unsupported: clients fall back to a single presigned PUT, up to GCS's 5 TiB object limit. |
+
+**GCS finding (2026-11-19): not yet verified.** No GCS HMAC credentials were available when the primitives were written, so the check has not been run and `MultipartPresignSupported` keeps returning `false` for `storage.googleapis.com`. To check a bucket, create an HMAC key for a service account with write access and run:
+
+```bash
+UNIFIED_TEST_GCS_BUCKET=<bucket> UNIFIED_TEST_GCS_KEY=<hmac access id> UNIFIED_TEST_GCS_SECRET=<hmac secret> \
+  go test -tags gcs ./internal/objectstore/ -run GCS -v
+```
+
+The test starts a multipart upload, PUTs two parts through presigned URLs and completes it. If it passes, record the date here and set the GCS branch of `MultipartPresignSupported` (`internal/objectstore/presign.go`) to `true`.
+
 ### The controller's master key (critical)
 
 This is the master key (KEK) used to encrypt secrets (AES-256-GCM, see [Secrets Management Guide](../user-guide/secrets.md#security-model)). The controller refuses to start unless it is given one, via exactly one of:

@@ -141,13 +141,18 @@ type ControllerOIDCConfig struct {
 // ControllerConfig holds all configuration for the controller binary.
 // Populated from a YAML file via LoadController; zero-value fields mean "not set".
 type ControllerConfig struct {
-	DSN           string    `yaml:"dsn"`
-	Addr          string    `yaml:"addr"`
-	Token         string    `yaml:"token"`
-	S3Endpoint    string    `yaml:"s3Endpoint"`
-	S3Bucket      string    `yaml:"s3Bucket"`
-	S3Key         string    `yaml:"s3Key"`
-	S3Secret      string    `yaml:"s3Secret"`
+	DSN        string `yaml:"dsn"`
+	Addr       string `yaml:"addr"`
+	Token      string `yaml:"token"`
+	S3Endpoint string `yaml:"s3Endpoint"`
+	S3Bucket   string `yaml:"s3Bucket"`
+	S3Key      string `yaml:"s3Key"`
+	S3Secret   string `yaml:"s3Secret"`
+	// S3UseSSL makes the controller reach the store over https (env: UNIFIED_S3_USE_SSL).
+	// Presigned URLs travel to clients, so S3 and GCS need it.
+	S3UseSSL bool `yaml:"s3UseSSL"`
+	// S3Region is the bucket region (env: UNIFIED_S3_REGION); "auto" for GCS.
+	S3Region      string    `yaml:"s3Region"`
 	DataDir       string    `yaml:"dataDir"`
 	KeySource     KeySource `yaml:"-"`
 	WebDir        string    `yaml:"webDir"`
@@ -272,6 +277,8 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		S3Bucket:   os.Getenv("UNIFIED_S3_BUCKET"),
 		S3Key:      os.Getenv("UNIFIED_S3_KEY"),
 		S3Secret:   os.Getenv("UNIFIED_S3_SECRET"),
+		S3UseSSL:   envBool("UNIFIED_S3_USE_SSL"),
+		S3Region:   os.Getenv("UNIFIED_S3_REGION"),
 		DataDir:    os.Getenv("UNIFIED_DATA_DIR"),
 		KeySource: KeySource{
 			KeyFile:        os.Getenv("UNIFIED_CONTROLLER_KEY_FILE"),
@@ -368,6 +375,12 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.S3Secret != "" {
 		eff.S3Secret = file.S3Secret
+	}
+	if file.S3UseSSL {
+		eff.S3UseSSL = true
+	}
+	if file.S3Region != "" {
+		eff.S3Region = file.S3Region
 	}
 	if file.DataDir != "" {
 		eff.DataDir = file.DataDir

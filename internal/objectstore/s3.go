@@ -20,6 +20,10 @@ type S3Config struct {
 	UseSSL          bool
 	Region          string
 
+	// MultipartPresign is whether the backend accepts presigned UploadPart
+	// URLs; set it from MultipartPresignSupported(Endpoint).
+	MultipartPresign bool
+
 	// Creds, when non-nil, supplies credentials instead of AccessKeyID and
 	// SecretAccessKey. minio-go re-fetches from the provider when it reports
 	// the credential expired and re-signs per request, so a provider that can
@@ -33,8 +37,9 @@ type S3Config struct {
 
 // S3ObjectStore implements ObjectStore using an S3-compatible backend (AWS S3, MinIO, etc.).
 type S3ObjectStore struct {
-	client *minio.Client
-	bucket string
+	client           *minio.Client
+	bucket           string
+	multipartPresign bool
 }
 
 // NewS3ObjectStore creates an S3ObjectStore and ensures the bucket exists.
@@ -62,7 +67,7 @@ func NewS3ObjectStore(ctx context.Context, cfg S3Config) (*S3ObjectStore, error)
 		}
 	}
 
-	return &S3ObjectStore{client: client, bucket: cfg.Bucket}, nil
+	return &S3ObjectStore{client: client, bucket: cfg.Bucket, multipartPresign: cfg.MultipartPresign}, nil
 }
 
 func (s *S3ObjectStore) Put(ctx context.Context, key string, content io.Reader, size int64) error {

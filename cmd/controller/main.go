@@ -206,6 +206,8 @@ func main() {
 	s3Bucket := flag.String("s3-bucket", eff.S3Bucket, "S3 bucket name (env: UNIFIED_S3_BUCKET)")
 	s3Key := flag.String("s3-key", eff.S3Key, "S3 access key (env: UNIFIED_S3_KEY)")
 	s3Secret := flag.String("s3-secret", eff.S3Secret, "S3 secret key (env: UNIFIED_S3_SECRET)")
+	s3UseSSL := flag.Bool("s3-use-ssl", eff.S3UseSSL, "reach the S3 endpoint over https; required for presigned URLs on AWS S3 and GCS (env: UNIFIED_S3_USE_SSL)")
+	s3Region := flag.String("s3-region", eff.S3Region, "S3 bucket region; \"auto\" for GCS (env: UNIFIED_S3_REGION)")
 	dataDir := flag.String("data-dir", eff.DataDir, "local object store directory (env: UNIFIED_DATA_DIR)")
 	webDir := flag.String("web-dir", eff.WebDir, "static web assets directory; if empty /ui/* returns 404 (env: UNIFIED_WEB_DIR)")
 	uiProxyTarget := flag.String("ui-proxy-target", eff.UIProxyTarget, "Vite dev server URL to reverse-proxy /ui/* to when --web-dir is empty, e.g. http://localhost:5173 (env: UNIFIED_UI_PROXY_TARGET)")
@@ -390,6 +392,10 @@ func main() {
 			Bucket:          *s3Bucket,
 			AccessKeyID:     *s3Key,
 			SecretAccessKey: *s3Secret,
+			UseSSL:          *s3UseSSL,
+			Region:          *s3Region,
+
+			MultipartPresign: objectstore.MultipartPresignSupported(*s3Endpoint),
 		}
 		s3, err := objectstore.NewS3ObjectStore(ctx, cfg)
 		if err != nil {

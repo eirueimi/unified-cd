@@ -4,7 +4,60 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/url"
+	"time"
 )
+
+// PresignExpiry is how long every presigned URL stays valid.
+const PresignExpiry = 15 * time.Minute
+
+// ObjectInfo describes one stored object.
+type ObjectInfo struct {
+	Key          string
+	Size         int64
+	ETag         string
+	LastModified time.Time
+}
+
+// Statter reports metadata for one object without reading its content.
+type Statter interface {
+	// Stat returns the object's metadata, or an error satisfying
+	// errors.Is(err, ErrNotFound) if key does not exist.
+	Stat(ctx context.Context, key string) (ObjectInfo, error)
+}
+
+// Upload identifies an in-progress multipart upload.
+type Upload struct {
+	Key       string
+	UploadID  string
+	Initiated time.Time
+}
+
+// CompletedPart names one uploaded part when completing a multipart upload.
+type CompletedPart struct {
+	PartNumber int
+	ETag       string
+}
+
+// Presigner issues presigned URLs and drives multipart uploads. Each URL is
+// scoped to one object and one operation and expires after PresignExpiry. URLs
+// are bearer credentials: never log them. Only *S3ObjectStore implements it.
+type Presigner interface {
+	Statter
+	// PresignGet returns a GET URL. A non-empty filename sets
+	// response-content-disposition to `attachment; filename="<filename>"`.
+	PresignGet(ctx context.Context, key, filename string) (*url.URL, error)
+	PresignHead(ctx context.Context, key string) (*url.URL, error)
+	PresignPut(ctx context.Context, key string) (*url.URL, error)
+	PresignUploadPart(ctx context.Context, key, uploadID string, part int) (*url.URL, error)
+	StartMultipart(ctx context.Context, key string) (string, error)
+	CompleteMultipart(ctx context.Context, key, uploadID string, parts []CompletedPart) error
+	AbortMultipart(ctx context.Context, key, uploadID string) error
+	ListMultipartUploads(ctx context.Context, prefix string) ([]Upload, error)
+	// MultipartPresign reports whether the backend accepts presigned
+	// UploadPart URLs (see MultipartPresignSupported).
+	MultipartPresign() bool
+}
 
 // ErrNotFound is the sentinel error returned (wrapped) by Get when key does
 // not exist in the store.
