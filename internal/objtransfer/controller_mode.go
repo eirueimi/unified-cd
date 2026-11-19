@@ -59,13 +59,34 @@ func (c *Client) streamURL(req api.PresignRequest, ttlDays int) (string, error) 
 }
 
 // controllerUpload PUTs body to the controller with chunked transfer encoding,
-// so the archive is never buffered whole. The body cannot be rewound, so the
-// upload is not retried; the step's own retry semantics apply on top.
+// so the archive is never buffered whole. A body that can be rewound (the
+// buffered replay of a small stream, an io.ReadSeeker) is retried on the
+// transient answers presign retries (429, 503 unavailable, 409
+// binding-pending); a one-shot stream is sent once and not retried, so the
+// step's own retry semantics apply on top.
 func (c *Client) controllerUpload(ctx context.Context, tmpl api.PresignRequest, ttlDays int, body io.Reader) error {
 	endpoint, err := c.streamURL(tmpl, ttlDays)
 	if err != nil {
 		return err
 	}
+	rs, rewindable := body.(io.ReadSeeker)
+	if !rewindable {
+		return c.controllerUploadOnce(ctx, endpoint, tmpl.Kind, body)
+	}
+	start, err := rs.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return c.controllerUploadOnce(ctx, endpoint, tmpl.Kind, body)
+	}
+	_, err = retryObjectCall(ctx, func() (struct{}, error) {
+		if _, err := rs.Seek(start, io.SeekStart); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, c.controllerUploadOnce(ctx, endpoint, tmpl.Kind, rs)
+	})
+	return err
+}
+
+func (c *Client) controllerUploadOnce(ctx context.Context, endpoint, kind string, body io.Reader) error {
 	// Hide the concrete type of body so net/http cannot infer a length: the
 	// request is chunked.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, struct{ io.Reader }{body})
@@ -84,11 +105,31 @@ func (c *Client) controllerUpload(ctx context.Context, tmpl api.PresignRequest, 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return classify(objectResponseError(resp, tmpl.Kind+"/stream-put"))
+		return classify(objectResponseError(resp, kind+"/stream-put"))
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	return nil
 }
+
+// lengthChecked fails a read that ends before the Content-Length the
+// controller declared, so a truncated download is never taken for a complete
+// one.
+type lengthChecked struct {
+	rc   io.ReadCloser
+	want int64
+	got  int64
+}
+
+func (l *lengthChecked) Read(p []byte) (int, error) {
+	n, err := l.rc.Read(p)
+	l.got += int64(n)
+	if errors.Is(err, io.EOF) && l.got != l.want {
+		return n, fmt.Errorf("controller download ended after %d of %d bytes: %w", l.got, l.want, io.ErrUnexpectedEOF)
+	}
+	return n, err
+}
+
+func (l *lengthChecked) Close() error { return l.rc.Close() }
 
 // controllerDownload opens a GET of req (an artifact or cache get) on the
 // controller. A transient answer (binding pending, rate limit) is retried like
@@ -130,6 +171,9 @@ func (c *Client) controllerDownload(ctx context.Context, req api.PresignRequest)
 		out.MatchedKey = matched
 	} else if req.Kind == api.ObjectKindCache {
 		out.MatchedKey = req.Key
+	}
+	if resp.ContentLength >= 0 {
+		return &lengthChecked{rc: resp.Body, want: resp.ContentLength}, out, nil
 	}
 	return resp.Body, out, nil
 }

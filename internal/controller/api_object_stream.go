@@ -20,7 +20,8 @@ import (
 const auditActionObjectsStream = "objects.stream"
 
 // cacheKeyHeader carries the original key of the cache entry a restore
-// matched, percent-encoded with url.PathEscape.
+// matched. The value is percent-encoded with url.PathEscape (so any key is a
+// valid header value) and decoded by the client; ordinary keys are unchanged.
 const cacheKeyHeader = "X-Unified-Cache-Key"
 
 // The controller-mode routes move archive bytes through the controller, for
@@ -49,7 +50,7 @@ func writeObjectErr(w http.ResponseWriter, oerr *objectErr) {
 // An artifact can only be written to the requester's own run.
 func (s *Server) handleStreamArtifactPut(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "runID")
-	rq, ok := s.authenticateObjectRequester(w, r, runID)
+	rq, ok := s.authenticateObjectRequesterAs(w, r, runID, auditActionObjectsStream)
 	if !ok {
 		return
 	}
@@ -57,7 +58,11 @@ func (s *Server) handleStreamArtifactPut(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	name := chi.URLParam(r, "name")
+	name, err := artifactNameParam(r)
+	if err != nil {
+		writeObjectError(w, http.StatusBadRequest, api.ObjectErrInvalid, "invalid artifact name")
+		return
+	}
 	key, err := artifact.ArtifactKey(runID, name)
 	if err != nil {
 		writeObjectError(w, http.StatusBadRequest, api.ObjectErrInvalid, "invalid artifact name")
@@ -80,17 +85,35 @@ func (s *Server) handleStreamArtifactPut(w http.ResponseWriter, r *http.Request)
 // with an optional ?sourceRunId=<id> to read another run's artifact.
 func (s *Server) handleStreamArtifactGet(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "runID")
-	if _, ok := s.authenticateObjectRequester(w, r, runID); !ok {
+	if _, ok := s.authenticateObjectRequesterAs(w, r, runID, auditActionObjectsStream); !ok {
 		return
 	}
 	store, ok := s.streamStore(w)
 	if !ok {
 		return
 	}
-	key, oerr := s.artifactReadKey(r.Context(), runID, r.URL.Query().Get("sourceRunId"), chi.URLParam(r, "name"))
+	name, err := artifactNameParam(r)
+	if err != nil {
+		writeObjectError(w, http.StatusBadRequest, api.ObjectErrInvalid, "invalid artifact name")
+		return
+	}
+	key, oerr := s.artifactReadKey(r.Context(), runID, r.URL.Query().Get("sourceRunId"), name)
 	if oerr != nil {
 		writeObjectErr(w, oerr)
 		return
+	}
+	size := int64(-1)
+	if st, ok := store.(objectstore.Statter); ok {
+		info, err := st.Stat(r.Context(), key)
+		if errors.Is(err, objectstore.ErrNotFound) {
+			writeObjectError(w, http.StatusNotFound, api.ObjectErrNotFound, "object not found")
+			return
+		}
+		if err != nil {
+			writeObjectErr(w, internalObject("stat", key, err))
+			return
+		}
+		size = info.Size
 	}
 	rc, err := store.Get(r.Context(), key)
 	if errors.Is(err, objectstore.ErrNotFound) {
@@ -102,9 +125,7 @@ func (s *Server) handleStreamArtifactGet(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer rc.Close()
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, rc)
+	streamBody(w, rc, size, key, "")
 }
 
 // handleStreamCachePut handles PUT /api/v1/runs/{runID}/objects/caches?key=<k>&ttlDays=<n>.
@@ -112,7 +133,7 @@ func (s *Server) handleStreamArtifactGet(w http.ResponseWriter, r *http.Request)
 // once the entry is visible to restores.
 func (s *Server) handleStreamCachePut(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "runID")
-	rq, ok := s.authenticateObjectRequester(w, r, runID)
+	rq, ok := s.authenticateObjectRequesterAs(w, r, runID, auditActionObjectsStream)
 	if !ok {
 		return
 	}
@@ -162,7 +183,7 @@ func (s *Server) handleStreamCachePut(w http.ResponseWriter, r *http.Request) {
 // handleStreamCacheGet handles GET /api/v1/runs/{runID}/objects/caches?key=<k>&restoreKey=<p>...
 func (s *Server) handleStreamCacheGet(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "runID")
-	rq, ok := s.authenticateObjectRequester(w, r, runID)
+	rq, ok := s.authenticateObjectRequesterAs(w, r, runID, auditActionObjectsStream)
 	if !ok {
 		return
 	}
@@ -176,8 +197,7 @@ func (s *Server) handleStreamCacheGet(w http.ResponseWriter, r *http.Request) {
 		writeObjectError(w, http.StatusBadRequest, api.ObjectErrInvalid, "key is required")
 		return
 	}
-	remote := &cache.StoreRemote{Store: store, JobName: rq.JobName}
-	rc, matched, err := remote.Open(r.Context(), key, q["restoreKey"])
+	rc, matched, size, err := s.openCache(r, store, rq.JobName, key, q["restoreKey"])
 	if errors.Is(err, cache.ErrCacheMiss) {
 		writeObjectError(w, http.StatusNotFound, api.ObjectErrCacheMiss, "cache miss")
 		return
@@ -187,10 +207,60 @@ func (s *Server) handleStreamCacheGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
-	w.Header().Set(cacheKeyHeader, url.PathEscape(matched))
+	// The matched key is percent-encoded (url.PathEscape) so any key is a
+	// valid header value; the client decodes it. Ordinary keys are unchanged.
+	streamBody(w, rc, size, cache.JobPrefix(rq.JobName), url.PathEscape(matched))
+}
+
+// openCache opens the archive for key (then restoreKeys). When the store can
+// Stat, the lookup is cache.LookupExisting, as for presign: a .meta whose
+// archive is gone falls through to the next candidate, and the size is known.
+func (s *Server) openCache(r *http.Request, store objectstore.ObjectStore, job, key string, restoreKeys []string) (io.ReadCloser, string, int64, error) {
+	ctx := r.Context()
+	st, ok := store.(objectstore.Statter)
+	if !ok {
+		rc, matched, err := (&cache.StoreRemote{Store: store, JobName: job}).Open(ctx, key, restoreKeys)
+		return rc, matched, -1, err
+	}
+	dataKey, matched, info, err := cache.LookupExisting(ctx, store, st, job, key, restoreKeys)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	rc, err := store.Get(ctx, dataKey)
+	if errors.Is(err, objectstore.ErrNotFound) {
+		return nil, "", 0, cache.ErrCacheMiss
+	}
+	if err != nil {
+		return nil, "", 0, err
+	}
+	return rc, matched, info.Size, nil
+}
+
+// artifactNameParam is the {name} URL parameter, percent-decoded: chi returns
+// the still-escaped segment when the path has escapes (a name with "," or ";"
+// is sent escaped), while direct mode stores the plain name.
+func artifactNameParam(r *http.Request) (string, error) {
+	return url.PathUnescape(chi.URLParam(r, "name"))
+}
+
+// streamBody sends rc as a 200 response. A known size is declared as
+// Content-Length so the client can detect truncation. If the copy fails after
+// the headers went out, the connection is aborted (http.ErrAbortHandler)
+// instead of ending the chunked body cleanly, which a client would take for a
+// complete download.
+func streamBody(w http.ResponseWriter, rc io.Reader, size int64, logKey, matchedKeyEscaped string) {
 	w.Header().Set("Content-Type", "application/octet-stream")
+	if matchedKeyEscaped != "" {
+		w.Header().Set(cacheKeyHeader, matchedKeyEscaped)
+	}
+	if size >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, rc)
+	if _, err := io.Copy(w, rc); err != nil {
+		slog.Warn("stream: download failed part way", "key", logKey, "error", err)
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func contentLengthOrUnknown(r *http.Request) int64 {
@@ -203,8 +273,5 @@ func contentLengthOrUnknown(r *http.Request) int64 {
 // auditStream writes an objects.stream row for an upload; details never carry
 // object bytes or credentials.
 func (s *Server) auditStream(r *http.Request, rq objectRequester, resource string, details map[string]any, status int) {
-	if rq.PodUID != "" {
-		details["podUid"] = rq.PodUID
-	}
-	s.auditAgentEvent(r, rq.AgentID, auditActionObjectsStream, resource, status, details)
+	s.auditPresignAction(r, rq, auditActionObjectsStream, resource, details, status)
 }

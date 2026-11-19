@@ -395,11 +395,16 @@ func cacheTTLDays(spec []byte, requested int) (int, error) {
 // ("artifact:<run>/<name>" or "cache:<job>/<key>") or, for a denial, the run;
 // details never carry a URL.
 func (s *Server) auditPresign(r *http.Request, rq objectRequester, resource string, details map[string]any, status int) {
+	s.auditPresignAction(r, rq, auditActionObjectsPresign, resource, details, status)
+}
+
+// auditPresignAction is auditPresign with an explicit audit action.
+func (s *Server) auditPresignAction(r *http.Request, rq objectRequester, action, resource string, details map[string]any, status int) {
 	if rq.PodUID != "" {
 		if details == nil {
 			details = map[string]any{}
 		}
 		details["podUid"] = rq.PodUID
 	}
-	s.auditAgentEvent(r, rq.AgentID, auditActionObjectsPresign, resource, status, details)
+	s.auditAgentEvent(r, rq.AgentID, action, resource, status, details)
 }

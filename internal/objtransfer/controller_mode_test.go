@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/cache"
@@ -43,6 +44,12 @@ type streamEnv struct {
 	objects  map[string][]byte // path+key -> body
 	// presignAnswer answers every presign request; nil means mode controller.
 	presignAnswer func(n int, req api.PresignRequest, w http.ResponseWriter) bool
+	// putHook, when set, may answer a streaming PUT (n counts attempts from 1)
+	// before the body is stored; it returns true when it answered.
+	putHook func(n int, w http.ResponseWriter) bool
+	putN    int
+	// getHook, when set, answers streaming GETs.
+	getHook func(w http.ResponseWriter) bool
 }
 
 func newStreamEnv(t *testing.T) *streamEnv {
@@ -85,6 +92,14 @@ func (e *streamEnv) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodPut:
+			e.mu.Lock()
+			e.putN++
+			n, hook := e.putN, e.putHook
+			e.mu.Unlock()
+			if hook != nil && hook(n, w) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				return
+			}
 			data, _ := io.ReadAll(r.Body)
 			chunked := len(r.TransferEncoding) > 0 && r.TransferEncoding[0] == "chunked"
 			e.mu.Lock()
@@ -94,6 +109,9 @@ func (e *streamEnv) serve(w http.ResponseWriter, r *http.Request) {
 			e.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 		case http.MethodGet:
+			if e.getHook != nil && e.getHook(w) {
+				return
+			}
 			e.mu.Lock()
 			data, ok := e.objects[id]
 			e.mu.Unlock()
@@ -270,3 +288,85 @@ func totalBytes(puts []streamPut) int {
 
 func isCacheMiss(err error) bool { return err != nil && errors.Is(err, cache.ErrCacheMiss) }
 func isNotFound(err error) bool  { return err != nil && errors.Is(err, objectstore.ErrNotFound) }
+
+func TestControllerMode_RewindableUploadRetries429(t *testing.T) {
+	sleeps := noSleep(t)
+	tinyParts(t, 64, 1000)
+	e := newStreamEnv(t)
+	e.putHook = func(n int, w http.ResponseWriter) bool {
+		if n == 1 {
+			w.Header().Set("Retry-After", "2")
+			writeErr(w, http.StatusTooManyRequests, api.ObjectErrRateLimited)
+			return true
+		}
+		return false
+	}
+	data := bytes.Repeat([]byte("abcde"), 10) // fits in part 1: replayed from a SectionReader
+	if err := e.client.Artifacts().Put(t.Context(), "artifacts/run-1/a.tar.gz", bytes.NewReader(data), -1); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.puts) != 1 || !bytes.Equal(e.puts[0].body, data) {
+		t.Fatalf("stored %d puts, want the full %d bytes once", len(e.puts), len(data))
+	}
+	if e.putN != 2 {
+		t.Fatalf("put attempts = %d, want 2", e.putN)
+	}
+	if len(*sleeps) != 1 || (*sleeps)[0] < 2*time.Second {
+		t.Fatalf("backoff = %v, want one delay honouring Retry-After: 2", *sleeps)
+	}
+}
+
+func TestControllerMode_OneShotStreamIsNotRetried(t *testing.T) {
+	noSleep(t)
+	tinyParts(t, 16, 1000)
+	e := newStreamEnv(t)
+	e.putHook = func(n int, w http.ResponseWriter) bool {
+		writeErr(w, http.StatusTooManyRequests, api.ObjectErrRateLimited)
+		return true
+	}
+	err := e.client.Artifacts().Put(t.Context(), "artifacts/run-1/a.tar.gz", bytes.NewReader(bytes.Repeat([]byte("z"), 100)), -1)
+	if err == nil {
+		t.Fatal("want the 429 to fail a stream that cannot be rewound")
+	}
+	if e.putN != 1 {
+		t.Fatalf("put attempts = %d, want 1", e.putN)
+	}
+}
+
+func TestControllerMode_DownloadChecksContentLength(t *testing.T) {
+	e := newStreamEnv(t)
+	e.client.ForceController = true
+	if err := e.client.Artifacts().Put(t.Context(), "artifacts/run-1/a.tar.gz", strings.NewReader("hello"), 5); err != nil {
+		t.Fatal(err)
+	}
+	rc, err := e.client.Artifacts().Get(t.Context(), "artifacts/run-1/a.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(rc)
+	if err != nil || string(got) != "hello" {
+		t.Fatalf("complete download: %q, %v", got, err)
+	}
+	if _, ok := rc.(*lengthChecked); !ok {
+		t.Fatalf("a download with a Content-Length must be length-checked, got %T", rc)
+	}
+	rc.Close()
+
+	// A body shorter than the declared length (a mid-stream store failure the
+	// controller aborted) is an error, not a successful short download.
+	e.getHook = func(w http.ResponseWriter) bool {
+		w.Header().Set("Content-Length", "10")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("short"))
+		return true
+	}
+	rc, err = e.client.Artifacts().Get(t.Context(), "artifacts/run-1/a.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadAll(rc)
+	rc.Close()
+	if err == nil {
+		t.Fatal("a truncated download was reported as success")
+	}
+}

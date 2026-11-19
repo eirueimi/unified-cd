@@ -43,6 +43,13 @@ type objectRequester struct {
 //     Config.RequireRunBinding is never consulted: a URL is for one run's
 //     object, so the binding is always required.
 func (s *Server) authenticateObjectRequester(w http.ResponseWriter, r *http.Request, runID string) (objectRequester, bool) {
+	return s.authenticateObjectRequesterAs(w, r, runID, auditActionObjectsPresign)
+}
+
+// authenticateObjectRequesterAs is authenticateObjectRequester with the audit
+// action its 403 rows are written under (the streaming routes use
+// auditActionObjectsStream).
+func (s *Server) authenticateObjectRequesterAs(w http.ResponseWriter, r *http.Request, runID, action string) (objectRequester, bool) {
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, bearerPrefix) || strings.TrimPrefix(header, bearerPrefix) == "" {
 		writeObjectError(w, http.StatusUnauthorized, api.ObjectErrUnauthenticated, "missing bearer token")
@@ -50,12 +57,12 @@ func (s *Server) authenticateObjectRequester(w http.ResponseWriter, r *http.Requ
 	}
 	token := strings.TrimPrefix(header, bearerPrefix)
 	if strings.HasPrefix(token, "uca_") {
-		return s.authenticateObjectAgent(w, r, runID)
+		return s.authenticateObjectAgent(w, r, runID, action)
 	}
-	return s.authenticateObjectSidecar(w, r, runID, token)
+	return s.authenticateObjectSidecar(w, r, runID, token, action)
 }
 
-func (s *Server) authenticateObjectAgent(w http.ResponseWriter, r *http.Request, runID string) (objectRequester, bool) {
+func (s *Server) authenticateObjectAgent(w http.ResponseWriter, r *http.Request, runID, action string) (objectRequester, bool) {
 	principal, status, _ := s.authenticateAgentBearer(r)
 	if status != 0 {
 		if status == http.StatusServiceUnavailable {
@@ -86,13 +93,13 @@ func (s *Server) authenticateObjectAgent(w http.ResponseWriter, r *http.Request,
 	case runWriteNotFound:
 		writeObjectError(w, http.StatusNotFound, api.ObjectErrNotFound, "run not found")
 	default:
-		s.auditPresign(r, req, runID, nil, http.StatusForbidden)
+		s.auditPresignAction(r, req, action, runID, nil, http.StatusForbidden)
 		writeObjectError(w, http.StatusForbidden, api.ObjectErrForbidden, "run "+runID+" is claimed by another agent")
 	}
 	return objectRequester{}, false
 }
 
-func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Request, runID, token string) (objectRequester, bool) {
+func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Request, runID, token, action string) (objectRequester, bool) {
 	// The TokenReview is a call to the cluster API: bound the rate per client
 	// address before doing any work.
 	if s.presignLimiter != nil && !s.presignLimiter.allow(r, presignRateProvider, "sidecar") {
@@ -116,7 +123,7 @@ func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Reques
 	}
 	req := objectRequester{PodUID: identity.PodUID}
 	if !contains(cluster.Namespaces, identity.Namespace) || !contains(cluster.ServiceAccounts, identity.ServiceAccount) {
-		s.auditPresign(r, req, runID, nil, http.StatusForbidden)
+		s.auditPresignAction(r, req, action, runID, nil, http.StatusForbidden)
 		writeObjectError(w, http.StatusForbidden, api.ObjectErrForbidden, "this namespace or service account may not request object URLs")
 		return objectRequester{}, false
 	}
@@ -135,7 +142,7 @@ func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Reques
 		return objectRequester{}, false
 	}
 	if binding.PodUID != identity.PodUID {
-		s.auditPresign(r, req, runID, nil, http.StatusForbidden)
+		s.auditPresignAction(r, req, action, runID, nil, http.StatusForbidden)
 		writeObjectError(w, http.StatusForbidden, api.ObjectErrForbidden, "the presented pod is not the one bound to this run")
 		return objectRequester{}, false
 	}
