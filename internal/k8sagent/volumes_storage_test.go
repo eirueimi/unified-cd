@@ -97,8 +97,8 @@ func TestK8sStorage_MeasuresEachMountedVolume(t *testing.T) {
 
 	before := time.Now()
 	measure(a,
-		PodVolume{Name: "go-cache", ClaimName: "agent1-go-cache", MountPath: ".ucd-cache/go"},
-		PodVolume{Name: "tool-cache", ClaimName: "agent1-tool-cache", MountPath: "/root/.cache"},
+		PodVolume{Name: "go-cache", ClaimName: "agent1.go-cache", MountPath: ".ucd-cache/go"},
+		PodVolume{Name: "tool-cache", ClaimName: "agent1.tool-cache", MountPath: "/root/.cache"},
 	)
 	after := time.Now()
 
@@ -123,7 +123,7 @@ func TestK8sStorage_MeasuresARootVolumeAtTheWorkspace(t *testing.T) {
 	ex := &statfsExec{out: map[string]string{"/workspace": reading(5, 50)}}
 	a := storageAgent(ex)
 
-	measure(a, PodVolume{Name: "unity-main", ClaimName: "agent1-unity-main", MountPath: "."})
+	measure(a, PodVolume{Name: "unity-main", ClaimName: "agent1.unity-main", MountPath: "."})
 
 	got := a.storageReading().Volumes
 	require.Contains(t, got, "unity-main")

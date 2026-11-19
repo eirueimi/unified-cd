@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -112,6 +113,17 @@ func oidcScopes(rolesClaim string, override []string) []string {
 // The auth URL sent to the browser remains the external Issuer URL.
 // The returned ctx has the transport injected and can be passed directly to Exchange / Verify.
 func (s *Server) oidcProvider(ctx context.Context, host string) (context.Context, *oidc.Provider, *oauth2.Config, error) {
+	ctx = s.oidcHTTPContext(ctx)
+	provider, err := oidc.NewProvider(ctx, s.oidcCfg.Issuer)
+	if err != nil {
+		return ctx, nil, nil, fmt.Errorf("OIDC provider discovery: %w", err)
+	}
+	return ctx, provider, s.oauth2Config(provider, host), nil
+}
+
+// oidcHTTPContext injects the IssuerInternal rewriting HTTP client into ctx
+// when one is configured.
+func (s *Server) oidcHTTPContext(ctx context.Context) context.Context {
 	if s.oidcCfg.IssuerInternal != "" {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, &http.Client{
 			Transport: &hostRewriteTransport{
@@ -120,24 +132,149 @@ func (s *Server) oidcProvider(ctx context.Context, host string) (context.Context
 			},
 		})
 	}
-	provider, err := oidc.NewProvider(ctx, s.oidcCfg.Issuer)
-	if err != nil {
-		return ctx, nil, nil, fmt.Errorf("OIDC provider discovery: %w", err)
-	}
+	return ctx
+}
+
+// oauth2Config builds the per-request OAuth client config for a discovered
+// provider. The redirect URL depends on the request host, so it is never cached.
+func (s *Server) oauth2Config(provider *oidc.Provider, host string) *oauth2.Config {
 	redirectBase := "http://" + host
 	if s.oidcCfg.ExternalURL != "" {
 		redirectBase = strings.TrimRight(s.oidcCfg.ExternalURL, "/")
 	}
 	redirectURL := redirectBase + "/api/v1/auth/oidc-callback"
 	scopes := oidcScopes(s.oidcCfg.RolesClaim, s.oidcCfg.Scopes)
-	cfg := &oauth2.Config{
+	return &oauth2.Config{
 		ClientID:     s.oidcCfg.ClientID,
 		ClientSecret: s.oidcCfg.ClientSecret,
 		RedirectURL:  redirectURL,
 		Scopes:       scopes,
 		Endpoint:     provider.Endpoint(),
 	}
-	return ctx, provider, cfg, nil
+}
+
+// relayDiscoveryTTL is how long a successful IdP discovery is reused by the
+// CLI relay and the CLI browser-login endpoints; relayDiscoveryTimeout bounds
+// one discovery request.
+const (
+	relayDiscoveryTTL     = 10 * time.Minute
+	relayDiscoveryTimeout = 10 * time.Second
+)
+
+// discoveryFlight is one in-progress discovery shared by all waiting callers.
+type discoveryFlight struct {
+	key      string
+	done     chan struct{}
+	provider *oidc.Provider
+	err      error
+}
+
+// relayDiscoveryCache holds the last successful discovery. It is keyed by the
+// issuer pair, so a config swap never serves a stale provider. Failures are
+// never stored. Cache hits take only a read lock; the lock is never held
+// during I/O. The zero value is ready to use; now and timeout are replaceable
+// in tests.
+type relayDiscoveryCache struct {
+	mu       sync.RWMutex
+	now      func() time.Time
+	timeout  time.Duration
+	key      string
+	provider *oidc.Provider
+	at       time.Time
+	flight   *discoveryFlight
+}
+
+func (c *relayDiscoveryCache) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+// fresh returns the cached provider for key when it is still valid. The caller
+// holds mu.
+func (c *relayDiscoveryCache) fresh(key string) *oidc.Provider {
+	if c.provider != nil && c.key == key && c.clock().Sub(c.at) < relayDiscoveryTTL {
+		return c.provider
+	}
+	return nil
+}
+
+// get returns the cached provider or runs discover once for all concurrent
+// callers. The shared discovery runs on its own context (see discover), so a
+// caller that gives up only stops waiting: it returns ctx.Err() and the
+// discovery carries on for the others.
+func (c *relayDiscoveryCache) get(ctx context.Context, key string, discover func(context.Context) (*oidc.Provider, error)) (*oidc.Provider, error) {
+	c.mu.RLock()
+	p := c.fresh(key)
+	c.mu.RUnlock()
+	if p != nil {
+		return p, nil
+	}
+
+	c.mu.Lock()
+	if p := c.fresh(key); p != nil {
+		c.mu.Unlock()
+		return p, nil
+	}
+	f := c.flight
+	if f == nil || f.key != key {
+		f = &discoveryFlight{key: key, done: make(chan struct{})}
+		c.flight = f
+		timeout := c.timeout
+		if timeout <= 0 {
+			timeout = relayDiscoveryTimeout
+		}
+		go func() {
+			dctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			provider, err := func() (p *oidc.Provider, err error) {
+				// A panic in discover must not leave the flight open: every
+				// waiter would block until its own context ended.
+				defer func() {
+					if r := recover(); r != nil {
+						p, err = nil, fmt.Errorf("OIDC discovery panic: %v", r)
+					}
+				}()
+				return discover(dctx)
+			}()
+			c.mu.Lock()
+			if err == nil {
+				c.provider, c.key, c.at = provider, key, c.clock()
+			}
+			if c.flight == f {
+				c.flight = nil
+			}
+			c.mu.Unlock()
+			f.provider, f.err = provider, err
+			close(f.done)
+		}()
+	}
+	c.mu.Unlock()
+
+	select {
+	case <-f.done:
+		return f.provider, f.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// relayProvider is oidcProvider backed by a 10-minute cache of successful
+// discovery. Concurrent callers share one discovery request, bounded by its own
+// 10 s timeout and independent of any caller's request context. The
+// oauth2.Config is rebuilt per call because its RedirectURL depends on host.
+func (s *Server) relayProvider(ctx context.Context, host string) (context.Context, *oidc.Provider, *oauth2.Config, error) {
+	ctx = s.oidcHTTPContext(ctx)
+	issuer := s.oidcCfg.Issuer
+	key := issuer + "\x00" + s.oidcCfg.IssuerInternal
+	provider, err := s.relayDisc.get(ctx, key, func(dctx context.Context) (*oidc.Provider, error) {
+		return oidc.NewProvider(s.oidcHTTPContext(dctx), issuer)
+	})
+	if err != nil {
+		return ctx, nil, nil, fmt.Errorf("OIDC provider discovery: %w", err)
+	}
+	return ctx, provider, s.oauth2Config(provider, host), nil
 }
 
 // verifierProvider returns the lazily initialised, cached provider used to
@@ -299,7 +436,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// the state. This runs before the IdP-error branch and the token exchange so
 	// a refused request never reaches the loopback and never spends the IdP code.
 	if savedState.CLIRedirect != "" {
-		c, cerr := r.Cookie(cliCallbackCookie)
+		c, cerr := r.Cookie(s.cliCookieName(cliCallbackCookie))
 		if cerr != nil || c.Value == "" || savedState.CLICallbackHash == "" ||
 			subtle.ConstantTimeCompare([]byte(hashCLICode(c.Value)), []byte(savedState.CLICallbackHash)) != 1 {
 			http.SetCookie(w, s.cliCallbackCookieFor("", -1))

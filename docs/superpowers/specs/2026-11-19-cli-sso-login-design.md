@@ -144,6 +144,9 @@ The relay is stateless. Nothing is stored except the browser-login one-time code
      only its SHA-256 is stored with the state (`cli_confirm_hash`). A start link planted
      by another local program cannot be continued without the cookie of the browser that
      opened it.
+     (Follow-up: when cookies are Secure, both cookies are named `__Host-ucd_cli_login` and
+     `__Host-ucd_cli_cb` with `Path=/` and no `Domain`; the plain names and narrow paths
+     below apply only with insecure cookies.)
    - `POST /api/v1/auth/cli/browser/continue` (unauthenticated, rate limited) checks that
      cookie against the stored hash in constant time (403 `confirmation required: ...`
      otherwise). It then generates a second nonce, stores its SHA-256 on the state

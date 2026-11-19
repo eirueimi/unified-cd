@@ -2967,7 +2967,7 @@ func (p *Postgres) SetCLIOIDCStateCallbackHash(ctx context.Context, state, hash 
 		return fmt.Errorf("set cli oidc state callback hash: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return errors.New("set cli oidc state callback hash: state not found")
+		return fmt.Errorf("set cli oidc state callback hash: %w", ErrCLIStateNotFound)
 	}
 	return nil
 }

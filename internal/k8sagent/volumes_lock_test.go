@@ -230,7 +230,7 @@ func TestVolumeLock_TwoReplicasCannotBothTakeAFreeVolume(t *testing.T) {
 	pods, err := cs.CoreV1().Pods(testVolNS).List(context.Background(), metav1.ListOptions{})
 	require.NoError(t, err)
 	require.Len(t, pods.Items, 1, "exactly one run pod may exist for an exclusive volume")
-	assert.Equal(t, winner.run, pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy))
+	assert.Equal(t, winner.run, pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy))
 
 	// When the winner ends (pod gone, lock released) the loser gets its turn.
 	require.NoError(t, cs.CoreV1().Pods(testVolNS).Delete(context.Background(), winner.res.pod.Name, metav1.DeleteOptions{}))
@@ -239,7 +239,7 @@ func TestVolumeLock_TwoReplicasCannotBothTakeAFreeVolume(t *testing.T) {
 	case r := <-results:
 		require.NoError(t, r.err)
 		assert.NotEqual(t, winner.run, r.run)
-		assert.Equal(t, r.run, pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy))
+		assert.Equal(t, r.run, pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy))
 	case <-time.After(10 * time.Second):
 		t.Fatal("the waiting replica never got the volume after the holder released it")
 	}
@@ -250,7 +250,7 @@ func TestVolumeLock_ALostRaceFallsThroughToTheNextCandidate(t *testing.T) {
 	ctl := newControllerStub(t)
 	// Another replica holds cache-1 and has not created its pod yet, so the pod
 	// labels call cache-1 free.
-	setLock(t, cs, "agent1-cache-1", "other-run", time.Now())
+	setLock(t, cs, "agent1.cache-1", "other-run", time.Now())
 	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")},
 		[]api.DesiredVolume{vcfg("cache-1", "exclusive", "1Gi"), vcfg("cache-2", "exclusive", "1Gi")})
 
@@ -265,9 +265,9 @@ func TestVolumeLock_ALostRaceFallsThroughToTheNextCandidate(t *testing.T) {
 			claims = append(claims, v.PersistentVolumeClaim.ClaimName)
 		}
 	}
-	assert.Equal(t, []string{"agent1-cache-2"}, claims)
-	assert.Equal(t, "other-run", pvcAnnotation(t, cs, "agent1-cache-1", annoVolumeHeldBy), "the other run's lock is untouched")
-	assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1-cache-2", annoVolumeHeldBy))
+	assert.Equal(t, []string{"agent1.cache-2"}, claims)
+	assert.Equal(t, "other-run", pvcAnnotation(t, cs, "agent1.cache-1", annoVolumeHeldBy), "the other run's lock is untouched")
+	assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1.cache-2", annoVolumeHeldBy))
 }
 
 func TestVolumeLock_ConflictingUpdateIsRetriedNotLost(t *testing.T) {
@@ -276,7 +276,7 @@ func TestVolumeLock_ConflictingUpdateIsRetriedNotLost(t *testing.T) {
 	cs.PrependReactor("update", "persistentvolumeclaims", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		if injected.Add(1) == 1 {
 			// An unrelated writer (the provisioner binding the claim) got in first.
-			return true, nil, apierrors.NewConflict(pvcResource.GroupResource(), "agent1-unity-main", errors.New("modified"))
+			return true, nil, apierrors.NewConflict(pvcResource.GroupResource(), "agent1.unity-main", errors.New("modified"))
 		}
 		return false, nil, nil
 	})
@@ -286,7 +286,7 @@ func TestVolumeLock_ConflictingUpdateIsRetriedNotLost(t *testing.T) {
 	ok, err := a.lockVolume(context.Background(), "unity-main", "run-a")
 	require.NoError(t, err)
 	assert.True(t, ok, "a conflict with nobody holding the lock is re-read and retried")
-	assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy))
+	assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy))
 }
 
 func TestVolumeLock_StaleHolders(t *testing.T) {
@@ -315,7 +315,7 @@ func TestVolumeLock_StaleHolders(t *testing.T) {
 				_, err := cs.CoreV1().Pods(testVolNS).Create(context.Background(), tc.pod, metav1.CreateOptions{})
 				require.NoError(t, err)
 			}
-			setLock(t, cs, "agent1-unity-main", "dead", tc.at)
+			setLock(t, cs, "agent1.unity-main", "dead", tc.at)
 			ctl := newControllerStub(t)
 			a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 
@@ -323,9 +323,9 @@ func TestVolumeLock_StaleHolders(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.expect, ok)
 			if tc.expect {
-				assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy))
+				assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy))
 			} else {
-				assert.Equal(t, "dead", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy))
+				assert.Equal(t, "dead", pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy))
 			}
 		})
 	}
@@ -335,10 +335,10 @@ func TestVolumeLock_UnlockLeavesAnotherRunsLockAlone(t *testing.T) {
 	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
 	ctl := newControllerStub(t)
 	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
-	setLock(t, cs, "agent1-unity-main", "someone-else", time.Now())
+	setLock(t, cs, "agent1.unity-main", "someone-else", time.Now())
 
 	require.NoError(t, a.unlockVolume(context.Background(), "unity-main", "run-a"))
-	assert.Equal(t, "someone-else", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy))
+	assert.Equal(t, "someone-else", pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy))
 }
 
 func TestVolumeLock_SharedVolumesAreNeverLocked(t *testing.T) {
@@ -347,7 +347,7 @@ func TestVolumeLock_SharedVolumesAreNeverLocked(t *testing.T) {
 	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []api.DesiredVolume{vcfg("go-cache", "shared", "1Gi")})
 	res, err := a.createClaimPod(context.Background(), claimFor("run-a", mount("go-cache", "", ".cache")))
 	require.NoError(t, err)
-	assert.Empty(t, pvcAnnotation(t, cs, "agent1-go-cache", annoVolumeHeldBy))
+	assert.Empty(t, pvcAnnotation(t, cs, "agent1.go-cache", annoVolumeHeldBy))
 	res.release(context.Background())
 }
 
@@ -358,15 +358,15 @@ func TestExecuteRun_HoldsTheVolumeLockForTheRunAndReleasesItAfter(t *testing.T) 
 	f := newVolFixture(t, []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")})
 	var during string
 	f.a.exec = &podCapturingExec{inner: f.ex, onExec: func() {
-		during = pvcAnnotation(t, f.cs, "agent1-unity-main", annoVolumeHeldBy)
+		during = pvcAnnotation(t, f.cs, "agent1.unity-main", annoVolumeHeldBy)
 	}}
 
 	f.a.executeRun(context.Background(), f.claim([]dsl.VolumeMount{mount("unity-main", "", ".")}))
 	require.Equal(t, api.RunSucceeded, f.waitFinish(t))
 
 	assert.Equal(t, f.runID, during)
-	assert.Empty(t, pvcAnnotation(t, f.cs, "agent1-unity-main", annoVolumeHeldBy), "the lock is released when the run ends")
-	assert.Empty(t, pvcAnnotation(t, f.cs, "agent1-unity-main", annoVolumeHeldAt))
+	assert.Empty(t, pvcAnnotation(t, f.cs, "agent1.unity-main", annoVolumeHeldBy), "the lock is released when the run ends")
+	assert.Empty(t, pvcAnnotation(t, f.cs, "agent1.unity-main", annoVolumeHeldAt))
 }
 
 // onCreatePM runs hook once, just before the first CreatePod: the moment a
@@ -405,7 +405,7 @@ func TestVolumeLock_LockStolenDuringACreateIsNotKeptByThePod(t *testing.T) {
 	vols := []api.DesiredVolume{vcfg("unity-main", "exclusive", "1Gi")}
 	pm := &onCreatePM{podManager: volPM{NewPodManager(cs, testVolNS, "img")}}
 	// Replica B judges A's lock stale and takes it over while A's create is in flight.
-	pm.hook = func() { setLock(t, cs, "agent1-unity-main", "run-b", time.Now()) }
+	pm.hook = func() { setLock(t, cs, "agent1.unity-main", "run-b", time.Now()) }
 	a := lockReplica(cs, ctl.srv.URL, pm, vols)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -428,7 +428,7 @@ func TestVolumeLock_LockStolenDuringACreateIsNotKeptByThePod(t *testing.T) {
 	pods, err := cs.CoreV1().Pods(testVolNS).List(context.Background(), metav1.ListOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, pods.Items, "the pod made under a lock that was lost is deleted")
-	assert.Equal(t, "run-b", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy), "the other run's lock is untouched")
+	assert.Equal(t, "run-b", pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy), "the other run's lock is untouched")
 
 	// run-b finishes and releases; run-a, which has been waiting, gets its turn.
 	require.NoError(t, (&K8sAgent{cfg: a.cfg, kube: cs, pm: pm}).unlockVolume(context.Background(), "unity-main", "run-b"))
@@ -436,7 +436,7 @@ func TestVolumeLock_LockStolenDuringACreateIsNotKeptByThePod(t *testing.T) {
 	case r := <-done:
 		require.NoError(t, r.err)
 		require.NotNil(t, r.res.pod)
-		assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy))
+		assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy))
 	case <-time.After(10 * time.Second):
 		t.Fatal("run-a never got the volume once run-b released it")
 	}
@@ -457,7 +457,7 @@ func TestVolumeLock_ConfirmationIsACompareAndSwapThatInvalidatesARivalsPendingWr
 	// After A's pod commits and before A hears about it, B reads the claim and
 	// is thereby holding the resourceVersion A's lock write produced.
 	pm.after = func() {
-		p, err := cs.CoreV1().PersistentVolumeClaims(testVolNS).Get(context.Background(), "agent1-unity-main", metav1.GetOptions{})
+		p, err := cs.CoreV1().PersistentVolumeClaims(testVolNS).Get(context.Background(), "agent1.unity-main", metav1.GetOptions{})
 		require.NoError(t, err)
 		bsView = p
 	}
@@ -473,7 +473,7 @@ func TestVolumeLock_ConfirmationIsACompareAndSwapThatInvalidatesARivalsPendingWr
 	_, err = cs.CoreV1().PersistentVolumeClaims(testVolNS).Update(context.Background(), bsView, metav1.UpdateOptions{})
 	require.Error(t, err, "B's takeover must not succeed after A confirmed")
 	assert.True(t, apierrors.IsConflict(err), "got %v", err)
-	assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy))
+	assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy))
 }
 
 // If the rival's write lands between A's read and A's confirming write, A's
@@ -507,7 +507,7 @@ func TestVolumeLock_ConfirmationConflictReReadsAndLosesToTheWinner(t *testing.T)
 	pods, perr := cs.CoreV1().Pods(testVolNS).List(context.Background(), metav1.ListOptions{})
 	require.NoError(t, perr)
 	assert.Empty(t, pods.Items, "the loser's pod is deleted")
-	assert.Equal(t, "run-b", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy))
+	assert.Equal(t, "run-b", pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy))
 }
 
 type stallOnceCreatePM struct {
@@ -542,7 +542,7 @@ func TestVolumeLock_ACreateThatTimesOutIsRetriedNotFatal(t *testing.T) {
 	require.NotNil(t, res.pod)
 	assert.Equal(t, int32(2), pm.n.Load())
 	assert.Less(t, time.Since(start), 5*time.Second)
-	assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy), "the retry holds the lock again")
+	assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy), "the retry holds the lock again")
 
 	// The run log says what happened, not that another run holds the volume.
 	log := ctl.logText("run-a")
@@ -580,7 +580,7 @@ func TestVolumeLock_APodCreateThatNeverLandsFailsTheRunWithTheTrueReason(t *test
 	assert.Contains(t, err.Error(), "did not complete in 5 consecutive attempts")
 	assert.Contains(t, err.Error(), "already exists", "the last cause is carried")
 	assert.Equal(t, int32(maxCreateAttempts), pm.n.Load(), "exactly maxCreateAttempts creates were tried")
-	assert.Empty(t, pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy), "a failed run holds no lock")
+	assert.Empty(t, pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy), "a failed run holds no lock")
 
 	log := ctl.logText("run-a")
 	assert.Contains(t, log, "attempt 1 of 5")
@@ -766,7 +766,7 @@ func TestExecuteRun_ReleasesTheLockWhenThePodCannotBeCreated(t *testing.T) {
 
 	f.a.executeRun(context.Background(), f.claim([]dsl.VolumeMount{mount("unity-main", "", ".")}))
 	require.Equal(t, api.RunFailed, f.waitFinish(t))
-	assert.Empty(t, pvcAnnotation(t, f.cs, "agent1-unity-main", annoVolumeHeldBy), "a lock must not outlive a pod that was never created")
+	assert.Empty(t, pvcAnnotation(t, f.cs, "agent1.unity-main", annoVolumeHeldBy), "a lock must not outlive a pod that was never created")
 }
 
 // TestRun_VolumeWaitIsAbandonedOnDrain is the Kubernetes twin of the host
@@ -839,7 +839,7 @@ func TestRun_VolumeWaitIsAbandonedOnDrain(t *testing.T) {
 	pods, err := cs.CoreV1().Pods(testVolNS).List(context.Background(), metav1.ListOptions{})
 	require.NoError(t, err)
 	assert.Len(t, pods.Items, 1, "an abandoned run must not create a pod")
-	assert.Empty(t, pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy), "a waiting run holds no lock")
+	assert.Empty(t, pvcAnnotation(t, cs, "agent1.unity-main", annoVolumeHeldBy), "a waiting run holds no lock")
 
 	select {
 	case <-done:

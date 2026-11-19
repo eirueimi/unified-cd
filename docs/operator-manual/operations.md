@@ -271,7 +271,7 @@ controller that is unreachable never causes a reclaim: the agent keeps its last 
 
 **Kubernetes agents.**
 
-- Each volume is a PVC named `<agentName>-<volume>`, created when the controller delivers its
+- Each volume is a PVC named `<agentName>.<volume>`, created when the controller delivers its
   `AgentVolume` and **never resized by the agent**. A volume that leaves the set stops being
   advertised. With `reclaimPolicy: Retain` (the default) its PVC stays, logged once (`k8s: volume
   is no longer in the delivered set and no run holds it; its PVC is left in place (reclaimPolicy
@@ -777,7 +777,7 @@ a series that is not there is not a zero. The cases:
   firing low-disk alert** for that volume, and nothing fires again until a run happens to mount it.
 
 **Aggregate Kubernetes volumes before alerting.** Several Kubernetes agent replicas share one set of
-PVCs, named `<agentName>-<volume>`, but each replica enrols under its own agent ID. One physical
+PVCs, named `<agentName>.<volume>`, but each replica enrols under its own agent ID. One physical
 volume therefore appears as several series, one per replica, each with its own age. An alert on the
 raw series fires once per replica. Aggregate on the labels that identify the physical volume:
 

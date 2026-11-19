@@ -26,7 +26,7 @@ poolIdleTimeout: ""
 # file makes the agent refuse to start. See docs/operator-manual/kubernetes-integration.md,
 # "Named volumes".
 #
-# Each AgentVolume becomes a PVC named <agentName>-<volume>. agentName must stay the same across
+# Each AgentVolume becomes a PVC named <agentName>.<volume>. agentName must stay the same across
 # restarts; it is not the enrolled agent ID. It is required for the agent to provision any
 # volume, and never change it while a volume holds data: the PVC names derive from it, so a new
 # name provisions new, empty PVCs and orphans the old ones. It must be a DNS label (lowercase
@@ -73,7 +73,7 @@ poolIdleTimeout: ""
 #   allowSecrets: []                # Secrets a job may read (secretKeyRef, secretRef, secret
 #                                   # volumes); may not name sidecarS3SecretName
 #   allowImagePullSecrets: []       # imagePullSecrets a job may name
-#   allowPersistentVolumeClaims: [] # claimName values; may not name <agentName>-<volume>
+#   allowPersistentVolumeClaims: [] # claimName values; may not name <agentName>.<volume>
 #   allowHostAccess: false          # hostPath, hostNetwork/hostPID/hostIPC, hostPort, probe hosts
 #   allowPrivileged: false          # privileged, non-baseline capabilities, procMount, sysctls, ...
 #   allowUnconfinedProfiles: false  # seccomp / AppArmor Unconfined (e.g. rootless BuildKit)

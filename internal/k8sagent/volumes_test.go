@@ -40,7 +40,7 @@ func listPVCs(t *testing.T, cs *fake.Clientset) map[string]corev1.PersistentVolu
 func claimPod(name, agent string, phase corev1.PodPhase, volumes ...string) *corev1.Pod {
 	labels := map[string]string{"app": "unified-cd-agent"}
 	for _, v := range volumes {
-		labels[volumeLabelPrefix+agent+"-"+v] = v
+		labels[volumeLabelPrefix+v] = agent
 	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testVolNS, Labels: labels},
@@ -87,7 +87,7 @@ func TestBusyVolumes_NothingHeldIsEmptyNotNil(t *testing.T) {
 // is not.
 func TestBusyVolumes_ReadsWhatBuildPodLabels(t *testing.T) {
 	pod, err := BuildPod("run-abc123", testVolNS, nil, nil, "img", SidecarSpec{}, testShimImage, []PodVolume{
-		{Name: "go-cache", ClaimName: "agent1-go-cache", MountPath: ".ucd-cache/go"},
+		{Name: "go-cache", ClaimName: "agent1.go-cache", Agent: "agent1", MountPath: ".ucd-cache/go"},
 	})
 	require.NoError(t, err)
 	cs := fake.NewSimpleClientset(pod)
@@ -99,9 +99,9 @@ func TestBusyVolumes_ReadsWhatBuildPodLabels(t *testing.T) {
 
 func TestBuildPod_MountsNamedVolumes(t *testing.T) {
 	vols := []PodVolume{
-		{Name: "unity-main", ClaimName: "agent1-unity-main", MountPath: "."},
-		{Name: "go-cache", ClaimName: "agent1-go-cache", MountPath: ".ucd-cache/go"},
-		{Name: "tool-cache", ClaimName: "agent1-tool-cache", MountPath: "/root/.cache"},
+		{Name: "unity-main", ClaimName: "agent1.unity-main", Agent: "agent1", MountPath: "."},
+		{Name: "go-cache", ClaimName: "agent1.go-cache", Agent: "agent1", MountPath: ".ucd-cache/go"},
+		{Name: "tool-cache", ClaimName: "agent1.tool-cache", Agent: "agent1", MountPath: "/root/.cache"},
 	}
 	jobTmpl := &dsl.PodTemplate{Spec: map[string]any{
 		"containers": []any{
@@ -121,7 +121,7 @@ func TestBuildPod_MountsNamedVolumes(t *testing.T) {
 	ws := volByName["workspace"]
 	require.NotNil(t, ws.PersistentVolumeClaim, "a volume at . replaces the workspace emptyDir")
 	assert.Nil(t, ws.EmptyDir)
-	assert.Equal(t, "agent1-unity-main", ws.PersistentVolumeClaim.ClaimName)
+	assert.Equal(t, "agent1.unity-main", ws.PersistentVolumeClaim.ClaimName)
 
 	// Every container sees every mount, the sidecar included, so an artifact or
 	// cache path inside a volume reads the volume and not an empty mountpoint.
@@ -140,8 +140,8 @@ func TestBuildPod_MountsNamedVolumes(t *testing.T) {
 			assert.Equal(t, mp, got[name], "container %s mount %s", c.Name, name)
 		}
 	}
-	assert.Equal(t, "agent1-go-cache", volByName["ucd-vol-1"].PersistentVolumeClaim.ClaimName)
-	assert.Equal(t, "agent1-tool-cache", volByName["ucd-vol-2"].PersistentVolumeClaim.ClaimName)
+	assert.Equal(t, "agent1.go-cache", volByName["ucd-vol-1"].PersistentVolumeClaim.ClaimName)
+	assert.Equal(t, "agent1.tool-cache", volByName["ucd-vol-2"].PersistentVolumeClaim.ClaimName)
 
 	// The workspace mount comes before anything nested inside it.
 	idx := map[string]int{}
@@ -151,9 +151,9 @@ func TestBuildPod_MountsNamedVolumes(t *testing.T) {
 	assert.Less(t, idx["workspace"], idx["ucd-vol-1"])
 
 	// The pod is labelled with what it holds; that label is what BusyVolumes reads.
-	assert.Equal(t, "unity-main", pod.Labels[volumeLabelPrefix+"agent1-unity-main"])
-	assert.Equal(t, "go-cache", pod.Labels[volumeLabelPrefix+"agent1-go-cache"])
-	assert.Equal(t, "tool-cache", pod.Labels[volumeLabelPrefix+"agent1-tool-cache"])
+	assert.Equal(t, "agent1", pod.Labels[volumeLabelPrefix+"unity-main"])
+	assert.Equal(t, "agent1", pod.Labels[volumeLabelPrefix+"go-cache"])
+	assert.Equal(t, "agent1", pod.Labels[volumeLabelPrefix+"tool-cache"])
 	assert.Equal(t, "unified-cd-agent", pod.Labels["app"], "the pod GC still finds the pod")
 }
 
@@ -163,7 +163,7 @@ func TestBuildPod_MountsVolumesRelativeToACustomWorkspace(t *testing.T) {
 		Spec:      map[string]any{"containers": []any{map[string]any{"name": "job", "image": "golang"}}},
 	}
 	pod, err := BuildPod("run-abc123", testVolNS, nil, jobTmpl, "img", SidecarSpec{}, testShimImage, []PodVolume{
-		{Name: "go-cache", ClaimName: "agent1-go-cache", MountPath: "cache/go"},
+		{Name: "go-cache", ClaimName: "agent1.go-cache", Agent: "agent1", MountPath: "cache/go"},
 	})
 	require.NoError(t, err)
 	got := map[string]string{}

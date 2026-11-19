@@ -9,7 +9,7 @@
 #
 # Agents pick up a new or changed AgentVolume on their next heartbeat (about 15 seconds).
 # A host agent keeps the data at <workspaceDir>/volumes/<name>; a Kubernetes agent creates a PVC
-# named <agentName>-<name>. Both reuse an existing directory or PVC with that name as it is.
+# named <agentName>.<name>. Both reuse an existing directory or PVC with that name as it is.
 
 # ── A shared Go build/module cache on every agent ────────────────────────
 apiVersion: unified-cd/v1

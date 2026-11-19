@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -9,10 +10,12 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,13 +34,29 @@ type relayIdP struct {
 	tokenForms []url.Values
 	revokeForm url.Values
 	tokenFn    func(form url.Values) (int, any)
+
+	discoveryCalls atomic.Int32
+	discoveryGate  chan struct{} // when non-nil, discovery waits until it is closed
+	failDiscovery  atomic.Bool
 }
 
 func newRelayIdP(t *testing.T, withRevoke bool) *relayIdP {
 	t.Helper()
 	p := &relayIdP{testIssuer: newTestIssuer(t)}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		p.discoveryCalls.Add(1)
+		if g := p.discoveryGate; g != nil {
+			select {
+			case <-g:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		if p.failDiscovery.Load() {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
 		doc := map[string]any{
 			"issuer":                                p.URL,
 			"authorization_endpoint":                p.URL + "/auth",
@@ -387,4 +406,170 @@ func TestCLIRelay_ErrorCodeRestrictedToLowerUnderscore(t *testing.T) {
 		assert.NotContains(t, rec.Body.String(), bad)
 		assert.Contains(t, rec.Body.String(), "server_error")
 	}
+}
+
+func TestCLIRelay_DiscoveryIsCachedForTenMinutes(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, relaySecret)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	s.relayDisc.now = func() time.Time { return now }
+
+	for i := 0; i < 2; i++ {
+		rec := relayPost(s, "/api/v1/auth/cli/device/start", struct{}{})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	}
+	assert.Equal(t, int32(1), p.discoveryCalls.Load(), "second call within the TTL reuses the discovery")
+
+	now = now.Add(9*time.Minute + 59*time.Second)
+	require.Equal(t, http.StatusOK, relayPost(s, "/api/v1/auth/cli/device/start", struct{}{}).Code)
+	assert.Equal(t, int32(1), p.discoveryCalls.Load())
+
+	now = now.Add(2 * time.Second)
+	require.Equal(t, http.StatusOK, relayPost(s, "/api/v1/auth/cli/device/start", struct{}{}).Code)
+	assert.Equal(t, int32(2), p.discoveryCalls.Load(), "discovery runs again after the TTL")
+}
+
+func TestCLIRelay_FailedDiscoveryIsNotCached(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, relaySecret)
+	p.failDiscovery.Store(true)
+	rec := relayPost(s, "/api/v1/auth/cli/device/start", struct{}{})
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Equal(t, int32(1), p.discoveryCalls.Load())
+
+	p.failDiscovery.Store(false)
+	rec = relayPost(s, "/api/v1/auth/cli/device/start", struct{}{})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, int32(2), p.discoveryCalls.Load(), "the failure was retried")
+}
+
+func TestCLIRelay_DiscoveryCacheKeepsPerRequestRedirectURL(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, relaySecret)
+	_, _, cfgA, err := s.relayProvider(t.Context(), "a.example.com")
+	require.NoError(t, err)
+	_, _, cfgB, err := s.relayProvider(t.Context(), "b.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "http://a.example.com/api/v1/auth/oidc-callback", cfgA.RedirectURL)
+	assert.Equal(t, "http://b.example.com/api/v1/auth/oidc-callback", cfgB.RedirectURL)
+	assert.Equal(t, int32(1), p.discoveryCalls.Load())
+}
+
+func TestCLIRelay_DiscoveryCacheConcurrent(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, relaySecret)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, _, err := s.relayProvider(t.Context(), "h")
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, int32(1), p.discoveryCalls.Load())
+}
+
+// blockingDiscoveryIdP serves discovery only after release is closed.
+func blockingDiscoveryIdP(t *testing.T) (*relayIdP, chan struct{}) {
+	t.Helper()
+	p := newRelayIdP(t, false)
+	release := make(chan struct{})
+	p.discoveryGate = release
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	return p, release
+}
+
+func TestCLIRelay_ConcurrentCallersShareOneDiscovery(t *testing.T) {
+	p, release := blockingDiscoveryIdP(t)
+	s := newRelayServer(t, p, relaySecret)
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, _, err := s.relayProvider(t.Context(), "h")
+			assert.NoError(t, err)
+		}()
+	}
+	require.Eventually(t, func() bool { return p.discoveryCalls.Load() == 1 }, 5*time.Second, 5*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	assert.Equal(t, int32(1), p.discoveryCalls.Load(), "exactly one discovery request for all callers")
+}
+
+func TestCLIRelay_CancelledCallerReturnsWhileDiscoveryContinues(t *testing.T) {
+	p, release := blockingDiscoveryIdP(t)
+	s := newRelayServer(t, p, relaySecret)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	errc := make(chan error, 1)
+	go func() {
+		_, _, _, err := s.relayProvider(ctx, "h")
+		errc <- err
+	}()
+	require.Eventually(t, func() bool { return p.discoveryCalls.Load() == 1 }, 5*time.Second, 5*time.Millisecond)
+	cancel()
+	select {
+	case err := <-errc:
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a cancelled caller must return promptly")
+	}
+
+	// The shared discovery was not cancelled: a second caller gets its result.
+	other := make(chan error, 1)
+	go func() {
+		_, _, _, err := s.relayProvider(t.Context(), "h")
+		other <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	require.NoError(t, <-other)
+	assert.Equal(t, int32(1), p.discoveryCalls.Load())
+}
+
+func TestCLIRelay_HungDiscoveryIsAbandonedAndNotCached(t *testing.T) {
+	p, release := blockingDiscoveryIdP(t)
+	s := newRelayServer(t, p, relaySecret)
+	s.relayDisc.timeout = 150 * time.Millisecond
+
+	start := time.Now()
+	_, _, _, err := s.relayProvider(t.Context(), "h")
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), 3*time.Second, "bounded by the discovery timeout")
+
+	close(release)
+	_, _, _, err = s.relayProvider(t.Context(), "h")
+	require.NoError(t, err, "the failure was not cached")
+	assert.Equal(t, int32(2), p.discoveryCalls.Load())
+}
+
+func TestCLIRelay_PanickingDiscoveryBecomesErrorAndClearsFlight(t *testing.T) {
+	var c relayDiscoveryCache
+	_, err := c.get(t.Context(), "k", func(context.Context) (*oidc.Provider, error) {
+		panic("boom")
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "panic")
+
+	c.mu.RLock()
+	flight := c.flight
+	c.mu.RUnlock()
+	assert.Nil(t, flight, "the flight is cleared")
+
+	// A later call starts a fresh discovery instead of waiting on the dead one.
+	_, err = c.get(t.Context(), "k", func(context.Context) (*oidc.Provider, error) {
+		return nil, assert.AnError
+	})
+	assert.ErrorIs(t, err, assert.AnError)
 }

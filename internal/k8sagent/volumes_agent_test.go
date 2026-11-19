@@ -179,7 +179,7 @@ func TestExecuteRun_ExposesVolumePathsToSteps(t *testing.T) {
 			claims[v.PersistentVolumeClaim.ClaimName] = true
 		}
 	}
-	assert.Equal(t, map[string]bool{"agent1-go-cache": true, "agent1-tool-cache": true}, claims)
+	assert.Equal(t, map[string]bool{"agent1.go-cache": true, "agent1.tool-cache": true}, claims)
 }
 
 // podCapturingExec calls onExec once a step runs, then delegates.
@@ -220,7 +220,7 @@ func TestExecuteRun_PicksAFreeCandidate(t *testing.T) {
 			}
 		}
 	}
-	assert.Equal(t, []string{"agent1-cache-2"}, claims, "the held candidate is skipped, not waited for")
+	assert.Equal(t, []string{"agent1.cache-2"}, claims, "the held candidate is skipped, not waited for")
 
 	f.ex.mu.Lock()
 	defer f.ex.mu.Unlock()
@@ -503,8 +503,8 @@ func TestRun_ReceivesVolumesFromTheHeartbeat(t *testing.T) {
 		}
 	}
 	mu.Unlock()
-	assert.Contains(t, listPVCs(t, cs), "agent1-unity-main")
-	assert.Contains(t, listPVCs(t, cs), "agent1-go-cache")
+	assert.Contains(t, listPVCs(t, cs), "agent1.unity-main")
+	assert.Contains(t, listPVCs(t, cs), "agent1.go-cache")
 }
 
 // srcTemplate is a named AGENT pod template that moves the workspace. The job
@@ -660,7 +660,7 @@ func TestExecuteRun_PrefersAnUngatedCandidate(t *testing.T) {
 
 	claims := claimedPVCs(t, f, []dsl.VolumeMount{{Name: dsl.StringOrSlice{"cache-1", "cache-2"}, As: "cache", MountPath: ".cache"}})
 
-	assert.Equal(t, []string{"agent1-cache-2"}, claims)
+	assert.Equal(t, []string{"agent1.cache-2"}, claims)
 }
 
 // Every candidate gated: the run is already claimed, so it falls back to the
@@ -673,7 +673,7 @@ func TestExecuteRun_FallsBackWhenEveryCandidateIsGated(t *testing.T) {
 
 	claims := claimedPVCs(t, f, []dsl.VolumeMount{{Name: dsl.StringOrSlice{"cache-1", "cache-2"}, As: "cache", MountPath: ".cache"}})
 
-	assert.Equal(t, []string{"agent1-cache-1"}, claims)
+	assert.Equal(t, []string{"agent1.cache-1"}, claims)
 }
 
 // Nothing gated: the first listed free candidate, as before.
@@ -682,5 +682,5 @@ func TestExecuteRun_NothingGatedKeepsListedOrder(t *testing.T) {
 
 	claims := claimedPVCs(t, f, []dsl.VolumeMount{{Name: dsl.StringOrSlice{"cache-1", "cache-2"}, As: "cache", MountPath: ".cache"}})
 
-	assert.Equal(t, []string{"agent1-cache-1"}, claims)
+	assert.Equal(t, []string{"agent1.cache-1"}, claims)
 }

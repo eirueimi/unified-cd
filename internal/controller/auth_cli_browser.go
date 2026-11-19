@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -45,7 +46,8 @@ const (
 	errBrowserLoginNeedsKM = "browser login requires the controller key manager"
 
 	// cliConfirmCookie carries the nonce that binds the continue step to the
-	// browser that opened the start page.
+	// browser that opened the start page. This is the base name; see
+	// cliCookieName for the name actually used.
 	cliConfirmCookie = "ucd_cli_login"
 	cliBrowserPath   = "/api/v1/auth/cli/browser/"
 
@@ -53,6 +55,11 @@ const (
 	// the browser that confirmed.
 	cliCallbackCookie = "ucd_cli_cb"
 	cliCallbackPath   = "/api/v1/auth/oidc-callback"
+
+	// cliHostPrefix makes a browser refuse the cookie unless it is Secure, has
+	// Path=/ and no Domain, so a sibling subdomain or a plain-http page cannot
+	// plant it.
+	cliHostPrefix = "__Host-"
 
 	errCLIConfirmRequired = "confirmation required: open the link printed by unified-cli login --browser on this computer"
 )
@@ -141,12 +148,31 @@ func setCLIPageHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 }
 
+// cliCookieName returns the name a CLI-login cookie is set and read under:
+// base with the __Host- prefix when cookies are Secure, plain otherwise (the
+// prefix requires Secure, so an InsecureCookies deployment cannot use it).
+func (s *Server) cliCookieName(base string) string {
+	if s.cfg.InsecureCookies {
+		return base
+	}
+	return cliHostPrefix + base
+}
+
+// cliCookiePath returns the cookie Path. A __Host- cookie must use "/"; the
+// plain cookies keep their narrow paths.
+func (s *Server) cliCookiePath(narrow string) string {
+	if s.cfg.InsecureCookies {
+		return narrow
+	}
+	return "/"
+}
+
 // cliConfirmCookieFor builds the browser-binding cookie. maxAge < 0 deletes it.
 func (s *Server) cliConfirmCookieFor(value string, maxAge int) *http.Cookie {
 	return &http.Cookie{
-		Name:     cliConfirmCookie,
+		Name:     s.cliCookieName(cliConfirmCookie),
 		Value:    value,
-		Path:     cliBrowserPath,
+		Path:     s.cliCookiePath(cliBrowserPath),
 		MaxAge:   maxAge,
 		HttpOnly: true,
 		Secure:   !s.cfg.InsecureCookies,
@@ -159,9 +185,9 @@ func (s *Server) cliConfirmCookieFor(value string, maxAge int) *http.Cookie {
 // a cross-site top-level GET, which Strict would not carry. maxAge < 0 deletes it.
 func (s *Server) cliCallbackCookieFor(value string, maxAge int) *http.Cookie {
 	return &http.Cookie{
-		Name:     cliCallbackCookie,
+		Name:     s.cliCookieName(cliCallbackCookie),
 		Value:    value,
-		Path:     cliCallbackPath,
+		Path:     s.cliCookiePath(cliCallbackPath),
 		MaxAge:   maxAge,
 		HttpOnly: true,
 		Secure:   !s.cfg.InsecureCookies,
@@ -194,7 +220,7 @@ func (s *Server) handleCLIBrowserStart(w http.ResponseWriter, r *http.Request) {
 	}
 	// Discover the provider now so a misconfigured IdP is reported by the CLI
 	// preflight instead of after the user confirmed.
-	if _, _, _, err := s.oidcProvider(r.Context(), r.Host); err != nil {
+	if _, _, _, err := s.relayProvider(r.Context(), r.Host); err != nil {
 		slog.Warn("cli browser login: provider discovery failed")
 		http.Error(w, "OIDC provider error", http.StatusInternalServerError)
 		return
@@ -247,13 +273,13 @@ func (s *Server) handleCLIBrowserContinue(w http.ResponseWriter, r *http.Request
 		cliPageError(w, "invalid or expired state", http.StatusBadRequest)
 		return
 	}
-	c, err := r.Cookie(cliConfirmCookie)
+	c, err := r.Cookie(s.cliCookieName(cliConfirmCookie))
 	if err != nil || c.Value == "" || st.CLIConfirmHash == "" ||
 		subtle.ConstantTimeCompare([]byte(hashCLICode(c.Value)), []byte(st.CLIConfirmHash)) != 1 {
 		cliPageError(w, errCLIConfirmRequired, http.StatusForbidden)
 		return
 	}
-	_, _, oauth2Cfg, err := s.oidcProvider(r.Context(), r.Host)
+	_, _, oauth2Cfg, err := s.relayProvider(r.Context(), r.Host)
 	if err != nil {
 		slog.Warn("cli browser login: provider discovery failed")
 		cliPageError(w, "OIDC provider error", http.StatusInternalServerError)
@@ -268,6 +294,11 @@ func (s *Server) handleCLIBrowserContinue(w http.ResponseWriter, r *http.Request
 	}
 	cbNonceStr := base64.RawURLEncoding.EncodeToString(cbNonce)
 	if err := s.store.SetCLIOIDCStateCallbackHash(r.Context(), st.State, hashCLICode(cbNonceStr)); err != nil {
+		if errors.Is(err, store.ErrCLIStateNotFound) {
+			// The state expired between the check above and this update.
+			cliPageError(w, "invalid or expired state", http.StatusBadRequest)
+			return
+		}
 		cliPageError(w, "store error", http.StatusInternalServerError)
 		return
 	}

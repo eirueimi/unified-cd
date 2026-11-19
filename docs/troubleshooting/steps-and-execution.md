@@ -507,7 +507,7 @@ timeout (default 5 minutes):
 k8s: run pod did not become ready: waiting for Pod ucd-run-... to become Running: context deadline exceeded ...
 ```
 
-and the volume's PVC (`<agentName>-<volume>`) is stuck `Pending`.
+and the volume's PVC (`<agentName>.<volume>`) is stuck `Pending`.
 
 **Cause**
 
@@ -518,7 +518,7 @@ the PVC when the controller delivers the volume regardless; the cluster cannot b
 
 **Fix**
 
-- `kubectl -n <ns> describe pvc <agentName>-<volume>` shows the provisioner's reason.
+- `kubectl -n <ns> describe pvc <agentName>.<volume>` shows the provisioner's reason.
 - Set `storageClassName` on the volume to an RWX-capable class. The agent **does not change an
   existing PVC** (it logs a mismatch warning): delete the Pending PVC, then restart the agent so it
   is recreated.
