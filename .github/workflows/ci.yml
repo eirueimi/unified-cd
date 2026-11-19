@@ -488,7 +488,7 @@ jobs:
           UNIFIED_TEST_S3_SECRET: garageadmin12345
         run: |
           set -o pipefail
-          go test -tags garage ./internal/objectstore/... -run Garage -count=1 -v 2>&1 | tee garage-test.log
+          go test -tags garage ./internal/objectstore/... ./internal/objtransfer/... -run Garage -count=1 -v 2>&1 | tee garage-test.log
           if grep -q -e '--- SKIP' garage-test.log; then
             echo "a Garage test was skipped although the store is configured"
             exit 1
