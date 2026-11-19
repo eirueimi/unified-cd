@@ -733,6 +733,12 @@ func (a *K8sAgent) storageReading() *api.AgentStorage {
 		// The same decision the claim makes, so the heartbeat never says a
 		// volume is blocked when its stale reading has let a probe run through.
 		v.ClaimBlocked = volumeGated(v, th, now)
+		// A free count above the total is an impossible reading; report no
+		// usage rather than a wrapped-around subtraction.
+		if v.TotalBytes >= v.FreeBytes {
+			used := v.TotalBytes - v.FreeBytes
+			v.UsedBytes = &used
+		}
 		vols[name] = v
 	}
 	return &api.AgentStorage{AgentName: a.cfg.AgentName, Volumes: vols}

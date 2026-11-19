@@ -594,6 +594,7 @@ Key metrics:
 | `unifiedcd_agent_workspace_filesystem_size_bytes{agent}` | gauge | Total bytes of that filesystem |
 | `unifiedcd_agent_volume_filesystem_free_bytes{agent,agent_name,volume}` | gauge | Free bytes on the filesystem backing a [named volume](#named-volume-hygiene) |
 | `unifiedcd_agent_volume_filesystem_size_bytes{agent,agent_name,volume}` | gauge | Total bytes of that filesystem |
+| `unifiedcd_agent_volume_used_bytes{agent,agent_name,volume}` | gauge | Bytes used on a named volume's own filesystem (total minus free), as last measured. **Kubernetes agents only**: their volumes are PVCs with a filesystem of their own. Host agents do not report it |
 | `unifiedcd_agent_volume_measured_timestamp_seconds{agent,agent_name,volume}` | gauge | Unix time at which the agent measured that volume: how old the free/size figures are |
 | `unifiedcd_agent_min_free_disk_bytes{agent}` | gauge | A host agent's `minFreeDisk` **resolved to bytes** (a percentage is applied to the workspace filesystem's size). **`0` means the claim-time disk check is disabled** (explicit `minFreeDisk: 0`), not that the disk is full. Omitted while a percentage cannot be resolved yet (the workspace has not been measured) |
 | `unifiedcd_agent_claim_blocked_by_disk{agent}` | gauge | `1` while a host agent is declining to claim anything because workspace free disk is below `minFreeDisk`, else `0` |
@@ -718,6 +719,7 @@ filesystem's headroom, so do not add them up.
 | `unifiedcd_agent_workspace_filesystem_size_bytes` | `agent` | Host agents |
 | `unifiedcd_agent_volume_filesystem_free_bytes` | `agent`, `agent_name`, `volume` | Both |
 | `unifiedcd_agent_volume_filesystem_size_bytes` | `agent`, `agent_name`, `volume` | Both |
+| `unifiedcd_agent_volume_used_bytes` | `agent`, `agent_name`, `volume` | Kubernetes agents |
 | `unifiedcd_agent_volume_measured_timestamp_seconds` | `agent`, `agent_name`, `volume` | Both |
 | `unifiedcd_agent_min_free_disk_bytes` | `agent` | Host agents |
 | `unifiedcd_agent_claim_blocked_by_disk` | `agent` | Host agents |

@@ -124,3 +124,54 @@ func TestHandleAgentHeartbeat_AStorageWriteFailureDoesNotFailTheHeartbeat(t *tes
 
 	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 }
+
+// The agents API carries the stored storage reading, including the used bytes a
+// Kubernetes agent reports, so the Web UI can show volume usage.
+func TestAgentsAPI_IncludesStorageUsedBytes(t *testing.T) {
+	s, pg := newTestServer(t)
+	token := issueAgentAccessForTest(t, pg, "k8s-st", nil, nil)
+	measured := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	rr := postHeartbeatForTest(t, s, "k8s-st", token, &api.HeartbeatRequest{
+		ActiveRunIDs: []string{},
+		Storage: &api.AgentStorage{
+			AgentName: "builders",
+			Volumes: map[string]api.VolumeStats{"cache": {
+				FilesystemStats: api.FilesystemStats{FreeBytes: 10, TotalBytes: 100},
+				MeasuredAt:      measured,
+				UsedBytes:       u64p(90),
+			}},
+		},
+	})
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+
+	type agentJSON struct {
+		ID      string `json:"id"`
+		Storage *struct {
+			Volumes map[string]struct {
+				UsedBytes *uint64 `json:"usedBytes"`
+			} `json:"volumes"`
+		} `json:"storage"`
+	}
+	get := func(path string, out any) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer secret")
+		s.Router().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), out))
+	}
+
+	var one agentJSON
+	get("/api/v1/agents/k8s-st", &one)
+	require.NotNil(t, one.Storage)
+	require.NotNil(t, one.Storage.Volumes["cache"].UsedBytes)
+	assert.EqualValues(t, 90, *one.Storage.Volumes["cache"].UsedBytes)
+
+	var list []agentJSON
+	get("/api/v1/agents", &list)
+	require.Len(t, list, 1)
+	require.NotNil(t, list[0].Storage)
+	require.NotNil(t, list[0].Storage.Volumes["cache"].UsedBytes)
+	assert.EqualValues(t, 90, *list[0].Storage.Volumes["cache"].UsedBytes)
+}

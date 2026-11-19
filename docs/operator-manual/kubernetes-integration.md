@@ -508,7 +508,8 @@ is applied. Shorten the volume name or `agentName`.
   after a restart it offers no volumes until the first answer arrives.
 - **Free space.** The agent measures each volume's filesystem from inside the claim pod, before the
   run and again after it, and the controller exports it as
-  `unifiedcd_agent_volume_filesystem_free_bytes{agent_name,volume}`. An idle volume is not measured,
+  `unifiedcd_agent_volume_filesystem_free_bytes{agent_name,volume}`, with the space in use (total minus
+  free) as `unifiedcd_agent_volume_used_bytes{agent_name,volume}`. An idle volume is not measured,
   so its figure ages (see `unifiedcd_agent_volume_measured_timestamp_seconds`), and a restarted agent
   has no figures until a run next mounts each volume. Replicas sharing one config report the same PVC
   under different `agent` IDs: aggregate with `min by (agent_name, volume)`. See [Watching agent disk
