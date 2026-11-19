@@ -124,7 +124,14 @@ All of these are authenticated as above, rate-limited per requester, and audited
    - The builder must verify that today's host `b.jobName` equals the run record's job name for `call:` child runs and folder-qualified jobs, and add a test, so existing cache entries keep their namespace. If they differ, the run record's value wins, and the migration guide notes the one-time cache miss.
 4. **Which runs and requesters may get URLs.** Presign mirrors the existing artifact handlers' guards exactly (`agentRunGuard`, the terminal-run rules of `handleArtifactUpload`/`handleArtifactDownload`).
    - **Cross-run downloads** (`downloadArtifact.runId`, `call:` reading a child's artifacts) use the same permission checks as the existing download route.
-   - **Humans** (UI, CLI) keep the existing controller routes in this change.
+   - **Humans (UI, CLI).** The download route is unchanged, with the same authentication, permission check and audit entry. User decision (2026-11-20): a new controller setting, `objectStore.artifactDownload: proxy | redirect` (env `UNIFIED_ARTIFACT_DOWNLOAD`), chooses what happens after those checks.
+     - **`proxy`** (the default, today's behaviour): the controller streams the object.
+     - **`redirect`**:
+       - The controller answers `302` to a 15-minute presigned GET for that one object, with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The response sets `response-content-disposition`, so the browser saves the file under the artifact's file name.
+       - The CLI follows the redirect without forwarding its `Authorization` header to the store host. Go's http client already drops it on a cross-host redirect; add a test.
+       - The docs note that the store endpoint must be reachable from users' browsers. An internal-only Garage hostname is not, so keep `proxy` there.
+       - The docs also note that a download interrupted after the URL expires must be restarted from the UI.
+     - With the `LocalObjectStore`, `redirect` is not available. The controller refuses to start if it is set, with `objectStore.artifactDownload: redirect requires an S3-compatible object store`.
 5. **Controller config.**
    - The existing sidecar-auth settings are kept with their names, and now govern the presign endpoint for sidecars: `StoreCredentialClusters`, the namespace/ServiceAccount allow-list, its Helm values, and the `StoreCredentialRate*` limits.
    - `StoreCredentialRequireRunBinding` is removed, because binding is always required. If it is still set, the controller logs a deprecation warning and ignores it; it does not refuse to start.
