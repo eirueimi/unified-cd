@@ -393,9 +393,9 @@ type Store interface {
 	// UpsertRunPodBinding records that podName/podUID is the Kubernetes Pod
 	// executing runID (replacing any others), as reported by a Kubernetes agent's
 	// heartbeat (api.HeartbeatRequest.PodBindings). This is what the
-	// store-credentials broker (internal/controller/api_store_credentials.go)
-	// checks a requesting Pod's verified identity against before handing out
-	// object-store credentials for a run. ON CONFLICT overwrites both
+	// presign endpoint (internal/controller/object_requester.go) checks a
+	// requesting sidecar's verified Pod identity against before issuing object
+	// URLs for a run. ON CONFLICT overwrites both
 	// columns, so a run reclaimed by a different Pod (after an agent
 	// restart, or a stuck-run reconcile) simply replaces the stale binding —
 	// there is no history to keep, and keeping one would only let a
@@ -406,8 +406,8 @@ type Store interface {
 	// when no Kubernetes agent has ever reported one for it — a host-agent
 	// run (which has no Kubernetes Pod at all), a run claimed before this
 	// field existed, or simply a run whose first heartbeat has not landed
-	// yet. The store-credentials broker treats ok=false as "unknown", not as
-	// "rejected" — see its RequireRunBinding config knob.
+	// yet. The presign endpoint treats an empty binding set as 409
+	// binding-pending (the sidecar retries), never as permission.
 	GetRunPodBinding(ctx context.Context, runID string) (binding RunPodBinding, ok bool, err error)
 	// ReplaceRunPodBindings makes pods the complete set of Pods bound to runID:
 	// a run may hold its claim Pod plus the isolated scope Pods the same agent

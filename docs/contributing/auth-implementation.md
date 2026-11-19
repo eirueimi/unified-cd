@@ -130,11 +130,11 @@ one is load-bearing:
 6. The enrollment policy's namespace and ServiceAccount constraints apply.
 
 Items 1–5 live in `VerifyProjectedToken` and are shared with the
-store-credential broker; item 6 is enrollment policy and is not.
+job Pod sidecar authentication on the presign endpoint; item 6 is enrollment policy and is not.
 
 !!! danger "The audiences must stay different"
     Enrollment verifies audience `unified-cd-agent-enrollment`. The
-    store-credential broker verifies `unified-cd-store-credentials`. **If these
+    presign endpoint verifies `unified-cd-store-credentials` for job Pod sidecars. **If these
     were ever the same, any job Pod's token would enroll an agent.**
 
     This is asserted from two layers and in both directions, and the Pod-spec
@@ -163,8 +163,9 @@ because it accepts two kinds of caller, and `authenticateObjectRequester`
   allow-list. **The run binding is mandatory**: the Pod must be the one the
   run's `run_pod_bindings` row names. No row yet is `409 binding-pending` with
   `Retry-After: 1` (the k8s agent reports the binding on its next heartbeat);
-  a different Pod is `403`. `Config.RequireRunBinding` is never consulted
-  here: a URL is for one run's object, so there is no permissive mode.
+  a different Pod is `403`. There is no permissive mode: the
+  deprecated `storeCredentialRequireRunBinding` setting is ignored, because a URL is for one
+  run's object.
 
 Both rate limits use the `StoreCredentialRate*` settings. After
 authentication the handler derives every key itself: artifacts as

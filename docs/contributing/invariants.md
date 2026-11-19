@@ -132,8 +132,8 @@ sent.
 ### The two token audiences must stay different
 
 Agent enrollment verifies a projected ServiceAccount token with audience
-`unified-cd-agent-enrollment`. The store-credential broker verifies one with
-audience `unified-cd-store-credentials`.
+`unified-cd-agent-enrollment`. The job Pod sidecar's presign requests carry one with
+audience `unified-cd-store-credentials` (the name predates presigned URLs).
 
 **If these were ever the same, any job Pod's token would enroll an agent.**
 

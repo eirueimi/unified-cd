@@ -1,14 +1,81 @@
 package controller
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"k8s.io/client-go/kubernetes"
 )
 
-// presignRateProvider names the presign endpoint's buckets in presignLimiter,
+// KubernetesStoreCredentialRequestTimeout bounds the TokenReview call made
+// per configured cluster when a job Pod's sidecar authenticates to the object
+// endpoints. A sibling of KubernetesEnrollmentRequestTimeout, kept separate
+// rather than shared: the two audiences are a deliberate security boundary
+// (see api.KubernetesStoreCredentialAudience's doc comment), and the sidecar
+// path is called far more often than enrollment, so each has its own timeout.
+const KubernetesStoreCredentialRequestTimeout = 5 * time.Second
+
+// StoreCredentialCluster names one Kubernetes cluster trusted to authenticate
+// job Pod sidecars on the object endpoints, and which namespaces and
+// ServiceAccounts within it may do so. The name predates the presign design
+// and is kept because it is the config key (agentAuth.
+// kubernetesStoreCredentialPolicies) operators already have.
+//
+// This is server CONFIGURATION, not a database-backed policy like
+// KubernetesEnrollmentVerifiers' constraints:
+//
+//  1. A sidecar presents only a token, so the handler has no policy name to
+//     look one up by. It tries each configured cluster's client until one
+//     TokenReview authenticates (safe: a token reviewed against the wrong
+//     cluster's API server comes back unauthenticated, it does not error).
+//  2. The agent's OWN kubernetes enrollment policy names the AGENT's
+//     namespace/ServiceAccount, not the JOB POD's (a different namespace by
+//     design). Reusing it would reject the common case, so job-Pod identity
+//     and agent identity stay two separate trust domains.
+type StoreCredentialCluster struct {
+	Cluster         string
+	Client          kubernetes.Interface
+	Namespaces      []string
+	ServiceAccounts []string
+}
+
+// verifyStoreCredentialToken tries every configured cluster's client in turn
+// and returns the first that authenticates the token against
+// api.KubernetesStoreCredentialAudience, along with the StoreCredentialCluster
+// entry that succeeded (needed afterward for its namespace/ServiceAccount
+// allowlist). In the common single-cluster deployment this tries exactly one
+// client.
+//
+// The last error observed is returned when every cluster rejects the token,
+// so a genuinely unavailable TokenReview is reported as such rather than
+// folded into "rejected".
+func (s *Server) verifyStoreCredentialToken(r *http.Request, token string) (BoundPodIdentity, StoreCredentialCluster, error) {
+	if len(s.storeCredentialClusters) == 0 {
+		return BoundPodIdentity{}, StoreCredentialCluster{}, ErrKubernetesEnrollmentUnavailable
+	}
+	var lastErr error
+	for _, cluster := range s.storeCredentialClusters {
+		identity, err := VerifyProjectedToken(r.Context(), cluster.Client, cluster.Cluster, api.KubernetesStoreCredentialAudience, token, KubernetesStoreCredentialRequestTimeout)
+		if err == nil {
+			return identity, cluster, nil
+		}
+		lastErr = err
+	}
+	return BoundPodIdentity{}, StoreCredentialCluster{}, lastErr
+}
+
+// isKubernetesIdentityUnavailable reports whether err is the "we could not
+// even ask" class of failure (a TokenReview/Pod-lookup timeout, or no cluster
+// configured at all) rather than "we asked, and the token is not valid".
+func isKubernetesIdentityUnavailable(err error) bool {
+	return errors.Is(err, ErrKubernetesEnrollmentUnavailable)
+}
+
+// presignRateProvider names the presign endpoint's buckets in objectLimiter,
 // so they never share a budget with another endpoint.
 const presignRateProvider = "objects-presign"
 
@@ -40,8 +107,7 @@ type objectRequester struct {
 //     an allow-listed namespace and ServiceAccount, and the Pod must be the
 //     one bound to the run. A missing binding is 409 binding-pending (the
 //     agent reports it on its next heartbeat; the sidecar retries).
-//     Config.RequireRunBinding is never consulted: a URL is for one run's
-//     object, so the binding is always required.
+//     The binding is always required: a URL is for one run's object.
 func (s *Server) authenticateObjectRequester(w http.ResponseWriter, r *http.Request, runID string) (objectRequester, bool) {
 	return s.authenticateObjectRequesterAs(w, r, runID, auditActionObjectsPresign)
 }
@@ -73,7 +139,7 @@ func (s *Server) authenticateObjectAgent(w http.ResponseWriter, r *http.Request,
 		return objectRequester{}, false
 	}
 	req := objectRequester{AgentID: principal.AgentID}
-	if s.presignLimiter != nil && !s.presignLimiter.allowKey(presignRateProvider+"\x00agent\x00"+principal.AgentID) {
+	if s.objectLimiter != nil && !s.objectLimiter.allowKey(presignRateProvider+"\x00agent\x00"+principal.AgentID) {
 		w.Header().Set("Retry-After", "1")
 		writeObjectError(w, http.StatusTooManyRequests, api.ObjectErrRateLimited, "presign rate limit exceeded")
 		return objectRequester{}, false
@@ -102,7 +168,7 @@ func (s *Server) authenticateObjectAgent(w http.ResponseWriter, r *http.Request,
 func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Request, runID, token, action string) (objectRequester, bool) {
 	// The TokenReview is a call to the cluster API: bound the rate per client
 	// address before doing any work.
-	if s.presignLimiter != nil && !s.presignLimiter.allow(r, presignRateProvider, "sidecar") {
+	if s.objectLimiter != nil && !s.objectLimiter.allow(r, presignRateProvider, "sidecar") {
 		w.Header().Set("Retry-After", "1")
 		writeObjectError(w, http.StatusTooManyRequests, api.ObjectErrRateLimited, "presign rate limit exceeded")
 		return objectRequester{}, false

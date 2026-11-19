@@ -643,3 +643,24 @@ func TestControllerOIDCAuthParams_RejectsReservedKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestRequireRunBindingDeprecatedWarns(t *testing.T) {
+	eff, err := config.ControllerEffective("")
+	require.NoError(t, err)
+	require.Empty(t, eff.Warnings)
+
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("storeCredentialRequireRunBinding: true\n"), 0o600))
+	eff, err = config.ControllerEffective(path)
+	require.NoError(t, err)
+	require.Len(t, eff.Warnings, 1)
+	require.Contains(t, eff.Warnings[0], "deprecated and ignored")
+
+	t.Setenv("UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING", "true")
+	eff, err = config.ControllerEffective("")
+	require.NoError(t, err)
+	require.Len(t, eff.Warnings, 1, "env alone warns once; file plus env still warns once")
+	eff, err = config.ControllerEffective(path)
+	require.NoError(t, err)
+	require.Len(t, eff.Warnings, 1)
+}

@@ -34,12 +34,14 @@ Upgrade the sidecar image together with the k8s-agent (the default `sidecarImage
 After upgrading the controller, steps on the Kubernetes agent fail with:
 
 ```
-artifact requires S3 configuration (UNIFIED_S3_*): store credentials broker <url>: store credentials request failed: 404 Not Found: 404 page not found
+artifact requires S3 configuration (UNIFIED_S3_*): store credentials broker <url>: store credentials request failed: 401 Unauthorized: unauthorized
 ```
+
+(`cache requires S3 configuration ...` for a cache step; `<url>` is the controller URL.)
 
 **Cause**
 
-The job Pod runs an old `unified-artifact` sidecar image. It still asks the controller for store credentials at `POST /api/v1/store-credentials`, which the controller no longer serves, and it is the old sidecar's own message that names `UNIFIED_S3_*`. The sidecar image must match the k8s-agent release.
+The job Pod runs an old `unified-artifact` sidecar image. It still asks the controller for store credentials at the old broker endpoint, which the controller no longer serves. The old sidecar sends its token in the request body with no `Authorization` header, so the controller's API authentication answers `401` before routing can say the route is gone. The `UNIFIED_S3_*` in the message is the old sidecar's own wording; there is nothing to set. The sidecar image must match the k8s-agent release.
 
 **Fix**
 
@@ -62,6 +64,60 @@ The config file sets `sidecarS3SecretName` or `sidecarS3SecretMode`, or the envi
 **Fix**
 
 Remove those keys (and the variables) and restart. If you set `agent.config.sidecarS3SecretMode` in the Helm values, remove it there; the chart no longer sets it. The Secret can be deleted once every agent is upgraded.
+
+## A host agent refuses to start: the cache store flags are no longer supported
+
+**Symptom**
+
+The host agent exits at startup with:
+
+```
+agent config: the cache store flags (--cache-endpoint, --cache-key, --cache-secret, --cache-bucket) are no longer supported; caches use controller-issued URLs (see docs/operator-manual/migrations/2026-11-20-run-scoped-object-access.md)
+```
+
+**Cause**
+
+One of the removed cache store settings is still set: a `--cache-*` flag, a `UNIFIED_CACHE_ENDPOINT` / `UNIFIED_CACHE_KEY` / `UNIFIED_CACHE_SECRET` / `UNIFIED_CACHE_BUCKET` variable (check the service unit or environment file too), or a `cacheEndpoint` / `cacheKey` / `cacheSecret` / `cacheBucket` key in the agent config file. The agent no longer holds a store key; the controller issues a URL per transfer.
+
+**Fix**
+
+Remove every one of them and restart. Caches need no agent configuration. If the agent cannot reach the object store endpoint the controller names, set `objectTransfer: controller` instead (see [Agents: Object transfer](../operator-manual/agents.md#object-transfer-objecttransfer)).
+
+## A transfer fails with `multipart-unavailable`
+
+**Symptom**
+
+A log line or step error contains:
+
+```
+presign put: 501 multipart-unavailable: the object store does not accept presigned multipart uploads; use a single put
+```
+
+**Cause**
+
+The controller's store cannot presign multipart upload parts (GCS's S3-compatible API is treated this way; see [Object store compatibility](../operator-manual/operations.md#object-store-compatibility)). The client normally handles this itself: it spools the stream to a temporary file and sends one presigned PUT. If you see the error as a failure, the single PUT that followed failed or the temporary directory had no room for the whole archive.
+
+**Fix**
+
+Make sure the client's temp directory can hold the largest archive it uploads on such a store, and look at the error that follows for the real cause (for example a store endpoint the client cannot reach).
+
+## A download fails with `object changed during download`
+
+**Symptom**
+
+An artifact or cache download fails with:
+
+```
+object changed during download (at byte 1073741824)
+```
+
+**Cause**
+
+The client resumes an interrupted download with a `Range` request and a conditional header that names the object version it started with. The object was replaced (for example the artifact was uploaded again, or the cache entry was overwritten) between the first part and the resume, so the store answered `412` and the client refuses to join bytes of two versions.
+
+**Fix**
+
+Retry the step. A run's artifact name is normally written once; if a job re-uploads the same artifact while another run is downloading it, order the two so the download starts after the upload finishes.
 
 ## Job pods never start with `CreateContainerConfigError`
 

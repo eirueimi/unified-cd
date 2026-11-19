@@ -19,18 +19,16 @@ type ControllerAgentAuthConfig struct {
 	KubernetesEnrollmentPolicies []ControllerKubernetesEnrollmentPolicyConfig `yaml:"kubernetesEnrollmentPolicies"`
 
 	// KubernetesStoreCredentialPolicies declares which namespaces and
-	// ServiceAccounts, per cluster, may exchange a projected ServiceAccount
-	// token for object-store credentials (the §5.6 broker,
-	// docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md).
+	// ServiceAccounts, per cluster, may authenticate a job Pod's sidecar to
+	// the object endpoints with a projected ServiceAccount token (presigned
+	// object URLs; see docs/operator-manual/migrations/2026-11-20-run-scoped-object-access.md).
 	// Deliberately its own list rather than a reuse of
 	// KubernetesEnrollmentPolicies: that list authorizes the AGENT's own
 	// identity (e.g. namespace "unified-cd", ServiceAccount "k8s-agent" in
 	// the shipped manifests), while this one authorizes JOB POD identities
 	// (e.g. namespace "ci") — a different namespace by design, and
-	// deliberately so (see kubernetes-integration.md's "S3 credentials"
-	// section on operators tripping over exactly that distinction for the
-	// Secret path this broker replaces). See
-	// internal/controller/api_store_credentials.go's StoreCredentialCluster
+	// deliberately so (see kubernetes-integration.md). See
+	// internal/controller/object_requester.go's StoreCredentialCluster
 	// doc comment for the full reasoning.
 	KubernetesStoreCredentialPolicies []ControllerKubernetesStoreCredentialPolicyConfig `yaml:"kubernetesStoreCredentialPolicies"`
 }
@@ -164,11 +162,14 @@ type ControllerConfig struct {
 	AgentAuth   *ControllerAgentAuthConfig `yaml:"agentAuth"`
 	// InsecureCookies disables the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES).
 	InsecureCookies bool `yaml:"insecureCookies"`
-	// StoreCredentialRequireRunBinding controls the §5.6 broker's behavior
-	// when it cannot check a request's RunID against a known run/Pod
-	// binding (see controller.Config.RequireRunBinding's doc comment for
-	// the full reasoning). Default false (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING).
+	// StoreCredentialRequireRunBinding is DEPRECATED and ignored: run binding
+	// is always required for presigned object access. Still parsed so an
+	// existing config keeps loading; setting it true adds a startup warning
+	// (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING).
 	StoreCredentialRequireRunBinding bool `yaml:"storeCredentialRequireRunBinding"`
+	// Warnings are startup notices produced while resolving the effective
+	// config (deprecated settings); not read from YAML.
+	Warnings []string `yaml:"-"`
 	// AllowDefaultToken lets the controller start with the publicly documented
 	// default admin token (env: UNIFIED_ALLOW_DEFAULT_TOKEN). See CheckAdminToken.
 	AllowDefaultToken bool `yaml:"allowDefaultToken"`
@@ -177,8 +178,9 @@ type ControllerConfig struct {
 	// default) ignores those headers and uses the TCP peer address as the
 	// client IP (env: UNIFIED_TRUSTED_PROXIES, comma-separated).
 	TrustedProxies []string `yaml:"trustedProxies"`
-	// StoreCredentialRateLimit bounds POST /api/v1/store-credentials per client
-	// address. Zero fields mean the defaults (burst 200, 20 requests/second).
+	// StoreCredentialRateLimit bounds the object endpoints
+	// (POST /api/v1/runs/{runID}/objects/presign): per agent, or per client
+	// address for job Pod sidecars. Zero fields mean the defaults (burst 200, 20 requests/second).
 	// Env: UNIFIED_STORE_CREDENTIAL_RATE_BURST, UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND.
 	StoreCredentialRateLimit StoreCredentialRateLimitConfig `yaml:"storeCredentialRateLimit"`
 	// MaxRequestBodyBytes caps the body of an API request (agent log routes,
@@ -188,8 +190,12 @@ type ControllerConfig struct {
 	MaxRequestBodyBytes int64 `yaml:"maxRequestBodyBytes"`
 }
 
+// RequireRunBindingDeprecatedWarning is the startup warning for the
+// deprecated storeCredentialRequireRunBinding setting.
+const RequireRunBindingDeprecatedWarning = "storeCredentialRequireRunBinding is deprecated and ignored: run binding is always required for presigned object access"
+
 // StoreCredentialRateLimitConfig is the per-client-address token bucket for the
-// store-credentials broker endpoint.
+// object endpoints (the presign endpoint).
 type StoreCredentialRateLimitConfig struct {
 	Burst     int     `yaml:"burst"`
 	PerSecond float64 `yaml:"perSecond"`
@@ -348,6 +354,7 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		if err := validateOIDCDevice(eff.OIDC); err != nil {
 			return nil, err
 		}
+		eff.addDeprecationWarnings()
 		return eff, nil
 	}
 
@@ -499,7 +506,16 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	if err := validateControllerAgentAuth(eff.AgentAuth); err != nil {
 		return nil, err
 	}
+	eff.addDeprecationWarnings()
 	return eff, nil
+}
+
+// addDeprecationWarnings records one warning per deprecated setting that is
+// still set (from the environment or the config file).
+func (c *ControllerConfig) addDeprecationWarnings() {
+	if c.StoreCredentialRequireRunBinding {
+		c.Warnings = append(c.Warnings, RequireRunBindingDeprecatedWarning)
+	}
 }
 
 func validateControllerAgentAuth(cfg *ControllerAgentAuthConfig) error {

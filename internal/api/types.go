@@ -93,20 +93,16 @@ type HeartbeatRequest struct {
 	// populates this — a host agent has no Kubernetes Pod backing a run at
 	// all, so it always leaves this nil/omitted, and the controller must
 	// treat that absence as "unknown", never as "not this Pod" (see
-	// internal/controller/api_store_credentials.go's RequireRunBinding).
+	// internal/controller/object_requester.go, which answers 409 binding-pending).
 	//
 	// This is deliberately piggybacked on the heartbeat the k8s agent
 	// already sends every DefaultHeartbeatInterval, rather than a new
 	// endpoint: the controller needs to learn "which Pod runs which run" to
-	// enforce api.StoreCredentialsRequest.RunID against a verified Pod
-	// identity (see PodBinding's doc comment and
-	// docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md
-	// §5.6), and the agent already reports its active-run set on exactly
-	// this cadence — reusing it costs one map, not a second round trip.
-	// The consequence is a bounded startup window (up to one heartbeat
-	// interval after Pod creation) during which the controller does not
-	// yet know a run's binding; RequireRunBinding's default is chosen with
-	// that window in mind.
+	// check a sidecar's verified Pod identity against the run in a presign
+	// request (see PodBinding's doc comment). The consequence is a bounded
+	// startup window (up to one heartbeat interval after Pod creation) during
+	// which the controller does not yet know a run's binding; the presign
+	// endpoint answers 409 binding-pending and the sidecar retries.
 	PodBindings map[string]PodBinding `json:"podBindings,omitempty"`
 
 	// PodBindingSets maps a runID to EVERY Pod bound to it: its claim Pod plus
@@ -152,7 +148,7 @@ type HeartbeatResponse struct {
 // reports is executing one of its active runs (see
 // HeartbeatRequest.PodBindings).
 //
-// PodUID, not PodName, is what internal/controller/api_store_credentials.go
+// PodUID, not PodName, is what internal/controller/object_requester.go
 // compares against a token-verified caller: a Pod name can be reused (a new
 // Pod created under the same generated/templated name once the old one is
 // deleted), whereas a Pod UID is assigned once by the Kubernetes API server
@@ -780,83 +776,28 @@ type AppSourceMeta struct {
 	ManagedResources []ResourceRef        `json:"managedResources,omitempty"`
 }
 
-// ---- store credential broker (kubernetes sidecar) ----
+// ---- kubernetes sidecar authentication ----
 
 // KubernetesStoreCredentialAudience is the projected ServiceAccount token
-// audience a job Pod's sidecar presents to fetch object-store credentials
-// from the controller (see docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md
-// §5.6).
+// audience a job Pod's sidecar presents to the controller's object endpoints
+// (POST /api/v1/runs/{runID}/objects/presign). The name predates the presign
+// design: the token no longer buys store credentials, only per-object URLs
+// for the run its Pod is bound to.
 //
 // This lives in internal/api, not internal/controller (where the sibling
 // KubernetesEnrollmentAudience lives), because — unlike enrollment, whose
-// audience only ever appears on the controller side of a TokenReview, with
-// the agent's own token volume declared in static YAML
-// (charts/unified-cd/templates/agent/deployment.yaml) — this audience is minted at
-// runtime by Go code on BOTH sides: internal/k8sagent's podbuilder.go writes
-// it into a projected volume it constructs per job Pod, and
-// internal/controller verifies it in a TokenReview. Both packages already
-// import internal/api (k8sagent for AgentEnrollRequest/AgentTokenResponse),
-// so this is the shared home with no new layering, rather than either side
-// depending on the other.
+// audience only ever appears on the controller side of a TokenReview — this
+// audience is minted at runtime by Go code on BOTH sides: internal/k8sagent's
+// podbuilder.go writes it into a projected volume it constructs per job Pod,
+// and internal/controller verifies it in a TokenReview.
 //
 // Deliberately a different literal from KubernetesEnrollmentAudience: if a
 // job Pod's token were accepted for enrollment, any job could register
-// itself as an agent, and if an agent's enrollment token were accepted here,
-// any enrolled agent's own bootstrap credential (not the per-job broker
-// token) would buy store credentials too. See kubernetes_token_test.go and
-// api_store_credentials_test.go for the tests asserting the separation in
-// both directions.
+// itself as an agent, and if an agent's enrollment token were accepted here
+// it would authenticate as a sidecar. See kubernetes_token_test.go and
+// object_requester_test.go for the tests asserting the separation in both
+// directions.
 const KubernetesStoreCredentialAudience = "unified-cd-store-credentials"
-
-// StoreCredentialsRequest is presented by the unified-artifact sidecar to
-// exchange its projected ServiceAccount token for object-store credentials.
-type StoreCredentialsRequest struct {
-	Token string `json:"token"`
-
-	// RunID names the run the requesting Pod is executing. It IS enforced:
-	// the controller checks it against HeartbeatRequest.PodBindings (see
-	// PodBinding's doc comment) and refuses a Pod that names a run some
-	// OTHER Pod is bound to (internal/controller/api_store_credentials.go).
-	//
-	// This still buys no ISOLATION today — every caller receives the
-	// identical passthrough credential regardless of RunID (see the
-	// handler's passthrough comment) — but it is no longer a no-op: it is
-	// the prerequisite the credential-scoping options in
-	// docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md
-	// §5.6 need (the controller cannot hand out a credential scoped to a
-	// run's key without first knowing which Pod is allowed to ask for it),
-	// and it is worth having on its own: it narrows a stolen/misdirected
-	// token to the one run it was minted for, rather than any run in the
-	// broker's configured namespaces.
-	//
-	// An empty RunID (an old sidecar built before this field was threaded
-	// through, or one that legitimately has none to report) cannot be
-	// checked against anything and is treated as "unknown" — the same
-	// permissive-by-default bucket as a RunID with no reported binding yet
-	// — not as an automatic pass or an automatic reject; see
-	// RequireRunBinding.
-	RunID string `json:"runId,omitempty"`
-}
-
-// StoreCredentialsResponse carries what the sidecar needs to build a client.
-//
-// ExpiresAt is present even when the credential is static and does not
-// expire — it is the zero Time then. The field exists now so that a future
-// scoped or STS-minted credential is a change of what the controller
-// returns rather than a change of shape, and the sidecar's refresh logic
-// (internal/objectstore's credentials.Provider seam, §5.5) does not have to
-// be added later: a provider that reads ExpiresAt already knows how to
-// refresh, it is only ever given a zero value today.
-type StoreCredentialsResponse struct {
-	Endpoint  string    `json:"endpoint"`
-	Bucket    string    `json:"bucket"`
-	Region    string    `json:"region,omitempty"`
-	UseSSL    bool      `json:"useSsl"`
-	AccessKey string    `json:"accessKey"`
-	SecretKey string    `json:"secretKey"`
-	Token     string    `json:"sessionToken,omitempty"`
-	ExpiresAt time.Time `json:"expiresAt,omitempty"`
-}
 
 // ---- authz policy view (spec 5.18) ----
 

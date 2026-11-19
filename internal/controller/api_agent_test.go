@@ -910,7 +910,7 @@ func TestAgentHeartbeat_BodylessSkipsReconcile(t *testing.T) {
 // run/Pod binding feature: a heartbeat body carrying PodBindings (as only a
 // Kubernetes agent ever sends — see HeartbeatRequest.PodBindings) lands in
 // run_pod_bindings, retrievable via GetRunPodBinding. The read side
-// (enforcement) is covered separately in api_store_credentials_test.go.
+// (enforcement) is covered separately in object_requester_test.go.
 func TestAgentHeartbeat_RecordsPodBindings(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))

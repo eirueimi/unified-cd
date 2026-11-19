@@ -213,7 +213,7 @@ func main() {
 	uiProxyTarget := flag.String("ui-proxy-target", eff.UIProxyTarget, "Vite dev server URL to reverse-proxy /ui/* to when --web-dir is empty, e.g. http://localhost:5173 (env: UNIFIED_UI_PROXY_TARGET)")
 	stderrPlain := flag.Bool("log-stderr-plain", eff.StderrPlain, "render step stderr in the run log the same color as stdout instead of red (env: UNIFIED_LOG_STDERR_PLAIN)")
 	insecureCookies := flag.Bool("insecure-cookies", eff.InsecureCookies, "do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)")
-	storeCredentialRequireRunBinding := flag.Bool("store-credential-require-run-binding", eff.StoreCredentialRequireRunBinding, "reject a store-credentials request when no run->pod binding is known yet, instead of allowing it; leave false during a rolling upgrade or while any host agent may call this endpoint (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING)")
+	storeCredentialRequireRunBinding := flag.Bool("store-credential-require-run-binding", eff.StoreCredentialRequireRunBinding, "deprecated and ignored: run binding is always required for presigned object access (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING)")
 	allowDefaultToken := flag.Bool("allow-default-token", eff.AllowDefaultToken, "allow starting with the publicly documented default admin token; trial use only (env: UNIFIED_ALLOW_DEFAULT_TOKEN)")
 	trustedProxies := flag.String("trusted-proxies", strings.Join(eff.TrustedProxies, ","), "comma-separated CIDRs/IPs of reverse proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the client IP; empty ignores those headers (env: UNIFIED_TRUSTED_PROXIES)")
 	maxRequestBodyBytes := flag.Int64("max-request-body-bytes", func() int64 {
@@ -227,7 +227,7 @@ func main() {
 			return eff.StoreCredentialRateLimit.Burst
 		}
 		return 200
-	}(), "burst size of the rate limit on POST /api/v1/store-credentials (per client address) and POST /api/v1/runs/{runID}/objects/presign (per agent, or per client address for sidecars) (env: UNIFIED_STORE_CREDENTIAL_RATE_BURST)")
+	}(), "burst size of the rate limit on POST /api/v1/runs/{runID}/objects/presign (per agent, or per client address for sidecars) (env: UNIFIED_STORE_CREDENTIAL_RATE_BURST)")
 	storeCredPerSecond := flag.Float64("store-credential-rate-per-second", func() float64 {
 		if eff.StoreCredentialRateLimit.PerSecond > 0 {
 			return eff.StoreCredentialRateLimit.PerSecond
@@ -290,6 +290,15 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// eff.Warnings already covers the env var and the config file; the flag
+	// is the remaining way to set the deprecated knob.
+	for _, w := range eff.Warnings {
+		slog.Warn(w)
+	}
+	if *storeCredentialRequireRunBinding && !eff.StoreCredentialRequireRunBinding {
+		slog.Warn(config.RequireRunBindingDeprecatedWarning)
+	}
 
 	poolCfg, poolWarnings := postgresPoolConfigFromEnv()
 	for _, warning := range poolWarnings {
@@ -375,16 +384,6 @@ func main() {
 	km := resolved.KeyManager
 
 	var obj objectstore.ObjectStore
-	// storeCredentialS3, when non-nil, is what the §5.6 broker
-	// (POST /api/v1/store-credentials) hands to a job Pod's sidecar: the
-	// controller's OWN raw S3 config, not the constructed ObjectStore below
-	// (which only exposes Put/Get/Delete/List, not the key material a
-	// sidecar needs to build its own minio client). Built from the exact
-	// same flags as obj so the two can never disagree about which store is
-	// configured; nil exactly when obj's S3 branch below does not run, which
-	// is what lets the broker report a clear "no object store configured"
-	// error instead of an empty credential.
-	var storeCredentialS3 *objectstore.S3Config
 	objectStoreState := "none"
 	if *s3Endpoint != "" && *s3Bucket != "" {
 		cfg := objectstore.S3Config{
@@ -403,7 +402,6 @@ func main() {
 			os.Exit(1)
 		}
 		obj = s3
-		storeCredentialS3 = &cfg
 		objectStoreState = "s3"
 		slog.Info("using S3-compatible object store", "endpoint", *s3Endpoint, "bucket", *s3Bucket)
 	} else if *dataDir != "" {
@@ -418,7 +416,7 @@ func main() {
 	// clusterClients is keyed the same as verifiers (by cluster name) and
 	// reuses the SAME kubernetes.Interface built below for each cluster —
 	// one TokenReview-capable client per cluster serves both the enrollment
-	// verifier above and the store-credential broker below, which differ
+	// verifier above and the sidecar authentication below, which differ
 	// only in which audience they ask the API server to confirm. Building a
 	// second client per cluster would be a duplicate, unnecessary
 	// kubeconfig/rest.Config resolution for a client that behaves
@@ -440,8 +438,8 @@ func main() {
 		clusterClients[cluster.Name] = client
 	}
 
-	// storeCredentialClusters is the §5.6 broker's namespace/ServiceAccount
-	// allowlist, one entry per configured
+	// storeCredentialClusters is the sidecar authentication's
+	// namespace/ServiceAccount allowlist, one entry per configured
 	// agentAuth.kubernetesStoreCredentialPolicies policy — see
 	// ControllerAgentAuthConfig.KubernetesStoreCredentialPolicies and
 	// controller.StoreCredentialCluster for why this is a separate list from
@@ -458,7 +456,7 @@ func main() {
 		}
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, StoreCredentialS3: storeCredentialS3, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StoreCredentialRateBurst: *storeCredBurst, StoreCredentialRatePerSecond: *storeCredPerSecond, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, RequireRunBinding: *storeCredentialRequireRunBinding}, st)
+	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StoreCredentialRateBurst: *storeCredBurst, StoreCredentialRatePerSecond: *storeCredPerSecond, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
 	// Stops the shared log-notify listener goroutine (started lazily on the
 	// first SSE viewer — see (*controller.Server).subscribeLogNotify) if it
 	// was ever started. A no-op otherwise. Deferred here rather than left to

@@ -51,11 +51,13 @@ type Config struct {
 	// governed separately — see requestBodyLimit.
 	MaxRequestBodyBytes int64
 
-	// StoreCredentialRateBurst and StoreCredentialRatePerSecond bound
-	// POST /api/v1/store-credentials per client address. 0 means the defaults
-	// (200 and 20). Many job sidecars can share one source address behind an
-	// Ingress, load balancer or SNAT, so the defaults are generous; the
-	// sidecar retries a 429.
+	// StoreCredentialRateBurst and StoreCredentialRatePerSecond bound the
+	// object endpoints (POST /api/v1/runs/{runID}/objects/presign): per agent
+	// for agent bearers, per client address for job Pod sidecars. 0 means the
+	// defaults (200 and 20). Many job sidecars can share one source address
+	// behind an Ingress, load balancer or SNAT, so the defaults are generous;
+	// the sidecar retries a 429. The names are kept from before
+	// presigned object URLs.
 	StoreCredentialRateBurst     int
 	StoreCredentialRatePerSecond float64
 
@@ -75,60 +77,11 @@ type Config struct {
 	CloudEnrollmentVerifiers map[string]CloudEnrollmentVerifier
 
 	// StoreCredentialClusters lists the Kubernetes clusters (and, per
-	// cluster, which namespaces/ServiceAccounts) trusted to broker
-	// object-store credentials to job Pod sidecars — see
-	// api_store_credentials.go for why this is server configuration rather
-	// than a database-backed policy like KubernetesEnrollmentVerifiers'
-	// namespace/ServiceAccount constraints are. nil/empty disables the
-	// broker entirely: POST /api/v1/store-credentials then always reports
-	// "kubernetes identity unavailable", the same failure shape enrollment
-	// uses when no verifier is configured for a requested cluster.
+	// cluster, which namespaces/ServiceAccounts) trusted to authenticate job
+	// Pod sidecars on the object endpoints — see StoreCredentialCluster for
+	// why this is server configuration rather than a database-backed policy.
+	// nil/empty means no sidecar is accepted: a non-agent bearer gets 401.
 	StoreCredentialClusters []StoreCredentialCluster
-
-	// StoreCredentialS3 is the credential the broker hands out — the
-	// controller's OWN object-store configuration, passed through
-	// unscoped. nil means the controller has no object store configured,
-	// which the broker reports as a clear, named error rather than an
-	// empty credential the sidecar would only fail to sign with later.
-	StoreCredentialS3 *objectstore.S3Config
-
-	// RequireRunBinding decides what handleStoreCredentials does when it
-	// cannot check a request's RunID against a known run/Pod binding —
-	// either because RunID is empty, or because no k8s agent heartbeat has
-	// reported one for it yet (see api.HeartbeatRequest.PodBindings).
-	//
-	// false (the default) ALLOWS the request in that case, logging that
-	// enforcement was skipped. This is the only setting that is safe to
-	// roll out onto a fleet gradually: during a rolling upgrade some job
-	// Pods' sidecars will still ask before the k8s agent that created them
-	// has sent its first heartbeat carrying the binding (up to
-	// DefaultHeartbeatInterval after Pod creation, see
-	// HeartbeatRequest.PodBindings), and an older k8s agent binary never
-	// reports a binding at all. Either would otherwise have its FIRST
-	// artifact/cache step of every run fail, fleet-wide, the moment this
-	// shipped — not a narrow edge case but the common path.
-	//
-	// true REJECTS the request instead. This is strictly stronger — a Pod
-	// with no reported binding gets nothing rather than a passthrough
-	// credential — and is the right setting once every agent in a fleet is
-	// known to report bindings (no host agents asking this endpoint at
-	// all, no in-flight rolling upgrade). It does not need to be, and is
-	// not, the default: this project ships one binary fleet-wide with no
-	// staged rollout mechanism, so defaulting to true would brick the
-	// upgrade that introduces it.
-	//
-	// Neither setting is the end state. A mismatched binding (the Pod
-	// asking is verified but is NOT the one bound to the named run) is
-	// ALWAYS rejected regardless of this flag — that is a contradiction,
-	// not an absence of information, and permissiveness only ever concerns
-	// the latter. This flag exists because passthrough credentials cannot
-	// be scoped to a run today (see the handler's passthrough comment), so
-	// an unbound request costs nothing to allow; it is a temporary state,
-	// not a design destination — the day the controller can mint a
-	// run-scoped credential, an unbound request must be rejected
-	// unconditionally, or scoping buys no isolation from a Pod that simply
-	// never reports a binding.
-	RequireRunBinding bool
 }
 
 // OIDCConfig holds the OIDC provider configuration.
@@ -177,7 +130,7 @@ type Server struct {
 	claimedBy                     *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
 	enrollmentLimiter             *enrollmentLimiter
 	storeCredentialLimiter        *enrollmentLimiter
-	presignLimiter                *enrollmentLimiter // Per-requester budget of the presign endpoint (StoreCredentialRate*).
+	objectLimiter                 *enrollmentLimiter // Per-requester budget of the object endpoints (StoreCredentialRate*).
 	cliRelay                      *cliRelayLimiters  // Per-IP limiters for the CLI relay routes.
 	credentialTouches             *credentialTouchLimiter
 	kubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
@@ -215,7 +168,7 @@ type Server struct {
 
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
-	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), storeCredentialLimiter: newStoreCredentialLimiter(cfg), presignLimiter: newStoreCredentialLimiter(cfg), cliRelay: newCLIRelayLimiters(), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters, storeCredentialS3: cfg.StoreCredentialS3}
+	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), objectLimiter: newStoreCredentialLimiter(cfg), cliRelay: newCLIRelayLimiters(), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters}
 	s.cloudEnrollmentVerifiers = defaultCloudEnrollmentVerifiers()
 	for provider, verifier := range cfg.CloudEnrollmentVerifiers {
 		s.cloudEnrollmentVerifiers[provider] = verifier
@@ -690,18 +643,6 @@ func (s *Server) routes() {
 		r.With(s.agentOrServerAuth, auditLogMiddleware(s.store), s.authorize).Get("/{name}", s.handleArtifactDownload)
 		r.With(s.agentOrServerAuth, auditLogMiddleware(s.store), s.authorize).Get("/", s.handleArtifactList)
 	})
-
-	// store-credentials is deliberately OUTSIDE ServerAuth/agentAuth/the
-	// /api/v1/agents group above, for the same reason /enroll is: the
-	// projected ServiceAccount token IN THE REQUEST BODY is the credential,
-	// checked by handleStoreCredentials itself via a TokenReview. Neither an
-	// agent bearer token nor a human session cookie is an appropriate gate
-	// here — a job Pod's sidecar has neither. Applying agentOrServerAuth (or
-	// any of this file's other middleware) would require the sidecar to
-	// already hold one of THOSE credentials before it could ask for this
-	// one, which defeats the point: this endpoint exists so a Pod that holds
-	// nothing but its own projected token can still get store credentials.
-	s.r.Post("/api/v1/store-credentials", s.handleStoreCredentials)
 
 	// The presign endpoint authenticates in the handler for the same reason:
 	// it accepts either an agent bearer or a job Pod sidecar's projected

@@ -191,8 +191,8 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 			// would otherwise be marked stale over a store hiccup), and the
 			// NEXT heartbeat re-asserts the same binding, so a single dropped
 			// write self-heals within one more interval. See
-			// internal/controller/api_store_credentials.go's
-			// runBindingRejects for the reader side.
+			// internal/controller/object_requester.go's
+			// authenticateObjectSidecar for the reader side.
 			// PodBindingSets (every Pod of a run) wins over PodBindings (the old
 			// one-Pod report) for a run present in both.
 			for runID, pods := range req.PodBindingSets {

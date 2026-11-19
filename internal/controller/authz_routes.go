@@ -195,7 +195,6 @@ var routeTable = []routeRule{
 	unauthenticated(mPost, "/webhook/{name}"),
 	unauthenticated(mPost, "/api/v1/agents/enroll"),
 	unauthenticated(mPost, "/api/v1/agents/token/refresh"),
-	unauthenticated(mPost, "/api/v1/store-credentials"),
 	// The handler authenticates: an agent bearer (uca_) or a sidecar's
 	// projected ServiceAccount token, then the run binding (see
 	// authenticateObjectRequester).

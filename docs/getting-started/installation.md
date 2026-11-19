@@ -103,6 +103,7 @@ kubectl create secret generic unified-cd-controller-kek -n unified-cd \
 
 - `UNIFIED_DB_DSN` is the PostgreSQL connection string; `UNIFIED_TOKEN` is the
   administrator static token for human and CLI authentication.
+- For AWS S3 or GCS also set `UNIFIED_S3_USE_SSL=true` and `UNIFIED_S3_REGION`: presigned URLs travel to agents and job Pods, so those must be able to reach the endpoint you give here. See [Operations: networking and cost of object transfers](../operator-manual/operations.md#networking-and-cost-of-object-transfers).
 - Omitting the four `UNIFIED_S3_*` keys does not stop the controller. It starts
   and logs `no object store configured — log archival disabled`; log archival
   and artifacts are then off.

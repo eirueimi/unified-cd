@@ -124,7 +124,7 @@ func TestStartHeartbeat_SendsActiveRunIDsFromProvider(t *testing.T) {
 // also calls the podBindings provider and forwards its result unchanged, so
 // the controller learns which Pod executes which run (see
 // api.HeartbeatRequest.PodBindings and
-// internal/controller/api_store_credentials.go's run-binding enforcement).
+// internal/controller/object_requester.go's run-binding check).
 func TestStartHeartbeat_SendsPodBindingsFromProvider(t *testing.T) {
 	var lastBody atomic.Value // api.HeartbeatRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -49,8 +49,8 @@ func TestPodBindingSet_NilReceiverIsSafe(t *testing.T) {
 
 // TestExecuteRun_RecordsPodBinding verifies executeRun's non-pool path
 // records the created Pod's name and UID into a.podBindings for the claim's
-// RunID — the write side the store-credentials broker's run-binding
-// enforcement (internal/controller/api_store_credentials.go) depends on via
+// RunID — the write side the presign endpoint's run-binding check
+// (internal/controller/object_requester.go) depends on via
 // the heartbeat (see api.HeartbeatRequest.PodBindings). fakePM.CreatePod
 // simulates a real API server assigning both Name and UID at creation.
 func TestExecuteRun_RecordsPodBinding(t *testing.T) {

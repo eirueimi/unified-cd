@@ -1,7 +1,7 @@
 -- run_pod_bindings records which Kubernetes Pod (by name and UID) a
 -- Kubernetes agent has most recently reported as executing a run, so the
--- store-credentials broker (internal/controller/api_store_credentials.go)
--- can refuse a Pod asking for a run it is not executing. See
+-- presign endpoint (internal/controller/object_requester.go) can refuse a
+-- Pod asking for object URLs for a run it is not executing. See
 -- docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md
 -- §5.6.
 --
