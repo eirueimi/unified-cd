@@ -210,7 +210,8 @@ run is claimed by exactly one agent.
   the spelling in the job.
 - The first `no agent declares volume` form: the volume is declared, but no registered agent
   advertises that single name as ready. Check the `volumeStatus` of the agents your
-  `agentSelector` matches in `GET /api/v1/agents` for the reason, and check that the volume's
+  `agentSelector` matches in `GET /api/v1/agents` for the reason (the same states are in the
+  Web UI: the Volumes card on the agent's page, or the expanded row on the Volumes page), and check that the volume's
   own `agentSelector` matches those agents' labels.
 - The second form: the entry lists several candidate names and no registered agent advertises
   any of them.
@@ -226,7 +227,8 @@ A volume that is declared but currently **busy** is not this: that run is claime
 
 - Check what the agents actually advertise. The volume names an agent offers are in the
   `volumes` field of `GET /api/v1/agents` and `GET /api/v1/agents/{agentId}`, and why a desired
-  volume is not ready is in `volumeStatus` (`unified-cli agent list` does not print them).
+  volume is not ready is in `volumeStatus` (`unified-cli agent list` does not print them). The Web
+  UI shows the same per agent on the Volumes page and in the Volumes card of the agent's page.
 - A name that is simply not declared: apply an `AgentVolume` with that `metadata.name`. Agents pick
   it up on their next heartbeat (about 15 seconds); no agent restart. Its `agentSelector` must match
   the labels of the agent you expect to run the job.

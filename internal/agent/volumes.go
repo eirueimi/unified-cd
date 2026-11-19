@@ -26,8 +26,6 @@ const (
 type volume struct {
 	mode string
 	path string
-	// size is the advisory capacity in bytes; 0 means none was declared.
-	size int64
 	// retiring: the volume left the desired set while runs still hold it. It is
 	// not offered or assigned; it is forgotten when the last holder releases.
 	retiring bool

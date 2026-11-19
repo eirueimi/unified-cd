@@ -565,7 +565,7 @@ var errRunTerminal = errors.New("the controller reports the run finished while i
 
 // reserveClaimVolumes holds every volume the claim mounts, waiting while another
 // run on this agent holds one, and narrows c.Volumes to the volumes chosen. The
-// returned func measures each volume's usage (advisory) and releases the lot; it
+// returned func measures each volume's usage and releases the lot; it
 // is called once, when the run and its unmounts are done.
 //
 // The wait ends, and the run is failed with the reason, when the agent starts

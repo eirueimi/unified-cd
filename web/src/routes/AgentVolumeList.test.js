@@ -122,4 +122,51 @@ describe('AgentVolumeList', () => {
     expect(queryByText('No agent has been asked to provision this volume.')).toBeNull();
     expect(queryByText('Offline')).toBeNull();
   });
+
+  it('expanded detail cells keep the nested table inside one block', async () => {
+    setPerms(['agentvolume.read', 'agent.read']);
+    const { findByText, getByText, container } = render(AgentVolumeList);
+    await findByText('cache');
+    await fireEvent.click(getByText('cache'));
+    await findByText('Offline');
+    const detail = container.querySelector('tr.vol-detail');
+    expect(detail.querySelectorAll(':scope > td').length).toBe(1);
+    for (const td of detail.querySelectorAll('tr tr td')) {
+      expect(td.children.length).toBe(1);
+      expect(td.children[0].tagName).toBe('SPAN');
+    }
+  });
+
+  it('shows only the error when the declarations fetch fails', async () => {
+    setPerms(['agentvolume.read', 'agent.read']);
+    global.fetch = vi.fn((url) => {
+      if (url.endsWith('/api/v1/agent-volumes')) {
+        return Promise.resolve({ ok: false, status: 500, json: async () => ({ error: 'boom' }), text: async () => 'boom' });
+      }
+      return jsonResponse(agents);
+    });
+    const { findByText, queryByText, container } = render(AgentVolumeList);
+    await waitFor(() => expect(container.querySelector('.error')).toBeTruthy());
+    expect(queryByText('No volumes declared yet.')).toBeNull();
+    expect(container.querySelector('table')).toBeNull();
+  });
+
+  it('renders dashes, not zeros, and disables expand when only the agents fetch fails', async () => {
+    setPerms(['agentvolume.read', 'agent.read']);
+    global.fetch = vi.fn((url) => {
+      if (url.endsWith('/api/v1/agent-volumes')) return jsonResponse(decls);
+      return Promise.resolve({ ok: false, status: 500, json: async () => ({ error: 'agents down' }), text: async () => 'agents down' });
+    });
+    const { findByText, getByText, queryByText, container } = render(AgentVolumeList);
+    const row = (await findByText('cache')).closest('tr');
+    expect(container.querySelector('.error').textContent).toContain('Could not load agents');
+    expect(row.textContent).not.toContain('0 / 0');
+    expect(row.querySelector('td[data-label="Agents"]').textContent.trim()).toBe('—');
+    expect(row.querySelector('td[data-label="Total used"]').textContent.trim()).toBe('—');
+    expect(row.querySelector('td[data-label="Largest"]').textContent.trim()).toBe('—');
+    expect(row.querySelector('.vol-toggle')).toBeNull();
+    await fireEvent.click(getByText('cache'));
+    expect(container.querySelector('tr.vol-detail')).toBeNull();
+    expect(queryByText('No agent has been asked to provision this volume.')).toBeNull();
+  });
 });

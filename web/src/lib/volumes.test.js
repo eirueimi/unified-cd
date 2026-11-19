@@ -119,4 +119,14 @@ describe('aggregateVolume', () => {
     const r = aggregateVolume('cache', [agent('old', { volumeStatus: [{ name: 'cache', ready: false, reason: 'pending' }] })]);
     expect(r.perAgent[0]).toMatchObject({ agentId: 'old', ready: false, reason: 'pending', usedBytes: null, freeBytes: null });
   });
+
+  it('ignores usedBytes carried by a non-Kubernetes agent', () => {
+    const r = aggregateVolume('cache', [
+      agent('h', { storage: { volumes: { cache: { freeBytes: 1, totalBytes: 2, measuredAt: iso(now), usedBytes: 9 * GiB } } } }),
+    ]);
+    expect(r.measured).toBe(0);
+    expect(r.totalUsed).toBeNull();
+    expect(r.largest).toBeNull();
+    expect(r.perAgent[0].usedBytes).toBeNull();
+  });
 });

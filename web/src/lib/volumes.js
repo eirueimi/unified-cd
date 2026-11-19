@@ -82,7 +82,8 @@ export function aggregateVolume(name, agents) {
     const vs = (agent.volumeStatus || []).find((s) => s.name === name);
     if (!vs) continue;
     const reading = agent.storage?.volumes?.[name];
-    const usedBytes = reading?.usedBytes ?? null;
+    // Used is reported by Kubernetes agents only (each PVC is its own filesystem).
+    const usedBytes = isK8sAgent(agent) ? (reading?.usedBytes ?? null) : null;
     if (vs.ready) ready++;
     perAgent.push({
       agentId: agent.id,

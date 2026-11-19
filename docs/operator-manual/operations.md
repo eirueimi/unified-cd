@@ -711,7 +711,9 @@ Prometheus therefore needs to reach only the controller, never the agents.
 
 Every figure is the free and total space of **the filesystem a path sits on** (a `statfs`), not the
 number of bytes a particular volume occupies. Several volumes on one filesystem all report that
-filesystem's headroom, so do not add them up.
+filesystem's headroom, so do not add them up. The one exception is
+`unifiedcd_agent_volume_used_bytes`, which only Kubernetes agents report: each volume there is a
+PVC with a filesystem of its own, so total minus free is that volume's usage.
 
 | Series | Labels | Reported by |
 |---|---|---|
@@ -795,6 +797,10 @@ Example queries:
 ```promql
 # Free space per physical volume (alert when it falls below your threshold)
 min by (agent_name, volume) (unifiedcd_agent_volume_filesystem_free_bytes)
+
+# Space in use per physical volume (Kubernetes agents only). Replicas sharing one PVC report the
+# same figure; max avoids a stale lower reading from a replica that has not mounted it lately
+max by (agent_name, volume) (unifiedcd_agent_volume_used_bytes)
 
 # Fraction free per physical volume
 min by (agent_name, volume) (

@@ -6,7 +6,7 @@
   import { fmtRelative } from '../lib/utils.js';
   import { fmtBytes, aggregateVolume } from '../lib/volumes.js';
 
-  let decls = [], agents = [], loading = true, error = '';
+  let decls = [], agents = [], loading = true, error = '', agentsError = '';
   let expanded = {};
 
   // Per-agent columns need agent.read; without it the page is declarations only.
@@ -14,16 +14,26 @@
   $: summaries = Object.fromEntries(decls.map((d) => [d.name, aggregateVolume(d.name, agents)]));
 
   async function load() {
-    loading = true; error = '';
+    loading = true; error = ''; agentsError = '';
     try {
       decls = (await apiFetch('/api/v1/agent-volumes')) || [];
-      agents = canAgents ? (await apiFetch('/api/v1/agents')) || [] : [];
-    } catch (e) { error = e.message; }
-    finally { loading = false; }
+    } catch (e) {
+      error = e.message;
+      decls = [];
+      loading = false;
+      return;
+    }
+    agents = [];
+    if (canAgents) {
+      try {
+        agents = (await apiFetch('/api/v1/agents')) || [];
+      } catch (e) { agentsError = e.message; }
+    }
+    loading = false;
   }
 
   function toggle(name) {
-    if (!canAgents) return;
+    if (!canAgents || agentsError) return;
     expanded = { ...expanded, [name]: !expanded[name] };
   }
 
@@ -33,10 +43,11 @@
 <div class="container">
   <AuthSetup />
   <h1>Volumes</h1>
-  {#if error}<div class="error" style="margin-bottom:0.75rem">{error}</div>{/if}
   {#if loading}<div class="loading">Loading...</div>
+  {:else if error}<div class="error">{error}</div>
   {:else if !decls.length}<div class="empty">No volumes declared yet.</div>
   {:else}
+  {#if agentsError}<div class="error" style="margin-bottom:0.75rem">Could not load agents: {agentsError}</div>{/if}
   <table class="cards">
     <thead>
       <tr>
@@ -50,13 +61,17 @@
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
         <tr class:clickable={canAgents} on:click={() => toggle(d.name)}>
           <td data-label="Volume" style="font-family:monospace;font-size:0.85rem">
-            <span>{#if canAgents}<button type="button" class="vol-toggle" aria-expanded={!!expanded[d.name]} aria-label={`Toggle agents for ${d.name}`}>{expanded[d.name] ? '▾' : '▸'}</button> {/if}<span>{d.name}</span></span>
+            <span>{#if canAgents && !agentsError}<button type="button" class="vol-toggle" aria-expanded={!!expanded[d.name]} aria-label={`Toggle agents for ${d.name}`}>{expanded[d.name] ? '▾' : '▸'}</button> {/if}<span>{d.name}</span></span>
           </td>
           <td data-label="Mode"><span>{d.spec?.mode ?? '—'}</span></td>
           <td data-label="Size"><span>{d.spec?.size ?? '—'}</span></td>
           <td data-label="Selector"><span>{(d.spec?.agentSelector || []).join(', ') || '—'}</span></td>
           <td data-label="Reclaim"><span>{d.spec?.reclaimPolicy || 'Retain'}</span></td>
-          {#if canAgents}
+          {#if canAgents && agentsError}
+            <td data-label="Agents"><span>—</span></td>
+            <td data-label="Total used"><span>—</span></td>
+            <td data-label="Largest"><span>—</span></td>
+          {:else if canAgents}
             <td data-label="Agents"><span>{s.ready} / {s.asked}</span></td>
             <td data-label="Total used">
               <span>{fmtBytes(s.totalUsed)}{#if s.totalUsed != null && s.measured < s.asked} <span class="meta">({s.measured} of {s.asked} measured)</span>{/if}</span>
@@ -70,9 +85,9 @@
             </td>
           {/if}
         </tr>
-        {#if canAgents && expanded[d.name]}
+        {#if canAgents && !agentsError && expanded[d.name]}
           <tr class="vol-detail">
-            <td data-label="Agents" colspan="8">
+            <td colspan="8">
               <div style="width:100%">
                 {#if !s.perAgent.length}
                   <div class="empty">No agent has been asked to provision this volume.</div>
@@ -112,5 +127,7 @@
 <style>
   tr.clickable { cursor: pointer; }
   tr.vol-offline { opacity: 0.55; }
+  tr.vol-detail td { display: block; font-weight: normal; color: inherit; text-align: left; border-bottom: none; }
+  tr.vol-detail td::before { display: none; }
   .vol-toggle { background: none; border: none; padding: 0; color: var(--text-muted); cursor: pointer; font: inherit; }
 </style>

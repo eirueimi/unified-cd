@@ -137,4 +137,17 @@ describe('AgentDetail Volumes card', () => {
     expect(cells[1].classList.contains('vol-blocked')).toBe(true);
     expect(cells[0].classList.contains('vol-blocked')).toBe(false);
   });
+
+  it('wraps each cell value in a single element so phone cards do not split it', async () => {
+    setPerms(['agentvolume.read']);
+    mockFetch(makeAgent({ os: 'linux/k8s' }));
+    const { container, findByText } = render(AgentDetail, { params: { id: 'a1' } });
+    await findByText('Not ready');
+    const tds = container.querySelectorAll('table.cards tbody td');
+    expect(tds.length).toBeGreaterThan(0);
+    for (const td of tds) {
+      expect(td.children.length).toBe(1);
+      expect(td.children[0].tagName).toBe('SPAN');
+    }
+  });
 });

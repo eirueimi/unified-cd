@@ -95,16 +95,18 @@
       <tbody>
         {#each rows as r (r.name)}
           <tr>
-            <td data-label="Volume" style="font-family:monospace;font-size:0.85rem">{r.name}</td>
-            <td data-label="Mode">{r.mode ?? '—'}</td>
+            <td data-label="Volume" style="font-family:monospace;font-size:0.85rem"><span>{r.name}</span></td>
+            <td data-label="Mode"><span>{r.mode ?? '—'}</span></td>
             <td data-label="State">
-              {#if r.ready}<span class="badge badge-success">Ready</span>
-              {:else}<span class="badge badge-failed">Not ready</span>{#if r.reason} <span class="meta">{r.reason}</span>{/if}{/if}
+              <span>
+                {#if r.ready}<span class="badge badge-success">Ready</span>
+                {:else}<span class="badge badge-failed">Not ready</span>{#if r.reason} <span class="meta">{r.reason}</span>{/if}{/if}
+              </span>
             </td>
-            <td data-label="Used">{#if isK8sAgent(agent)}{fmtBytes(r.usedBytes)}{#if r.overSize} <span class="vol-blocked" title="Used exceeds the declared size">⚠</span>{/if}{:else}—{/if}</td>
-            <td data-label="Size">{r.size ?? '—'}</td>
-            <td data-label="Disk free" class:vol-blocked={r.claimBlocked}>{r.freeBytes != null && r.totalBytes != null ? fmtBytes(r.freeBytes) + ' / ' + fmtBytes(r.totalBytes) : '—'}</td>
-            <td data-label="Measured" class="meta">{r.measuredAt ? fmtRelative(r.measuredAt) : '—'}</td>
+            <td data-label="Used"><span>{#if isK8sAgent(agent)}{fmtBytes(r.usedBytes)}{#if r.overSize} <span class="vol-blocked" title="Used exceeds the declared size">⚠</span>{/if}{:else}—{/if}</span></td>
+            <td data-label="Size"><span>{r.size ?? '—'}</span></td>
+            <td data-label="Disk free" class:vol-blocked={r.claimBlocked}><span>{r.freeBytes != null && r.totalBytes != null ? fmtBytes(r.freeBytes) + ' / ' + fmtBytes(r.totalBytes) : '—'}</span></td>
+            <td data-label="Measured" class="meta"><span>{r.measuredAt ? fmtRelative(r.measuredAt) : '—'}</span></td>
           </tr>
         {/each}
       </tbody>
