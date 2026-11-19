@@ -373,7 +373,7 @@ Queued state before it could be failed; skipping`), and nothing — not the term
 status, not the reason line, not its concurrency locks — is written for it.
 
 **Named volumes and replicas.** Replicas of one k8s-agent Deployment share a config and therefore
-share one set of volume PVCs (`<agentName>-<volume>`), so `agentName` must be identical across them
+share one set of volume PVCs (`<agentName>.<volume>`), so `agentName` must be identical across them
 and must never change while the volumes hold data. Exclusion on an `exclusive` volume does not rely
 on any one replica's memory: a run takes a lock on the PVC itself (its `unified-cd/volume-held-by`
 annotation) and occupancy is read from the live Pods that mount it, so two replicas, including two

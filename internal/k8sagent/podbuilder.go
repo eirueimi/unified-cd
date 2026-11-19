@@ -379,7 +379,7 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 	// After the workspace: a volume nested inside it has to be mounted second.
 	injectVolumes(podSpec, workspaceMountOf(wsCfg), vols)
 	for _, v := range vols {
-		labels[volumeLabelPrefix+v.ClaimName] = v.Name
+		labels[volumeLabelPrefix+v.Name] = v.Agent
 	}
 	injectUcdShim(podSpec, shimImage)
 

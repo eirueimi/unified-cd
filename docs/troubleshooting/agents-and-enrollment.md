@@ -214,8 +214,21 @@ each matching agent in its heartbeat answer.
 
 **Fix:** delete the `volumes:` key from the k8s-agent config, apply an `AgentVolume` for each volume
 (`unified-cd apply -f volume.yaml`) and restart the agent. An existing PVC named
-`<agentName>-<volume>` is used as it is, so data is kept. Keep `agentName` as it was: a new
+`<agentName>.<volume>` is used as it is, so data is kept. Keep `agentName` as it was: a new
 `agentName` provisions new, empty PVCs and leaves the old ones behind.
+
+### A Kubernetes volume is empty after upgrading to 0.17
+
+**Symptom:** after upgrading the k8s-agent, a volume that held data (a build cache, a checkout) is
+empty, and `kubectl -n <namespace> get pvc` lists both `<agentName>-<volume>` and
+`<agentName>.<volume>`.
+
+**Cause:** PVCs are now named `<agentName>.<volume>`. The agent creates that claim empty and never
+adopts, patches or deletes an old `<agentName>-<volume>` one.
+
+**Fix:** copy the data to the new claim and delete the old one, as described in
+[Kubernetes volume PVC names](../operator-manual/migrations/2026-11-20-k8s-volume-pvc-names.md). Do not
+change `agentName`.
 
 ### A Kubernetes agent fails at startup with `agentName "..." is not usable in a PVC name`
 
@@ -227,7 +240,7 @@ agentName "Bad_Name" is not usable in a PVC name: a lowercase RFC 1123 label mus
 ```
 
 **Cause:** `agentName` in the k8s-agent config prefixes every volume PVC name
-(`<agentName>-<volume>`), so it must be a DNS label. The check runs at startup even when the agent
+(`<agentName>.<volume>`), so it must be a DNS label. The check runs at startup even when the agent
 serves no volumes, so an agent that started before controller-declared volumes can be refused
 after the upgrade.
 
@@ -241,18 +254,17 @@ hold data, rename carefully: a new `agentName` provisions new, empty PVCs.
 reasons, and jobs that need it stay `Queued`:
 
 ```
-invalid: claim name "ci-main-<volume>" exceeds 63 characters
+invalid: agentName "Ci_Main" is not usable in a PVC name: ...
 invalid: agentName is not set in the agent config; it prefixes the PVC names
-create PVC: persistentvolumeclaims "ci-main-go-cache" is forbidden: User "system:serviceaccount:unified-cd:unified-cd-k8s-agent" cannot create resource "persistentvolumeclaims" ...
-create PVC: annotate ci-main-go-cache with reclaim policy: ... forbidden
-create PVC: ci-main-go-cache is being deleted
-reclaim: persistentvolumeclaims "ci-main-go-cache" is forbidden: ... cannot delete resource "persistentvolumeclaims" ...
+create PVC: persistentvolumeclaims "ci-main.go-cache" is forbidden: User "system:serviceaccount:unified-cd:unified-cd-k8s-agent" cannot create resource "persistentvolumeclaims" ...
+create PVC: annotate ci-main.go-cache with reclaim policy: ... forbidden
+create PVC: ci-main.go-cache is being deleted
+reclaim: persistentvolumeclaims "ci-main.go-cache" is forbidden: ... cannot delete resource "persistentvolumeclaims" ...
 waiting for runs holding it to finish before switching to shared
 ```
 
-**Cause:** the other volumes in the set are applied; only the one named is affected. `<agentName>-<volume>`
-must be at most 63 characters (shorten the `AgentVolume` name, or `agentName`); `agentName` must be
-set in the k8s-agent config; the agent's Role needs `get`, `list`, `create`, `update`, `patch` and
+**Cause:** the other volumes in the set are applied; only the one named is affected. `agentName` must be
+a DNS label and set in the k8s-agent config; the agent's Role needs `get`, `list`, `create`, `update`, `patch` and
 `delete` on `persistentvolumeclaims` (a Role from before controller-declared volumes lacks `patch`);
 a PVC that is being deleted (it has a deletion timestamp, typically waiting for a Pod that still
 mounts it) is not used, and a fresh one is created once it is gone; and a `mode` change waits
@@ -261,8 +273,8 @@ until no Pod holds the volume. The agent retries on every heartbeat.
 **Fix:** correct the cause. For the RBAC reasons, upgrade the Helm release (or apply the release
 bundle) so the Role in
 [`charts/unified-cd/templates/agent/rbac.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/agent/rbac.yaml)
-is current (or add the verbs to your own) **before** rolling the agent image. Never "fix" a
-too-long PVC name by changing `agentName` on an agent whose volumes already hold data. See [Named
+is current (or add the verbs to your own) **before** rolling the agent image. Never change
+`agentName` on an agent whose volumes already hold data to "fix" one of these. See [Named
 volumes on Kubernetes](../operator-manual/kubernetes-integration.md#named-volumes).
 
 ### A Kubernetes agent fails at startup with `workspace.pvc was removed`

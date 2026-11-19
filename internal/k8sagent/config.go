@@ -77,7 +77,7 @@ type Config struct {
 	SidecarS3SecretMode string `yaml:"sidecarS3SecretMode,omitempty"`
 
 	// AgentName is the stable name this agent's volume claims are prefixed
-	// with: <agentName>-<volume>. Required for the agent to provision any
+	// with: <agentName>.<volume>. Required for the agent to provision any
 	// AgentVolume delivered by the controller (a volume is reported not ready
 	// without it), and it must not change while the claims hold data.
 	//

@@ -193,7 +193,7 @@ podImage: golang:1.24-alpine
 
 # Named volumes are declared on the controller (kind: AgentVolume) and delivered to the
 # agent; there is no `volumes:` key here (see "Named volumes" below).
-# agentName prefixes the PVC names (<agentName>-<volume>); it is required for the agent
+# agentName prefixes the PVC names (<agentName>.<volume>); it is required for the agent
 # to provision any volume and must never change while they hold data.
 # agentName: ci-main
 
@@ -441,7 +441,7 @@ spec:
 A `volumes:` key in the k8s-agent config is refused at startup with
 `k8s agent config: "volumes" is no longer supported; declare volumes on the controller with kind: AgentVolume (see docs/operator-manual/migrations/2026-11-18-controller-declared-volumes.md)`.
 
-**`agentName`.** The PVCs are named `<agentName>-<volume>` (`ci-main-unity-main`). It is a separate
+**`agentName`.** The PVCs are named `<agentName>.<volume>` (`ci-main.unity-main`). It is a separate
 field, not the agent ID, because the enrolled ID is `k8s:<cluster>:<namespace>:<pod UID>`: it
 contains colons a claim name cannot, and it changes on every restart, so a prefix derived from it
 would provision a fresh, empty PVC on each restart and leave the last one behind. Replicas of one
@@ -450,11 +450,18 @@ different `agentName`s. **Never change `agentName` while the volumes hold data**
 provisions new, empty PVCs and leaves the old ones behind, still holding your data and still
 costing money.
 
-**Volume names must be DNS labels.** An `AgentVolume` name is always a DNS label (lower-case
-letters, digits and `-`), but `<agentName>-<volume>` must also be at most 63 characters. A volume
-that breaks that is not provisioned and is reported not ready with
-`invalid: claim name "<claim>" exceeds 63 characters` in `GET /api/v1/agents`; the rest of the set
-is applied. Shorten the volume name or `agentName`.
+**Names and collisions.** An `AgentVolume` name and `agentName` are both DNS labels (lower-case
+letters, digits and `-`, at most 63 characters each, no `.`). The `.` between them in
+`<agentName>.<volume>` is what keeps two different pairs from sharing a claim: agent `a-b` with
+volume `c` and agent `a` with volume `b-c` get `a-b.c` and `a.b-c`. The longest possible claim is
+127 characters, within the 253 a PVC name allows. An `agentName` that is not a DNS label makes
+every volume not ready with `invalid: agentName "<name>" is not usable in a PVC name: ...`.
+
+**Claims from before 0.17.** Earlier versions named the PVC `<agentName>-<volume>`. The agent
+never adopts, patches, resizes or deletes such a claim: it creates the new `<agentName>.<volume>`
+empty and leaves the old one alone, even one with `reclaimPolicy: Delete`. To keep the data, copy
+it over and then delete the old claim yourself; see
+[Kubernetes volume PVC names](migrations/2026-11-20-k8s-volume-pvc-names.md).
 
 **PVC lifecycle.**
 
@@ -475,7 +482,7 @@ is applied. Shorten the volume name or `agentName`.
   With `reclaimPolicy: Retain` (the default) the PVC stays, logged once as left behind: removing a
   resource must not destroy tens of gigabytes. With **`reclaimPolicy: Delete` the agent deletes the
   PVC**, and only when all of these hold:
-  - the PVC is named `<agentName>-<volume>` and carries the owner label and the `Delete` annotation;
+  - the PVC is named `<agentName>.<volume>` and carries the owner label and the `Delete` annotation;
   - the volume has been absent from the delivered set for **10 minutes** without interruption. The
     first agent to see it missing stamps the annotation `unified-cd/left-desired-at` (and logs
     `volume left the set; reclaim scheduled after 10m0s`); any replica that is still delivered the
@@ -963,7 +970,7 @@ jobPodPolicy:
   allowImagePullSecrets: []       # imagePullSecrets a job may name (the kubelet pulls with the Secret; the
                                   # job cannot read it)
   allowPersistentVolumeClaims: [] # claimName values of persistentVolumeClaim volumes. A job that names
-                                  # one of this agent's named-volume claims (<agentName>-<volume>) is
+                                  # one of this agent's named-volume claims (<agentName>.<volume>) is
                                   # refused even if it is listed here.
   # Categories:
   allowHostAccess: false          # hostPath; hostNetwork / hostPID / hostIPC; hostPort / hostIP; probe and
@@ -992,7 +999,7 @@ jobPodPolicy: ...`:
   An entry containing `*` gets `wildcards are not supported; list each name`.
 - `allowSecrets` naming `sidecarS3SecretName`:
   `allowSecrets: "<name>" is sidecarS3SecretName, the artifact sidecar's credentials, which job containers must never read`.
-- A job whose `podTemplate` mounts one of this agent's named-volume claims (`<agentName>-<volume>`)
+- A job whose `podTemplate` mounts one of this agent's named-volume claims (`<agentName>.<volume>`)
   directly, whether or not `allowPersistentVolumeClaims` lists it. The volumes are delivered by the
   controller, so this is checked against the live set when the run is claimed, not at startup; the
   run fails with

@@ -80,6 +80,10 @@ type volumeState struct {
 	reserved map[string]string
 	// orphanLogged remembers the PVCs already reported as left behind.
 	orphanLogged map[string]bool
+	// reclaimLogged remembers, by volume, that "reclaim scheduled" was logged for
+	// the volume's current absence from the set; it is cleared when the volume is
+	// delivered again or reclaimed.
+	reclaimLogged map[string]bool
 }
 
 // offered returns the volumes currently offered, by name.
@@ -176,8 +180,8 @@ func (a *K8sAgent) validateDesired(d api.DesiredVolume) (resource.Quantity, erro
 	if errs := validation.IsDNS1123Label(d.Name); len(errs) > 0 {
 		return zero, fmt.Errorf("name %q is not usable in a PVC name: %s", d.Name, strings.Join(errs, "; "))
 	}
-	if claim := claimNameFor(a.cfg.AgentName, d.Name); len(claim) > validation.LabelValueMaxLength {
-		return zero, fmt.Errorf("claim name %q exceeds %d characters", claim, validation.LabelValueMaxLength)
+	if errs := validation.IsDNS1123Label(a.cfg.AgentName); len(errs) > 0 {
+		return zero, fmt.Errorf("agentName %q is not usable in a PVC name: %s", a.cfg.AgentName, strings.Join(errs, "; "))
 	}
 	switch d.Mode {
 	case agentlib.VolumeModeExclusive, agentlib.VolumeModeShared:
@@ -221,10 +225,13 @@ func reclaimPolicyOrDefault(p string) string {
 //   - A mode change is applied only while no pod holds the volume; until then
 //     the volume is not offered. The existing PVC's access mode is not changed.
 //
-// Decisions that depend on which pods hold a volume are taken only while volMu
-// is held (the lock createClaimPod chooses volumes under) and only when the
-// pods could be listed; otherwise they wait for the next call, and the current
-// offers stay as they are.
+// Decisions that depend on which pods hold a volume (a mode change, the reclaim
+// of an absent volume and the delete itself) are taken only while volMu is held
+// (the lock createClaimPod chooses volumes under) and only when the pods could be
+// listed; otherwise they wait for the next call, and the current offers stay as
+// they are. volMu is NOT held across the calls that do not depend on occupancy:
+// listing, creating and annotating PVCs, and stamping the left-desired-at mark.
+// Those can be slow, and a run's pod create must not wait behind them.
 func (a *K8sAgent) applyVolumes(ctx context.Context, desired []api.DesiredVolume) []api.AgentVolumeStatus {
 	s := &a.volState
 	s.mu.Lock()
@@ -233,32 +240,46 @@ func (a *K8sAgent) applyVolumes(ctx context.Context, desired []api.DesiredVolume
 		s.reserved = map[string]string{}
 		s.orphanLogged = map[string]bool{}
 	}
-	s.mu.Unlock()
-
-	// held is nil when occupancy is unknown. TryLock, not Lock: this runs on the
-	// heartbeat goroutine, which must not stall behind a pod create.
-	var held map[string]bool
-	if a.volMu.TryLock() {
-		defer a.volMu.Unlock()
-		held = a.occupancy(ctx)
+	if s.reclaimLogged == nil {
+		s.reclaimLogged = map[string]bool{}
 	}
-	holdsVolume := func(volume string) bool { return held[volume] || held[claimNameFor(a.cfg.AgentName, volume)] }
+	s.mu.Unlock()
 
 	var owned map[string]*corev1.PersistentVolumeClaim
 	if a.kube != nil {
 		owned = a.ownedPVCs(ctx)
 	}
 
-	statuses := make([]api.AgentVolumeStatus, 0, len(desired))
+	// First pass, without volMu: validate, create or annotate each PVC.
+	var dups []api.AgentVolumeStatus
+	staged := make([]stagedVolume, 0, len(desired))
 	mentioned := make(map[string]bool, len(desired))
 	for _, d := range desired {
 		if mentioned[d.Name] {
-			statuses = append(statuses, api.AgentVolumeStatus{Name: d.Name, Reason: "invalid: volume delivered more than once"})
+			dups = append(dups, api.AgentVolumeStatus{Name: d.Name, Reason: "invalid: volume delivered more than once"})
 			continue
 		}
 		mentioned[d.Name] = true
-		statuses = append(statuses, a.applyOne(ctx, d, owned, held != nil, holdsVolume))
+		staged = append(staged, a.applyOne(ctx, d, owned))
 	}
+	// A volume that is back in the set starts a new absence period when it next
+	// leaves, which logs again.
+	s.mu.Lock()
+	for name := range mentioned {
+		delete(s.reclaimLogged, name)
+	}
+	s.mu.Unlock()
+
+	// Stamp the absence clock of every Delete volume that left the set, also
+	// without volMu: it does not depend on occupancy.
+	var graceOver map[string]bool
+	if owned != nil {
+		graceOver = a.markAbsent(ctx, mentioned, owned)
+	}
+
+	// Second pass, under volMu where it can be had.
+	statuses := a.decide(ctx, staged, mentioned, owned, graceOver)
+	statuses = append(statuses, dups...)
 
 	// A volume that left the set stops being offered at once.
 	s.mu.Lock()
@@ -268,10 +289,6 @@ func (a *K8sAgent) applyVolumes(ctx context.Context, desired []api.DesiredVolume
 		}
 	}
 	s.mu.Unlock()
-
-	if owned != nil {
-		statuses = append(statuses, a.reclaim(ctx, mentioned, owned, held != nil, holdsVolume)...)
-	}
 
 	// Remember which claims are named volumes', for the pod policy.
 	reserved := map[string]string{}
@@ -289,7 +306,30 @@ func (a *K8sAgent) applyVolumes(ctx context.Context, desired []api.DesiredVolume
 	}
 	s.mu.Unlock()
 
-	sort.Slice(statuses, func(i, j int) bool { return statuses[i].Name < statuses[j].Name })
+	sort.SliceStable(statuses, func(i, j int) bool { return statuses[i].Name < statuses[j].Name })
+	return statuses
+}
+
+// decide is the part of an apply that depends on which pods hold a volume: it
+// settles the mode of each staged volume and reclaims absent ones. It holds volMu
+// for as long as it runs (when it can take it) and reads occupancy under it.
+func (a *K8sAgent) decide(ctx context.Context, staged []stagedVolume, mentioned map[string]bool, owned map[string]*corev1.PersistentVolumeClaim, graceOver map[string]bool) []api.AgentVolumeStatus {
+	// held is nil when occupancy is unknown. TryLock, not Lock: this runs on the
+	// heartbeat goroutine, which must not stall behind a pod create.
+	var held map[string]bool
+	if a.volMu.TryLock() {
+		defer a.volMu.Unlock()
+		held = a.occupancy(ctx)
+	}
+	holdsVolume := func(volume string) bool { return held[volume] || held[claimNameFor(a.cfg.AgentName, volume)] }
+
+	statuses := make([]api.AgentVolumeStatus, 0, len(staged))
+	for _, sv := range staged {
+		statuses = append(statuses, a.settleMode(sv, held != nil, holdsVolume))
+	}
+	if owned != nil {
+		statuses = append(statuses, a.reclaim(ctx, mentioned, owned, graceOver, held != nil, holdsVolume)...)
+	}
 	return statuses
 }
 
@@ -332,8 +372,19 @@ func (a *K8sAgent) ownedPVCs(ctx context.Context) map[string]*corev1.PersistentV
 	return out
 }
 
-// applyOne applies one delivered volume and reports its status.
-func (a *K8sAgent) applyOne(ctx context.Context, d api.DesiredVolume, owned map[string]*corev1.PersistentVolumeClaim, heldKnown bool, holdsVolume func(string) bool) api.AgentVolumeStatus {
+// stagedVolume is a delivered volume after its PVC has been ensured, waiting
+// for the decisions that need occupancy (settleMode).
+type stagedVolume struct {
+	d  api.DesiredVolume
+	st api.AgentVolumeStatus
+	// pvc is the volume's claim; nil when the volume already failed (st is then
+	// final).
+	pvc *corev1.PersistentVolumeClaim
+}
+
+// applyOne validates one delivered volume and ensures its PVC. It takes no
+// occupancy decision and must run without volMu; settleMode finishes the job.
+func (a *K8sAgent) applyOne(ctx context.Context, d api.DesiredVolume, owned map[string]*corev1.PersistentVolumeClaim) stagedVolume {
 	s := &a.volState
 	st := api.AgentVolumeStatus{Name: d.Name}
 	entry := func() *volumeEntry {
@@ -346,6 +397,50 @@ func (a *K8sAgent) applyOne(ctx context.Context, d api.DesiredVolume, owned map[
 		}
 		return e
 	}
+	setOffered := func(offered bool) {
+		s.mu.Lock()
+		s.vols[d.Name].offered = offered
+		s.mu.Unlock()
+	}
+
+	size, err := a.validateDesired(d)
+	if err != nil {
+		entry()
+		setOffered(false)
+		st.Reason = fmt.Sprintf("invalid: %v", err)
+		// The volume is still declared: keep its PVC's policy current and its
+		// absence clock cleared, so a Delete-to-Retain change is never lost.
+		if pvc := owned[claimNameFor(a.cfg.AgentName, d.Name)]; pvc != nil && a.kube != nil {
+			if _, perr := a.syncPVCAnnotations(ctx, pvc, d); perr != nil {
+				slog.Warn("k8s: could not update the annotations of a volume that failed to apply", "volume", d.Name, "pvc", pvc.Name, "error", perr)
+			}
+		}
+		return stagedVolume{d: d, st: st}
+	}
+	e := entry()
+	if a.kube == nil {
+		setOffered(false)
+		st.Reason = "create PVC: the agent has no Kubernetes client"
+		return stagedVolume{d: d, st: st}
+	}
+	pvc, err := a.ensurePVC(ctx, d, size, owned, e)
+	if err != nil {
+		setOffered(false)
+		st.Reason = err.Error()
+		return stagedVolume{d: d, st: st}
+	}
+	return stagedVolume{d: d, st: st, pvc: pvc}
+}
+
+// settleMode decides whether a volume whose PVC exists is offered, and under
+// which mode. A mode change depends on whether a pod holds the volume, so this
+// runs under volMu (when it could be taken; heldKnown says it was).
+func (a *K8sAgent) settleMode(sv stagedVolume, heldKnown bool, holdsVolume func(string) bool) api.AgentVolumeStatus {
+	if sv.pvc == nil {
+		return sv.st
+	}
+	s := &a.volState
+	d, st := sv.d, sv.st
 	setOffered := func(offered bool, mode string) {
 		s.mu.Lock()
 		e := s.vols[d.Name]
@@ -355,35 +450,8 @@ func (a *K8sAgent) applyOne(ctx context.Context, d api.DesiredVolume, owned map[
 		}
 		s.mu.Unlock()
 	}
-
-	size, err := a.validateDesired(d)
-	if err != nil {
-		entry()
-		setOffered(false, "")
-		st.Reason = fmt.Sprintf("invalid: %v", err)
-		// The volume is still declared: keep its PVC's policy current and its
-		// absence clock cleared, so a Delete-to-Retain change is never lost.
-		if pvc := owned[claimNameFor(a.cfg.AgentName, d.Name)]; pvc != nil && a.kube != nil {
-			if _, perr := a.syncPVCAnnotations(ctx, pvc, d); perr != nil {
-				slog.Warn("k8s: could not update the annotations of a volume that failed to apply", "volume", d.Name, "pvc", pvc.Name, "error", perr)
-			}
-		}
-		return st
-	}
-	e := entry()
-	if a.kube == nil {
-		setOffered(false, "")
-		st.Reason = "create PVC: the agent has no Kubernetes client"
-		return st
-	}
-	pvc, err := a.ensurePVC(ctx, d, size, owned, e)
-	if err != nil {
-		setOffered(false, "")
-		st.Reason = err.Error()
-		return st
-	}
-
 	s.mu.Lock()
+	e := s.vols[d.Name]
 	offered, mode := e.offered, e.mode
 	s.mu.Unlock()
 	switch {
@@ -403,7 +471,7 @@ func (a *K8sAgent) applyOne(ctx context.Context, d api.DesiredVolume, owned map[
 	default:
 		setOffered(true, d.Mode)
 		slog.Warn("k8s: volume mode changed; the existing PVC's access mode is not changed",
-			"volume", d.Name, "pvc", pvc.Name, "mode", d.Mode, "accessModes", pvc.Spec.AccessModes)
+			"volume", d.Name, "pvc", sv.pvc.Name, "mode", d.Mode, "accessModes", sv.pvc.Spec.AccessModes)
 	}
 	st.Ready = true
 	return st
@@ -530,18 +598,46 @@ func warnOnClaimMismatch(existing *corev1.PersistentVolumeClaim, d api.DesiredVo
 	}
 }
 
+// reclaimCandidate says whether pvc is one reclaim may consider, and for which
+// volume: it is named exactly claimNameFor(agent, volume) for the volume its
+// label names (so a claim left by the old "<agentName>-<volume>" naming is never
+// one), it carries this agent's owner label, and the volume is not delivered.
+func (a *K8sAgent) reclaimCandidate(pvc *corev1.PersistentVolumeClaim, mentioned map[string]bool) (string, bool) {
+	v := pvc.Labels[labelVolumeName]
+	if v == "" || pvc.Name != claimNameFor(a.cfg.AgentName, v) || pvc.Labels[labelVolumeOwner] != a.cfg.AgentName || mentioned[v] {
+		return "", false
+	}
+	return v, true
+}
+
+// markAbsent stamps the left-desired-at annotation of every Delete volume's PVC
+// that left the delivered set and reports, by PVC name, which have been absent
+// for reclaimGrace. It does not depend on occupancy and is called without volMu.
+func (a *K8sAgent) markAbsent(ctx context.Context, mentioned map[string]bool, owned map[string]*corev1.PersistentVolumeClaim) map[string]bool {
+	over := map[string]bool{}
+	for n, pvc := range owned {
+		v, ok := a.reclaimCandidate(pvc, mentioned)
+		if ok && pvc.Annotations[annotationReclaimPolicy] == dsl.ReclaimDelete && a.reclaimGraceOver(ctx, pvc, v) {
+			over[n] = true
+		}
+	}
+	return over
+}
+
 // reclaim handles the PVCs of volumes that are not in the delivered set. A PVC
-// is deleted only when ALL of these hold: it is named <agentName>-<volume> for
+// is deleted only when ALL of these hold: it is named <agentName>.<volume> for
 // the volume its label names, it carries the owner label for this agent, its
 // annotation says reclaimPolicy Delete, the volume is not in the delivered set,
-// its left-desired-at annotation is at least reclaimGrace old, no live pod
-// holds it (the pod list read under volMu at the start of this apply), and its
-// lock annotations name no holder stamped within the lock grace. The delete is
-// conditional on the PVC's resourceVersion from that same read, so a lock
-// taken, or a left-desired-at cleared by another replica, since then cancels
-// it. Everything else is kept; a Retain one is reported once as left behind. A
-// failed delete is reported as "reclaim: <error>" and retried.
-func (a *K8sAgent) reclaim(ctx context.Context, mentioned map[string]bool, owned map[string]*corev1.PersistentVolumeClaim, heldKnown bool, holdsVolume func(string) bool) []api.AgentVolumeStatus {
+// its left-desired-at annotation is at least reclaimGrace old (graceOver, from
+// markAbsent), no live pod holds it (the pod list read under volMu at the start
+// of this decision), and its lock annotations name no holder stamped within the
+// lock grace. The delete is conditional on the PVC's resourceVersion from the
+// read at the start of the apply, so a lock taken, or a left-desired-at cleared
+// by another replica, since then cancels it. Everything else is kept; a Retain
+// one is reported once as left behind. A failed delete is reported as "reclaim:
+// <error>" and retried. It runs under volMu: eligibility and the delete are
+// decisions about occupancy.
+func (a *K8sAgent) reclaim(ctx context.Context, mentioned map[string]bool, owned map[string]*corev1.PersistentVolumeClaim, graceOver map[string]bool, heldKnown bool, holdsVolume func(string) bool) []api.AgentVolumeStatus {
 	var failed []api.AgentVolumeStatus
 	names := make([]string, 0, len(owned))
 	for n := range owned {
@@ -550,11 +646,11 @@ func (a *K8sAgent) reclaim(ctx context.Context, mentioned map[string]bool, owned
 	sort.Strings(names)
 	for _, n := range names {
 		pvc := owned[n]
-		v := pvc.Labels[labelVolumeName]
-		if v == "" || pvc.Name != claimNameFor(a.cfg.AgentName, v) || pvc.Labels[labelVolumeOwner] != a.cfg.AgentName || mentioned[v] {
+		v, ok := a.reclaimCandidate(pvc, mentioned)
+		if !ok {
 			continue
 		}
-		if pvc.Annotations[annotationReclaimPolicy] == dsl.ReclaimDelete && !a.reclaimGraceOver(ctx, pvc, v) {
+		if pvc.Annotations[annotationReclaimPolicy] == dsl.ReclaimDelete && !graceOver[pvc.Name] {
 			continue
 		}
 		if !heldKnown || holdsVolume(v) {
@@ -590,6 +686,7 @@ func (a *K8sAgent) reclaim(ctx context.Context, mentioned map[string]bool, owned
 		slog.Info("k8s: reclaimed volume PVC", "volume", v, "pvc", pvc.Name)
 		a.volState.mu.Lock()
 		delete(a.volState.orphanLogged, pvc.Name)
+		delete(a.volState.reclaimLogged, v)
 		a.volState.mu.Unlock()
 	}
 	return failed
@@ -609,6 +706,14 @@ func (a *K8sAgent) reclaimGraceOver(ctx context.Context, pvc *corev1.PersistentV
 		slog.Warn("k8s: could not mark a volume as left the set; its reclaim waits", "volume", v, "pvc", pvc.Name, "error", err)
 		return false
 	}
-	slog.Info(fmt.Sprintf("volume left the set; reclaim scheduled after %s", reclaimGrace), "volume", v, "pvc", pvc.Name)
+	// Once per absence period: it is logged again only after the volume has been
+	// delivered again and has left anew.
+	a.volState.mu.Lock()
+	first := !a.volState.reclaimLogged[v]
+	a.volState.reclaimLogged[v] = true
+	a.volState.mu.Unlock()
+	if first {
+		slog.Info(fmt.Sprintf("volume left the set; reclaim scheduled after %s", reclaimGrace), "volume", v, "pvc", pvc.Name)
+	}
 	return false
 }

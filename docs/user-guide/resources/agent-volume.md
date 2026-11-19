@@ -51,7 +51,7 @@ Unknown fields are rejected.
 - A **mode switch** and a **reclaim** (`reclaimPolicy: Delete`) are applied only once no run holds
   the volume. A run that holds it finishes normally first. A reclaim also waits until the volume
   has been absent from the agent's set for 10 minutes in a row (the agent logs
-  `volume left the set; reclaim scheduled after 10m0s`).
+  `volume left the set; reclaim scheduled after 10m0s`, once per absence).
 - A host agent offers no volumes until its first successful heartbeat, which it sends immediately
   at startup; while the controller is unreachable it keeps its last known set.
 

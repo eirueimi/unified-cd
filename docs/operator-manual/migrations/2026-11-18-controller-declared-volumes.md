@@ -101,11 +101,14 @@ first receives the `AgentVolume`.
 ### Kubernetes agents
 
 - The PVCs `<agentName>-<volume>` are reused as they are. Keep `agentName` in the k8s-agent config:
-  it still prefixes the PVC names, and a new `agentName` provisions new, empty PVCs.
+  it still prefixes the PVC names, and a new `agentName` provisions new, empty PVCs. **This holds
+  only up to 0.16:** from 0.17 the PVC is named `<agentName>.<volume>` and an old `-` claim is
+  ignored (see [Kubernetes volume PVC names](2026-11-20-k8s-volume-pvc-names.md)).
 - The agent logs a warning if an existing PVC's size, storage class or access mode differs from the
   `AgentVolume`, and leaves it alone. It never resizes a PVC.
-- A volume whose claim name `<agentName>-<volume>` exceeds 63 characters is reported not ready; the
-  others are unaffected.
+- Up to 0.16, a volume whose claim name `<agentName>-<volume>` exceeded 63 characters was reported
+  not ready; the others were unaffected. From 0.17 both names are DNS labels of at most 63
+  characters each and that limit no longer applies.
 - `agentName` must now be a valid DNS label (lowercase letters, digits and `-`) even on an agent
   that serves no volumes; any other value is refused at startup (see below).
 

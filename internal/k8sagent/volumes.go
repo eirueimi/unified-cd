@@ -27,7 +27,7 @@ import (
 
 // Agent-owned named volumes on Kubernetes.
 //
-// A volume is an ordinary PersistentVolumeClaim named <agentName>-<volume>,
+// A volume is an ordinary PersistentVolumeClaim named <agentName>.<volume>,
 // created when the controller delivers its AgentVolume (volumes_apply.go) and
 // deleted only by reclaim (reclaimPolicy: Delete, once it left the set and no
 // pod holds it). A claim pod that mounts
@@ -40,11 +40,12 @@ import (
 // rollout, a crash) where exclusion matters.
 const (
 	// volumeLabelPrefix starts the key of the label a claim pod carries for
-	// each volume it mounts: volume.unified-cd/<claim name>: <volume name>. The
-	// claim name is the key and the volume name the value so that one pod can
-	// hold several volumes, and so that the value can be checked against the
-	// key rather than parsed out of it (agent "a" with volume "b-c" and agent
-	// "a-b" with volume "c" share a claim name but not a label).
+	// each volume it mounts: volume.unified-cd/<volume name>: <agent name>. The
+	// volume name is the key (a DNS label, so it fits the 63-character name
+	// segment of a label key, which the claim name <agent>.<volume> may not)
+	// and the agent name the value, so that one pod can hold several volumes
+	// and so that another agent's pod holding a volume of the same name is not
+	// mistaken for this agent's.
 	volumeLabelPrefix = "volume.unified-cd/"
 
 	// labelVolumeOwner and labelVolumeName mark a PVC this agent created, so
@@ -55,7 +56,7 @@ const (
 
 	// podVolumeNamePrefix names the pod-level Volume for a mounted claim:
 	// ucd-vol-<index in the claim's volume list>. Index-based because a pod
-	// volume name must be a short DNS label and the claim name may be 63
+	// volume name must be a short DNS label and the claim name may be 127
 	// characters.
 	podVolumeNamePrefix = "ucd-vol-"
 
@@ -66,7 +67,12 @@ const (
 
 // claimNameFor is the PVC backing a volume: the agent name as a prefix, so
 // several k8s-agents in one namespace keep independent copies of a volume name.
-func claimNameFor(agentName, volume string) string { return agentName + "-" + volume }
+// Agent and volume names are DNS labels and so contain no ".", which makes the
+// mapping injective: agent "a-b" with volume "c" and agent "a" with volume "b-c"
+// no longer share a claim. The result is a DNS-1123 subdomain of at most 127
+// characters. (Versions before this used "-" and could collide; their claims
+// are left alone, see docs/operator-manual/migrations/2026-11-20-k8s-volume-pvc-names.md.)
+func claimNameFor(agentName, volume string) string { return agentName + "." + volume }
 
 // BusyVolumes returns the volumes of agentName that a live claim pod mounts,
 // sorted. It is derived from the pods themselves, so two replicas of one
@@ -93,9 +99,9 @@ func heldVolumes(pods []corev1.Pod, agentName string) map[string]bool {
 		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
 			continue
 		}
-		for key, volume := range p.Labels {
-			claim, ok := strings.CutPrefix(key, volumeLabelPrefix)
-			if ok && volume != "" && claim == claimNameFor(agentName, volume) {
+		for key, owner := range p.Labels {
+			volume, ok := strings.CutPrefix(key, volumeLabelPrefix)
+			if ok && volume != "" && owner == agentName {
 				held[volume] = true
 			}
 		}
@@ -118,6 +124,9 @@ type PodVolume struct {
 	Name string
 	// ClaimName is the PVC behind it.
 	ClaimName string
+	// Agent is the agent name that owns the claim; it is the value of the pod's
+	// volume label (see volumeLabelPrefix).
+	Agent string
 	// MountPath is cleaned and slash-separated: "." is the workspace root, a
 	// relative path is under the workspace, an absolute path is a container
 	// path.
@@ -226,7 +235,7 @@ func planPodVolumes(agentName string, declared map[string]declaredVolume, mounts
 			// host agent.
 			return nil, nil, fmt.Errorf("spec.volumes[%d]: volume %q is shared and cannot be mounted at the workspace root (mountPath %q): several runs would work in one checkout with no exclusion. Declare it exclusive in its AgentVolume, or mount it at a subdirectory", i, name, v.MountPath)
 		}
-		vols = append(vols, PodVolume{Name: name, ClaimName: claimNameFor(agentName, name), MountPath: mp})
+		vols = append(vols, PodVolume{Name: name, ClaimName: claimNameFor(agentName, name), Agent: agentName, MountPath: mp})
 		switch {
 		case mp == ".":
 			paths[alias] = workspace

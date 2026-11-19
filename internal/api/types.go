@@ -580,7 +580,7 @@ type AgentStorage struct {
 	// AgentName is the name the metrics series are labelled with next to the
 	// agent ID: the hostname for a host agent, the configured agentName for a
 	// Kubernetes agent. Replicas of one Kubernetes agent each enrol under their
-	// own agent ID yet share one set of PVCs named <agentName>-<volume>, so the
+	// own agent ID yet share one set of PVCs named <agentName>.<volume>, so the
 	// ID alone would report one physical volume N times.
 	AgentName string `json:"agentName,omitempty"`
 	// Workspace is the workspace filesystem; nil when the agent has none.
