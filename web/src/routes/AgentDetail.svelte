@@ -1,14 +1,29 @@
 <script>
   import AuthSetup from '../components/AuthSetup.svelte';
-  import { apiFetch } from '../lib/api.js';
+  import { apiFetch, grants } from '../lib/api.js';
+  import { allows } from '../lib/authz.js';
   import { statusBadge, fmtRelative } from '../lib/utils.js';
+  import { fmtBytes, isOnline, isK8sAgent, volumeRows } from '../lib/volumes.js';
 
   export let params;
   $: agentId = params.id;
 
   let agent = null, runs = [], loading = true, error = '';
+  let declsByName = {};
 
-  function isOnline(ts) { return Date.now() - new Date(ts).getTime() < 90000; }
+  $: canReadDecls = allows($grants, 'agentvolume.read');
+  $: rows = volumeRows(agent, declsByName);
+
+  async function loadDecls() {
+    declsByName = {};
+    if (!canReadDecls) return;
+    try {
+      const list = await apiFetch('/api/v1/agent-volumes') || [];
+      declsByName = Object.fromEntries(list.map((d) => [d.name, d]));
+    } catch (e) {
+      declsByName = {};
+    }
+  }
 
   async function load() {
     loading = true; error = '';
@@ -29,6 +44,7 @@
       } catch (e) {
         runs = [];
       }
+      if ((agent.volumeStatus || []).length > 0) await loadDecls();
     }
     loading = false;
   }
@@ -68,6 +84,31 @@
         <span style="background:var(--bg-elev);border:1px solid var(--border);padding:0.15rem 0.6rem;border-radius:1rem;font-size:0.8rem;font-family:monospace">{label}</span>
       {/each}
     </div>
+  </div>
+  {/if}
+
+  {#if rows.length > 0}
+  <div class="card" style="margin-bottom:1rem">
+    <div class="meta" style="margin-bottom:0.5rem">Volumes</div>
+    <table class="cards">
+      <thead><tr><th>Volume</th><th>Mode</th><th>State</th><th>Used</th><th>Size</th><th>Disk free</th><th>Measured</th></tr></thead>
+      <tbody>
+        {#each rows as r (r.name)}
+          <tr>
+            <td data-label="Volume" style="font-family:monospace;font-size:0.85rem">{r.name}</td>
+            <td data-label="Mode">{r.mode ?? '—'}</td>
+            <td data-label="State">
+              {#if r.ready}<span class="badge badge-success">Ready</span>
+              {:else}<span class="badge badge-failed">Not ready</span>{#if r.reason} <span class="meta">{r.reason}</span>{/if}{/if}
+            </td>
+            <td data-label="Used">{#if isK8sAgent(agent)}{fmtBytes(r.usedBytes)}{#if r.overSize} <span class="vol-blocked" title="Used exceeds the declared size">⚠</span>{/if}{:else}—{/if}</td>
+            <td data-label="Size">{r.size ?? '—'}</td>
+            <td data-label="Disk free" class:vol-blocked={r.claimBlocked}>{r.freeBytes != null && r.totalBytes != null ? fmtBytes(r.freeBytes) + ' / ' + fmtBytes(r.totalBytes) : '—'}</td>
+            <td data-label="Measured" class="meta">{r.measuredAt ? fmtRelative(r.measuredAt) : '—'}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
   </div>
   {/if}
 
