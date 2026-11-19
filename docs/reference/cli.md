@@ -982,7 +982,7 @@ when `--server` / `UNIFIED_SERVER` differs from the server stored in the config)
 failed refresh prints `token refresh failed: <reason>; run "unified-cli login" again`
 once to stderr and the command still runs. If the IdP issued no refresh token, `login`
 prints `the identity provider issued no refresh token; you will need to log in again
-when the token expires` (Dex default lifetime: about 24 hours, Google: about 1 hour);
+when the token expires` (Dex default lifetime: about 24 hours; Google's is expected to be about 1 hour, not verified);
 re-run `login` when the token expires. If the server has no SSO configured, `login`
 instead prompts for an existing PAT (see [`token create`](#token-create)) and stores
 that instead.

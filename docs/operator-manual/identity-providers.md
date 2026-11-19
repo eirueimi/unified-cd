@@ -19,8 +19,20 @@ These points come from the controller implementation and decide what a working I
 - **Scopes requested.** `openid`, `email`, `profile`, plus `rolesClaim` itself as an extra scope when the claim name contains neither `/` nor `:` (so `groups` adds the scope `groups`, `roles` adds the scope `roles`; a namespaced Auth0 claim adds nothing). The CLI reads the same list from `GET /api/v1/auth/oidc-config` (`scopes`). To change this, set `oidc.scopes` (YAML list, or `UNIFIED_OIDC_SCOPES` comma-separated): when non-empty it is requested exactly, in order, with `openid` prepended if missing and duplicates dropped, and the automatic `rolesClaim` scope is **not** added. Use it when the IdP rejects the extra scope, or when you need a scope the default list lacks. Each entry is one scope; an entry containing whitespace (for example `"openid email profile"`) is a startup error. The CLI device flow uses the same override through `/api/v1/auth/oidc-config`. When the roles claim only appears if its scope is requested (Dex `groups`, Okta `groups`), keep that scope in the list yourself.
 - **Identity matching.** `userMap` and `permissions.*.users` match the token's `email` and its `sub`. If the token has no `email`, the controller uses `sub` in its place. The `email_verified` claim is **not** checked, so only use IdPs where users cannot choose an unverified email address of their own.
 - **Group changes** reach unified-cd at the next browser login (the ID token is re-issued then) and on silent session refresh when the refreshed ID token still carries the claim. CLI id_tokens carry the groups from login time until they expire; a CLI that refreshes its token gets the IdP's new id_token, so group changes reach it at the next refresh. The controller does not re-check admission on refresh.
-- **Refresh tokens (CLI).** The CLI refreshes its id_token automatically only when the IdP issued a refresh token at login. Most IdPs issue one only when asked: Okta, Entra ID and Keycloak need the `offline_access` scope in `oidc.scopes`, and Google needs `access_type=offline` in `oidc.authParams` (browser login) or a TV client (device flow). Without a refresh token `unified-cli login` still succeeds but warns `the identity provider issued no refresh token; you will need to log in again when the token expires`.
+- **Refresh tokens (CLI).** The CLI refreshes its id_token automatically only when the IdP issued a refresh token at login. IdPs are generally expected to issue one only when asked: the per-IdP sections below add `offline_access` to `oidc.scopes` for Okta, Entra ID and Keycloak, and `access_type=offline` to `oidc.authParams` for Google (see [Unverified IdP behavior](#unverified-idp-behavior)). Without a refresh token `unified-cli login` still succeeds but warns `the identity provider issued no refresh token; you will need to log in again when the token expires`.
 - **`authParams`.** `oidc.authParams` (config file only) adds extra query parameters to the authorization request of the web login and of `unified-cli login --browser`. The names `client_id`, `redirect_uri`, `response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method` and `nonce` are reserved; setting one is a startup error.
+
+### Unverified IdP behavior
+
+unified-cd's own behavior on this page (which scopes and query parameters it sends, what it does with the tokens it gets back) follows from the code. What each **identity provider** does with them has **not been tested against a real tenant**; it comes from general knowledge of the vendors' documentation. Steps marked *(unverified)* depend on it:
+
+- Okta, Entra ID and Keycloak issue a refresh token only when the `offline_access` scope is requested, and the vendor-side switches named in the steps (Okta **Refresh Token** grant type, Keycloak `offline_access` role) are what is needed to allow it.
+- Google returns a refresh token to a web client only with `access_type=offline` (and `prompt=consent` on repeat logins), and issues one for the TV client's device flow.
+- Google's TV client accepts only a small scope set, and rejects the extra `groups` scope the default list adds.
+- Google's id_token lifetime is about 1 hour.
+- Google, Okta, Entra ID and Dex return a new id_token when a refresh token is used.
+
+Test a login, `login --browser` and a refresh in a non-production tenant first. If a login prints the "issued no refresh token" warning, check these settings first.
 
 ## Which topology to choose
 
@@ -86,7 +98,7 @@ IdP side (menu names vary by version):
 2. Under **App roles**, create roles for users and groups (for example values `admin`, `team-a`, `team-b`).
 3. In **Enterprise applications > (your app) > Users and groups**, assign users or groups to those roles. Assigned app roles appear in the ID token's `roles` claim.
 4. For the CLI, create a second registration (or enable **Allow public client flows** on a registration) and use its application ID as `deviceClientId`. Entra's device code flow needs a public client.
-5. For CLI token refresh, add `offline_access` to `oidc.scopes` (see the scope gotcha below). Without it Entra issues no refresh token and the CLI asks for a new login when the id_token expires.
+5. *(Unverified)* For CLI token refresh, add `offline_access` to `oidc.scopes` (see the scope gotcha below). Entra is expected to issue no refresh token without it, in which case the CLI asks for a new login when the id_token expires.
 
 unified-cd config:
 
@@ -141,7 +153,7 @@ IdP side:
     - **Org authorization server** (issuer `https://<org>.okta.com`): on the app's **Sign On** tab, edit **OpenID Connect ID Token**, keep the claim name `groups` and set a filter (for example matches regex `team-.*`). The `groups` scope must be requested; unified-cd does so when `rolesClaim` is `groups`.
     - **Custom authorization server** (for example issuer `https://<org>.okta.com/oauth2/default`): **Security > API > (server) > Claims > Add Claim**, name `groups`, include in **ID Token** (always), value type **Groups**, filter by regex. A custom server also needs a scope named `groups` (**Scopes** tab) because unified-cd always requests it.
 3. For the CLI: create a second app integration of type **Native** (public, no secret) and enable the **Device Authorization** grant type. Its client ID is `deviceClientId`. Add the same groups claim for that app (or server-wide on the custom server).
-4. For CLI token refresh, enable the **Refresh Token** grant type on the apps and add `offline_access` to `oidc.scopes`. Okta issues a refresh token only for that scope, and `scopes` replaces the default list, so keep `openid`, `email`, `profile` and `groups` in it: `scopes: [openid, email, profile, groups, offline_access]`.
+4. *(Unverified)* For CLI token refresh, enable the **Refresh Token** grant type on the apps and add `offline_access` to `oidc.scopes`; Okta is expected to issue a refresh token only for that scope. `scopes` replaces the default list, so keep `openid`, `email`, `profile` and `groups` in it: `scopes: [openid, email, profile, groups, offline_access]`.
 
 unified-cd config:
 
@@ -182,7 +194,7 @@ IdP side:
 2. Create the group claim: on the client (or in a shared client scope), **Mappers > Add mapper > By configuration > Group Membership**. Token claim name `groups`, **Add to ID token** on. Decide **Full group path** now: it changes the values you write in the controller config.
 3. To use realm roles instead of groups, add a **User Realm Role** mapper (multivalued) with token claim name `roles` and **Add to ID token** on, and set `rolesClaim: roles`. Do not rely on the default `realm_access.roles` claim: it is nested and `rolesClaim` cannot reach it.
 4. CLI: create a second client with **Client authentication off** (public) and the **OAuth 2.0 Device Authorization Grant** enabled, and add the same mapper to it. Its ID is `deviceClientId`.
-5. For CLI token refresh, add `offline_access` to `oidc.scopes` (Keycloak issues an offline refresh token only for that scope; the client needs the `offline_access` role, which users have by default). Keep the scopes you already rely on in the list, for example `scopes: [openid, email, profile, groups, offline_access]`.
+5. *(Unverified)* For CLI token refresh, add `offline_access` to `oidc.scopes` (Keycloak is expected to issue an offline refresh token only for that scope, and the user needs the `offline_access` realm role; check that it is assigned). Keep the scopes you already rely on in the list, for example `scopes: [openid, email, profile, groups, offline_access]`.
 
 unified-cd config (Full group path **on**):
 
@@ -225,8 +237,8 @@ IdP side (direct):
 
 1. In Google Cloud Console, **APIs & Services > Credentials > Create OAuth client ID**, type **Web application**. Authorized redirect URI: `https://unified-cd.example.com/api/v1/auth/oidc-callback`.
 2. Restrict sign-in to your organisation, for example by setting the OAuth consent screen user type to **Internal**.
-3. CLI device flow: create a second OAuth client of type **TVs and limited-input devices**. Google requires its client secret at the token endpoint, so set it as `oidc.deviceClientSecret` on the controller. The controller then relays the CLI's device login, refresh and logout and adds the secret itself; the CLI never sees it. Google allows only a small scope set for this client type, so keep `oidc.scopes` to `openid`, `email`, `profile` (see the config below; the default list adds a `groups` scope Google would reject).
-4. Refresh tokens: Google issues a refresh token to a web client only when the authorization request carries `access_type=offline` (and `prompt=consent` for repeat logins). Set `oidc.authParams` as shown below; it applies to the web login and to `unified-cli login --browser`. The TV client issues refresh tokens for the device flow without it.
+3. CLI device flow: create a second OAuth client of type **TVs and limited-input devices**. Google requires its client secret at the token endpoint, so set it as `oidc.deviceClientSecret` on the controller. The controller then relays the CLI's device login, refresh and logout and adds the secret itself; the CLI never sees it. *(Unverified)* Google is expected to allow only a small scope set for this client type, so keep `oidc.scopes` to `openid`, `email`, `profile` (see the config below); the default list adds a `groups` scope, which Google may reject.
+4. Refresh tokens *(unverified)*: Google is expected to issue a refresh token to a web client only when the authorization request carries `access_type=offline` (and `prompt=consent` on repeat logins). Set `oidc.authParams` as shown below; unified-cd adds it to the web login and to `unified-cli login --browser`. The TV client is expected to issue refresh tokens for the device flow without it.
 
 Direct config (grants by user email only):
 
@@ -241,7 +253,7 @@ oidc:
   scopes: [openid, email, profile]
   authParams:
     access_type: offline    # without this Google issues no refresh token to the web client
-    prompt: consent         # needed to get a refresh token again on a repeat login
+    prompt: consent         # expected to be needed to get a refresh token again on a repeat login (unverified)
   defaultRole: deny
   userMap:
     alice@example.com: admin
@@ -253,7 +265,7 @@ oidc:
           carol@example.com: [job.read, run.trigger]
 ```
 
-> **Unverified assumptions.** These Google behaviors come from general knowledge of Google's OAuth documentation and have not been tested against a real Google tenant: the TV client's device flow returns a refresh token and an `id_token` for the `openid email profile` scopes; Google returns a refresh token to a web client only with `access_type=offline`; and Google returns a new `id_token` on refresh. Test `unified-cli login`, `--browser` and a refresh in a non-production project first. If a login prints the "issued no refresh token" warning, check `authParams` first.
+> **Unverified assumptions.** The Google behaviors in this section are listed under [Unverified IdP behavior](#unverified-idp-behavior) and have not been tested against a real Google tenant. Test `unified-cli login`, `--browser` and a refresh in a non-production project first.
 
 Via Dex (groups):
 

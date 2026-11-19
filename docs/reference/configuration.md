@@ -133,7 +133,7 @@ oidc:
   deviceClientSecret: ''                 # optional; set => the controller relays the CLI device login, refresh and logout and keeps this secret (needs deviceClientId); env: UNIFIED_OIDC_DEVICE_CLIENT_SECRET
   rolesClaim: groups
   scopes: [openid, email, profile]       # optional; replaces the default scope list (no automatic rolesClaim scope)
-  authParams:                            # optional, config file only; extra query parameters for the browser login's authorization request
+  authParams:                            # optional, config file only; extra query parameters for the authorization request of the web login and of `unified-cli login --browser`
     access_type: offline                 # e.g. Google needs this to issue a refresh token; client_id, redirect_uri, response_type, scope, state, code_challenge, code_challenge_method and nonce are rejected
   defaultRole: viewer
   roleMap:                               # OIDC group/role -> unified-cd role
