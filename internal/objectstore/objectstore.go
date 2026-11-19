@@ -40,8 +40,17 @@ type CompletedPart struct {
 }
 
 // Presigner issues presigned URLs and drives multipart uploads. Each URL is
-// scoped to one object and one operation and expires after PresignExpiry. URLs
-// are bearer credentials: never log them. Only *S3ObjectStore implements it.
+// scoped to one object and one operation and expires after PresignExpiry. Only
+// *S3ObjectStore implements it.
+//
+// Callers must derive every key server-side under the run's or job's own
+// prefix; never take a key from a client. Every method rejects empty keys, a
+// leading "/", backslashes and "." or ".." segments with ErrInvalidKey as a
+// backstop, not as a substitute for deriving keys.
+//
+// URLs are bearer credentials: never log them. PUT and UploadPart URLs sign
+// only the host header, so the object size is not bounded by the URL; rely on
+// bucket quotas to cap storage.
 type Presigner interface {
 	Statter
 	// PresignGet returns a GET URL. A non-empty filename sets

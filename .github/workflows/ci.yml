@@ -460,6 +460,8 @@ jobs:
   garage:
     name: Garage object store integration
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4

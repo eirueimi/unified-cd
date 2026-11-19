@@ -2,6 +2,7 @@ package objectstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,6 +12,22 @@ import (
 )
 
 var _ Presigner = (*S3ObjectStore)(nil)
+
+// ErrInvalidKey is returned (wrapped) when an object key is empty, absolute,
+// contains a backslash, or has a "." or ".." path segment.
+var ErrInvalidKey = errors.New("objectstore: invalid object key")
+
+func validateKey(key string) error {
+	if key == "" || strings.HasPrefix(key, "/") || strings.Contains(key, "\\") {
+		return fmt.Errorf("%w: %q", ErrInvalidKey, key)
+	}
+	for _, seg := range strings.Split(key, "/") {
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("%w: %q", ErrInvalidKey, key)
+		}
+	}
+	return nil
+}
 
 // MultipartPresignSupported reports whether the backend at endpoint accepts
 // presigned UploadPart URLs. GCS's S3-compatible XML API has not been verified
@@ -28,6 +45,9 @@ func MultipartPresignSupported(endpoint string) bool {
 func (s *S3ObjectStore) MultipartPresign() bool { return s.multipartPresign }
 
 func (s *S3ObjectStore) presign(ctx context.Context, method, key string, params url.Values) (*url.URL, error) {
+	if err := validateKey(key); err != nil {
+		return nil, err
+	}
 	u, err := s.client.Presign(ctx, method, s.bucket, key, PresignExpiry, params)
 	if err != nil {
 		return nil, fmt.Errorf("presign %s %q: %w", method, key, err)
@@ -66,6 +86,9 @@ func (s *S3ObjectStore) core() minio.Core { return minio.Core{Client: s.client} 
 
 // StartMultipart implements Presigner.
 func (s *S3ObjectStore) StartMultipart(ctx context.Context, key string) (string, error) {
+	if err := validateKey(key); err != nil {
+		return "", err
+	}
 	id, err := s.core().NewMultipartUpload(ctx, s.bucket, key, minio.PutObjectOptions{ContentType: "application/octet-stream"})
 	if err != nil {
 		return "", fmt.Errorf("start multipart %q: %w", key, err)
@@ -75,6 +98,9 @@ func (s *S3ObjectStore) StartMultipart(ctx context.Context, key string) (string,
 
 // CompleteMultipart implements Presigner.
 func (s *S3ObjectStore) CompleteMultipart(ctx context.Context, key, uploadID string, parts []CompletedPart) error {
+	if err := validateKey(key); err != nil {
+		return err
+	}
 	cp := make([]minio.CompletePart, len(parts))
 	for i, p := range parts {
 		cp[i] = minio.CompletePart{PartNumber: p.PartNumber, ETag: p.ETag}
@@ -87,6 +113,9 @@ func (s *S3ObjectStore) CompleteMultipart(ctx context.Context, key, uploadID str
 
 // AbortMultipart implements Presigner.
 func (s *S3ObjectStore) AbortMultipart(ctx context.Context, key, uploadID string) error {
+	if err := validateKey(key); err != nil {
+		return err
+	}
 	if err := s.core().AbortMultipartUpload(ctx, s.bucket, key, uploadID); err != nil {
 		return fmt.Errorf("abort multipart %q: %w", key, err)
 	}
@@ -114,6 +143,9 @@ func (s *S3ObjectStore) ListMultipartUploads(ctx context.Context, prefix string)
 
 // Stat implements Statter, mapping a missing key to ErrNotFound.
 func (s *S3ObjectStore) Stat(ctx context.Context, key string) (ObjectInfo, error) {
+	if err := validateKey(key); err != nil {
+		return ObjectInfo{}, err
+	}
 	oi, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
 	if err != nil {
 		er := minio.ToErrorResponse(err)

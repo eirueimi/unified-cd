@@ -28,6 +28,9 @@ func newS3ForTest(t *testing.T, endpoint, bucket, region string) *S3ObjectStore 
 	return &S3ObjectStore{client: client, bucket: bucket}
 }
 
+// The path assertion below holds only for path-style endpoints (this test's
+// host and Garage). AWS S3 and GCS use virtual-host style, where the bucket is
+// in the host and the path is just "/<key>".
 func TestPresign_EachURLIsOneObjectOneOp_15Minutes(t *testing.T) {
 	s := newS3ForTest(t, "s3.example.com", "bkt", "us-east-1")
 	ctx := context.Background()
@@ -110,5 +113,38 @@ func TestLocalStat_NotFoundAndModTime(t *testing.T) {
 	}
 	if info.Key != "a/b" || info.Size != 5 || info.LastModified.IsZero() {
 		t.Errorf("info = %+v", info)
+	}
+}
+
+func TestInvalidKeysRejected(t *testing.T) {
+	s := newS3ForTest(t, "s3.example.com", "bkt", "us-east-1")
+	ctx := context.Background()
+	bad := []string{"", "/abs", "../x", "a/../b", "a/..", "./a", "a/./b", "a\\b", "..", "."}
+	for _, key := range bad {
+		calls := map[string]func() error{
+			"get":      func() error { _, err := s.PresignGet(ctx, key, ""); return err },
+			"head":     func() error { _, err := s.PresignHead(ctx, key); return err },
+			"put":      func() error { _, err := s.PresignPut(ctx, key); return err },
+			"part":     func() error { _, err := s.PresignUploadPart(ctx, key, "U", 1); return err },
+			"start":    func() error { _, err := s.StartMultipart(ctx, key); return err },
+			"complete": func() error { return s.CompleteMultipart(ctx, key, "U", nil) },
+			"abort":    func() error { return s.AbortMultipart(ctx, key, "U") },
+			"stat":     func() error { _, err := s.Stat(ctx, key); return err },
+		}
+		for name, fn := range calls {
+			if err := fn(); !errors.Is(err, ErrInvalidKey) {
+				t.Errorf("%s(%q) err = %v, want ErrInvalidKey", name, key, err)
+			}
+		}
+	}
+	if _, err := s.PresignGet(ctx, "runs/1/a..b/file", ""); err != nil {
+		t.Errorf("dots inside a segment must be allowed: %v", err)
+	}
+}
+
+func TestLocalDoesNotImplementPresigner(t *testing.T) {
+	var l any = NewLocalObjectStore(t.TempDir())
+	if _, ok := l.(Presigner); ok {
+		t.Fatal("LocalObjectStore must not implement Presigner")
 	}
 }

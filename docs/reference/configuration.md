@@ -67,7 +67,7 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_S3_KEY` | No | S3 access key ID |
 | `UNIFIED_S3_SECRET` | No | S3 secret access key |
 | `UNIFIED_S3_USE_SSL` | No | `true` to reach the object store over https. Default `false`. Presigned object URLs travel to clients, so AWS S3 and GCS need `true`. Flag: `--s3-use-ssl`; config key `s3UseSSL`. |
-| `UNIFIED_S3_REGION` | No | Bucket region (e.g. `us-east-1`; `auto` for GCS; `garage` for the bundled Garage). With a region set, the controller signs presigned URLs without a lookup round trip. Flag: `--s3-region`; config key `s3Region`. |
+| `UNIFIED_S3_REGION` | No | Bucket region (e.g. `us-east-1`; `auto` for GCS; `garage` for the bundled Garage). Set it: with an empty region the client looks up the bucket location (a network round trip) on the first presign, and presigning fails if that lookup does. Flag: `--s3-region`; config key `s3Region`. |
 | `UNIFIED_DATA_DIR` | No | Local directory used as object store fallback (alternative to S3, development only) |
 | `UNIFIED_WEB_DIR` | No | Path to static web assets directory. If unset, `/ui/*` returns 404. |
 | `UNIFIED_UI_PROXY_TARGET` | No | Proxy `/ui/*` to a Vite dev server (e.g. `http://localhost:5173`). Used during frontend development. |
