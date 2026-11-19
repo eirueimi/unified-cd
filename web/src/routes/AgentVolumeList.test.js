@@ -94,6 +94,8 @@ describe('AgentVolumeList', () => {
     expect(queryByText('Offline')).toBeNull();
     await fireEvent.click(getByText('cache'));
     await waitFor(() => expect(getByText('Offline')).toBeTruthy());
+    expect(getByText('Offline').closest('tr').classList.contains('vol-offline')).toBe(true);
+    expect(getByText('Ready').closest('tr').classList.contains('vol-offline')).toBe(false);
     expect(getByText('claim pending')).toBeTruthy();
     expect(getByText('host-1').closest('a').getAttribute('href')).toBe('#/agents/host-1');
   });

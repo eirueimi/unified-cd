@@ -81,7 +81,7 @@
                     <thead><tr><th>Agent</th><th>State</th><th>Used</th><th>Disk free</th><th>Measured</th></tr></thead>
                     <tbody>
                       {#each s.perAgent as a (a.agentId)}
-                        <tr>
+                        <tr class:vol-offline={!a.online}>
                           <td data-label="Agent" style="font-family:monospace;font-size:0.85rem">
                             <span><a href={`#/agents/${a.agentId}`}>{a.agentId}</a>{#if !a.online} <span class="badge badge-failed">Offline</span>{/if}</span>
                           </td>
@@ -111,5 +111,6 @@
 
 <style>
   tr.clickable { cursor: pointer; }
+  tr.vol-offline { opacity: 0.55; }
   .vol-toggle { background: none; border: none; padding: 0; color: var(--text-muted); cursor: pointer; font: inherit; }
 </style>
