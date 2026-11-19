@@ -129,7 +129,6 @@ type Server struct {
 	metrics                       *metrics.Metrics        // nil = middleware no-ops and /metrics returns 404.
 	claimedBy                     *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
 	enrollmentLimiter             *enrollmentLimiter
-	storeCredentialLimiter        *enrollmentLimiter
 	objectLimiter                 *enrollmentLimiter // Per-requester budget of the object endpoints (StoreCredentialRate*).
 	cliRelay                      *cliRelayLimiters  // Per-IP limiters for the CLI relay routes.
 	credentialTouches             *credentialTouchLimiter

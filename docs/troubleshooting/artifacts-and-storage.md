@@ -9,9 +9,9 @@ An artifact step fails, or a cache step logs `cache not restored`, with one of:
 ```
 artifact requires UNIFIED_CONTROLLER_URL and UNIFIED_POD_TOKEN_FILE (set by the k8s agent)
 cache requires UNIFIED_CONTROLLER_URL and UNIFIED_POD_TOKEN_FILE (set by the k8s agent)
-presign get: 403 forbidden: this namespace or service account may not request object URLs
-presign put: 409 binding-pending: no pod is bound to this run yet; retry
-presign get: 403 forbidden: the presented pod is not the one bound to this run
+presign artifact/get: 403 forbidden: this namespace or service account may not request object URLs
+presign artifact/put: 409 binding-pending: no pod is bound to this run yet; retry
+presign artifact/get: 403 forbidden: the presented pod is not the one bound to this run
 ```
 
 **Cause**
@@ -90,7 +90,7 @@ Remove every one of them and restart. Caches need no agent configuration. If the
 A log line or step error contains:
 
 ```
-presign put: 501 multipart-unavailable: the object store does not accept presigned multipart uploads; use a single put
+presign artifact/multipart-start: 501 multipart-unavailable: the object store does not accept presigned multipart uploads; use a single put
 ```
 
 **Cause**

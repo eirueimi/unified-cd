@@ -56,10 +56,31 @@ jobs and `call:` children). Existing cache entries are found after the upgrade; 
 3. Clean up: delete the S3 Secrets you created for `sidecarS3SecretName`, and remove
    `storeCredentialRequireRunBinding` from the controller configuration.
 
-During a Kubernetes rolling upgrade, a new k8s agent talking to a **not yet upgraded controller** reports
-only the run's claim Pod to it (migration `033` is what lets the controller keep every Pod of a run).
-Sidecars in isolated scope Pods then get `403` from the presign endpoint until the controller is upgraded.
-Upgrade the controller first, or in the same window, and the scope Pods work.
+A released old controller has no presign endpoint, so a new sidecar cannot work against it: every
+artifact and cache step in a new job Pod fails. The rule is therefore **upgrade the controller first, or
+together with the Kubernetes agents**, never the agents alone. The reverse also fails: an old sidecar
+cannot work against the new controller (see below).
+
+`objectStore.artifactDownload` arrives in this same release; until you set it, human downloads behave as
+before (`proxy`).
+
+## Rollback
+
+- **Roll back the controller and the Kubernetes agents together.** The sidecar image ships with the agent,
+  so rolling the agent back restores the old sidecar that the old controller serves. Rolling back only one
+  side leaves the pair incompatible, with the errors below.
+- **Host agents** rolled back to the old binary work against the old controller only with their old
+  `--cache-*` settings restored (the new binary refuses to start with them, the old one needs them for
+  caches).
+- **Migration `033` stays applied.** Running an older controller does not revert it, and a controller that
+  does not embed migration `033` cannot start against a database already at version 33: golang-migrate
+  cannot find the migration for the database's version and the controller exits at startup. Roll the schema
+  back first, using the migration files of the **new** release and the same tooling the controller uses:
+  `migrate -path internal/store/migrations -database "$UNIFIED_DB_DSN" goto 32` (v0.17.0 embeds migrations
+  up to `032`; for an older release use the last version that release embeds, for example `031` for v0.16.0,
+  which also runs the `032` down migration and drops the CLI login codes). Take a database backup first.
+  The `033` down migration is safe: it keeps the most recently reported Pod of each run and restores the
+  one-binding-per-run primary key, and the next heartbeat rebuilds any binding it dropped.
 
 ## Errors you will see
 
