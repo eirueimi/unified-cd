@@ -256,3 +256,18 @@ func TestExecuteRun_NoWarningWhenPreRunReadingIsHealthy(t *testing.T) {
 	require.Equal(t, api.RunSucceeded, f.waitFinish(t))
 	assert.NotContains(t, f.logText(), "lack of space")
 }
+
+func TestStorageReading_DerivesUsedBytes(t *testing.T) {
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("c", "shared", "1Gi")})
+	seed(f.a, "c", 30, 100, time.Now().UTC())
+	got := f.a.storageReading().Volumes["c"]
+	require.NotNil(t, got.UsedBytes)
+	assert.Equal(t, uint64(70), *got.UsedBytes)
+}
+
+func TestStorageReading_FreeAboveTotalOmitsUsed(t *testing.T) {
+	f := newVolFixture(t, []api.DesiredVolume{vcfg("c", "shared", "1Gi")})
+	seed(f.a, "c", 200, 100, time.Now().UTC())
+	got := f.a.storageReading().Volumes["c"]
+	assert.Nil(t, got.UsedBytes)
+}

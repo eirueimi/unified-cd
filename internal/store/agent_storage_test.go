@@ -32,7 +32,7 @@ func TestSetAgentStorage_RoundTripsEveryField(t *testing.T) {
 	want := api.AgentStorage{
 		AgentName:          "host1",
 		Workspace:          &api.FilesystemStats{FreeBytes: 10, TotalBytes: 100},
-		Volumes:            map[string]api.VolumeStats{"cache": volumeReading(1, 2, at)},
+		Volumes:            map[string]api.VolumeStats{"cache": withUsed(volumeReading(1, 2, at), 1)},
 		MinFreeDiskBytes:   u64p(5),
 		ClaimBlockedByDisk: boolp(true),
 	}
@@ -52,6 +52,8 @@ func TestSetAgentStorage_RoundTripsEveryField(t *testing.T) {
 	assert.Equal(t, uint64(1), g.Volumes["cache"].FreeBytes)
 	assert.Equal(t, uint64(2), g.Volumes["cache"].TotalBytes)
 	assert.True(t, at.Equal(g.Volumes["cache"].MeasuredAt), "MeasuredAt must survive the round trip")
+	require.NotNil(t, g.Volumes["cache"].UsedBytes)
+	assert.Equal(t, uint64(1), *g.Volumes["cache"].UsedBytes)
 }
 
 // An agent that cannot answer part of the reading (a Kubernetes agent has no
@@ -318,4 +320,71 @@ func TestListAgentStorage_MissingClaimBlockedKeyIsFalse(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, got["agent-1"].Volumes, "cache")
 	assert.False(t, got["agent-1"].Volumes["cache"].ClaimBlocked)
+}
+
+func withUsed(v api.VolumeStats, used uint64) api.VolumeStats {
+	v.UsedBytes = &used
+	return v
+}
+
+func cacheStorage(at time.Time) *api.AgentStorage {
+	return &api.AgentStorage{
+		AgentName: "builders",
+		Volumes:   map[string]api.VolumeStats{"cache": withUsed(volumeReading(10, 100, at), 90)},
+	}
+}
+
+func TestListAgents_ReturnsStorage(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	require.NoError(t, pg.UpsertAgent(ctx, "k8s-1", "", "linux/k8s", "v1", nil, nil, nil, nil))
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	want := cacheStorage(at)
+	require.NoError(t, pg.SetAgentStorage(ctx, "k8s-1", want))
+
+	agents, err := pg.ListAgents(ctx)
+	require.NoError(t, err)
+	require.Len(t, agents, 1)
+	require.NotNil(t, agents[0].Storage)
+	assert.Equal(t, "builders", agents[0].Storage.AgentName)
+	got := agents[0].Storage.Volumes["cache"]
+	assert.Equal(t, uint64(10), got.FreeBytes)
+	assert.Equal(t, uint64(100), got.TotalBytes)
+	require.NotNil(t, got.UsedBytes)
+	assert.Equal(t, uint64(90), *got.UsedBytes)
+	assert.True(t, at.Equal(got.MeasuredAt))
+}
+
+func TestGetAgent_ReturnsStorage(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	require.NoError(t, pg.UpsertAgent(ctx, "k8s-1", "", "linux/k8s", "v1", nil, nil, nil, nil))
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, pg.SetAgentStorage(ctx, "k8s-1", cacheStorage(at)))
+
+	a, err := pg.GetAgent(ctx, "k8s-1")
+	require.NoError(t, err)
+	require.NotNil(t, a)
+	require.NotNil(t, a.Storage)
+	got := a.Storage.Volumes["cache"]
+	assert.Equal(t, uint64(10), got.FreeBytes)
+	require.NotNil(t, got.UsedBytes)
+	assert.Equal(t, uint64(90), *got.UsedBytes)
+	assert.True(t, at.Equal(got.MeasuredAt))
+}
+
+func TestGetAgent_NullStorageStaysNil(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1", nil, nil, nil, nil))
+
+	a, err := pg.GetAgent(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, a)
+	assert.Nil(t, a.Storage)
+
+	agents, err := pg.ListAgents(ctx)
+	require.NoError(t, err)
+	require.Len(t, agents, 1)
+	assert.Nil(t, agents[0].Storage)
 }

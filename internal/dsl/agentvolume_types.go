@@ -15,7 +15,8 @@ type AgentVolume struct {
 type AgentVolumeSpec struct {
 	// Mode is "exclusive" (one run at a time) or "shared" (concurrent runs).
 	Mode string `yaml:"mode" json:"mode"`
-	// Size is a Kubernetes quantity such as 200Gi. It must be positive.
+	// Size is a Kubernetes quantity such as 200Gi. It must be positive. It sets
+	// the PVC request on Kubernetes agents and has no effect on host agents.
 	Size string `yaml:"size" json:"size"`
 	// StorageClassName is the storage class for Kubernetes agents' PVCs.
 	StorageClassName string `yaml:"storageClassName,omitempty" json:"storageClassName,omitempty"`

@@ -565,7 +565,7 @@ var errRunTerminal = errors.New("the controller reports the run finished while i
 
 // reserveClaimVolumes holds every volume the claim mounts, waiting while another
 // run on this agent holds one, and narrows c.Volumes to the volumes chosen. The
-// returned func measures each volume's usage (advisory) and releases the lot; it
+// returned func measures each volume's usage and releases the lot; it
 // is called once, when the run and its unmounts are done.
 //
 // The wait ends, and the run is failed with the reason, when the agent starts
@@ -640,16 +640,7 @@ func (a *Agent) reserveClaimVolumes(claimCtx, runCtx context.Context, c *api.Cla
 	for _, w := range a.Volumes.TakeWarnings(c.RunID) {
 		a.warnRun(waitCtx, c.RunID, w)
 	}
-	return func() {
-		measured := map[string]bool{}
-		for _, v := range chosen {
-			if n := v.Name[0]; !measured[n] {
-				measured[n] = true
-				a.Volumes.CheckUsage(n)
-			}
-		}
-		release()
-	}, nil
+	return release, nil
 }
 
 // --- isolated runs ---

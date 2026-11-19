@@ -529,6 +529,9 @@ type AgentInfo struct {
 	// VolumeStatus is the agent's last reported state of each controller-declared
 	// volume it was asked to provision.
 	VolumeStatus []AgentVolumeStatus `json:"volumeStatus,omitempty"`
+	// Storage is the agent's last reported disk headroom. nil when the agent has
+	// never reported one.
+	Storage *AgentStorage `json:"storage,omitempty"`
 }
 
 // AgentVolumeStatus is one controller-declared volume's provisioning state on
@@ -551,6 +554,10 @@ type FilesystemStats struct {
 type VolumeStats struct {
 	FilesystemStats
 	MeasuredAt time.Time `json:"measuredAt"`
+	// UsedBytes is the space in use on the volume's own filesystem (total minus
+	// free). nil means the agent does not report it: only Kubernetes agents do,
+	// since their volumes are PVCs with a filesystem of their own.
+	UsedBytes *uint64 `json:"usedBytes,omitempty"`
 	// ClaimBlocked is true while the agent keeps this volume out of its claims
 	// (BusyVolumes) because its free space is below minFreeDisk. Runs that need
 	// the volume stay queued; other runs are unaffected.

@@ -23,7 +23,7 @@ spec:
 |---|---|---|---|
 | `metadata.name` | string | Yes | Volume name. Must be a DNS-1123 label (lowercase letters, digits and `-`, at most 63 characters), which also makes it a single path segment. Jobs refer to the volume by this name. |
 | `spec.mode` | string | Yes | `exclusive` allows one run at a time to hold the volume; `shared` allows concurrent runs. |
-| `spec.size` | string | Yes | Volume size as a Kubernetes quantity such as `200Gi`. Must be positive. |
+| `spec.size` | string | Yes | Volume size as a Kubernetes quantity such as `200Gi`. Must be positive. It sets the PVC request on Kubernetes agents and has no effect on host agents, which neither enforce it nor log a usage warning. |
 | `spec.storageClassName` | string | No | Storage class used for the PVC on Kubernetes agents. |
 | `spec.agentSelector` | []string | No | Labels in the same `key:value` syntax as a Job's `agentSelector`. An agent offers the volume only when it carries every listed label. Empty means every agent. Entries must not be empty strings. |
 | `spec.reclaimPolicy` | string | No | `Retain` (default) keeps the volume's data when the volume leaves an agent's desired set. `Delete` removes the data once the volume has been absent from the agent's set for 10 minutes without interruption and no run holds it. |
@@ -54,6 +54,13 @@ Unknown fields are rejected.
   `volume left the set; reclaim scheduled after 10m0s`).
 - A host agent offers no volumes until its first successful heartbeat, which it sends immediately
   at startup; while the controller is unreachable it keeps its last known set.
+
+### Seeing volumes in the Web UI
+
+- The **Volumes** page (`#/volumes`, in the top navigation) lists every declared volume with its mode, size, selector and reclaim policy. It needs `agentvolume.read`.
+- With `agent.read` as well, each row also shows how many agents hold the volume (`ready / asked`), the total used size and the largest holder. Click a row to see a per-agent breakdown (state, used, disk free, when it was measured). Without `agent.read` the page shows the declarations only.
+- An agent's own detail page has a **Volumes** card with the same readings for that agent.
+- **Used** size is reported by Kubernetes agents only. Host agents do not measure it, so it shows as a dash (`—`), and a total that covers only some agents reads `(1 of 2 measured)`. Kubernetes replicas that share one PVC are counted once. `spec.size` is only compared with used size on Kubernetes agents; it has no effect on host agents.
 
 ### Applying and managing
 

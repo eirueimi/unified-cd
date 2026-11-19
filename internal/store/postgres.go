@@ -1835,7 +1835,7 @@ func (p *Postgres) DeleteAgent(ctx context.Context, agentID string) error {
 }
 
 func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
-	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities, volumes, volume_status FROM agents ORDER BY last_seen_at DESC`
+	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities, volumes, volume_status, storage FROM agents ORDER BY last_seen_at DESC`
 	rows, err := p.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -1844,13 +1844,18 @@ func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
 	var out []api.AgentInfo
 	for rows.Next() {
 		var a api.AgentInfo
-		var envJSON, statusJSON []byte
-		if err := rows.Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities, &a.Volumes, &statusJSON); err != nil {
+		var envJSON, statusJSON, storageJSON []byte
+		if err := rows.Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities, &a.Volumes, &statusJSON, &storageJSON); err != nil {
 			return nil, err
 		}
 		if len(statusJSON) > 0 {
 			if err := json.Unmarshal(statusJSON, &a.VolumeStatus); err != nil {
 				return nil, fmt.Errorf("list agents: decode volume status for agent %q: %w", a.ID, err)
+			}
+		}
+		if len(storageJSON) > 0 {
+			if err := json.Unmarshal(storageJSON, &a.Storage); err != nil {
+				return nil, fmt.Errorf("list agents: decode storage for agent %q: %w", a.ID, err)
 			}
 		}
 		_ = json.Unmarshal(envJSON, &a.Env)
@@ -1863,11 +1868,11 @@ func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
 }
 
 func (p *Postgres) GetAgent(ctx context.Context, id string) (*api.AgentInfo, error) {
-	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities, volumes, volume_status FROM agents WHERE id = $1`
+	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities, volumes, volume_status, storage FROM agents WHERE id = $1`
 	var a api.AgentInfo
-	var envJSON, statusJSON []byte
+	var envJSON, statusJSON, storageJSON []byte
 	err := p.pool.QueryRow(ctx, q, id).
-		Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities, &a.Volumes, &statusJSON)
+		Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities, &a.Volumes, &statusJSON, &storageJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -1877,6 +1882,11 @@ func (p *Postgres) GetAgent(ctx context.Context, id string) (*api.AgentInfo, err
 	if len(statusJSON) > 0 {
 		if err := json.Unmarshal(statusJSON, &a.VolumeStatus); err != nil {
 			return nil, fmt.Errorf("get agent: decode volume status: %w", err)
+		}
+	}
+	if len(storageJSON) > 0 {
+		if err := json.Unmarshal(storageJSON, &a.Storage); err != nil {
+			return nil, fmt.Errorf("get agent: decode storage: %w", err)
 		}
 	}
 	_ = json.Unmarshal(envJSON, &a.Env)

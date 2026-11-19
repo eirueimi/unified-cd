@@ -113,36 +113,35 @@ func (m *VolumeManager) saveReclaimRecord() {
 	}
 }
 
-// validDesiredVolume checks one desired volume and returns its advisory size
-// in bytes and normalised reclaim policy.
-func (m *VolumeManager) validDesiredVolume(d api.DesiredVolume) (size int64, policy string, err error) {
+// validDesiredVolume checks one desired volume and returns its normalised
+// reclaim policy. The size is checked for validity only; it is not retained.
+func (m *VolumeManager) validDesiredVolume(d api.DesiredVolume) (policy string, err error) {
 	if err := validateVolumeConfigName(d.Name); err != nil {
-		return 0, "", err
+		return "", err
 	}
 	if strings.HasPrefix(d.Name, ".") {
-		return 0, "", fmt.Errorf("volume name %q must not start with a dot", d.Name)
+		return "", fmt.Errorf("volume name %q must not start with a dot", d.Name)
 	}
 	switch d.Mode {
 	case VolumeModeExclusive, VolumeModeShared:
 	default:
-		return 0, "", fmt.Errorf("mode must be %q or %q, got %q", VolumeModeExclusive, VolumeModeShared, d.Mode)
+		return "", fmt.Errorf("mode must be %q or %q, got %q", VolumeModeExclusive, VolumeModeShared, d.Mode)
 	}
 	if d.Size != "" {
 		q, perr := resource.ParseQuantity(d.Size)
 		if perr != nil || q.Value() <= 0 {
-			return 0, "", fmt.Errorf("size %q is not a positive quantity such as 200Gi", d.Size)
+			return "", fmt.Errorf("size %q is not a positive quantity such as 200Gi", d.Size)
 		}
-		size = q.Value()
 	}
 	policy, err = parseReclaimPolicy(d.ReclaimPolicy)
 	if err != nil {
-		return 0, "", err
+		return "", err
 	}
 	p := m.defaultVolumePath(d.Name)
 	if err := checkOutOfGCReach(m.base, p); err != nil {
-		return 0, "", err
+		return "", err
 	}
-	return size, policy, nil
+	return policy, nil
 }
 
 // parseReclaimPolicy normalises a delivered reclaim policy ("" is Retain).
@@ -184,7 +183,8 @@ func (m *VolumeManager) defaultVolumePath(name string) string {
 //     a Delete-to-Retain change is never lost.
 //   - A mode change is applied only when no run holds the volume; until then
 //     the volume is not offered.
-//   - A size change applies immediately.
+//   - A size change needs no action: the size is validated and otherwise unused
+//     by the host agent.
 func (m *VolumeManager) Apply(desired []api.DesiredVolume) []api.AgentVolumeStatus {
 	if m == nil {
 		return nil
@@ -212,7 +212,7 @@ func (m *VolumeManager) Apply(desired []api.DesiredVolume) []api.AgentVolumeStat
 			changed = true
 		}
 		_, known := m.reclaim[d.Name]
-		size, policy, err := m.validDesiredVolume(d)
+		policy, err := m.validDesiredVolume(d)
 		if err != nil {
 			statuses[d.Name] = api.AgentVolumeStatus{Name: d.Name, Reason: fmt.Sprintf("invalid: %v", err)}
 			// The volume cannot be applied, but a policy change for one this
@@ -223,7 +223,7 @@ func (m *VolumeManager) Apply(desired []api.DesiredVolume) []api.AgentVolumeStat
 			}
 			continue
 		}
-		st, ok := m.applyOne(d, size)
+		st, ok := m.applyOne(d)
 		statuses[d.Name] = st
 		if ok {
 			keep[d.Name] = struct{}{}
@@ -319,13 +319,12 @@ func (m *VolumeManager) Apply(desired []api.DesiredVolume) []api.AgentVolumeStat
 // applyOne brings one valid desired volume in line: it creates, updates, or
 // (while holders remain) holds back the entry. ok is true when an entry exists
 // that Apply must keep (even a not-ready one waiting for a mode switch).
-func (m *VolumeManager) applyOne(d api.DesiredVolume, size int64) (api.AgentVolumeStatus, bool) {
+func (m *VolumeManager) applyOne(d api.DesiredVolume) (api.AgentVolumeStatus, bool) {
 	m.mu.Lock()
 	v, exists := m.vols[d.Name]
 	if exists {
 		defer m.mu.Unlock()
 		v.retiring = false
-		v.size = size
 		if v.mode == d.Mode {
 			v.switching = false
 			return api.AgentVolumeStatus{Name: d.Name, Ready: true}, true
@@ -359,7 +358,7 @@ func (m *VolumeManager) applyOne(d api.DesiredVolume, size int64) (api.AgentVolu
 		}
 	}
 	m.mu.Lock()
-	m.vols[d.Name] = &volume{mode: d.Mode, path: p, size: size}
+	m.vols[d.Name] = &volume{mode: d.Mode, path: p}
 	m.mu.Unlock()
 	return api.AgentVolumeStatus{Name: d.Name, Ready: true}, true
 }

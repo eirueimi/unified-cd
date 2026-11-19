@@ -176,9 +176,9 @@ type VolumeConfig struct {
 	// Path is ignored (volumes live at <workspaceDir>/volumes/<name> on a
 	// host agent).
 	Path string `yaml:"path"`
-	// Size is an advisory capacity such as "200Gi". The host agent measures
-	// usage and warns on overrun; it never enforces the limit. Required by the
-	// Kubernetes agent, which provisions a PVC of this size.
+	// Size is a capacity such as "200Gi". The host agent does not use it
+	// (it is not measured against or enforced). Required by the Kubernetes
+	// agent, which provisions a PVC of this size.
 	Size string `yaml:"size"`
 	// StorageClassName selects the PVC's StorageClass. Kubernetes agent only;
 	// ignored by the host agent.

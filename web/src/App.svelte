@@ -18,6 +18,7 @@
   import GitCredentialList from "./routes/GitCredentialList.svelte";
   import AppSourceList from "./routes/AppSourceList.svelte";
   import SecretList from "./routes/SecretList.svelte";
+  import AgentVolumeList from "./routes/AgentVolumeList.svelte";
 
   const routes = {
     "/": JobList,
@@ -28,6 +29,7 @@
     "/runs/:id/yaml": RunYaml,
     "/agents": AgentMonitor,
     "/agents/:id": AgentDetail,
+    "/volumes": AgentVolumeList,
     "/tokens": TokenList,
     "/resources/schedules": ScheduleList,
     "/resources/webhooks": WebhookList,
@@ -71,6 +73,7 @@
   <span class="brand">⚡ unified-cd</span>
   <a href="#/">Jobs</a>
   {#if allows($grants, 'agent.read')}<a href="#/agents">Agents</a>{/if}
+  {#if allows($grants, 'agentvolume.read')}<a href="#/volumes">Volumes</a>{/if}
   {#if showSchedules || showWebhooks || showGitCredentials || showAppSources || showSecrets}
   <div class="dropdown">
     <span class="dropdown-trigger" class:nav-active={router.location.startsWith('/resources/')} tabindex="0" role="button" aria-haspopup="true">Resources ▾</span>

@@ -3,12 +3,10 @@ package agent
 import (
 	"bytes"
 	"context"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -175,72 +173,6 @@ func TestVolumeManager_RejectsVolumesRootResolvingIntoAWorkingDir(t *testing.T) 
 	require.False(t, sts[0].Ready)
 	require.Contains(t, sts[0].Reason, "workspace GC")
 	require.Empty(t, m.Names())
-}
-
-func TestVolumeManager_UsageMeasurementToleratesPermissionErrors(t *testing.T) {
-	m, _ := newTestVolumes(t, config.VolumeConfig{Name: "a", Mode: "exclusive", Size: "5"})
-	root := m.PathOf("a")
-
-	// The failure is injected through the walk function: a root-owned subtree
-	// left by an isolated run on a rootful runtime cannot be created portably
-	// (producing one needs root, and chmod 000 means nothing on Windows). The
-	// injected walk reports the same fs.ErrPermission a real unreadable
-	// directory yields. A real walk aborts when the callback returns an error,
-	// so the callback must return nil here.
-	m.walk = func(r string, fn fs.WalkDirFunc) error {
-		require.Equal(t, root, r)
-		require.NoError(t, fn(r, fakeDir{name: "a"}, nil))
-		require.NoError(t, fn(filepath.Join(r, "readable"), fakeFile{name: "readable", size: 4}, nil))
-		require.NoError(t, fn(filepath.Join(r, "rootowned"), fakeDir{name: "rootowned"},
-			&fs.PathError{Op: "open", Path: filepath.Join(r, "rootowned"), Err: fs.ErrPermission}))
-		require.NoError(t, fn(filepath.Join(r, "after"), fakeFile{name: "after", size: 3}, nil))
-		return nil
-	}
-
-	used, skipped, firstErr := m.measureUsage("a")
-	require.EqualValues(t, 7, used, "readable files on both sides of the failure are counted")
-	require.Equal(t, 1, skipped)
-	require.ErrorIs(t, firstErr, fs.ErrPermission)
-
-	// CheckUsage never fails the run, and says what it could not read.
-	var logs bytes.Buffer
-	defer captureSlog(&logs)()
-	m.CheckUsage("a")
-	require.Contains(t, logs.String(), "could not be read")
-	require.Contains(t, logs.String(), "exceeds")
-}
-
-func TestVolumeManager_UsageMeasurementOnARealUnreadableDir(t *testing.T) {
-	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
-		t.Skip("needs a non-root POSIX user for chmod to deny reads")
-	}
-	m, _ := newTestVolumes(t, config.VolumeConfig{Name: "a", Mode: "exclusive", Size: "1Gi"})
-	root := m.PathOf("a")
-	require.NoError(t, os.WriteFile(filepath.Join(root, "ok"), []byte("12345"), 0o644))
-	locked := filepath.Join(root, "locked")
-	require.NoError(t, os.Mkdir(locked, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(locked, "hidden"), []byte("x"), 0o644))
-	require.NoError(t, os.Chmod(locked, 0o000))
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
-
-	used, skipped, firstErr := m.measureUsage("a")
-	require.EqualValues(t, 5, used)
-	require.Equal(t, 1, skipped)
-	require.ErrorIs(t, firstErr, fs.ErrPermission)
-}
-
-func TestVolumeManager_UsageWithinSizeIsQuiet(t *testing.T) {
-	m, _ := newTestVolumes(t, config.VolumeConfig{Name: "a", Mode: "exclusive", Size: "1Mi"})
-	require.NoError(t, os.WriteFile(filepath.Join(m.PathOf("a"), "f"), []byte("abc"), 0o644))
-	var logs bytes.Buffer
-	defer captureSlog(&logs)()
-	m.CheckUsage("a")
-	require.Empty(t, logs.String())
-
-	// No declared size: nothing to compare against, nothing measured.
-	m2, _ := newTestVolumes(t, exclusive("b"))
-	m2.walk = func(string, fs.WalkDirFunc) error { t.Fatal("walked a volume with no size"); return nil }
-	m2.CheckUsage("b")
 }
 
 func TestVolumeManager_SharedAllowsConcurrentReserve(t *testing.T) {
@@ -436,7 +368,6 @@ func TestVolumeManager_NilManagerIsSafe(t *testing.T) {
 	require.Empty(t, m.Busy())
 	require.Equal(t, "", m.ModeOf("a"))
 	require.Equal(t, "", m.PathOf("a"))
-	require.NotPanics(t, func() { m.CheckUsage("a") })
 
 	_, _, err := m.Reserve("r", []string{"a"})
 	require.Error(t, err)
@@ -497,32 +428,6 @@ func TestVolumeManager_ReservePathContext_CancelledWaitReturns(t *testing.T) {
 }
 
 // --- helpers ---
-
-type fakeFile struct {
-	name string
-	size int64
-}
-
-func (f fakeFile) Name() string               { return f.name }
-func (f fakeFile) IsDir() bool                { return false }
-func (f fakeFile) Type() fs.FileMode          { return 0 }
-func (f fakeFile) Info() (fs.FileInfo, error) { return fakeInfo{f}, nil }
-
-type fakeInfo struct{ f fakeFile }
-
-func (i fakeInfo) Name() string       { return i.f.name }
-func (i fakeInfo) Size() int64        { return i.f.size }
-func (i fakeInfo) Mode() fs.FileMode  { return 0o644 }
-func (i fakeInfo) ModTime() time.Time { return time.Time{} }
-func (i fakeInfo) IsDir() bool        { return false }
-func (i fakeInfo) Sys() any           { return nil }
-
-type fakeDir struct{ name string }
-
-func (d fakeDir) Name() string               { return d.name }
-func (d fakeDir) IsDir() bool                { return true }
-func (d fakeDir) Type() fs.FileMode          { return fs.ModeDir }
-func (d fakeDir) Info() (fs.FileInfo, error) { return nil, fs.ErrPermission }
 
 // captureSlog routes the default logger into buf and returns the restore func.
 func captureSlog(buf *bytes.Buffer) func() {

@@ -210,10 +210,18 @@ describe('App — permission-aware navigation', () => {
     authReady.set(true);
     const { unmount } = render(App);
     await waitFor(() => expect(screen.getByText('Jobs')).toBeInTheDocument());
-    for (const name of ['Secrets', 'Webhooks', 'GitCredentials', 'AppSources', 'Agents', 'Tokens']) {
+    for (const name of ['Secrets', 'Webhooks', 'GitCredentials', 'AppSources', 'Agents', 'Tokens', 'Volumes']) {
       expect(screen.queryByText(name)).not.toBeInTheDocument();
     }
     expect(screen.getByText('Schedules')).toBeInTheDocument();
+    unmount();
+  });
+
+  it('shows the Volumes link only with agentvolume.read', async () => {
+    currentUser.set({ email: 'a@example.com', permissions: { global: ['job.read', 'agentvolume.read'], folders: {} } });
+    authReady.set(true);
+    const { unmount } = render(App);
+    await waitFor(() => expect(screen.getByText('Volumes')).toBeInTheDocument());
     unmount();
   });
 
@@ -222,7 +230,7 @@ describe('App — permission-aware navigation', () => {
     authReady.set(true);
     const { unmount } = render(App);
     await waitFor(() => expect(screen.getByText('Jobs')).toBeInTheDocument());
-    for (const name of ['Agents', 'Schedules', 'Webhooks', 'GitCredentials', 'AppSources', 'Secrets', 'Tokens']) {
+    for (const name of ['Agents', 'Volumes', 'Schedules', 'Webhooks', 'GitCredentials', 'AppSources', 'Secrets', 'Tokens']) {
       expect(screen.getByText(name)).toBeInTheDocument();
     }
     unmount();

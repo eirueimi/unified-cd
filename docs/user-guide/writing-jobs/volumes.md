@@ -319,7 +319,7 @@ holding a concurrency slot (see [Modes](#modes)).
 ## How full is a volume?
 
 A job cannot see how much room its volume has, and `size` is the operator's setting, not yours. On a
-host agent it is **advisory**: the agent warns when a volume grows past it but never stops a run, so
+host agent it has no effect (it only sets the PVC request on a Kubernetes agent), and the agent logs no usage warning, so
 it does not tell you how much space is actually left. What does protect a volume is the agent's
 `minFreeDisk` (on by default, `1%` of the volume's filesystem): **if an agent's volume is below its
 free-space threshold, runs that mount it stay `Queued`; other jobs are unaffected.** The run starts

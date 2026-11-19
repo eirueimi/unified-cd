@@ -376,3 +376,26 @@ unifiedcd_agent_min_free_disk_bytes{agent="disabled"} 0
 `
 	require.NoError(t, testutil.GatherAndCompare(m.reg, strings.NewReader(expected), "unifiedcd_agent_min_free_disk_bytes"))
 }
+
+func TestCollector_ExportsVolumeUsedBytesOnlyWhenReported(t *testing.T) {
+	used := uint64(90)
+	at := time.Unix(1700000000, 0)
+	m := New()
+	m.RegisterDBCollector(&fakeCounts{storage: map[string]api.AgentStorage{
+		"k8s-1": {
+			AgentName: "k8s-agent",
+			Volumes: map[string]api.VolumeStats{
+				"cache": {FilesystemStats: api.FilesystemStats{FreeBytes: 10, TotalBytes: 100}, MeasuredAt: at, UsedBytes: &used},
+				"other": {FilesystemStats: api.FilesystemStats{FreeBytes: 10, TotalBytes: 100}, MeasuredAt: at},
+			},
+		},
+	}}, 90*time.Second)
+
+	expected := `
+# HELP unifiedcd_agent_volume_used_bytes Bytes used on a named volume's own filesystem (total minus free), as last measured by the agent. Reported only by Kubernetes agents, whose volumes are PVCs.
+# TYPE unifiedcd_agent_volume_used_bytes gauge
+unifiedcd_agent_volume_used_bytes{agent="k8s-1",agent_name="k8s-agent",volume="cache"} 90
+`
+	require.NoError(t, testutil.GatherAndCompare(m.reg, strings.NewReader(expected),
+		"unifiedcd_agent_volume_used_bytes"))
+}

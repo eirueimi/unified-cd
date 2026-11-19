@@ -444,6 +444,7 @@ The UI lets you:
 - Stream live logs
 - View job YAML definitions
 - Monitor agent status
+- See which agents hold which AgentVolumes, whether they are ready, and the disk headroom under them
 
 ---
 

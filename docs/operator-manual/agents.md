@@ -1175,10 +1175,6 @@ last.
 - **Draining.** A run still waiting for a volume when the agent starts draining is failed with
   `run abandoned: the agent is draining and the run was still waiting for its volumes`; a drain does
   not wait out a holder that may run for tens of minutes.
-- **Usage warnings.** `volume usage exceeds its advisory size; the size is not enforced` is the
-  over-`size` warning. `volume usage could not be measured completely: some entries could not be
-  read, so the figure is a lower bound` means root-owned files (from a rootful runtime) hid part of
-  the tree.
 - **Hygiene is yours.** Nothing sweeps a volume. See [Operations: Named-Volume
   Hygiene](operations.md#named-volume-hygiene).
 

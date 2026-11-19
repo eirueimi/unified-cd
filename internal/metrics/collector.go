@@ -44,6 +44,9 @@ var (
 	volumeSizeDesc = prometheus.NewDesc("unifiedcd_agent_volume_filesystem_size_bytes",
 		"Total bytes of the filesystem backing a named volume, as last measured by the agent.",
 		[]string{"agent", "agent_name", "volume"}, nil)
+	volumeUsedDesc = prometheus.NewDesc("unifiedcd_agent_volume_used_bytes",
+		"Bytes used on a named volume's own filesystem (total minus free), as last measured by the agent. Reported only by Kubernetes agents, whose volumes are PVCs.",
+		[]string{"agent", "agent_name", "volume"}, nil)
 	volumeMeasuredDesc = prometheus.NewDesc("unifiedcd_agent_volume_measured_timestamp_seconds",
 		"Unix time at which the agent last measured a named volume's filesystem.",
 		[]string{"agent", "agent_name", "volume"}, nil)
@@ -77,6 +80,7 @@ func (d *dbCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- workspaceSizeDesc
 	ch <- volumeFreeDesc
 	ch <- volumeSizeDesc
+	ch <- volumeUsedDesc
 	ch <- volumeMeasuredDesc
 	ch <- minFreeDiskDesc
 	ch <- volumeClaimBlockedDesc
@@ -144,6 +148,9 @@ func emitAgentStorage(ch chan<- prometheus.Metric, id string, s api.AgentStorage
 		}
 		gauge(volumeFreeDesc, float64(v.FreeBytes), id, s.AgentName, name)
 		gauge(volumeSizeDesc, float64(v.TotalBytes), id, s.AgentName, name)
+		if v.UsedBytes != nil {
+			gauge(volumeUsedDesc, float64(*v.UsedBytes), id, s.AgentName, name)
+		}
 		gauge(volumeMeasuredDesc, float64(v.MeasuredAt.Unix()), id, s.AgentName, name)
 		// 0 means "not blocked" only for an agent that gates: an old agent, or
 		// one with the check off, never sets ClaimBlocked and reads 0 here too.

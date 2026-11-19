@@ -232,9 +232,9 @@ controller that is unreachable never causes a reclaim: the agent keeps its last 
   paths under your normal disk monitoring, separately from `wsBase`'s `working<N>` directories,
   and give a large volume its own filesystem so it cannot fill the one the workspaces and the
   controller's checkouts share.
-- `size` (on the `AgentVolume`) is **advisory**. After each run the agent measures the volume and logs
-  `volume usage exceeds its advisory size; the size is not enforced` when it is over; alert on that
-  line. It never stops a run. `minFreeDisk` is the guard that does act: a volume whose filesystem
+- `size` (on the `AgentVolume`) sets the PVC request on Kubernetes agents and has no effect on host
+  agents: the agent neither enforces it nor measures or warns about the volume's usage. Alert on the
+  filesystem free-space metric instead. `minFreeDisk` is the guard that does act: a volume whose filesystem
   has less free space than the threshold keeps new runs that mount it queued (the default is `1%` of
   the volume's filesystem, so it is on unless you turned it off). The real number is on `/metrics`:
   `unifiedcd_agent_volume_filesystem_free_bytes` reports the free space of the filesystem under each
@@ -247,8 +247,8 @@ controller that is unreachable never causes a reclaim: the agent keeps its last 
   and keeps its records under `<workspaceDir>/.ucd-volume-locks/`, which is agent state like
   `.ucd-volume-modes/` and not part of any volume.
 - **Volumes written by isolated jobs on a rootful container runtime end up owned by root.** The
-  agent's own usage measurement tolerates this (it warns `volume usage could not be measured
-  completely ... the figure is a lower bound` rather than failing), and `cleanWorkspace` falls back
+  agent does not walk the volume after a run, so this does not slow or fail a release, and
+  `cleanWorkspace` falls back
   to a root cleanup container. But reclaiming the directory by hand needs root. Rootless podman
   removes the root-owned part (a root container's files belong to the agent's own user), but a
   job that sets `securityContext.runAsUser` still leaves files owned by a subordinate UID, which
@@ -594,6 +594,7 @@ Key metrics:
 | `unifiedcd_agent_workspace_filesystem_size_bytes{agent}` | gauge | Total bytes of that filesystem |
 | `unifiedcd_agent_volume_filesystem_free_bytes{agent,agent_name,volume}` | gauge | Free bytes on the filesystem backing a [named volume](#named-volume-hygiene) |
 | `unifiedcd_agent_volume_filesystem_size_bytes{agent,agent_name,volume}` | gauge | Total bytes of that filesystem |
+| `unifiedcd_agent_volume_used_bytes{agent,agent_name,volume}` | gauge | Bytes used on a named volume's own filesystem (total minus free), as last measured. **Kubernetes agents only**: their volumes are PVCs with a filesystem of their own. Host agents do not report it |
 | `unifiedcd_agent_volume_measured_timestamp_seconds{agent,agent_name,volume}` | gauge | Unix time at which the agent measured that volume: how old the free/size figures are |
 | `unifiedcd_agent_min_free_disk_bytes{agent}` | gauge | A host agent's `minFreeDisk` **resolved to bytes** (a percentage is applied to the workspace filesystem's size). **`0` means the claim-time disk check is disabled** (explicit `minFreeDisk: 0`), not that the disk is full. Omitted while a percentage cannot be resolved yet (the workspace has not been measured) |
 | `unifiedcd_agent_claim_blocked_by_disk{agent}` | gauge | `1` while a host agent is declining to claim anything because workspace free disk is below `minFreeDisk`, else `0` |
@@ -710,7 +711,9 @@ Prometheus therefore needs to reach only the controller, never the agents.
 
 Every figure is the free and total space of **the filesystem a path sits on** (a `statfs`), not the
 number of bytes a particular volume occupies. Several volumes on one filesystem all report that
-filesystem's headroom, so do not add them up.
+filesystem's headroom, so do not add them up. The one exception is
+`unifiedcd_agent_volume_used_bytes`, which only Kubernetes agents report: each volume there is a
+PVC with a filesystem of its own, so total minus free is that volume's usage.
 
 | Series | Labels | Reported by |
 |---|---|---|
@@ -718,6 +721,7 @@ filesystem's headroom, so do not add them up.
 | `unifiedcd_agent_workspace_filesystem_size_bytes` | `agent` | Host agents |
 | `unifiedcd_agent_volume_filesystem_free_bytes` | `agent`, `agent_name`, `volume` | Both |
 | `unifiedcd_agent_volume_filesystem_size_bytes` | `agent`, `agent_name`, `volume` | Both |
+| `unifiedcd_agent_volume_used_bytes` | `agent`, `agent_name`, `volume` | Kubernetes agents |
 | `unifiedcd_agent_volume_measured_timestamp_seconds` | `agent`, `agent_name`, `volume` | Both |
 | `unifiedcd_agent_min_free_disk_bytes` | `agent` | Host agents |
 | `unifiedcd_agent_claim_blocked_by_disk` | `agent` | Host agents |
@@ -793,6 +797,10 @@ Example queries:
 ```promql
 # Free space per physical volume (alert when it falls below your threshold)
 min by (agent_name, volume) (unifiedcd_agent_volume_filesystem_free_bytes)
+
+# Space in use per physical volume (Kubernetes agents only). Replicas sharing one PVC report the
+# same figure; max avoids a stale lower reading from a replica that has not mounted it lately
+max by (agent_name, volume) (unifiedcd_agent_volume_used_bytes)
 
 # Fraction free per physical volume
 min by (agent_name, volume) (
