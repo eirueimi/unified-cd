@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -31,6 +32,9 @@ type relayIdP struct {
 	tokenForms []url.Values
 	revokeForm url.Values
 	tokenFn    func(form url.Values) (int, any)
+
+	discoveryCalls atomic.Int32
+	failDiscovery  atomic.Bool
 }
 
 func newRelayIdP(t *testing.T, withRevoke bool) *relayIdP {
@@ -38,6 +42,11 @@ func newRelayIdP(t *testing.T, withRevoke bool) *relayIdP {
 	p := &relayIdP{testIssuer: newTestIssuer(t)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		p.discoveryCalls.Add(1)
+		if p.failDiscovery.Load() {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
 		doc := map[string]any{
 			"issuer":                                p.URL,
 			"authorization_endpoint":                p.URL + "/auth",
@@ -387,4 +396,67 @@ func TestCLIRelay_ErrorCodeRestrictedToLowerUnderscore(t *testing.T) {
 		assert.NotContains(t, rec.Body.String(), bad)
 		assert.Contains(t, rec.Body.String(), "server_error")
 	}
+}
+
+func TestCLIRelay_DiscoveryIsCachedForTenMinutes(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, relaySecret)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	s.relayDisc.now = func() time.Time { return now }
+
+	for i := 0; i < 2; i++ {
+		rec := relayPost(s, "/api/v1/auth/cli/device/start", struct{}{})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	}
+	assert.Equal(t, int32(1), p.discoveryCalls.Load(), "second call within the TTL reuses the discovery")
+
+	now = now.Add(9*time.Minute + 59*time.Second)
+	require.Equal(t, http.StatusOK, relayPost(s, "/api/v1/auth/cli/device/start", struct{}{}).Code)
+	assert.Equal(t, int32(1), p.discoveryCalls.Load())
+
+	now = now.Add(2 * time.Second)
+	require.Equal(t, http.StatusOK, relayPost(s, "/api/v1/auth/cli/device/start", struct{}{}).Code)
+	assert.Equal(t, int32(2), p.discoveryCalls.Load(), "discovery runs again after the TTL")
+}
+
+func TestCLIRelay_FailedDiscoveryIsNotCached(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, relaySecret)
+	p.failDiscovery.Store(true)
+	rec := relayPost(s, "/api/v1/auth/cli/device/start", struct{}{})
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Equal(t, int32(1), p.discoveryCalls.Load())
+
+	p.failDiscovery.Store(false)
+	rec = relayPost(s, "/api/v1/auth/cli/device/start", struct{}{})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, int32(2), p.discoveryCalls.Load(), "the failure was retried")
+}
+
+func TestCLIRelay_DiscoveryCacheKeepsPerRequestRedirectURL(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, relaySecret)
+	_, _, cfgA, err := s.relayProvider(t.Context(), "a.example.com")
+	require.NoError(t, err)
+	_, _, cfgB, err := s.relayProvider(t.Context(), "b.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "http://a.example.com/api/v1/auth/oidc-callback", cfgA.RedirectURL)
+	assert.Equal(t, "http://b.example.com/api/v1/auth/oidc-callback", cfgB.RedirectURL)
+	assert.Equal(t, int32(1), p.discoveryCalls.Load())
+}
+
+func TestCLIRelay_DiscoveryCacheConcurrent(t *testing.T) {
+	p := newRelayIdP(t, false)
+	s := newRelayServer(t, p, relaySecret)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, _, err := s.relayProvider(t.Context(), "h")
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, int32(1), p.discoveryCalls.Load())
 }

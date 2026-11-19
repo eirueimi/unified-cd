@@ -14,6 +14,10 @@ var (
 	ErrAgentIdentityDisabled   = errors.New("agent identity disabled")
 	ErrAgentEnrollmentInvalid  = errors.New("agent enrollment invalid")
 	ErrAgentRefreshReplay      = errors.New("agent refresh replay")
+
+	// ErrCLIStateNotFound is returned by SetCLIOIDCStateCallbackHash when the
+	// state is unknown, expired or not a CLI state.
+	ErrCLIStateNotFound = errors.New("cli oidc state not found")
 )
 
 type AgentIdentity struct {
@@ -615,7 +619,8 @@ type Store interface {
 	GetCLIOIDCState(ctx context.Context, state string) (*OIDCState, error)
 	// SetCLIOIDCStateCallbackHash records the SHA-256 (hex) of the nonce the
 	// confirmation step set as a cookie; the IdP callback must present it. It
-	// fails when the state is unknown, expired or not a CLI state.
+	// fails with ErrCLIStateNotFound when the state is unknown, expired or not a
+	// CLI state.
 	SetCLIOIDCStateCallbackHash(ctx context.Context, state, hash string) error
 	GetAndDeleteOIDCState(ctx context.Context, state string) (*OIDCState, error)
 	DeleteExpiredOIDCStates(ctx context.Context) error

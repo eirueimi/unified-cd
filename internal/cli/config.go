@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -83,11 +84,34 @@ func SaveConfig(path string, c Config) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := renameReplace(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}
 	return nil
+}
+
+const (
+	renameRetryFor  = 2 * time.Second
+	renameRetryStep = 50 * time.Millisecond
+)
+
+// renameReplace renames src over dst. On Windows the rename fails with a
+// sharing or access violation (reported as fs.ErrPermission) while another
+// process, for example an antivirus scanner or a concurrent reader, has dst
+// open, so that error is retried every 50 ms for up to 2 s and the last error
+// is returned. Elsewhere, and for any other error, it is a plain os.Rename.
+func renameReplace(src, dst string) error {
+	err := os.Rename(src, dst)
+	if runtime.GOOS != "windows" {
+		return err
+	}
+	deadline := time.Now().Add(renameRetryFor)
+	for err != nil && errors.Is(err, fs.ErrPermission) && time.Now().Before(deadline) {
+		time.Sleep(renameRetryStep)
+		err = os.Rename(src, dst)
+	}
+	return err
 }
 
 // DefaultConfigPath returns the default configuration file path.

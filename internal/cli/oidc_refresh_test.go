@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -252,6 +253,112 @@ func TestRefresh_Concurrent_OneIdPCall(t *testing.T) {
 	saved, err := LoadConfig(path)
 	require.NoError(t, err)
 	assert.Equal(t, results[0].Token, saved.Token)
+}
+
+// TestHelperProcess is not a test: it is the body of the child processes
+// started by TestRefresh_TwoProcesses_OneIdPCall. It does nothing unless
+// GO_WANT_HELPER_PROCESS is set.
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+	path := os.Getenv("UCD_HELPER_CONFIG")
+	// Wait for the parent's start signal so both children contend for the lock.
+	for i := 0; i < 400; i++ {
+		if _, err := os.Stat(path + ".go"); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	c, err := LoadConfig(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "load:", err)
+		os.Exit(2)
+	}
+	got, err := refreshIfNeeded(context.Background(), path, c, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "refresh:", err)
+		os.Exit(3)
+	}
+	fmt.Println("token=" + got.Token)
+	os.Exit(0)
+}
+
+func TestRefresh_TwoProcesses_OneIdPCall(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns child processes")
+	}
+	f := newFakeSSO(t)
+	path, _ := staleConfig(t, f, nil)
+
+	type result struct {
+		out []byte
+		err error
+	}
+	results := make([]chan result, 2)
+	for i := range results {
+		results[i] = make(chan result, 1)
+		cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess$")
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "UCD_HELPER_CONFIG="+path)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		require.NoError(t, cmd.Start())
+		go func(ch chan result) {
+			err := cmd.Wait()
+			if err != nil {
+				err = fmt.Errorf("%w: %s", err, stderr.String())
+			}
+			ch <- result{stdout.Bytes(), err}
+		}(results[i])
+	}
+	require.NoError(t, os.WriteFile(path+".go", nil, 0o600))
+
+	var tokens []string
+	for _, ch := range results {
+		r := <-ch
+		require.NoError(t, r.err)
+		var tok string
+		for _, line := range strings.Split(string(r.out), "\n") {
+			if v, ok := strings.CutPrefix(strings.TrimSpace(line), "token="); ok {
+				tok = v
+			}
+		}
+		require.NotEmpty(t, tok, "child output: %s", r.out)
+		tokens = append(tokens, tok)
+	}
+	assert.Equal(t, int32(1), f.idpCalls.Load(), "exactly one IdP refresh call across both processes")
+	saved, err := LoadConfig(path)
+	require.NoError(t, err)
+	assert.NotEqual(t, "old-token", saved.Token)
+	assert.Equal(t, saved.Token, tokens[0])
+	assert.Equal(t, saved.Token, tokens[1])
+}
+
+func TestSaveConfig_RetriesRenameOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("rename over an open file only fails on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, SaveConfig(path, Config{Server: "https://x", Token: "t1"}))
+
+	// A reader holds the file open without FILE_SHARE_DELETE, so renaming over
+	// it fails until the reader closes.
+	r, err := os.Open(path)
+	require.NoError(t, err)
+	released := time.AfterFunc(400*time.Millisecond, func() { _ = r.Close() })
+	defer released.Stop()
+
+	start := time.Now()
+	require.NoError(t, SaveConfig(path, Config{Server: "https://x", Token: "t2"}))
+	assert.GreaterOrEqual(t, time.Since(start), 300*time.Millisecond, "the first attempts must have failed and been retried")
+	c, err := LoadConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, "t2", c.Token)
+	entries, err := os.ReadDir(filepath.Dir(path))
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.False(t, strings.HasSuffix(e.Name(), ".tmp"), "leftover %s", e.Name())
+	}
 }
 
 func TestSaveConfig_ModeAndNoTempFile(t *testing.T) {

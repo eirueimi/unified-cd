@@ -237,7 +237,7 @@ func (s *Server) handleCLIDeviceStart(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	ctx, _, cfg, err := s.oidcProvider(r.Context(), r.Host)
+	ctx, _, cfg, err := s.relayProvider(r.Context(), r.Host)
 	if err != nil || cfg.Endpoint.DeviceAuthURL == "" {
 		slog.Warn("cli relay: device authorization endpoint unavailable")
 		writeJSON(w, http.StatusBadGateway, api.CLIOAuthError{Error: "server_error", ErrorDescription: "identity provider unavailable"})
@@ -296,7 +296,7 @@ func (s *Server) handleCLIDeviceToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, api.CLIOAuthError{Error: "invalid_request", ErrorDescription: "deviceCode is required"})
 		return
 	}
-	ctx, _, cfg, err := s.oidcProvider(r.Context(), r.Host)
+	ctx, _, cfg, err := s.relayProvider(r.Context(), r.Host)
 	if err != nil {
 		slog.Warn("cli relay: provider discovery failed")
 		writeJSON(w, http.StatusBadGateway, api.CLIOAuthError{Error: "server_error", ErrorDescription: "identity provider unavailable"})
@@ -344,7 +344,7 @@ func (s *Server) handleCLIRefresh(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	ctx, _, cfg, err := s.oidcProvider(r.Context(), r.Host)
+	ctx, _, cfg, err := s.relayProvider(r.Context(), r.Host)
 	if err != nil {
 		slog.Warn("cli relay: provider discovery failed")
 		writeJSON(w, http.StatusBadGateway, api.CLIOAuthError{Error: "server_error", ErrorDescription: "identity provider unavailable"})
@@ -391,7 +391,7 @@ func (s *Server) handleCLIRevoke(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	ctx, provider, _, err := s.oidcProvider(r.Context(), r.Host)
+	ctx, provider, _, err := s.relayProvider(r.Context(), r.Host)
 	if err != nil {
 		slog.Warn("cli relay: provider discovery failed")
 		writeJSON(w, http.StatusBadGateway, api.CLIOAuthError{Error: "server_error", ErrorDescription: "identity provider unavailable"})

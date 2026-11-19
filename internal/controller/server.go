@@ -188,6 +188,10 @@ type Server struct {
 	oidcProviderV    *oidc.Provider
 	oidcProviderVErr error
 
+	// relayDisc caches the IdP discovery used by the CLI relay and the CLI
+	// browser-login endpoints (see relayProvider).
+	relayDisc relayDiscoveryCache
+
 	// verifyIDTokenHook, when non-nil, replaces the go-oidc id_token
 	// verification in the bearer branch, the login callback and silent
 	// refresh. It returns the verified claims. Tests only.

@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -124,7 +126,7 @@ func (f *browserFixture) startPage(t *testing.T, redirect string) (rec *httptest
 	m := stateInputRE.FindStringSubmatch(rec.Body.String())
 	require.Len(t, m, 2, "page must carry the state: %s", rec.Body.String())
 	for _, c := range rec.Result().Cookies() {
-		if c.Name == cliConfirmCookie {
+		if c.Name == f.s.cliCookieName(cliConfirmCookie) {
 			cookie = c
 		}
 	}
@@ -159,7 +161,7 @@ func (f *browserFixture) confirmedState(t *testing.T) (string, *http.Cookie) {
 func callbackCookieOf(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
 	for _, c := range rec.Result().Cookies() {
-		if c.Name == cliCallbackCookie {
+		if strings.HasSuffix(c.Name, cliCallbackCookie) {
 			return c
 		}
 	}
@@ -193,7 +195,7 @@ func (f *browserFixture) login(t *testing.T) string {
 	rec2 := f.callbackWith(callbackForState(state), cb)
 	require.Equal(t, http.StatusFound, rec2.Code, rec2.Body.String())
 	for _, c := range rec2.Result().Cookies() {
-		assert.Equal(t, cliCallbackCookie, c.Name, "a CLI login must not create a web session")
+		assert.Equal(t, f.s.cliCookieName(cliCallbackCookie), c.Name, "a CLI login must not create a web session")
 		assert.Negative(t, c.MaxAge, "the callback cookie is cleared")
 	}
 	back, err := url.Parse(rec2.Header().Get("Location"))
@@ -284,7 +286,7 @@ func TestCLIBrowser_StartShowsConfirmationPage(t *testing.T) {
 	assert.Equal(t, http.SameSiteStrictMode, cookie.SameSite)
 	assert.True(t, cookie.HttpOnly)
 	assert.True(t, cookie.Secure, "Secure unless InsecureCookies")
-	assert.Equal(t, "/api/v1/auth/cli/browser/", cookie.Path)
+	assert.Equal(t, "/", cookie.Path, "a __Host- cookie must have Path=/")
 	assert.Equal(t, int(stateTTL.Seconds()), cookie.MaxAge)
 	assert.Len(t, cookie.Value, 43, "32 random bytes, base64url")
 	assert.NotContains(t, body, cookie.Value, "the nonce must never appear in the page")
@@ -301,6 +303,120 @@ func TestCLIBrowser_StartCookieNotSecureWithInsecureCookies(t *testing.T) {
 	_, _, cookie := f.startPage(t, cliLoopback)
 	assert.False(t, cookie.Secure)
 	assert.Equal(t, http.SameSiteStrictMode, cookie.SameSite)
+}
+
+// setCookieHeader returns the raw Set-Cookie header whose name matches.
+func setCookieHeader(t *testing.T, rec *httptest.ResponseRecorder, name string) string {
+	t.Helper()
+	for _, h := range rec.Header().Values("Set-Cookie") {
+		if strings.HasPrefix(h, name+"=") {
+			return h
+		}
+	}
+	require.FailNow(t, "no Set-Cookie for "+name)
+	return ""
+}
+
+func TestCLIBrowser_SecureCookiesUseHostPrefix(t *testing.T) {
+	f := newBrowserFixture(t, true)
+	startRec, state, _ := f.startPage(t, cliLoopback)
+	confirm := setCookieHeader(t, startRec, "__Host-ucd_cli_login")
+	for _, want := range []string{"Path=/;", "Secure", "HttpOnly", "SameSite=Strict"} {
+		assert.Contains(t, confirm+";", want)
+	}
+	assert.NotContains(t, confirm, "Domain")
+
+	var confirmCookie *http.Cookie
+	for _, c := range startRec.Result().Cookies() {
+		confirmCookie = c
+	}
+	rec := f.continueWith(state, confirmCookie)
+	require.Equal(t, http.StatusFound, rec.Code, rec.Body.String())
+	cb := setCookieHeader(t, rec, "__Host-ucd_cli_cb")
+	for _, want := range []string{"Path=/;", "Secure", "HttpOnly", "SameSite=Lax"} {
+		assert.Contains(t, cb+";", want)
+	}
+	assert.NotContains(t, cb, "Domain")
+	cleared := setCookieHeader(t, rec, "__Host-ucd_cli_login")
+	assert.Contains(t, cleared, "Max-Age=0")
+	assert.Contains(t, cleared+";", "Path=/;")
+	assert.Contains(t, cleared, "Secure")
+	assert.NotContains(t, cleared, "Domain")
+
+	// The callback accepts the prefixed cookie and clears it with the same attributes.
+	rec2 := f.callbackWith(callbackForState(state), callbackCookieOf(t, rec))
+	require.Equal(t, http.StatusFound, rec2.Code, rec2.Body.String())
+	clearedCB := setCookieHeader(t, rec2, "__Host-ucd_cli_cb")
+	assert.Contains(t, clearedCB, "Max-Age=0")
+	assert.Contains(t, clearedCB+";", "Path=/;")
+	assert.Contains(t, clearedCB, "Secure")
+	assert.NotContains(t, clearedCB, "Domain")
+}
+
+func TestCLIBrowser_InsecureCookiesKeepPlainNamesAndPaths(t *testing.T) {
+	f := newBrowserFixture(t, true)
+	f.s.cfg.InsecureCookies = true
+	startRec, state, confirm := f.startPage(t, cliLoopback)
+	assert.Equal(t, "ucd_cli_login", confirm.Name)
+	assert.Equal(t, "/api/v1/auth/cli/browser/", confirm.Path)
+	assert.False(t, confirm.Secure)
+	assert.NotContains(t, startRec.Header().Get("Set-Cookie"), "__Host-")
+
+	rec := f.continueWith(state, confirm)
+	require.Equal(t, http.StatusFound, rec.Code, rec.Body.String())
+	cb := callbackCookieOf(t, rec)
+	assert.Equal(t, "ucd_cli_cb", cb.Name)
+	assert.Equal(t, "/api/v1/auth/oidc-callback", cb.Path)
+	assert.False(t, cb.Secure)
+
+	rec2 := f.callbackWith(callbackForState(state), cb)
+	require.Equal(t, http.StatusFound, rec2.Code, rec2.Body.String())
+}
+
+func TestCLIBrowser_PlainCookieNamesAreIgnoredWhenSecure(t *testing.T) {
+	f := newBrowserFixture(t, true)
+	_, state, confirm := f.startPage(t, cliLoopback)
+	// A plain-named cookie (settable by a sibling subdomain or over http) is not accepted.
+	rec := f.continueWith(state, &http.Cookie{Name: "ucd_cli_login", Value: confirm.Value})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	rec = f.continueWith(state, confirm)
+	require.Equal(t, http.StatusFound, rec.Code)
+	cb := callbackCookieOf(t, rec)
+	rec = f.callbackWith(callbackForState(state), &http.Cookie{Name: "ucd_cli_cb", Value: cb.Value})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// expiredStateStore reports the state as gone when the callback hash is set,
+// as if it expired between the confirmation check and the update.
+type expiredStateStore struct{ store.Store }
+
+func (expiredStateStore) SetCLIOIDCStateCallbackHash(context.Context, string, string) error {
+	return fmt.Errorf("set cli oidc state callback hash: %w", store.ErrCLIStateNotFound)
+}
+
+func TestCLIBrowser_ContinueStateExpiredMidRequestIs400(t *testing.T) {
+	f := newBrowserFixture(t, true)
+	_, state, cookie := f.startPage(t, cliLoopback)
+	f.s.store = expiredStateStore{f.st}
+	rec := f.continueWith(state, cookie)
+	assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Equal(t, "invalid or expired state", strings.TrimSpace(rec.Body.String()))
+	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+	assert.Empty(t, rec.Header().Values("Set-Cookie"), "no callback cookie is set for a dead state")
+}
+
+func TestCLIBrowser_ContinueOtherStoreErrorIs500(t *testing.T) {
+	f := newBrowserFixture(t, true)
+	_, state, cookie := f.startPage(t, cliLoopback)
+	f.s.store = failingCallbackHashStore{f.st}
+	rec := f.continueWith(state, cookie)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+type failingCallbackHashStore struct{ store.Store }
+
+func (failingCallbackHashStore) SetCLIOIDCStateCallbackHash(context.Context, string, string) error {
+	return errors.New("db down")
 }
 
 func TestCLIBrowser_ContinueRequiresTheStartingBrowser(t *testing.T) {
@@ -331,7 +447,7 @@ func TestCLIBrowser_ContinueRequiresTheStartingBrowser(t *testing.T) {
 	assert.Equal(t, state, loc.Query().Get("state"))
 	var cleared bool
 	for _, c := range rec.Result().Cookies() {
-		if c.Name == cliConfirmCookie && c.MaxAge < 0 {
+		if c.Name == f.s.cliCookieName(cliConfirmCookie) && c.MaxAge < 0 {
 			cleared = true
 		}
 	}
@@ -377,12 +493,12 @@ func TestCLIBrowser_FullFlow(t *testing.T) {
 	cb := callbackCookieOf(t, rec)
 	assert.True(t, cb.HttpOnly)
 	assert.Equal(t, http.SameSiteLaxMode, cb.SameSite)
-	assert.Equal(t, cliCallbackPath, cb.Path)
+	assert.Equal(t, "/", cb.Path, "a __Host- cookie must have Path=/")
 	assert.Greater(t, cb.MaxAge, 0)
 	rec2 := f.callbackWith(callbackForState(state), cb)
 	require.Equal(t, http.StatusFound, rec2.Code, rec2.Body.String())
 	for _, c := range rec2.Result().Cookies() {
-		assert.Equal(t, cliCallbackCookie, c.Name, "a CLI login must not create a web session")
+		assert.Equal(t, f.s.cliCookieName(cliCallbackCookie), c.Name, "a CLI login must not create a web session")
 	}
 	back, err := url.Parse(rec2.Header().Get("Location"))
 	require.NoError(t, err)
@@ -437,12 +553,12 @@ func TestCLIBrowser_CallbackRequiresTheConfirmingBrowser(t *testing.T) {
 		f := newBrowserFixture(t, true)
 		_, state, confirm := f.startPage(t, cliLoopback)
 		require.Equal(t, http.StatusFound, f.continueWith(state, confirm).Code)
-		check(t, f, f.callbackWith(callbackForState(state), &http.Cookie{Name: cliCallbackCookie, Value: confirm.Value}))
+		check(t, f, f.callbackWith(callbackForState(state), &http.Cookie{Name: f.s.cliCookieName(cliCallbackCookie), Value: confirm.Value}))
 	})
 	t.Run("state never confirmed", func(t *testing.T) {
 		f := newBrowserFixture(t, true)
 		_, state, _ := f.startPage(t, cliLoopback)
-		check(t, f, f.callbackWith(callbackForState(state), &http.Cookie{Name: cliCallbackCookie, Value: "x"}))
+		check(t, f, f.callbackWith(callbackForState(state), &http.Cookie{Name: f.s.cliCookieName(cliCallbackCookie), Value: "x"}))
 	})
 	t.Run("IdP error without cookie", func(t *testing.T) {
 		f := newBrowserFixture(t, true)
@@ -455,7 +571,7 @@ func TestCLIBrowser_CallbackRequiresTheConfirmingBrowser(t *testing.T) {
 		rec := f.callbackWith(callbackForState(state), nil)
 		var cleared bool
 		for _, c := range rec.Result().Cookies() {
-			if c.Name == cliCallbackCookie && c.MaxAge < 0 {
+			if c.Name == f.s.cliCookieName(cliCallbackCookie) && c.MaxAge < 0 {
 				cleared = true
 			}
 		}
@@ -503,7 +619,7 @@ func TestCLIBrowser_AdmissionDeniedRedirectsWithAccessDenied(t *testing.T) {
 	assert.Equal(t, "http://127.0.0.1:5555/callback?error=access_denied", rec.Header().Get("Location"))
 	assert.Equal(t, int32(0), f.st.created.Load(), "no code is issued")
 	for _, c := range rec.Result().Cookies() {
-		assert.Equal(t, cliCallbackCookie, c.Name)
+		assert.Equal(t, f.s.cliCookieName(cliCallbackCookie), c.Name)
 	}
 }
 
