@@ -102,7 +102,7 @@ func oidcScopes(rolesClaim string, override []string) []string {
 		return scopes
 	}
 	scopes := []string{oidc.ScopeOpenID, "email", "profile"}
-	if rolesClaim != "" && !strings.ContainsAny(rolesClaim, "/:") {
+	if rolesClaim != "" && !strings.ContainsAny(rolesClaim, "/:.") {
 		scopes = append(scopes, rolesClaim)
 	}
 	return scopes
@@ -543,13 +543,20 @@ func verifiedEmail(claims map[string]any) string {
 	return email
 }
 
-// hasGroupsOverage reports whether the claims carry an Entra ID groups overage
-// marker: a "groups" key in _claim_names, or hasgroups set to true.
-func hasGroupsOverage(claims map[string]any) bool {
+// hasGroupsOverage reports whether the claims carry an Entra ID overage marker
+// for the configured roles claim: its name (default "groups") as a key of
+// _claim_names, or, only when the roles claim is "groups", hasgroups set to true.
+func hasGroupsOverage(claims map[string]any, rolesClaim string) bool {
+	if rolesClaim == "" {
+		rolesClaim = "groups"
+	}
 	if names, ok := claims["_claim_names"].(map[string]any); ok {
-		if _, ok := names["groups"]; ok {
+		if _, ok := names[rolesClaim]; ok {
 			return true
 		}
+	}
+	if rolesClaim != "groups" {
+		return false
 	}
 	switch v := claims["hasgroups"].(type) {
 	case bool:
@@ -565,7 +572,7 @@ func hasGroupsOverage(claims map[string]any) bool {
 // name, never the e-mail or any token. With limited set, a subject is warned
 // about at most once per overageWarnInterval.
 func (s *Server) warnGroupsOverage(claims map[string]any, values []string, limited bool) {
-	if len(values) > 0 || !hasGroupsOverage(claims) {
+	if len(values) > 0 || !hasGroupsOverage(claims, s.oidcCfg.RolesClaim) {
 		return
 	}
 	sub, _ := claims["sub"].(string)
@@ -578,6 +585,9 @@ func (s *Server) warnGroupsOverage(claims map[string]any, values []string, limit
 	}
 	slog.Warn(groupsOverageMessage, "sub", sub, "rolesClaim", rolesClaim)
 }
+
+// overageLimiterMax bounds the number of subjects the limiter remembers.
+const overageLimiterMax = 4096
 
 // overageLimiter allows one event per key per overageWarnInterval.
 type overageLimiter struct {
@@ -594,14 +604,19 @@ func (l *overageLimiter) allow(key string, now time.Time) bool {
 	if l.last == nil {
 		l.last = map[string]time.Time{}
 	}
-	if len(l.last) >= 4096 { // drop expired entries so the map stays bounded
+	if len(l.last) >= overageLimiterMax { // drop expired entries first
 		for k, t := range l.last {
 			if now.Sub(t) >= overageWarnInterval {
 				delete(l.last, k)
 			}
 		}
 	}
-	l.last[key] = now
+	// Strictly bounded: when the map is still full of live entries, new subjects
+	// are not recorded. They are allowed (logged) on every call instead, so no
+	// warning is ever lost; only the rate limit is relaxed under that load.
+	if len(l.last) < overageLimiterMax {
+		l.last[key] = now
+	}
 	return true
 }
 

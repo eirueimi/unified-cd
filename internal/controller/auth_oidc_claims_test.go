@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -198,6 +200,37 @@ func TestOIDCIdentity_OverageMarkerWithGroupsPresentNoWarning(t *testing.T) {
 	// An unrelated _claim_names entry is not an overage marker.
 	_, _, _ = oidcIdentity(s, map[string]any{"sub": "s", "_claim_names": map[string]any{"other": "src1"}})
 	assert.Empty(t, buf.String())
+}
+
+func TestOIDCIdentity_OverageTiedToRolesClaim(t *testing.T) {
+	buf := captureLogs(t)
+	// roles claim "roles": hasgroups and a groups marker are not about it.
+	s := newClaimsServer("roles")
+	oidcIdentity(s, overageClaims("hasgroups"))
+	oidcIdentity(s, overageClaims("names"))
+	assert.Empty(t, buf.String())
+	// A marker naming the configured claim does warn.
+	oidcIdentity(s, map[string]any{"sub": "s", "_claim_names": map[string]any{"roles": "src1"}})
+	assert.Len(t, overageWarnings(t, buf), 1)
+	// Empty rolesClaim means groups.
+	buf.Reset()
+	oidcIdentity(newClaimsServer(""), overageClaims("hasgroups"))
+	assert.Len(t, overageWarnings(t, buf), 1)
+}
+
+func TestOverageLimiter_Bounded(t *testing.T) {
+	var l overageLimiter
+	now := time.Now()
+	for i := 0; i < overageLimiterMax+10; i++ {
+		assert.True(t, l.allow(fmt.Sprintf("s%d", i), now))
+	}
+	assert.Len(t, l.last, overageLimiterMax)
+	// Recorded subjects are limited; unrecorded ones are still allowed.
+	assert.False(t, l.allow("s0", now.Add(time.Minute)))
+	assert.True(t, l.allow("s"+fmt.Sprint(overageLimiterMax+5), now.Add(time.Minute)))
+	// Expired entries are pruned to make room.
+	assert.True(t, l.allow("fresh", now.Add(overageWarnInterval+time.Second)))
+	assert.False(t, l.allow("fresh", now.Add(overageWarnInterval+2*time.Second)))
 }
 
 func TestCompleteOIDCLogin_OverageDoesNotFailLogin(t *testing.T) {

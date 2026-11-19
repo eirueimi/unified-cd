@@ -213,6 +213,7 @@ func TestOIDCScopes(t *testing.T) {
 	assert.Equal(t, base, oidcScopes("", nil))
 	assert.Equal(t, base, oidcScopes("https://unified-cd.example.com/roles", nil))
 	assert.Equal(t, base, oidcScopes("urn:roles", nil))
+	assert.Equal(t, base, oidcScopes("realm_access.roles", nil))
 }
 
 func TestOIDCScopes_Override(t *testing.T) {
