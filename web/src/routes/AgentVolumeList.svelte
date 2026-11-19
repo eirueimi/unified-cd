@@ -127,7 +127,10 @@
 <style>
   tr.clickable { cursor: pointer; }
   tr.vol-offline { opacity: 0.55; }
-  tr.vol-detail td { display: block; font-weight: normal; color: inherit; text-align: left; border-bottom: none; }
-  tr.vol-detail td::before { display: none; }
+  /* Phone card layout only: on desktop the detail cell must stay a colspan table cell. */
+  @media (max-width: 640px) {
+    tr.vol-detail td { display: block; font-weight: normal; color: inherit; text-align: left; border-bottom: none; }
+    tr.vol-detail td::before { display: none; }
+  }
   .vol-toggle { background: none; border: none; padding: 0; color: var(--text-muted); cursor: pointer; font: inherit; }
 </style>
