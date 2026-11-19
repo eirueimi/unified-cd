@@ -249,7 +249,7 @@ func TestExecuteRun_FinallyStepCacheSave_Runs(t *testing.T) {
 	assert.Equal(t, "Succeeded", h.finishStatus(t))
 
 	restored := t.TempDir()
-	hit, err := cache.Restore(context.Background(), a.CacheStore, "finally-cache", restored, "finally-cache-key", nil)
+	hit, err := cache.Restore(context.Background(), &cache.StoreRemote{Store: a.CacheStore, JobName: "finally-cache"}, restored, "finally-cache-key", nil)
 	require.NoError(t, err)
 	require.True(t, hit, "a cache: step inside finally: must still get its deferred save drained")
 	got, err := os.ReadFile(filepath.Join(restored, "built.txt"))

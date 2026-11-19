@@ -282,7 +282,7 @@ func TestHostBackend_CacheSaveOfAnAncestorExcludesTheVolumeAndSaysSo(t *testing.
 			require.NoError(t, h.b.CacheSave(context.Background(), ScopeHandle{}, "k", resolved, 7))
 
 			restored := t.TempDir()
-			hit, err := cache.Restore(context.Background(), h.store, "job", restored, "k", nil)
+			hit, err := cache.Restore(context.Background(), &cache.StoreRemote{Store: h.store, JobName: "job"}, restored, "k", nil)
 			require.NoError(t, err)
 			require.True(t, hit)
 			require.Equal(t, g.Entries, listEntries(t, restored))
@@ -332,7 +332,7 @@ func TestHostBackend_CacheRestoreOfAnAncestorLeavesTheVolumesAlone(t *testing.T)
 			for _, mt := range g.Mounts {
 				writeFiles(t, filepath.Join(old, filepath.FromSlash(strings.TrimPrefix(mt.MountPath, "/workspace/"))), "old.bin")
 			}
-			require.NoError(t, cache.Save(context.Background(), h.store, "job", old, "k", 7))
+			require.NoError(t, cache.Save(context.Background(), &cache.StoreRemote{Store: h.store, JobName: "job"}, old, "k", 7))
 
 			for _, mt := range g.Mounts {
 				writeFiles(t, h.m.PathOf(mt.Name), g.VolumeFiles...)

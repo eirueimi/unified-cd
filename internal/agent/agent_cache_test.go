@@ -46,7 +46,7 @@ func TestExecuteCacheStep_PathTemplateExpandedOnRestore(t *testing.T) {
 	// Seed the store under the key the step's key template expands to.
 	src := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), []byte("cached"), 0o644))
-	require.NoError(t, cache.Save(ctx, a.CacheStore, "test-job", src, "k-1", 7))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: a.CacheStore, JobName: "test-job"}, src, "k-1", 7))
 
 	// The Path template must expand to a path RELATIVE to the workspace: an
 	// absolute path is now rejected by ResolveCachePath's containment check
@@ -86,7 +86,7 @@ func TestExecuteCacheStep_PathTemplateExpandedOnDeferredSave(t *testing.T) {
 	postHooks[0].fn(ctx)
 
 	restored := t.TempDir()
-	hit, err := cache.Restore(ctx, a.CacheStore, "test-job", restored, "save-key", nil)
+	hit, err := cache.Restore(ctx, &cache.StoreRemote{Store: a.CacheStore, JobName: "test-job"}, restored, "save-key", nil)
 	require.NoError(t, err)
 	require.True(t, hit, "deferred save should archive the template-expanded path")
 	got, err := os.ReadFile(filepath.Join(restored, "built.txt"))
@@ -146,7 +146,7 @@ func TestExecuteCacheStep_HashFileHashesWorkspaceNotProcessCwd(t *testing.T) {
 
 	src := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), []byte("cached"), 0o644))
-	require.NoError(t, cache.Save(ctx, a.CacheStore, "test-job", src, "go-"+hash, 7))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: a.CacheStore, JobName: "test-job"}, src, "go-"+hash, 7))
 
 	sctx := &safeStepCtx{data: dsl.TemplateData{}}
 	step := cacheClaimStep(&dsl.CacheStep{Path: "restored", Key: `go-{{ hashFile "go.sum" }}`})

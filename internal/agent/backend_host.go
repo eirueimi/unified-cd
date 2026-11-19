@@ -227,9 +227,9 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 		var skipped int
 		var err error
 		if root, ok := b.confineRootOf(path); ok {
-			hit, skipped, err = cache.RestoreInWritten(ctx, b.a.CacheStore, b.jobName, absOrSelf(root), absOrSelf(path), key, restoreKeys, exclude, &written)
+			hit, skipped, err = cache.RestoreInWritten(ctx, &cache.StoreRemote{Store: b.a.CacheStore, JobName: b.jobName}, absOrSelf(root), absOrSelf(path), key, restoreKeys, exclude, &written)
 		} else {
-			hit, skipped, err = cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, exclude, &written)
+			hit, skipped, err = cache.RestoreWritten(ctx, &cache.StoreRemote{Store: b.a.CacheStore, JobName: b.jobName}, path, key, restoreKeys, exclude, &written)
 		}
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			return false, err
@@ -247,7 +247,7 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 		return false, err
 	}
 	defer os.RemoveAll(hostDir)
-	hit, skipped, err := cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, hostDir, key, restoreKeys, nil, nil)
+	hit, skipped, err := cache.RestoreWritten(ctx, &cache.StoreRemote{Store: b.a.CacheStore, JobName: b.jobName}, hostDir, key, restoreKeys, nil, nil)
 	if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 		return false, err
 	}
@@ -288,9 +288,9 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 	if !ok {
 		return b.readWithFallback(ctx, "cache save", path, func(root, p string, exclude []string) error {
 			if root != "" {
-				return cache.SaveIn(ctx, b.a.CacheStore, b.jobName, root, p, key, ttlDays, exclude)
+				return cache.SaveIn(ctx, &cache.StoreRemote{Store: b.a.CacheStore, JobName: b.jobName}, root, p, key, ttlDays, exclude)
 			}
-			return cache.SaveExcluding(ctx, b.a.CacheStore, b.jobName, p, key, ttlDays, exclude)
+			return cache.SaveExcluding(ctx, &cache.StoreRemote{Store: b.a.CacheStore, JobName: b.jobName}, p, key, ttlDays, exclude)
 		})
 	}
 	hostPath, cleanup, err := sm.copyOutToTemp(ctx, h, path)
@@ -298,7 +298,7 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 		return err
 	}
 	defer cleanup()
-	return cache.Save(ctx, b.a.CacheStore, b.jobName, hostPath, key, ttlDays)
+	return cache.Save(ctx, &cache.StoreRemote{Store: b.a.CacheStore, JobName: b.jobName}, hostPath, key, ttlDays)
 }
 
 // UploadArtifact uploads the file/dir at path (host or scope-container path)

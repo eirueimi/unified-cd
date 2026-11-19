@@ -26,6 +26,11 @@ Intervals are the values `main.go` passes; several are configurable, and a
 worker whose feature is disabled (`retentionDays <= 0`, a nil object store)
 returns immediately instead of spinning.
 
+`RunCacheCleanup` removes cache entries whose `.meta` has expired. When the object
+store can report object age (`objectstore.Statter`), it also removes data archives
+that have had no `.meta` for longer than `cache.OrphanGrace` (24 hours): an upload
+that never completed, or whose `.meta` was never committed.
+
 ## The shape they share
 
 Eleven of the twelve follow the same skeleton:

@@ -26,7 +26,7 @@ func seededStore(t *testing.T, key string) objectstore.ObjectStore {
 	if err := os.WriteFile(filepath.Join(src, "dep.txt"), []byte("cached"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := cache.Save(context.Background(), store, "test-job", src, key, 7); err != nil {
+	if err := cache.Save(context.Background(), &cache.StoreRemote{Store: store, JobName: "test-job"}, src, key, 7); err != nil {
 		t.Fatal(err)
 	}
 	return store
@@ -313,7 +313,7 @@ func TestRunCache_RestoreWarnsWhenLinksSkipped(t *testing.T) {
 	}
 	store := objectstore.NewLocalObjectStore(t.TempDir())
 	ctx := context.Background()
-	if err := cache.SaveIn(ctx, store, "test-job", src, src, "k", 7, nil); err != nil {
+	if err := cache.SaveIn(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, src, src, "k", 7, nil); err != nil {
 		t.Fatal(err)
 	}
 	keys, err := store.List(ctx, "caches/")

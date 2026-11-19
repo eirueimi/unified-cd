@@ -169,7 +169,7 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 			fmt.Fprintln(stderr, "cache restore: --job is required")
 			return 2
 		}
-		hit, skippedLinks, err := cache.RestoreIn(ctx, store, *job, *root, *path, *key, restoreKeys, exclude)
+		hit, _, skippedLinks, err := cache.RestoreIn(ctx, &cache.StoreRemote{Store: store, JobName: *job}, *root, *path, *key, restoreKeys, exclude)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			fmt.Fprintf(stderr, "cache restore error (ignored): %v\n", err)
 			// This path deliberately exits 0 (cache never fails a step) and
@@ -211,7 +211,7 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 			fmt.Fprintln(stderr, "cache save: --job is required")
 			return 2
 		}
-		if err := cache.SaveIn(ctx, store, *job, *root, *path, *key, *ttlDays, exclude); err != nil {
+		if err := cache.SaveIn(ctx, &cache.StoreRemote{Store: store, JobName: *job}, *root, *path, *key, *ttlDays, exclude); err != nil {
 			fmt.Fprintf(stderr, "cache save error (ignored): %v\n", err)
 		} else {
 			fmt.Fprintf(stderr, "cache saved: %s\n", *key)
