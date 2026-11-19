@@ -18,7 +18,7 @@ metadata:
   name: go-cache
 spec:
   mode: shared            # any number of runs at once; needs ReadWriteMany storage on Kubernetes
-  size: 20Gi              # host agent: advisory; Kubernetes: the PVC request
+  size: 20Gi              # host agent: no effect; Kubernetes: the PVC request
   # agentSelector omitted: every agent gets this volume.
 
 ---

@@ -822,7 +822,7 @@ the volume; an empty selector means every agent.
 | `agentSelector` | []string | no | AgentSelector lists labels (e.g. role:unity) an agent must all carry to offer this volume. Empty means every agent. |
 | `mode` | string | yes | Mode is "exclusive" (one run at a time) or "shared" (concurrent runs). |
 | `reclaimPolicy` | string | no | ReclaimPolicy is "Retain" (the default) or "Delete". With Delete the agent removes the volume's data once the volume has been absent from its desired set for 10 minutes without interruption and no run holds it. |
-| `size` | string | yes | Size is a Kubernetes quantity such as 200Gi. It must be positive. |
+| `size` | string | yes | Size is a Kubernetes quantity such as 200Gi. It must be positive. It sets the PVC request on Kubernetes agents and has no effect on host agents. |
 | `storageClassName` | string | no | StorageClassName is the storage class for Kubernetes agents' PVCs. |
 
 ## Vars

@@ -23,7 +23,7 @@ spec:
 |---|---|---|---|
 | `metadata.name` | string | Yes | Volume name. Must be a DNS-1123 label (lowercase letters, digits and `-`, at most 63 characters), which also makes it a single path segment. Jobs refer to the volume by this name. |
 | `spec.mode` | string | Yes | `exclusive` allows one run at a time to hold the volume; `shared` allows concurrent runs. |
-| `spec.size` | string | Yes | Volume size as a Kubernetes quantity such as `200Gi`. Must be positive. |
+| `spec.size` | string | Yes | Volume size as a Kubernetes quantity such as `200Gi`. Must be positive. It sets the PVC request on Kubernetes agents and has no effect on host agents, which neither enforce it nor log a usage warning. |
 | `spec.storageClassName` | string | No | Storage class used for the PVC on Kubernetes agents. |
 | `spec.agentSelector` | []string | No | Labels in the same `key:value` syntax as a Job's `agentSelector`. An agent offers the volume only when it carries every listed label. Empty means every agent. Entries must not be empty strings. |
 | `spec.reclaimPolicy` | string | No | `Retain` (default) keeps the volume's data when the volume leaves an agent's desired set. `Delete` removes the data once the volume has been absent from the agent's set for 10 minutes without interruption and no run holds it. |

@@ -77,7 +77,7 @@ To move a host job's persistent workspace onto a volume:
      - name: unity-main
        mode: exclusive
        path: /var/lib/unified-cd/volumes/unity-main   # optional
-       size: 200Gi                                    # advisory
+       size: 200Gi                                    # no effect on host agents
    ```
 
 2. Mount it in the job. `mountPath: "."` makes the volume the whole workspace, which is what a

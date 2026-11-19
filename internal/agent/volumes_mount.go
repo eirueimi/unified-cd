@@ -640,16 +640,7 @@ func (a *Agent) reserveClaimVolumes(claimCtx, runCtx context.Context, c *api.Cla
 	for _, w := range a.Volumes.TakeWarnings(c.RunID) {
 		a.warnRun(waitCtx, c.RunID, w)
 	}
-	return func() {
-		measured := map[string]bool{}
-		for _, v := range chosen {
-			if n := v.Name[0]; !measured[n] {
-				measured[n] = true
-				a.Volumes.CheckUsage(n)
-			}
-		}
-		release()
-	}, nil
+	return release, nil
 }
 
 // --- isolated runs ---

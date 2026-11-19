@@ -232,9 +232,9 @@ controller that is unreachable never causes a reclaim: the agent keeps its last 
   paths under your normal disk monitoring, separately from `wsBase`'s `working<N>` directories,
   and give a large volume its own filesystem so it cannot fill the one the workspaces and the
   controller's checkouts share.
-- `size` (on the `AgentVolume`) is **advisory**. After each run the agent measures the volume and logs
-  `volume usage exceeds its advisory size; the size is not enforced` when it is over; alert on that
-  line. It never stops a run. `minFreeDisk` is the guard that does act: a volume whose filesystem
+- `size` (on the `AgentVolume`) sets the PVC request on Kubernetes agents and has no effect on host
+  agents: the agent neither enforces it nor measures or warns about the volume's usage. Alert on the
+  filesystem free-space metric instead. `minFreeDisk` is the guard that does act: a volume whose filesystem
   has less free space than the threshold keeps new runs that mount it queued (the default is `1%` of
   the volume's filesystem, so it is on unless you turned it off). The real number is on `/metrics`:
   `unifiedcd_agent_volume_filesystem_free_bytes` reports the free space of the filesystem under each
@@ -247,8 +247,8 @@ controller that is unreachable never causes a reclaim: the agent keeps its last 
   and keeps its records under `<workspaceDir>/.ucd-volume-locks/`, which is agent state like
   `.ucd-volume-modes/` and not part of any volume.
 - **Volumes written by isolated jobs on a rootful container runtime end up owned by root.** The
-  agent's own usage measurement tolerates this (it warns `volume usage could not be measured
-  completely ... the figure is a lower bound` rather than failing), and `cleanWorkspace` falls back
+  agent does not walk the volume after a run, so this does not slow or fail a release, and
+  `cleanWorkspace` falls back
   to a root cleanup container. But reclaiming the directory by hand needs root. Rootless podman
   removes the root-owned part (a root container's files belong to the agent's own user), but a
   job that sets `securityContext.runAsUser` still leaves files owned by a subordinate UID, which

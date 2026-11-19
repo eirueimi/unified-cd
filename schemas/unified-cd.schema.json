@@ -48,7 +48,7 @@
           "type": "string"
         },
         "size": {
-          "description": "Size is a Kubernetes quantity such as 200Gi. It must be positive.",
+          "description": "Size is a Kubernetes quantity such as 200Gi. It must be positive. It sets\nthe PVC request on Kubernetes agents and has no effect on host agents.",
           "type": "string"
         },
         "storageClassName": {

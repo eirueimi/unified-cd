@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path"
@@ -92,10 +91,6 @@ type VolumeManager struct {
 	// have created (see volumes_mount.go), which every claim slot writes.
 	linkMu sync.Mutex
 
-	// walk is filepath.WalkDir; a field so a test can inject the failure a
-	// root-owned subtree produces without needing root to build one.
-	walk func(root string, fn fs.WalkDirFunc) error
-
 	// locks is the diagnostic that notices another agent process on the same
 	// volume directory (volumes_lock.go). It decides nothing.
 	locks *volumeLockState
@@ -140,7 +135,6 @@ func NewVolumeManager(base string) (*VolumeManager, error) {
 		rename:     os.Rename,
 		now:        time.Now,
 		changed:    make(chan struct{}),
-		walk:       filepath.WalkDir,
 		locks:      newVolumeLockState(),
 	}
 	m.reclaim, m.leftSetAt = m.loadReclaimRecord()
@@ -828,77 +822,4 @@ func (m *VolumeManager) Busy() []string {
 	}
 	sort.Strings(paths)
 	return append(busy, paths...)
-}
-
-// CheckUsage measures the named volume's disk usage and logs a warning when it
-// exceeds the declared advisory size. It never returns an error and never
-// fails a run: the size is advisory (per-directory quotas are not portable
-// without root), and an isolated run on a rootful container runtime leaves
-// root-owned files the agent user may not be able to read. Whatever cannot be
-// read is skipped and reported in a single warning. A volume with no declared
-// size is not measured.
-func (m *VolumeManager) CheckUsage(name string) {
-	if m == nil {
-		return
-	}
-	m.mu.Lock()
-	v, ok := m.vols[name]
-	var vpath string
-	var vsize int64
-	if ok {
-		vpath, vsize = v.path, v.size
-	}
-	m.mu.Unlock()
-	if !ok || vsize == 0 {
-		return
-	}
-	used, skipped, firstErr := m.measureUsage(name)
-	if skipped > 0 {
-		slog.Warn("volume usage could not be measured completely: some entries could not be read, so the figure is a lower bound (likely root-owned files left by an isolated run on a rootful container runtime)",
-			"volume", name, "path", vpath, "unreadableEntries", skipped, "firstError", firstErr)
-	}
-	if used > vsize {
-		slog.Warn("volume usage exceeds its advisory size; the size is not enforced",
-			"volume", name, "path", vpath, "usedBytes", used, "sizeBytes", vsize)
-	}
-}
-
-// measureUsage sums the size of the regular files under the volume. skipped
-// counts entries that could not be read (permission errors, files that vanish
-// mid-walk) and firstErr is the first such error. Symlinks are not followed.
-func (m *VolumeManager) measureUsage(name string) (used int64, skipped int, firstErr error) {
-	vpath := m.PathOf(name)
-	if vpath == "" {
-		return 0, 0, nil
-	}
-	note := func(err error) {
-		skipped++
-		if firstErr == nil {
-			firstErr = err
-		}
-	}
-	walkErr := m.walk(vpath, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil {
-			// Returning nil keeps the walk going; for a directory that could
-			// not be listed, its contents are simply not counted.
-			note(err)
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		info, ierr := d.Info()
-		if ierr != nil {
-			note(ierr)
-			return nil
-		}
-		if info.Mode().IsRegular() {
-			used += info.Size()
-		}
-		return nil
-	})
-	if walkErr != nil {
-		note(walkErr)
-	}
-	return used, skipped, firstErr
 }
