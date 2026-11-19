@@ -709,6 +709,13 @@ func (s *Server) routes() {
 	// both with its own JSON error codes.
 	s.r.Post("/api/v1/runs/{runID}/objects/presign", s.handlePresignObject)
 
+	// Controller-mode transfers (stores that cannot presign, or agents with
+	// objectTransfer: controller) authenticate in the handler the same way.
+	s.r.Put("/api/v1/runs/{runID}/objects/caches", s.handleStreamCachePut)
+	s.r.Get("/api/v1/runs/{runID}/objects/caches", s.handleStreamCacheGet)
+	s.r.Put("/api/v1/runs/{runID}/objects/artifacts/{name}", s.handleStreamArtifactPut)
+	s.r.Get("/api/v1/runs/{runID}/objects/artifacts/{name}", s.handleStreamArtifactGet)
+
 	s.registerAgentIdentityRoutes()
 
 	// When WebDir is set, serve the Web UI as static files (no auth required).

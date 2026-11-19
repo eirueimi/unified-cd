@@ -485,6 +485,9 @@ func main() {
 	if obj != nil {
 		srv.SetObjectStore(obj)
 		srv.SetCacheStore(obj)
+		if _, ok := obj.(objectstore.Presigner); !ok {
+			slog.Info("object store has no presigning (local filesystem): all agent and sidecar transfers stream through the controller")
+		}
 	}
 
 	// OIDC configuration (config file > env vars)

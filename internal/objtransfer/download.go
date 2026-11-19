@@ -20,6 +20,9 @@ const maxResumes = 5
 // reader resumes a dropped transfer from the last byte read.
 func (c *Client) openDownload(ctx context.Context, req api.PresignRequest) (io.ReadCloser, api.PresignResponse, error) {
 	resp, err := c.presign(ctx, req)
+	if errors.Is(err, errControllerMode) {
+		return c.controllerDownload(ctx, req)
+	}
 	if err != nil {
 		return nil, api.PresignResponse{}, err
 	}

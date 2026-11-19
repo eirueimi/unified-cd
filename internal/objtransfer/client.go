@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -37,9 +38,14 @@ type Client struct {
 	HTTP *http.Client
 	// TempDir holds the part buffers of an upload; empty means os.TempDir().
 	TempDir string
-	// ForceController skips the presign endpoint and reports controller mode
-	// (see errControllerMode), for stores the client cannot reach directly.
+	// ForceController skips the presign endpoint and streams every transfer
+	// through the controller (controller_mode.go), for stores the client
+	// cannot reach directly.
 	ForceController bool
+
+	// controller is set once the presign endpoint answered mode "controller";
+	// later transfers of this Client go straight to the streaming routes.
+	controller atomic.Bool
 }
 
 // errControllerMode means the transfer must stream through the controller
@@ -109,24 +115,42 @@ func redactErr(err error) error {
 
 // presign asks the controller for a presigned request or an upload/commit
 // step. A 409 binding-pending is retried for up to bindingWait; 429 and 503
-// unavailable are retried with backoff. Anything else fails.
+// unavailable are retried with backoff. Anything else fails. When the
+// controller answers mode "controller" (or ForceController is set) the result
+// is errControllerMode, and the decision is remembered for this Client.
 func (c *Client) presign(ctx context.Context, req api.PresignRequest) (api.PresignResponse, error) {
-	if c.ForceController {
+	if c.useController() {
 		return api.PresignResponse{}, errControllerMode
 	}
+	resp, err := retryObjectCall(ctx, func() (api.PresignResponse, error) { return c.presignOnce(ctx, req) })
+	if err != nil {
+		return api.PresignResponse{}, err
+	}
+	if resp.Mode == api.ObjectModeController {
+		c.controller.Store(true)
+		return api.PresignResponse{}, errControllerMode
+	}
+	return resp, nil
+}
+
+// useController reports whether transfers stream through the controller:
+// forced by the caller, or learned from an earlier presign answer.
+func (c *Client) useController() bool { return c.ForceController || c.controller.Load() }
+
+// retryObjectCall runs fn, retrying the answers the controller marks as
+// transient (see presign). Errors that are not a *presignError pass through.
+func retryObjectCall[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	var zero T
 	start := time.Now()
 	var waited time.Duration
 	for attempt := 0; ; attempt++ {
-		resp, err := c.presignOnce(ctx, req)
+		resp, err := fn()
 		if err == nil {
-			if resp.Mode == api.ObjectModeController {
-				return api.PresignResponse{}, errControllerMode
-			}
 			return resp, nil
 		}
 		var pe *presignError
 		if !errors.As(err, &pe) {
-			return api.PresignResponse{}, err
+			return zero, err
 		}
 		var delay time.Duration
 		switch {
@@ -136,20 +160,20 @@ func (c *Client) presign(ctx context.Context, req api.PresignRequest) (api.Presi
 				delay = bindingRetryDelay
 			}
 			if time.Since(start)+delay > bindingWait || waited+delay > bindingWait {
-				return api.PresignResponse{}, fmt.Errorf("%w (still %s after %s)", err, api.ObjectErrBindingPending, bindingWait)
+				return zero, fmt.Errorf("%w (still %s after %s)", err, api.ObjectErrBindingPending, bindingWait)
 			}
 		case pe.Status == http.StatusTooManyRequests,
 			pe.Status == http.StatusServiceUnavailable && pe.Code == api.ObjectErrUnavailable:
 			if attempt == retryAttempts-1 {
-				return api.PresignResponse{}, err
+				return zero, err
 			}
 			delay = backoff(attempt, pe.RetryAfter)
 		default:
-			return api.PresignResponse{}, classify(pe)
+			return zero, classify(pe)
 		}
 		waited += delay
 		if err := sleep(ctx, delay); err != nil {
-			return api.PresignResponse{}, err
+			return zero, err
 		}
 	}
 }
@@ -189,19 +213,7 @@ func (c *Client) presignOnce(ctx context.Context, req api.PresignRequest) (api.P
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		pe := &presignError{
-			Status:     resp.StatusCode,
-			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
-			op:         req.Kind + "/" + req.Op,
-		}
-		var oe api.ObjectError
-		if json.Unmarshal(raw, &oe) == nil && oe.Code != "" {
-			pe.Code, pe.Message = oe.Code, oe.Error
-		} else {
-			pe.Message = http.StatusText(resp.StatusCode)
-		}
-		return api.PresignResponse{}, pe
+		return api.PresignResponse{}, objectResponseError(resp, req.Kind+"/"+req.Op)
 	}
 	var out api.PresignResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&out); err != nil {
@@ -234,4 +246,22 @@ func (c *Client) tempFile() (*os.File, error) {
 		return nil, fmt.Errorf("create temp file: %w", err)
 	}
 	return f, nil
+}
+
+// objectResponseError turns a non-2xx answer of a controller object route into
+// a *presignError. It reads a bounded part of the body, not the whole of it.
+func objectResponseError(resp *http.Response, op string) *presignError {
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	pe := &presignError{
+		Status:     resp.StatusCode,
+		RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		op:         op,
+	}
+	var oe api.ObjectError
+	if json.Unmarshal(raw, &oe) == nil && oe.Code != "" {
+		pe.Code, pe.Message = oe.Code, oe.Error
+	} else {
+		pe.Message = http.StatusText(resp.StatusCode)
+	}
+	return pe
 }

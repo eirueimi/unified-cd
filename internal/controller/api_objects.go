@@ -144,28 +144,38 @@ func (s *Server) presignArtifact(ctx context.Context, runID string, req api.Pres
 	if req.Op == api.ObjectOpCommit {
 		return api.PresignResponse{}, invalidObject("commit applies to caches only")
 	}
-	source := runID
-	if req.SourceRunID != "" && req.SourceRunID != runID {
-		if req.Op != api.ObjectOpGet && req.Op != api.ObjectOpHead {
-			return api.PresignResponse{}, invalidObject("sourceRunId is only allowed for get and head")
-		}
-		// Reading another run's artifact keeps the existing download route's
-		// rule for machine principals: any authenticated requester may read
-		// an existing run's artifacts (downloadArtifact.runId, call: children).
-		_, found, err := s.store.RunJobName(ctx, req.SourceRunID)
-		if err != nil {
-			return api.PresignResponse{}, internalObject("source run lookup", req.SourceRunID, err)
-		}
-		if !found {
-			return api.PresignResponse{}, &objectErr{status: http.StatusNotFound, code: api.ObjectErrNotFound, msg: "source run not found"}
-		}
-		source = req.SourceRunID
+	if req.SourceRunID != "" && req.SourceRunID != runID && req.Op != api.ObjectOpGet && req.Op != api.ObjectOpHead {
+		return api.PresignResponse{}, invalidObject("sourceRunId is only allowed for get and head")
 	}
-	key, err := artifact.ArtifactKey(source, req.Name)
-	if err != nil {
-		return api.PresignResponse{}, invalidObject("invalid artifact name")
+	key, oerr := s.artifactReadKey(ctx, runID, req.SourceRunID, req.Name)
+	if oerr != nil {
+		return api.PresignResponse{}, oerr
 	}
 	return s.presignKey(ctx, key, req, req.Name+".tar.gz", api.ObjectErrNotFound)
+}
+
+// artifactReadKey derives the key of artifact name in the requester's run, or
+// in sourceRunID when that names another run. Reading another run's artifact
+// keeps the existing download route's rule for machine principals: any
+// authenticated requester may read an existing run's artifacts
+// (downloadArtifact.runId, call: children).
+func (s *Server) artifactReadKey(ctx context.Context, runID, sourceRunID, name string) (string, *objectErr) {
+	source := runID
+	if sourceRunID != "" && sourceRunID != runID {
+		_, found, err := s.store.RunJobName(ctx, sourceRunID)
+		if err != nil {
+			return "", internalObject("source run lookup", sourceRunID, err)
+		}
+		if !found {
+			return "", &objectErr{status: http.StatusNotFound, code: api.ObjectErrNotFound, msg: "source run not found"}
+		}
+		source = sourceRunID
+	}
+	key, err := artifact.ArtifactKey(source, name)
+	if err != nil {
+		return "", invalidObject("invalid artifact name")
+	}
+	return key, nil
 }
 
 func (s *Server) presignCache(ctx context.Context, rq objectRequester, req api.PresignRequest) (api.PresignResponse, *objectErr) {

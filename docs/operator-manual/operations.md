@@ -77,6 +77,7 @@ Presigned object URLs and multipart uploads depend on the backend. The controlle
 | AWS S3 | yes | yes | Standard S3 behavior. |
 | Garage | yes | yes | Verified by the `garage` job in `.github/workflows/ci.yml` (Garage v2.3.0). |
 | GCS (S3-compatible XML API, `storage.googleapis.com`, region `auto`) | yes | not yet verified | Treated as unsupported: clients fall back to a single presigned PUT, up to GCS's 5 TiB object limit. |
+| Local filesystem (development) | no | no | Cannot presign: the controller streams all transfers (see below). |
 
 **GCS finding (2026-11-19): not yet verified.** No GCS HMAC credentials were available when the primitives were written, so the check has not been run and `MultipartPresignSupported` keeps returning `false` for `storage.googleapis.com`. To check a bucket, create an HMAC key for a service account with write access and run:
 
@@ -86,6 +87,14 @@ UNIFIED_TEST_GCS_BUCKET=<bucket> UNIFIED_TEST_GCS_KEY=<hmac access id> UNIFIED_T
 ```
 
 The test starts a multipart upload, PUTs two parts through presigned URLs and completes it. If it passes, record the date here and set the GCS branch of `MultipartPresignSupported` (`internal/objectstore/presign.go`) to `true`.
+
+**Local filesystem store streams through the controller.** The local filesystem store cannot presign URLs, so when the controller runs with it (no S3 endpoint configured) it logs once at startup:
+
+```
+object store has no presigning (local filesystem): all agent and sidecar transfers stream through the controller
+```
+
+From then on every agent and sidecar transfer of an artifact or cache archive goes through the controller: the presign endpoint answers `{"mode":"controller"}` and the client uses `PUT`/`GET /api/v1/runs/{runID}/objects/caches` and `/objects/artifacts/{name}` instead, with the same authentication, run scoping and audit as the presign endpoint (uploads are audited as `objects.stream`). Cache prefix lookup (`restoreKeys`) and the `.meta` write happen on the controller exactly as in direct mode. Uploads are streamed with chunked transfer encoding (no `Content-Length`) and have no size cap, like the artifact upload route, so a proxy in front of the controller must allow chunked request bodies. Controller-mode downloads are not resumed after a dropped connection; the step's retry semantics apply.
 
 ### The controller's master key (critical)
 

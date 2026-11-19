@@ -71,8 +71,13 @@ func (r cacheRemote) Open(ctx context.Context, key string, restoreKeys []string)
 // visible to restores.
 func (r cacheRemote) Save(ctx context.Context, key string, ttlDays int, body io.Reader) error {
 	tmpl := api.PresignRequest{Kind: api.ObjectKindCache, Key: key}
-	if err := r.c.upload(ctx, tmpl, body); err != nil {
+	streamed, err := r.c.uploadMode(ctx, tmpl, ttlDays, body)
+	if err != nil {
 		return err
+	}
+	if streamed {
+		// The controller wrote .meta itself when it received the archive.
+		return nil
 	}
 	commit := withOp(tmpl, api.ObjectOpCommit)
 	commit.TTLDays = ttlDays

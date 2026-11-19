@@ -424,25 +424,6 @@ func TestClient_FatalStatusesAreNotRetried(t *testing.T) {
 	}
 }
 
-func TestClient_ControllerMode(t *testing.T) {
-	e := newFakeEnv(t)
-	e.mode = api.ObjectModeController
-	_, err := e.client.Artifacts().Get(t.Context(), "artifacts/run-1/a.tar.gz")
-	if !errors.Is(err, errControllerMode) {
-		t.Fatalf("answered mode controller: err = %v", err)
-	}
-
-	e2 := newFakeEnv(t)
-	e2.client.ForceController = true
-	err = e2.client.Artifacts().Put(t.Context(), "artifacts/run-1/a.tar.gz", strings.NewReader("x"), 1)
-	if !errors.Is(err, errControllerMode) {
-		t.Fatalf("ForceController: err = %v", err)
-	}
-	if len(e2.ops()) != 0 {
-		t.Fatalf("ForceController sent %v", e2.ops())
-	}
-}
-
 func TestClient_AuthOnlyOnControllerRequests(t *testing.T) {
 	e := newFakeEnv(t)
 	if err := e.client.Artifacts().Put(t.Context(), "artifacts/run-1/a.tar.gz", strings.NewReader("hello"), 5); err != nil {

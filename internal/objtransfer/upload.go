@@ -63,13 +63,28 @@ func PartSize(n int) int64 {
 // presigned multipart uploads, is spooled to the temp file and sent with a
 // single PUT.
 func (c *Client) upload(ctx context.Context, tmpl api.PresignRequest, body io.Reader) error {
-	if c.ForceController {
-		return errControllerMode
+	_, err := c.uploadMode(ctx, tmpl, 0, body)
+	return err
+}
+
+// uploadMode is upload that also reports whether the bytes were streamed
+// through the controller. A cache archive streamed that way is committed by the
+// controller together with the upload (using ttlDays), so the caller must not
+// send a commit.
+//
+// The controller can answer mode "controller" only at the first presign of the
+// upload: the single PUT (the whole stream is already in the temp file f) or
+// multipart-start (f holds part 1 and br the rest). Either way nothing was sent
+// anywhere yet, and the buffered bytes are replayed in front of the unread
+// remainder into the controller stream.
+func (c *Client) uploadMode(ctx context.Context, tmpl api.PresignRequest, ttlDays int, body io.Reader) (streamed bool, err error) {
+	if c.useController() {
+		return true, c.controllerUpload(ctx, tmpl, ttlDays, body)
 	}
 	br := bufio.NewReader(body)
 	f, err := c.tempFile()
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() {
 		f.Close()
@@ -78,29 +93,40 @@ func (c *Client) upload(ctx context.Context, tmpl api.PresignRequest, body io.Re
 
 	n, eof, err := fillPart(f, br, PartSize(1))
 	if err != nil {
-		return fmt.Errorf("buffer upload: %w", err)
+		return false, fmt.Errorf("buffer upload: %w", err)
 	}
 	if eof {
-		return c.putFile(ctx, tmpl, f, n)
+		err := c.putFile(ctx, tmpl, f, n)
+		if errors.Is(err, errControllerMode) {
+			return true, c.controllerUpload(ctx, tmpl, ttlDays, io.NewSectionReader(f, 0, n))
+		}
+		return false, err
 	}
 
 	start, err := c.presign(ctx, withOp(tmpl, api.ObjectOpMultipartStart))
+	if errors.Is(err, errControllerMode) {
+		return true, c.controllerUpload(ctx, tmpl, ttlDays, io.MultiReader(io.NewSectionReader(f, 0, n), br))
+	}
 	if errors.Is(err, errMultipartUnavailable) {
 		// Spool the rest of the stream behind part 1 and send it whole.
 		if _, err := io.Copy(f, br); err != nil {
-			return fmt.Errorf("buffer upload: %w", err)
+			return false, fmt.Errorf("buffer upload: %w", err)
 		}
 		st, err := f.Stat()
 		if err != nil {
-			return fmt.Errorf("buffer upload: %w", err)
+			return false, fmt.Errorf("buffer upload: %w", err)
 		}
-		return c.putFile(ctx, tmpl, f, st.Size())
+		err = c.putFile(ctx, tmpl, f, st.Size())
+		if errors.Is(err, errControllerMode) {
+			return true, c.controllerUpload(ctx, tmpl, ttlDays, io.NewSectionReader(f, 0, st.Size()))
+		}
+		return false, err
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if start.UploadID == "" {
-		return errors.New("presign multipart-start: the controller returned no upload ID")
+		return false, errors.New("presign multipart-start: the controller returned no upload ID")
 	}
 	parts, err := c.uploadParts(ctx, tmpl, start.UploadID, f, n, br)
 	if err == nil {
@@ -110,9 +136,9 @@ func (c *Client) upload(ctx context.Context, tmpl api.PresignRequest, body io.Re
 	}
 	if err != nil {
 		c.abort(tmpl, start.UploadID)
-		return err
+		return false, err
 	}
-	return nil
+	return false, nil
 }
 
 func withOp(tmpl api.PresignRequest, op string) api.PresignRequest {
