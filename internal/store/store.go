@@ -606,8 +606,26 @@ type Store interface {
 
 	// OIDCState
 	CreateOIDCState(ctx context.Context, state, redirectTo string, expiresAt time.Time) (*OIDCState, error)
+	// CreateCLIOIDCState saves the state of a CLI browser login: the loopback
+	// redirect and PKCE challenge travel with it to the callback, and
+	// confirmHash (SHA-256 of the browser-bound nonce) gates the continue step.
+	CreateCLIOIDCState(ctx context.Context, state, cliRedirect, cliChallenge, confirmHash string, expiresAt time.Time) (*OIDCState, error)
+	// GetCLIOIDCState reads a CLI state by value without consuming it. It
+	// returns nil, nil when the state is unknown, expired or not a CLI state.
+	GetCLIOIDCState(ctx context.Context, state string) (*OIDCState, error)
+	// SetCLIOIDCStateCallbackHash records the SHA-256 (hex) of the nonce the
+	// confirmation step set as a cookie; the IdP callback must present it. It
+	// fails when the state is unknown, expired or not a CLI state.
+	SetCLIOIDCStateCallbackHash(ctx context.Context, state, hash string) error
 	GetAndDeleteOIDCState(ctx context.Context, state string) (*OIDCState, error)
 	DeleteExpiredOIDCStates(ctx context.Context) error
+	// CreateCLILoginCode stores a one-time CLI login code (by hash) and drops
+	// expired rows. SetCLILoginCodePayload fills the encrypted tokens once the
+	// row id is known (the ciphertext is bound to it). ConsumeCLILoginCode
+	// deletes and returns the row, or nil when missing or expired.
+	CreateCLILoginCode(ctx context.Context, codeHash, challenge string, dek, ct []byte, expiresAt time.Time) (id string, err error)
+	SetCLILoginCodePayload(ctx context.Context, id string, dek, ct []byte) error
+	ConsumeCLILoginCode(ctx context.Context, codeHash string) (*CLILoginCode, error)
 
 	// Sessions
 	CreateSession(ctx context.Context, tokenHash, sub, email, role string, claims []string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error)
@@ -696,8 +714,27 @@ type OIDCState struct {
 	ID         string
 	State      string
 	RedirectTo string
-	CreatedAt  time.Time
-	ExpiresAt  time.Time
+	// CLIRedirect and CLIChallenge are set for a CLI browser login (empty for
+	// the web login): the loopback URL to hand the code to and the S256 PKCE
+	// challenge it is bound to.
+	CLIRedirect  string
+	CLIChallenge string
+	// CLIConfirmHash is the SHA-256 (hex) of the nonce the start page set as a
+	// cookie; the continue step must present the matching cookie.
+	CLIConfirmHash string
+	// CLICallbackHash is the SHA-256 (hex) of the nonce the confirmation step
+	// set as a cookie; the IdP callback must present it. Empty until confirmed.
+	CLICallbackHash string
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+}
+
+// CLILoginCode is a redeemed one-time CLI login code: the PKCE challenge it is
+// bound to and the envelope-encrypted tokens.
+type CLILoginCode struct {
+	ID        string
+	Challenge string
+	DEK, CT   []byte
 }
 
 // Session holds a browser session.

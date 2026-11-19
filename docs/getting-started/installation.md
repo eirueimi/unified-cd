@@ -164,6 +164,7 @@ Without them the controller uses only the static `UNIFIED_TOKEN`; with them
 | `UNIFIED_OIDC_CLIENT_ID` | Yes | OIDC client ID registered with your identity provider. |
 | `UNIFIED_OIDC_CLIENT_SECRET` | For browser SSO | Client secret for the Authorization Code Flow. Omit only for public clients. |
 | `UNIFIED_OIDC_DEVICE_CLIENT_ID` | For CLI login | Client ID of the public client used by the CLI device flow. |
+| `UNIFIED_OIDC_DEVICE_CLIENT_SECRET` | Only for IdPs that need a device-flow secret | Secret of the device client. The controller then relays the CLI device-flow login, refresh and revoke, so the secret never reaches the CLI. Requires `UNIFIED_OIDC_DEVICE_CLIENT_ID`. |
 | `UNIFIED_OIDC_ISSUER_INTERNAL` | For an in-cluster IdP | Internal URL the controller uses to reach the IdP (for example `http://dex.unified-cd.svc.cluster.local:5556/dex`). Also enables the `/dex/*` reverse proxy so the browser reaches an in-cluster Dex through the controller. |
 | `UNIFIED_OIDC_EXTERNAL_URL` | Rarely | Override for the redirect URI base, when the controller's `Host` header differs from the URL the browser uses. |
 

@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -47,13 +50,37 @@ func NewRoot() *cobra.Command {
 		}
 		return c, nil
 	}
-	resolve := func() (Config, error) { return resolveWith(true) }
+	// resolve is the single place commands obtain their Config. It also
+	// refreshes a stored SSO token that is about to expire (never one from
+	// --token or $UNIFIED_TOKEN), warning once on failure.
+	var refreshWarned bool
+	rootCtx := context.Background()
+	resolve := func() (Config, error) {
+		c, err := resolveWith(true)
+		if err != nil || refreshWarned {
+			return c, err
+		}
+		path := configPath
+		if path == "" {
+			path = DefaultConfigPath()
+		}
+		overridden := os.Getenv("UNIFIED_TOKEN") != "" || tokenOverride != ""
+		var warn bytes.Buffer
+		c = applyRefresh(rootCtx, path, c, overridden, time.Now(), &warn)
+		if warn.Len() > 0 {
+			refreshWarned = true
+			_, _ = os.Stderr.Write(warn.Bytes())
+		}
+		return c, nil
+	}
 
 	// Install the extra-header transport once, before any command runs. Done
 	// leniently (no server required — e.g. `login`, `keygen`) and scoped to the
 	// server host inside installHeaderTransport, so a bad header value surfaces
 	// early and headers never leak to other hosts.
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		// Let Ctrl-C (the command context) cancel a token refresh.
+		rootCtx = cmdCtx(cmd)
 		c, err := resolveWith(false)
 		if err != nil {
 			return err
@@ -79,6 +106,7 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newAuditCmd(resolve))
 	root.AddCommand(newAuthzCmd(resolve))
 	root.AddCommand(newLoginCmd())
+	root.AddCommand(newLogoutCmd())
 	root.AddCommand(newKeygenCmd())
 	root.AddCommand(newVersionCmd())
 	return root

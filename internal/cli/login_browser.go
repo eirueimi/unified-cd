@@ -1,0 +1,253 @@
+package cli
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os/exec"
+	"regexp"
+	"runtime"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/eirueimi/unified-cd/internal/api"
+)
+
+const (
+	errBrowserNotConfigured = "browser login is not configured on this server"
+	errBrowserUpgrade       = "this server does not support browser login for the CLI; upgrade the controller or use the device flow"
+	browserDonePage         = "Login complete. You can close this tab."
+	browserRefusedPage      = "Login was refused. You can close this tab and see the terminal."
+)
+
+// callbackErrorRE matches the OAuth error codes the controller hands back.
+var callbackErrorRE = regexp.MustCompile(`^[a-z_]{1,64}$`)
+
+// callbackResult is what the loopback callback received: a one-time code, or
+// the error code of a refused login.
+type callbackResult struct {
+	code, errCode string
+}
+
+// browserLoginTimeout is how long login --browser waits for the browser to
+// come back. A variable so tests can shorten it.
+var browserLoginTimeout = 5 * time.Minute
+
+// openBrowser opens a URL with the OS default handler. A variable so tests can
+// drive the flow without a real browser.
+var openBrowser = func(u string) error {
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", u).Start()
+	case "darwin":
+		return exec.Command("open", u).Start()
+	default:
+		return exec.Command("xdg-open", u).Start()
+	}
+}
+
+// browserLogin runs the loopback + PKCE login against the controller: the
+// browser goes to the controller start URL and shows a confirmation page, the
+// user continues to the IdP, the IdP sends the browser back to the controller,
+// and the controller redirects it to this process's loopback listener with a
+// one-time code that is exchanged together with the verifier.
+func browserLogin(ctx context.Context, cmd *cobra.Command, serverURL, configPath string) error {
+	serverURL = strings.TrimRight(serverURL, "/")
+	cfg, err := fetchServerOIDCConfigCtx(ctx, serverURL)
+	if errors.Is(err, errOIDCNotConfigured) {
+		return errors.New(errBrowserNotConfigured)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to fetch OIDC config from server: %w", err)
+	}
+	if !cfg.BrowserSSOEnabled {
+		return errors.New(errBrowserNotConfigured)
+	}
+
+	verifier, err := randomBase64URL(32)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("could not start the loopback listener: %w", err)
+	}
+	handler, results := callbackHandler()
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
+
+	redirect := "http://" + ln.Addr().String() + "/callback"
+	startURL := serverURL + "/api/v1/auth/cli/browser/start?" + url.Values{
+		"redirect":  {redirect},
+		"challenge": {challenge},
+	}.Encode()
+
+	if err := preflightBrowserStart(ctx, startURL); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "\nOpen the following URL in your browser:\n  %s\n\nThe browser will ask you to confirm the sign-in before it continues to the identity provider.\nWaiting for the browser login to finish...\n", startURL)
+	if err := openBrowser(startURL); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "could not open the browser automatically; open the URL above manually")
+	}
+
+	timer := time.NewTimer(browserLoginTimeout)
+	defer timer.Stop()
+	var res callbackResult
+	select {
+	case res = <-results:
+	case <-timer.C:
+		return fmt.Errorf("timed out after %s waiting for the browser login", browserLoginTimeout)
+	case <-ctx.Done():
+		return fmt.Errorf("browser login cancelled: %w", ctx.Err())
+	}
+
+	if res.errCode != "" {
+		return fmt.Errorf("browser login was refused: %s", res.errCode)
+	}
+	body, _ := json.Marshal(api.CLIBrowserExchangeRequest{Code: res.code, CodeVerifier: verifier})
+	var tok api.CLITokenResponse
+	if err := postRelay(ctx, serverURL, "/api/v1/auth/cli/browser/exchange", body, &tok); err != nil {
+		return fmt.Errorf("browser login failed: %w", err)
+	}
+	if tok.IDToken == "" {
+		return errors.New("browser login failed: server returned no id_token")
+	}
+	if err := persistLogin(configPath, serverURL, tok, "browser", false); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "\nLogged in. Token saved to %s\n", configPath)
+	if !tok.Expiry.IsZero() {
+		fmt.Fprintf(cmd.OutOrStdout(), "Expires: %s\n", tok.Expiry.Format(time.RFC3339))
+	}
+	if tok.RefreshToken == "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), noRefreshTokenWarning)
+	}
+	return nil
+}
+
+// preflightBrowserStart asks the start endpoint once, without following
+// redirects, so an old controller (401/404) or a misconfigured one (other 4xx,
+// 5xx) is reported here instead of as a blank browser tab and a timeout. A 200
+// (the confirmation page) or a redirect is success. It creates one unused
+// oidc_states row that expires on its TTL (intentional).
+func preflightBrowserStart(ctx context.Context, startURL string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, startURL, nil)
+	if err != nil {
+		return err
+	}
+	// Share the default client transport so the extra request headers apply.
+	client := &http.Client{
+		Transport:     http.DefaultClient.Transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("could not reach the server: %w", err)
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusNotFound, resp.StatusCode == http.StatusUnauthorized:
+		// An old controller answers 404, or 401 when its authenticated /api/v1
+		// subrouter rejects the unknown route first. On a new controller this
+		// route is unauthenticated, so a 401 can only come from an old one.
+		return errors.New(errBrowserUpgrade)
+	case resp.StatusCode >= 400:
+		var oe struct {
+			Error string `json:"error"`
+		}
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		msg := ""
+		if json.Unmarshal(b, &oe) == nil && oe.Error != "" {
+			msg = oe.Error
+		} else {
+			msg = string(b) // the controller answers with plain-text http.Error bodies
+		}
+		if msg = firstLine(msg, 200); msg != "" {
+			return fmt.Errorf("browser login failed: server returned %d: %s", resp.StatusCode, msg)
+		}
+		return fmt.Errorf("browser login failed: server returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// firstLine returns the first non-empty line of s with control characters
+// removed, cut to at most max bytes.
+func firstLine(s string, max int) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}, line)
+		if line = strings.TrimSpace(line); line != "" {
+			if len(line) > max {
+				line = strings.ToValidUTF8(line[:max], "")
+			}
+			return line
+		}
+	}
+	return ""
+}
+
+// callbackHandler serves the loopback /callback. The first request that carries
+// a code or an error code delivers it on the returned channel; the code is
+// never logged. An error code that is not a short lowercase token is replaced
+// by server_error, so nothing a stray request sends reaches the terminal.
+func callbackHandler() (http.Handler, <-chan callbackResult) {
+	results := make(chan callbackResult, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		code := r.URL.Query().Get("code")
+		errCode := r.URL.Query().Get("error")
+		if r.Method != http.MethodGet || (code == "" && errCode == "") {
+			http.Error(w, "missing code", http.StatusBadRequest)
+			return
+		}
+		res := callbackResult{code: code}
+		page := browserDonePage
+		if errCode != "" {
+			if !callbackErrorRE.MatchString(errCode) {
+				errCode = "server_error"
+			}
+			res = callbackResult{errCode: errCode}
+			page = browserRefusedPage
+		}
+		select {
+		case results <- res:
+		default: // a result was already delivered
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, page)
+	})
+	return mux, results
+}
+
+func randomBase64URL(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}

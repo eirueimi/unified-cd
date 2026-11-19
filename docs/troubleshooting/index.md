@@ -87,6 +87,7 @@ covers it.
 - [A job or run returns 404 although the caller expects to read it](controller-and-database.md#a-job-or-run-returns-404-although-the-caller-expects-to-read-it)
 - [`403 forbidden: no permissions` / `token owner has no permissions`](controller-and-database.md#403-forbidden-no-permissions-token-owner-has-no-permissions)
 - [`403 forbidden: no role` / `forbidden: no role assigned`](controller-and-database.md#403-forbidden-no-role-forbidden-no-role-assigned)
+- [`token refresh failed: ...`, no refresh token, `login --browser` failures](controller-and-database.md#cli-login-and-token-refresh-problems)
 - [Token creation is refused: `cannot create a token`](controller-and-database.md#token-creation-is-refused-cannot-create-a-token)
 - [Controller logs `dropping log line for sealed run`](controller-and-database.md#controller-logs-dropping-log-line-for-sealed-run)
 - [A run's log shows `[N log line(s) dropped: controller unreachable]`](controller-and-database.md#a-runs-log-shows-n-log-lines-dropped-controller-unreachable)

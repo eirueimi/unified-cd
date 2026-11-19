@@ -139,6 +139,10 @@ type OIDCConfig struct {
 	ClientID       string
 	ClientSecret   string
 	DeviceClientID string // Public client ID for the CLI device flow (defaults to ClientID when omitted).
+	// DeviceClientSecret, when set, makes the controller relay the CLI logins. Never sent to clients.
+	DeviceClientSecret string
+	// AuthParams are extra authorization-request parameters for the browser login.
+	AuthParams map[string]string
 	// Scopes overrides the requested OIDC scopes when non-empty (see oidcScopes).
 	Scopes []string
 
@@ -171,6 +175,7 @@ type Server struct {
 	claimedBy                     *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
 	enrollmentLimiter             *enrollmentLimiter
 	storeCredentialLimiter        *enrollmentLimiter
+	cliRelay                      *cliRelayLimiters // Per-IP limiters for the CLI relay routes.
 	credentialTouches             *credentialTouchLimiter
 	kubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
 	cloudEnrollmentVerifiers      map[string]CloudEnrollmentVerifier
@@ -203,7 +208,7 @@ type Server struct {
 
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
-	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), storeCredentialLimiter: newStoreCredentialLimiter(cfg), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters, storeCredentialS3: cfg.StoreCredentialS3}
+	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), storeCredentialLimiter: newStoreCredentialLimiter(cfg), cliRelay: newCLIRelayLimiters(), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters, storeCredentialS3: cfg.StoreCredentialS3}
 	s.cloudEnrollmentVerifiers = defaultCloudEnrollmentVerifiers()
 	for provider, verifier := range cfg.CloudEnrollmentVerifiers {
 		s.cloudEnrollmentVerifiers[provider] = verifier
@@ -653,6 +658,15 @@ func (s *Server) routes() {
 	s.r.Get("/api/v1/auth/oidc-login", s.handleOIDCLogin)
 	s.r.Get("/api/v1/auth/oidc-callback", s.handleOIDCCallback)
 	s.r.Post("/api/v1/auth/logout", s.handleLogout)
+
+	// CLI token relay (no auth; rate limited; the controller adds the client secret).
+	s.r.Post("/api/v1/auth/cli/device/start", s.handleCLIDeviceStart)
+	s.r.Post("/api/v1/auth/cli/device/token", s.handleCLIDeviceToken)
+	s.r.Post("/api/v1/auth/cli/refresh", s.handleCLIRefresh)
+	s.r.Post("/api/v1/auth/cli/revoke", s.handleCLIRevoke)
+	s.r.Get("/api/v1/auth/cli/browser/start", s.handleCLIBrowserStart)
+	s.r.Post("/api/v1/auth/cli/browser/continue", s.handleCLIBrowserContinue)
+	s.r.Post("/api/v1/auth/cli/browser/exchange", s.handleCLIBrowserExchange)
 	s.r.With(ServerAuth(s.store, s)).Get("/api/v1/auth/me", s.handleMe)
 
 	s.r.Route("/api/v1/agents", func(r chi.Router) {

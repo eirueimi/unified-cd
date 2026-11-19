@@ -3,10 +3,13 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -155,24 +158,55 @@ func (s *Server) verifierProvider() (*oidc.Provider, error) {
 	return s.oidcProviderV, s.oidcProviderVErr
 }
 
-// verifyOIDCBearer verifies a Bearer token as a Dex-issued id_token.
-// Used to accept id_tokens obtained via the CLI device flow for API authentication.
-// Prefers the CLI public client (DeviceClientID) as the audience.
+// verifyOIDCBearer verifies a Bearer token as an IdP-issued id_token.
+// Used to accept id_tokens obtained via the CLI login flows for API authentication.
+// The audience must be one of bearerAudiences(); signature, issuer and expiry
+// are verified on every attempt (SkipClientIDCheck is never used).
 func (s *Server) verifyOIDCBearer(ctx context.Context, rawToken string) (*oidc.IDToken, error) {
 	provider, err := s.verifierProvider()
 	if err != nil {
 		return nil, err
 	}
-	verifier := provider.Verifier(&oidc.Config{ClientID: s.bearerAudience()})
-	return verifier.Verify(ctx, rawToken)
+	var firstErr error
+	for _, aud := range s.bearerAudiences() {
+		idToken, err := provider.Verifier(&oidc.Config{ClientID: aud}).Verify(ctx, rawToken)
+		if err == nil {
+			return idToken, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return nil, firstErr
 }
 
-// bearerAudience is the audience CLI id_tokens are issued for.
-func (s *Server) bearerAudience() string {
-	if s.oidcCfg.DeviceClientID != "" {
-		return s.oidcCfg.DeviceClientID
+// bearerAudiences is the allow-list of audiences CLI id_tokens may carry: the
+// device client (when set) followed by the browser client, without duplicates
+// or empty entries.
+func (s *Server) bearerAudiences() []string {
+	var out []string
+	for _, aud := range []string{s.oidcCfg.DeviceClientID, s.oidcCfg.ClientID} {
+		if aud == "" || slices.Contains(out, aud) {
+			continue
+		}
+		out = append(out, aud)
 	}
-	return s.oidcCfg.ClientID
+	return out
+}
+
+// authCodeOptions returns the extra authorization-request parameters configured
+// through oidc.authParams, in a stable order.
+func (s *Server) authCodeOptions() []oauth2.AuthCodeOption {
+	keys := make([]string, 0, len(s.oidcCfg.AuthParams))
+	for k := range s.oidcCfg.AuthParams {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var opts []oauth2.AuthCodeOption
+	for _, k := range keys {
+		opts = append(opts, oauth2.SetAuthURLParam(k, s.oidcCfg.AuthParams[k]))
+	}
+	return opts
 }
 
 // verifyIDTokenClaims verifies a raw id_token for the given audience and
@@ -197,9 +231,20 @@ func (s *Server) verifyIDTokenClaims(ctx context.Context, raw, audience string) 
 	return claims, nil
 }
 
-// verifyBearerClaims verifies a Bearer id_token (CLI device flow) and returns its claims.
+// verifyBearerClaims verifies a Bearer id_token (CLI login flows) against the
+// audience allow-list and returns its claims.
 func (s *Server) verifyBearerClaims(ctx context.Context, raw string) (map[string]any, error) {
-	return s.verifyIDTokenClaims(ctx, raw, s.bearerAudience())
+	var firstErr error
+	for _, aud := range s.bearerAudiences() {
+		claims, err := s.verifyIDTokenClaims(ctx, raw, aud)
+		if err == nil {
+			return claims, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return nil, firstErr
 }
 
 // handleOIDCLogin initiates the OIDC Authorization Code Flow.
@@ -227,7 +272,7 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, oauth2Cfg.AuthCodeURL(state), http.StatusFound)
+	http.Redirect(w, r, oauth2Cfg.AuthCodeURL(state, s.authCodeOptions()...), http.StatusFound)
 }
 
 // handleOIDCCallback handles the callback from the IdP.
@@ -247,6 +292,29 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil || savedState == nil {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
 		return
+	}
+
+	// A CLI login is only completed in the browser that confirmed it: the
+	// callback cookie set by /cli/browser/continue must match the hash stored on
+	// the state. This runs before the IdP-error branch and the token exchange so
+	// a refused request never reaches the loopback and never spends the IdP code.
+	if savedState.CLIRedirect != "" {
+		c, cerr := r.Cookie(cliCallbackCookie)
+		if cerr != nil || c.Value == "" || savedState.CLICallbackHash == "" ||
+			subtle.ConstantTimeCompare([]byte(hashCLICode(c.Value)), []byte(savedState.CLICallbackHash)) != 1 {
+			http.SetCookie(w, s.cliCallbackCookieFor("", -1))
+			cliPageError(w, errCLIConfirmRequired, http.StatusForbidden)
+			return
+		}
+		http.SetCookie(w, s.cliCallbackCookieFor("", -1))
+	}
+
+	// The IdP reported an error (for example access_denied): a CLI login hands
+	// it to the loopback so the CLI stops waiting; the web login keeps its page.
+	if idpErr := r.URL.Query().Get("error"); idpErr != "" && savedState.CLIRedirect != "" {
+		if redirectCLIBrowserError(w, savedState, idpErr) {
+			return
+		}
 	}
 
 	code := r.URL.Query().Get("code")
@@ -294,6 +362,11 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if savedState.CLIRedirect != "" {
+		s.completeCLIBrowserLogin(w, r, savedState, claims, oauthToken.RefreshToken, rawIDToken)
+		return
+	}
+
 	sessionToken, expiresAt, status, msg := s.completeOIDCLogin(r.Context(), claims, oauthToken.RefreshToken)
 	if status != 0 {
 		http.Error(w, msg, status)
@@ -304,28 +377,47 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, savedState.RedirectTo, http.StatusFound)
 }
 
+// oidcIdentity extracts the subject, e-mail (falling back to the subject) and
+// roles-claim values from verified id_token claims.
+func oidcIdentity(s *Server, claims map[string]any) (sub, email string, values []string) {
+	sub, _ = claims["sub"].(string)
+	email, _ = claims["email"].(string)
+	if email == "" {
+		email = sub
+	}
+	return sub, email, nonNilClaims(extractRoleValues(claims, s.oidcCfg.RolesClaim))
+}
+
+// admitOIDCClaims decides whether verified id_token claims may log in, for both
+// the web login and the CLI browser login. It refreshes the owner snapshot of
+// every PAT the user owns before deciding, so a denied login still drops stale
+// claims (spec 5.5). On failure it returns the HTTP status and message to
+// send; status is 0 when the user is admitted.
+func (s *Server) admitOIDCClaims(ctx context.Context, claims map[string]any) (status int, msg string) {
+	sub, email, values := oidcIdentity(s, claims)
+	_, _, admitted := s.identityGrants(values, email, sub)
+	if _, err := s.store.UpdatePATOwnerSnapshot(ctx, sub, email, values); err != nil {
+		return http.StatusInternalServerError, "session store error"
+	}
+	if !admitted {
+		return http.StatusForbidden, "forbidden: no role assigned"
+	}
+	return 0, ""
+}
+
 // completeOIDCLogin turns verified id_token claims into a stored session. It
 // admits the user when the legacy role resolution succeeds or an
 // oidc.permissions entry matches, stores the claim values on the session, and
 // refreshes the owner snapshot of every PAT the user owns. On failure it
 // returns the HTTP status and message to send; status is 0 on success.
 func (s *Server) completeOIDCLogin(ctx context.Context, claims map[string]any, refreshToken string) (sessionToken string, expiresAt time.Time, status int, msg string) {
-	sub, _ := claims["sub"].(string)
-	email, _ := claims["email"].(string)
-	if email == "" {
-		email = sub
+	// Admission (and the PAT owner snapshot refresh) runs before the session
+	// exists, so a failure leaves no orphaned session row.
+	if status, msg := s.admitOIDCClaims(ctx, claims); status != 0 {
+		return "", time.Time{}, status, msg
 	}
-	values := nonNilClaims(extractRoleValues(claims, s.oidcCfg.RolesClaim))
-	role, _, admitted := s.identityGrants(values, email, sub)
-	// Refresh the owner snapshot of the user's PATs before deciding admission,
-	// so a denied login still drops stale claims (spec 5.5), and before the
-	// session exists so a failure leaves no orphaned session row.
-	if _, err := s.store.UpdatePATOwnerSnapshot(ctx, sub, email, values); err != nil {
-		return "", time.Time{}, http.StatusInternalServerError, "session store error"
-	}
-	if !admitted {
-		return "", time.Time{}, http.StatusForbidden, "forbidden: no role assigned"
-	}
+	sub, email, values := oidcIdentity(s, claims)
+	role, _, _ := s.identityGrants(values, email, sub)
 
 	if s.km == nil {
 		return "", time.Time{}, http.StatusInternalServerError, "key manager not configured"

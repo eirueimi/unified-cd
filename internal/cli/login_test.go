@@ -265,3 +265,60 @@ func TestLogin_DeviceFlow_RequestsServerScopes(t *testing.T) {
 		})
 	}
 }
+
+// A login that names its own IdP client must not store a refresh token: the
+// server's refresh and revoke relays would act as the server's client.
+func TestLogin_ManualIssuerAndClientID_StoresNoRefreshToken(t *testing.T) {
+	var idp *httptest.Server
+	idp = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			_, _ = w.Write([]byte(`{"device_authorization_endpoint":"` + idp.URL + `/device","token_endpoint":"` + idp.URL + `/token"}`))
+		case "/device":
+			_, _ = w.Write([]byte(`{"device_code":"dc","user_code":"UC","verification_uri":"` + idp.URL + `/v","expires_in":600,"interval":1}`))
+		case "/token":
+			_, _ = w.Write([]byte(`{"access_token":"at","token_type":"Bearer","refresh_token":"manual-refresh","id_token":"` + testJWT(time.Now().Add(time.Hour)) + `","expires_in":3600}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer idp.Close()
+	// The controller reports no OIDC config (404): nothing is relayed.
+	ctl := httptest.NewServer(http.NotFoundHandler())
+	defer ctl.Close()
+
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	_, stderr, err := runLoginCmd(t, "--server", ctl.URL, "--issuer", idp.URL, "--client-id", "mine", "--config", path)
+	require.NoError(t, err, stderr)
+	saved, err := LoadConfig(path)
+	require.NoError(t, err)
+	assert.NotEmpty(t, saved.Token)
+	assert.Empty(t, saved.RefreshToken, "a manual login stores no refresh token")
+	assert.Empty(t, saved.LoginClient)
+	assert.False(t, saved.LoginRelay)
+	assert.NotContains(t, stderr, "manual-refresh")
+}
+
+func TestLogin_ManualFlagsRejectedWhenServerRelaysDeviceFlow(t *testing.T) {
+	ctl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/auth/oidc-config" {
+			_, _ = w.Write([]byte(`{"issuer":"https://idp.invalid","clientId":"web","deviceClientId":"cli","deviceRelay":true}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ctl.Close()
+	for _, extra := range [][]string{
+		{"--issuer", "https://idp.invalid"},
+		{"--client-id", "mine"},
+		{"--issuer", "https://idp.invalid", "--client-id", "mine"},
+	} {
+		path := filepath.Join(t.TempDir(), "cfg.yaml")
+		_, _, err := runLoginCmd(t, append([]string{"--server", ctl.URL, "--config", path}, extra...)...)
+		require.Error(t, err, "%v", extra)
+		assert.Equal(t, "--issuer and --client-id cannot be used when the server relays the device flow", err.Error())
+		cfg, _ := LoadConfig(path)
+		assert.Empty(t, cfg.Token)
+	}
+}
