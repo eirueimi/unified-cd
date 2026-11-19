@@ -55,6 +55,13 @@ Unknown fields are rejected.
 - A host agent offers no volumes until its first successful heartbeat, which it sends immediately
   at startup; while the controller is unreachable it keeps its last known set.
 
+### Seeing volumes in the Web UI
+
+- The **Volumes** page (`#/volumes`, in the top navigation) lists every declared volume with its mode, size, selector and reclaim policy. It needs `agentvolume.read`.
+- With `agent.read` as well, each row also shows how many agents hold the volume (`ready / asked`), the total used size and the largest holder. Click a row to see a per-agent breakdown (state, used, disk free, when it was measured). Without `agent.read` the page shows the declarations only.
+- An agent's own detail page has a **Volumes** card with the same readings for that agent.
+- **Used** size is reported by Kubernetes agents only. Host agents do not measure it, so it shows as a dash (`—`), and a total that covers only some agents reads `(1 of 2 measured)`. Kubernetes replicas that share one PVC are counted once. `spec.size` is only compared with used size on Kubernetes agents; it has no effect on host agents.
+
 ### Applying and managing
 
 ```bash

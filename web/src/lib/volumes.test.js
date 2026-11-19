@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtBytes, parseQuantity, isK8sAgent, isOnline, volumeRows } from './volumes.js';
+import { fmtBytes, parseQuantity, isK8sAgent, isOnline, volumeRows, aggregateVolume } from './volumes.js';
 
 describe('fmtBytes', () => {
   it('formats binary units', () => {
@@ -62,5 +62,61 @@ describe('volumeRows', () => {
     expect(r.mode).toBeNull();
     expect(r.size).toBeNull();
     expect(r.reason).toBe('r');
+  });
+});
+
+describe('aggregateVolume', () => {
+  const GiB = 2 ** 30;
+  const now = Date.now();
+  const iso = (ms) => new Date(ms).toISOString();
+  const agent = (id, over = {}) => ({
+    id, os: 'linux', lastSeenAt: iso(now),
+    volumeStatus: [{ name: 'cache', ready: true }],
+    ...over,
+  });
+
+  it('de-duplicates k8s replicas sharing a PVC, keeping the latest reading', () => {
+    const k8s = (id, used, at) => agent(id, {
+      os: 'linux/k8s',
+      storage: { agentName: 'builders', volumes: { cache: { freeBytes: 1, totalBytes: 2, measuredAt: iso(at), usedBytes: used } } },
+    });
+    const r = aggregateVolume('cache', [k8s('r1', 10 * GiB, now - 5000), k8s('r2', 12 * GiB, now)]);
+    expect(r.totalUsed).toBe(12 * GiB);
+    expect(r.largest).toEqual({ agentId: 'r2', usedBytes: 12 * GiB });
+    expect(r.asked).toBe(2);
+    expect(r.ready).toBe(2);
+    expect(r.perAgent).toHaveLength(2);
+  });
+
+  it('does not collapse host agents with the same hostname', () => {
+    const r = aggregateVolume('cache', [
+      agent('h1', { hostname: 'box' }), agent('h2', { hostname: 'box' }),
+    ]);
+    expect(r.asked).toBe(2);
+    expect(r.measured).toBe(0);
+    expect(r.totalUsed).toBeNull();
+    expect(r.largest).toBeNull();
+  });
+
+  it('counts a mixed fleet as partially measured', () => {
+    const r = aggregateVolume('cache', [
+      agent('k', { os: 'linux/k8s', storage: { agentName: 'k', volumes: { cache: { freeBytes: 1, totalBytes: 2, measuredAt: iso(now), usedBytes: 5 * GiB } } } }),
+      agent('h'),
+    ]);
+    expect(r.measured).toBe(1);
+    expect(r.asked).toBe(2);
+    expect(r.totalUsed).toBe(5 * GiB);
+  });
+
+  it('reports nothing when no agent lists the volume', () => {
+    const r = aggregateVolume('cache', [agent('x', { volumeStatus: [{ name: 'other', ready: true }] })]);
+    expect(r.asked).toBe(0);
+    expect(r.totalUsed).toBeNull();
+    expect(r.perAgent).toEqual([]);
+  });
+
+  it('tolerates an agent with volumeStatus but no storage', () => {
+    const r = aggregateVolume('cache', [agent('old', { volumeStatus: [{ name: 'cache', ready: false, reason: 'pending' }] })]);
+    expect(r.perAgent[0]).toMatchObject({ agentId: 'old', ready: false, reason: 'pending', usedBytes: null, freeBytes: null });
   });
 });

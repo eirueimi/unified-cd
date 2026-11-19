@@ -65,3 +65,49 @@ export function volumeRows(agent, declsByName) {
     };
   });
 }
+
+// aggregateVolume summarises one declared volume across the agents that were
+// asked to provision it (those whose volumeStatus lists the name).
+//
+// Kubernetes replicas that share storage.agentName share one PVC, so their used
+// readings are de-duplicated by (agentName, volume), keeping the latest
+// measuredAt, before summing. `measured` counts asked agents that carry a used
+// reading; `totalUsed` is null when there is none (absent stays absent).
+export function aggregateVolume(name, agents) {
+  const perAgent = [];
+  const used = new Map(); // dedup key -> {agentId, usedBytes, at}
+  let ready = 0;
+  let measured = 0;
+  for (const agent of agents || []) {
+    const vs = (agent.volumeStatus || []).find((s) => s.name === name);
+    if (!vs) continue;
+    const reading = agent.storage?.volumes?.[name];
+    const usedBytes = reading?.usedBytes ?? null;
+    if (vs.ready) ready++;
+    perAgent.push({
+      agentId: agent.id,
+      online: isOnline(agent.lastSeenAt),
+      ready: !!vs.ready,
+      reason: vs.reason ?? null,
+      usedBytes,
+      freeBytes: reading?.freeBytes ?? null,
+      totalBytes: reading?.totalBytes ?? null,
+      measuredAt: reading?.measuredAt ?? null,
+      claimBlocked: reading?.claimBlocked ?? null,
+    });
+    if (usedBytes == null) continue;
+    measured++;
+    const shared = isK8sAgent(agent) && agent.storage?.agentName;
+    const key = shared ? `pvc:${agent.storage.agentName}` : `agent:${agent.id}`;
+    const at = reading.measuredAt ? new Date(reading.measuredAt).getTime() : 0;
+    const prev = used.get(key);
+    if (!prev || at > prev.at) used.set(key, { agentId: agent.id, usedBytes, at });
+  }
+  let totalUsed = null;
+  let largest = null;
+  for (const u of used.values()) {
+    totalUsed = (totalUsed ?? 0) + u.usedBytes;
+    if (!largest || u.usedBytes > largest.usedBytes) largest = { agentId: u.agentId, usedBytes: u.usedBytes };
+  }
+  return { asked: perAgent.length, ready, measured, totalUsed, largest, perAgent };
+}
