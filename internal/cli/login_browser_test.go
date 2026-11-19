@@ -26,6 +26,7 @@ type fakeBrowserController struct {
 
 	mu          sync.Mutex
 	startStatus int // 0 = redirect to the loopback URL
+	startBody   string
 	exchangeErr string
 	tok         api.CLITokenResponse
 	challenge   string
@@ -49,6 +50,7 @@ func newFakeBrowserController(t *testing.T, enabled bool) *fakeBrowserController
 		case "/api/v1/auth/cli/browser/start":
 			if f.startStatus != 0 {
 				w.WriteHeader(f.startStatus)
+				_, _ = w.Write([]byte(f.startBody))
 				return
 			}
 			f.challenge = r.URL.Query().Get("challenge")
@@ -165,6 +167,32 @@ func TestLoginBrowser_OldController404(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, "this server does not support browser login for the CLI; upgrade the controller or use the device flow", err.Error())
 	assert.False(t, opened)
+}
+
+func TestLoginBrowser_OldController401(t *testing.T) {
+	f := newFakeBrowserController(t, true)
+	f.startStatus = http.StatusUnauthorized
+	f.startBody = "unauthorized\n"
+	_, _, err := runLoginCmd(t, "--browser", "--server", f.srv.URL, "--config", filepath.Join(t.TempDir(), "c.yaml"))
+	require.Error(t, err)
+	assert.Equal(t, "this server does not support browser login for the CLI; upgrade the controller or use the device flow", err.Error())
+}
+
+func TestLoginBrowser_StartPlainTextErrors(t *testing.T) {
+	f := newFakeBrowserController(t, true)
+	f.startStatus = http.StatusServiceUnavailable
+	f.startBody = "browser login requires the controller key manager\n"
+	_, _, err := runLoginCmd(t, "--browser", "--server", f.srv.URL, "--config", filepath.Join(t.TempDir(), "c.yaml"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "browser login requires the controller key manager")
+
+	f.startStatus = http.StatusBadRequest
+	f.startBody = "invalid redirect\x1b[31m\nsecond line"
+	_, _, err = runLoginCmd(t, "--browser", "--server", f.srv.URL, "--config", filepath.Join(t.TempDir(), "c.yaml"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "server returned 400: invalid redirect[31m")
+	assert.NotContains(t, err.Error(), "second line")
+	assert.NotContains(t, err.Error(), "")
 }
 
 func TestLoginBrowser_NotEnabled(t *testing.T) {

@@ -130,8 +130,10 @@ func browserLogin(ctx context.Context, cmd *cobra.Command, serverURL, configPath
 }
 
 // preflightBrowserStart asks the start endpoint once, without following its
-// redirect to the IdP, so an old controller (404) or a misconfigured one (4xx,
-// 5xx) is reported here instead of as a blank browser tab and a timeout.
+// redirect to the IdP, so an old controller (401/404) or a misconfigured one
+// (other 4xx, 5xx) is reported here instead of as a blank browser tab and a
+// timeout. It creates one unused oidc_states row that expires on its TTL
+// (intentional).
 func preflightBrowserStart(ctx context.Context, startURL string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -150,19 +152,48 @@ func preflightBrowserStart(ctx context.Context, startURL string) error {
 	}
 	defer resp.Body.Close()
 	switch {
-	case resp.StatusCode == http.StatusNotFound:
+	case resp.StatusCode == http.StatusNotFound, resp.StatusCode == http.StatusUnauthorized:
+		// An old controller answers 404, or 401 when its authenticated /api/v1
+		// subrouter rejects the unknown route first. On a new controller this
+		// route is unauthenticated, so a 401 can only come from an old one.
 		return errors.New(errBrowserUpgrade)
 	case resp.StatusCode >= 400:
 		var oe struct {
 			Error string `json:"error"`
 		}
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		if json.Unmarshal(b, &oe) == nil && oe.Error != "" && len(oe.Error) <= 200 {
-			return fmt.Errorf("browser login failed: server returned %d: %s", resp.StatusCode, oe.Error)
+		msg := ""
+		if json.Unmarshal(b, &oe) == nil && oe.Error != "" {
+			msg = oe.Error
+		} else {
+			msg = string(b) // the controller answers with plain-text http.Error bodies
+		}
+		if msg = firstLine(msg, 200); msg != "" {
+			return fmt.Errorf("browser login failed: server returned %d: %s", resp.StatusCode, msg)
 		}
 		return fmt.Errorf("browser login failed: server returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// firstLine returns the first non-empty line of s with control characters
+// removed, cut to at most max bytes.
+func firstLine(s string, max int) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}, line)
+		if line = strings.TrimSpace(line); line != "" {
+			if len(line) > max {
+				line = strings.ToValidUTF8(line[:max], "")
+			}
+			return line
+		}
+	}
+	return ""
 }
 
 // callbackHandler serves the loopback /callback. The first request that carries
