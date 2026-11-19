@@ -36,6 +36,7 @@ type cliRelayLimiters struct {
 	refresh         *enrollmentLimiter
 	revoke          *enrollmentLimiter
 	browserExchange *enrollmentLimiter
+	browserContinue *enrollmentLimiter
 }
 
 func newCLIRelayLimiters() *cliRelayLimiters {
@@ -45,6 +46,7 @@ func newCLIRelayLimiters() *cliRelayLimiters {
 		refresh:         newRateLimiter(nil, 200*time.Millisecond, 50),
 		revoke:          newRateLimiter(nil, time.Second, 20),
 		browserExchange: newRateLimiter(nil, time.Second, 20),
+		browserContinue: newRateLimiter(nil, time.Second, 20),
 	}
 }
 

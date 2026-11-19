@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -25,9 +27,12 @@ type fakeBrowserController struct {
 	srv *httptest.Server
 
 	mu          sync.Mutex
-	startStatus int // 0 = redirect to the loopback URL
+	startStatus int // 0 = serve the confirmation page
 	startBody   string
 	exchangeErr string
+	loopbackErr string // when set, continue hands this error code to the loopback
+	redirect    string
+	continued   bool
 	tok         api.CLITokenResponse
 	challenge   string
 	exchanged   api.CLIBrowserExchangeRequest
@@ -54,8 +59,21 @@ func newFakeBrowserController(t *testing.T, enabled bool) *fakeBrowserController
 				return
 			}
 			f.challenge = r.URL.Query().Get("challenge")
-			redirect := r.URL.Query().Get("redirect")
-			http.Redirect(w, r, redirect+"?code=one-time-code", http.StatusFound)
+			f.redirect = r.URL.Query().Get("redirect")
+			http.SetCookie(w, &http.Cookie{Name: "ucd_cli_login", Value: "nonce", Path: "/api/v1/auth/cli/browser/"})
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<form method="post" action="/api/v1/auth/cli/browser/continue"><input type="hidden" name="state" value="s1"></form>`))
+		case "/api/v1/auth/cli/browser/continue":
+			if c, err := r.Cookie("ucd_cli_login"); err != nil || c.Value != "nonce" || r.Method != http.MethodPost {
+				http.Error(w, "confirmation required", http.StatusForbidden)
+				return
+			}
+			f.continued = true
+			if f.loopbackErr != "" {
+				http.Redirect(w, r, f.redirect+"?error="+f.loopbackErr, http.StatusFound)
+				return
+			}
+			http.Redirect(w, r, f.redirect+"?code=one-time-code", http.StatusFound)
 		case "/api/v1/auth/cli/browser/exchange":
 			_ = json.NewDecoder(r.Body).Decode(&f.exchanged)
 			if f.exchangeErr != "" {
@@ -72,19 +90,32 @@ func newFakeBrowserController(t *testing.T, enabled bool) *fakeBrowserController
 	return f
 }
 
-// stubBrowser replaces the browser opener with a plain GET that follows
-// redirects (as a real browser would) and records the final page body.
+// stubBrowser replaces the browser opener with a cookie-keeping client that
+// loads the start page, clicks Continue (posts the form) and follows redirects
+// as a real browser would, and records the final page body.
 func stubBrowser(t *testing.T) *string {
 	var page string
 	old := openBrowser
 	openBrowser = func(u string) error {
-		resp, err := http.Get(u) //nolint:gosec
+		jar, _ := cookiejar.New(nil)
+		client := &http.Client{Jar: jar}
+		resp, err := client.Get(u) //nolint:gosec
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
 		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		page = string(b)
+		if strings.Contains(page, `action="/api/v1/auth/cli/browser/continue"`) {
+			base, _ := url.Parse(u)
+			resp, err = client.PostForm(base.Scheme+"://"+base.Host+"/api/v1/auth/cli/browser/continue", url.Values{"state": {"s1"}})
+			if err != nil {
+				return err
+			}
+			b, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			page = string(b)
+		}
 		return nil
 	}
 	t.Cleanup(func() { openBrowser = old })
@@ -113,6 +144,8 @@ func TestLoginBrowser_EndToEnd(t *testing.T) {
 
 	assert.Equal(t, "Login complete. You can close this tab.", strings.TrimSpace(*page))
 	assert.Contains(t, stdout, f.srv.URL+"/api/v1/auth/cli/browser/start?")
+	assert.Contains(t, stdout, "The browser will ask you to confirm the sign-in")
+	assert.True(t, f.continued)
 	assert.NotContains(t, stdout+stderr, "one-time-code")
 	assert.NotContains(t, stdout+stderr, "refresh-secret")
 	assert.Empty(t, stderr)
@@ -227,7 +260,7 @@ func TestLoginBrowser_ExchangeRejected(t *testing.T) {
 }
 
 func TestLoginBrowser_CallbackIgnoresMissingCode(t *testing.T) {
-	h, codes := callbackHandler()
+	h, results := callbackHandler()
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/callback", nil))
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -235,9 +268,52 @@ func TestLoginBrowser_CallbackIgnoresMissingCode(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/other?code=x", nil))
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 	select {
-	case <-codes:
-		t.Fatal("no code expected")
+	case <-results:
+		t.Fatal("no result expected")
 	default:
+	}
+}
+
+func TestLoginBrowser_CallbackDeliversErrorCode(t *testing.T) {
+	h, results := callbackHandler()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/callback?error=access_denied", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, browserRefusedPage, strings.TrimSpace(rec.Body.String()))
+	assert.Equal(t, callbackResult{errCode: "access_denied"}, <-results)
+
+	h, results = callbackHandler()
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/callback?error=%1B%5B31mevil", nil))
+	assert.Equal(t, callbackResult{errCode: "server_error"}, <-results, "a non-token error code is replaced")
+}
+
+func TestLoginBrowser_RefusedLoginStopsAndSavesNothing(t *testing.T) {
+	f := newFakeBrowserController(t, true)
+	f.loopbackErr = "access_denied"
+	page := stubBrowser(t)
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	_, _, err := runLoginCmd(t, "--browser", "--server", f.srv.URL, "--config", path)
+	require.Error(t, err)
+	assert.Equal(t, "browser login was refused: access_denied", err.Error())
+	assert.Contains(t, *page, "Login was refused")
+	cfg, _ := LoadConfig(path)
+	assert.Empty(t, cfg.Token)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	assert.Zero(t, f.exchanged.Code, "no exchange after a refusal")
+}
+
+func TestLoginBrowser_PreflightAcceptsConfirmationPageAndRedirect(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusFound} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if status == http.StatusFound {
+				w.Header().Set("Location", "https://idp.invalid/auth")
+			}
+			w.WriteHeader(status)
+		}))
+		assert.NoError(t, preflightBrowserStart(t.Context(), srv.URL+"/start"), "status %d", status)
+		srv.Close()
 	}
 }
 

@@ -164,9 +164,13 @@ One of these appears with `unified-cli login`, `login --browser`, or any command
 - `browser login failed: server returned 400: redirect must be http://127.0.0.1:<port>/callback or http://[::1]:<port>/callback`
 - `browser login failed: invalid_grant` (the one-time code was already used, expired after 2 minutes, or the PKCE verifier did not match)
 - `timed out after 5m0s waiting for the browser login`
+- `browser login was refused: access_denied` (or another lowercase code from the IdP)
+- the browser shows `confirmation required: open the link printed by unified-cli login --browser on this computer` (HTTP 403 from `/api/v1/auth/cli/browser/continue`)
+- `--issuer and --client-id cannot be used when the server relays the device flow`
 - `device access token error: invalid_grant` / `device access token error: expired_token`
 - `device authentication error: server returned 429` (device start), `token refresh failed: server returned 429; run "unified-cli login" again` (refresh) or `browser login failed: server returned 429` (browser code exchange)
 - `warning: could not revoke the refresh token: <reason>` (from `logout`)
+- `warning: the identity provider has no revocation endpoint; the refresh token stays valid until it expires` (from `logout`)
 - the browser shows a connection error on `http://127.0.0.1:<port>/callback` after the IdP login
 
 **Cause**
@@ -177,10 +181,13 @@ One of these appears with `unified-cli login`, `login --browser`, or any command
 - `browser login is not configured`: `oidc.clientSecret` is not set, so browser SSO is off.
 - 503 `browser login requires the controller key manager`: the one-time codes are encrypted, so the controller needs its key manager (`UNIFIED_CONTROLLER_KEY_FILE`, or Vault/OpenBao Transit; see [Secrets](../user-guide/secrets.md#setting-unified_controller_key_file-required)).
 - 400 on `start` or a refused loopback redirect: the redirect target must be `http://127.0.0.1:<port>/callback` or `http://[::1]:<port>/callback` and the challenge must be a base64url SHA-256 value. Anything else is refused, including `localhost`. A browser on another machine than the CLI cannot reach the CLI's loopback listener (for example over SSH); use the device flow there.
-- Timeout after 5 minutes: the browser never returned to the CLI. A user the web login would refuse (no role: the browser shows the `403 forbidden: no role assigned` page) gets no code, so the CLI just waits. Check that page, or the controller's roles, and run `unified-cli login --browser` again.
+- Timeout after 5 minutes: the browser never returned to the CLI. Most often the confirmation page was never accepted, or the browser could not reach the CLI's loopback port. Run `unified-cli login --browser` again.
+- `browser login was refused: <code>`: the user has no role (`access_denied`; the web login would show `403 forbidden: no role assigned`) or the IdP returned that OAuth error. Check the controller's roles and the IdP, then run `login --browser` again.
+- 403 `confirmation required: ...`: the browser that pressed Continue is not the one that opened the start page (the `ucd_cli_login` cookie is missing or belongs to another attempt). It also happens when the link was opened from another program, when cookies are blocked, or on plain HTTP without `--insecure-cookies` (the cookie is `Secure`). Open the link printed by `unified-cli login --browser` on this computer, in the browser you will use, and press Continue there. Do not continue a link somebody sent you.
+- `--issuer and --client-id cannot be used when the server relays the device flow`: the controller holds `oidc.deviceClientSecret`; run `unified-cli login --server <url>` without those flags.
 - 400 `invalid_grant` on `/api/v1/auth/cli/browser/exchange`: the code is single use (any attempt consumes it, including one with a wrong verifier) and valid for 2 minutes. Run `login --browser` again.
 - 429 `rate_limited`: each relay endpoint is limited per client IP. A 429 while the CLI polls for the device token is retried automatically (it backs off like `slow_down`), so it never shows up there. Behind a reverse proxy or load balancer without `trustedProxies`, every user shares the proxy's address and one bucket.
-- A `logout` revocation warning is harmless for the local state (the tokens are cleared anyway); the refresh token stays valid at the IdP until it expires or you revoke it there.
+- A `logout` revocation warning is harmless for the local state (the tokens are cleared anyway); the refresh token stays valid at the IdP until it expires or you revoke it there. `warning: the identity provider has no revocation endpoint; the refresh token stays valid until it expires` means the IdP (or an older controller) offers no revocation endpoint.
 
 **Fix**
 

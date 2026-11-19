@@ -70,14 +70,26 @@ func TestCLILoginCode_SetPayload(t *testing.T) {
 func TestOIDCState_CarriesCLIFields(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	st, err := pg.CreateCLIOIDCState(ctx, "s-cli", "http://127.0.0.1:5555/callback", "challenge", time.Now().Add(time.Minute))
+	st, err := pg.CreateCLIOIDCState(ctx, "s-cli", "http://127.0.0.1:5555/callback", "challenge", "confirm-hash", time.Now().Add(time.Minute))
 	require.NoError(t, err)
 	assert.Equal(t, "http://127.0.0.1:5555/callback", st.CLIRedirect)
+	assert.Equal(t, "confirm-hash", st.CLIConfirmHash)
+
+	// GetCLIOIDCState reads without consuming.
+	peek, err := pg.GetCLIOIDCState(ctx, "s-cli")
+	require.NoError(t, err)
+	require.NotNil(t, peek)
+	assert.Equal(t, "confirm-hash", peek.CLIConfirmHash)
+	assert.Equal(t, "challenge", peek.CLIChallenge)
 	got, err := pg.GetAndDeleteOIDCState(ctx, "s-cli")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "challenge", got.CLIChallenge)
 	assert.Equal(t, "http://127.0.0.1:5555/callback", got.CLIRedirect)
+	assert.Equal(t, "confirm-hash", got.CLIConfirmHash)
+	gone, err := pg.GetCLIOIDCState(ctx, "s-cli")
+	require.NoError(t, err)
+	assert.Nil(t, gone, "consumed state is gone")
 
 	_, err = pg.CreateOIDCState(ctx, "s-web", "/ui/", time.Now().Add(time.Minute))
 	require.NoError(t, err)
@@ -86,6 +98,19 @@ func TestOIDCState_CarriesCLIFields(t *testing.T) {
 	require.NotNil(t, web)
 	assert.Empty(t, web.CLIRedirect)
 	assert.Empty(t, web.CLIChallenge)
+	assert.Empty(t, web.CLIConfirmHash)
+
+	// Neither a web state nor an expired CLI state is readable.
+	_, err = pg.CreateOIDCState(ctx, "s-web2", "/ui/", time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	nilWeb, err := pg.GetCLIOIDCState(ctx, "s-web2")
+	require.NoError(t, err)
+	assert.Nil(t, nilWeb)
+	_, err = pg.CreateCLIOIDCState(ctx, "s-old", "http://127.0.0.1:5555/callback", "c", "h", time.Now().Add(-time.Second))
+	require.NoError(t, err)
+	old, err := pg.GetCLIOIDCState(ctx, "s-old")
+	require.NoError(t, err)
+	assert.Nil(t, old)
 }
 
 func TestMigration032CLILoginCodesUpDown(t *testing.T) {
@@ -98,12 +123,12 @@ func TestMigration032CLILoginCodesUpDown(t *testing.T) {
 	present := func() (tables, cols int) {
 		require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_name = 'cli_login_codes'`).Scan(&tables))
 		require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
-			WHERE table_name = 'oidc_states' AND column_name IN ('cli_redirect','cli_challenge')`).Scan(&cols))
+			WHERE table_name = 'oidc_states' AND column_name IN ('cli_redirect','cli_challenge','cli_confirm_hash')`).Scan(&cols))
 		return
 	}
 	tb, cl := present()
 	require.Equal(t, 1, tb)
-	require.Equal(t, 2, cl)
+	require.Equal(t, 3, cl)
 	_, err = pg.pool.Exec(ctx, string(down))
 	require.NoError(t, err)
 	tb, cl = present()
@@ -113,5 +138,5 @@ func TestMigration032CLILoginCodesUpDown(t *testing.T) {
 	require.NoError(t, err)
 	tb, cl = present()
 	require.Equal(t, 1, tb)
-	require.Equal(t, 2, cl)
+	require.Equal(t, 3, cl)
 }

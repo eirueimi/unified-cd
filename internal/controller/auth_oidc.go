@@ -293,6 +293,14 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The IdP reported an error (for example access_denied): a CLI login hands
+	// it to the loopback so the CLI stops waiting; the web login keeps its page.
+	if idpErr := r.URL.Query().Get("error"); idpErr != "" && savedState.CLIRedirect != "" {
+		if redirectCLIBrowserError(w, savedState, idpErr) {
+			return
+		}
+	}
+
 	code := r.URL.Query().Get("code")
 	if code == "" {
 		http.Error(w, "missing code", http.StatusBadRequest)

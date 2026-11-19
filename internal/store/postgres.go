@@ -2930,23 +2930,41 @@ func (p *Postgres) DeleteAgentVolume(ctx context.Context, name string) error {
 
 // CreateOIDCState saves an OIDC flow state to the database.
 func (p *Postgres) CreateOIDCState(ctx context.Context, state, redirectTo string, expiresAt time.Time) (*OIDCState, error) {
-	return p.createOIDCState(ctx, state, redirectTo, "", "", expiresAt)
+	return p.createOIDCState(ctx, state, redirectTo, "", "", "", expiresAt)
 }
 
 // CreateCLIOIDCState saves the state of a CLI browser login. The redirect is the
 // validated loopback URL the callback hands the one-time code to; the challenge
-// is the S256 PKCE challenge the code is bound to.
-func (p *Postgres) CreateCLIOIDCState(ctx context.Context, state, cliRedirect, cliChallenge string, expiresAt time.Time) (*OIDCState, error) {
-	return p.createOIDCState(ctx, state, "/ui/", cliRedirect, cliChallenge, expiresAt)
+// is the S256 PKCE challenge the code is bound to, and confirmHash is the
+// SHA-256 of the nonce that binds the continue step to the starting browser.
+func (p *Postgres) CreateCLIOIDCState(ctx context.Context, state, cliRedirect, cliChallenge, confirmHash string, expiresAt time.Time) (*OIDCState, error) {
+	return p.createOIDCState(ctx, state, "/ui/", cliRedirect, cliChallenge, confirmHash, expiresAt)
 }
 
-func (p *Postgres) createOIDCState(ctx context.Context, state, redirectTo, cliRedirect, cliChallenge string, expiresAt time.Time) (*OIDCState, error) {
-	const q = `INSERT INTO oidc_states(state, redirect_to, cli_redirect, cli_challenge, expires_at)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, state, redirect_to, cli_redirect, cli_challenge, created_at, expires_at`
+// GetCLIOIDCState reads a CLI state without deleting it. It returns nil, nil
+// when the state does not exist, has expired or is not a CLI state.
+func (p *Postgres) GetCLIOIDCState(ctx context.Context, state string) (*OIDCState, error) {
+	const q = `SELECT id, state, redirect_to, cli_redirect, cli_challenge, cli_confirm_hash, created_at, expires_at
+		FROM oidc_states WHERE state = $1 AND expires_at > NOW() AND cli_redirect <> ''`
 	var s OIDCState
-	err := p.pool.QueryRow(ctx, q, state, redirectTo, cliRedirect, cliChallenge, expiresAt).
-		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CreatedAt, &s.ExpiresAt)
+	err := p.pool.QueryRow(ctx, q, state).
+		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CLIConfirmHash, &s.CreatedAt, &s.ExpiresAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get cli oidc state: %w", err)
+	}
+	return &s, nil
+}
+
+func (p *Postgres) createOIDCState(ctx context.Context, state, redirectTo, cliRedirect, cliChallenge, confirmHash string, expiresAt time.Time) (*OIDCState, error) {
+	const q = `INSERT INTO oidc_states(state, redirect_to, cli_redirect, cli_challenge, cli_confirm_hash, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, state, redirect_to, cli_redirect, cli_challenge, cli_confirm_hash, created_at, expires_at`
+	var s OIDCState
+	err := p.pool.QueryRow(ctx, q, state, redirectTo, cliRedirect, cliChallenge, confirmHash, expiresAt).
+		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CLIConfirmHash, &s.CreatedAt, &s.ExpiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("create oidc state: %w", err)
 	}
@@ -2957,10 +2975,10 @@ func (p *Postgres) createOIDCState(ctx context.Context, state, redirectTo, cliRe
 // Returns nil, nil if the state is not found or has expired.
 func (p *Postgres) GetAndDeleteOIDCState(ctx context.Context, state string) (*OIDCState, error) {
 	const q = `DELETE FROM oidc_states WHERE state = $1 AND expires_at > NOW()
-		RETURNING id, state, redirect_to, cli_redirect, cli_challenge, created_at, expires_at`
+		RETURNING id, state, redirect_to, cli_redirect, cli_challenge, cli_confirm_hash, created_at, expires_at`
 	var s OIDCState
 	err := p.pool.QueryRow(ctx, q, state).
-		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CreatedAt, &s.ExpiresAt)
+		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CLIConfirmHash, &s.CreatedAt, &s.ExpiresAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil

@@ -186,6 +186,7 @@ var routeTable = []routeRule{
 	unauthenticated(mPost, "/api/v1/auth/cli/refresh"),
 	unauthenticated(mPost, "/api/v1/auth/cli/revoke"),
 	unauthenticated(mGet, "/api/v1/auth/cli/browser/start"),
+	unauthenticated(mPost, "/api/v1/auth/cli/browser/continue"),
 	unauthenticated(mPost, "/api/v1/auth/cli/browser/exchange"),
 	{Method: mGet, Pattern: "/api/v1/auth/me", Scope: scopeSelf},
 	unauthenticated(mAny, "/dex"),

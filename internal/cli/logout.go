@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,12 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 )
+
+// noRevocationWarning is printed when a refresh token was stored but there is
+// no revocation path (old controller or an IdP without RFC 7009 revocation).
+const noRevocationWarning = "warning: the identity provider has no revocation endpoint; the refresh token stays valid until it expires"
+
+var errNoRevocationEndpoint = errors.New("no revocation endpoint")
 
 func newLogoutCmd() *cobra.Command {
 	return &cobra.Command{
@@ -33,7 +40,9 @@ func newLogoutCmd() *cobra.Command {
 				return fmt.Errorf("read config: %w", err)
 			}
 			if c.RefreshToken != "" && c.Server != "" {
-				if err := revokeStoredToken(cmdCtx(cmd), c); err != nil {
+				if err := revokeStoredToken(cmdCtx(cmd), c); errors.Is(err, errNoRevocationEndpoint) {
+					fmt.Fprintln(cmd.ErrOrStderr(), noRevocationWarning)
+				} else if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not revoke the refresh token: %s\n", err.Error())
 				}
 			}
@@ -52,7 +61,8 @@ func newLogoutCmd() *cobra.Command {
 }
 
 // revokeStoredToken revokes c.RefreshToken at the identity provider when the
-// server advertises a revocation endpoint (otherwise it does nothing). Browser
+// server advertises a revocation endpoint (otherwise it returns
+// errNoRevocationEndpoint without revoking anything). Browser
 // and relayed device logins go through the controller, which holds the client
 // secret; direct device logins revoke at the IdP as a public client. The whole
 // call is bounded by refreshTimeout because the config lock is held meanwhile.
@@ -65,7 +75,7 @@ func revokeStoredToken(ctx context.Context, c Config) error {
 		return &refreshError{Reason: "could not fetch the OIDC config from the server"}
 	}
 	if cfg.RevocationEndpoint == "" {
-		return nil
+		return errNoRevocationEndpoint
 	}
 	if c.LoginClient == "browser" || c.LoginRelay {
 		client := "device"

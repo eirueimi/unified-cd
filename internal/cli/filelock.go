@@ -77,7 +77,13 @@ func breakStaleLock(path string) bool {
 		return false
 	}
 	if st, err := os.Stat(moved); err == nil && time.Since(st.ModTime()) <= lockStaleAfter {
-		_ = os.Link(moved, path) // fails if the path is taken again; best effort
+		// Residual window: between our rename and this link-back the path is
+		// free. If a third process creates the lock there, the link fails and
+		// the owner of the lock we moved keeps running without a lock file
+		// while the third process holds one, so two critical sections can
+		// overlap. The window is a few syscalls wide and the lock only guards
+		// config-file rewrites, so it is accepted; the link is best effort.
+		_ = os.Link(moved, path)
 	}
 	_ = os.Remove(moved)
 	return true

@@ -607,8 +607,12 @@ type Store interface {
 	// OIDCState
 	CreateOIDCState(ctx context.Context, state, redirectTo string, expiresAt time.Time) (*OIDCState, error)
 	// CreateCLIOIDCState saves the state of a CLI browser login: the loopback
-	// redirect and PKCE challenge travel with it to the callback.
-	CreateCLIOIDCState(ctx context.Context, state, cliRedirect, cliChallenge string, expiresAt time.Time) (*OIDCState, error)
+	// redirect and PKCE challenge travel with it to the callback, and
+	// confirmHash (SHA-256 of the browser-bound nonce) gates the continue step.
+	CreateCLIOIDCState(ctx context.Context, state, cliRedirect, cliChallenge, confirmHash string, expiresAt time.Time) (*OIDCState, error)
+	// GetCLIOIDCState reads a CLI state by value without consuming it. It
+	// returns nil, nil when the state is unknown, expired or not a CLI state.
+	GetCLIOIDCState(ctx context.Context, state string) (*OIDCState, error)
 	GetAndDeleteOIDCState(ctx context.Context, state string) (*OIDCState, error)
 	DeleteExpiredOIDCStates(ctx context.Context) error
 	// CreateCLILoginCode stores a one-time CLI login code (by hash) and drops
@@ -711,8 +715,11 @@ type OIDCState struct {
 	// challenge it is bound to.
 	CLIRedirect  string
 	CLIChallenge string
-	CreatedAt  time.Time
-	ExpiresAt  time.Time
+	// CLIConfirmHash is the SHA-256 (hex) of the nonce the start page set as a
+	// cookie; the continue step must present the matching cookie.
+	CLIConfirmHash string
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
 }
 
 // CLILoginCode is a redeemed one-time CLI login code: the PKCE challenge it is

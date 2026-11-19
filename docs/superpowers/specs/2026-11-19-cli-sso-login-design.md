@@ -138,7 +138,18 @@ The relay is stateless. Nothing is stored except the browser-login one-time code
    - The controller saves an OIDC state that records "CLI login", the redirect and the
      challenge. It extends the existing `oidc_states` row, or uses a sibling table; the
      builder decides.
-   - It then sends the browser to the IdP exactly as the web login does.
+   - It does not send the browser to the IdP yet. It answers with a confirmation page
+     ("Sign in unified-cli on this computer (port N)? ...") and sets a `ucd_cli_login`
+     cookie (random nonce, `HttpOnly`, `SameSite=Strict`, `Secure` unless insecure cookies);
+     only its SHA-256 is stored with the state (`cli_confirm_hash`). This closes RFC 8252
+     section 8.6 client impersonation: a start link planted by another local program cannot
+     be continued without the cookie of the browser that opened it.
+   - `POST /api/v1/auth/cli/browser/continue` (unauthenticated, rate limited) checks that
+     cookie against the stored hash in constant time (403 `confirmation required: ...`
+     otherwise) and then sends the browser to the IdP exactly as the web login does.
+   - When admission fails or the IdP callback carries `error=`, the browser is redirected
+     to the loopback with `?error=access_denied` (or the IdP's lowercase error code) so the
+     CLI stops instead of waiting.
 4. **The callback becomes a one-time code.** The existing `/api/v1/auth/oidc-callback`
    handles a CLI state differently from a web login:
    - It runs the same token exchange and id_token verification.

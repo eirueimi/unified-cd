@@ -64,7 +64,7 @@ var schemaSentinels = []sentinel{
 	{version: 30, migration: "030_pat_created_by", table: "pats", column: "created_by"},
 	// One sentinel per migration: the table probe. The same file also adds agents.volume_status.
 	{version: 31, migration: "031_agent_volumes", table: "agent_volume_defs"},
-	// The same file also adds oidc_states.cli_redirect and cli_challenge.
+	// The same file also adds oidc_states.cli_redirect, cli_challenge and cli_confirm_hash.
 	{version: 32, migration: "032_cli_login_codes", table: "cli_login_codes"},
 }
 

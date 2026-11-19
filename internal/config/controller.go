@@ -111,7 +111,8 @@ type ControllerOIDCConfig struct {
 	// allows the device flow to work without exposing secrets to the CLI. Falls back to ClientID when not set.
 	DeviceClientID string `yaml:"deviceClientId"`
 	// DeviceClientSecret is the secret of the device client. When set, the controller
-	// relays the CLI device and browser logins so the secret never leaves it. Requires
+	// relays the CLI device-flow login, refresh and revoke so the secret never leaves
+	// it. Browser logins (CLI and web) use ClientSecret, not this. Requires
 	// DeviceClientID. Never returned by any endpoint.
 	DeviceClientSecret string `yaml:"deviceClientSecret"`
 	// AuthParams are extra query parameters added to the browser login's authorization

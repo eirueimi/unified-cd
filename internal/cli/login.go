@@ -84,6 +84,10 @@ func newLoginCmd() *cobra.Command {
 				}
 				return browserLogin(cmdCtx(cmd), cmd, serverURL, configPath)
 			}
+			// A login that used --issuer or --client-id talks to a client the server
+			// does not know about: refresh and revoke through the server would use
+			// the server's client, so no refresh token is stored for it.
+			manual := oidcIssuer != "" || clientID != ""
 			// If --issuer / --client-id are not specified, fetch OIDC config from the server
 			var serverCfg *serverOIDCConfig
 			if oidcIssuer == "" || clientID == "" {
@@ -109,6 +113,15 @@ func newLoginCmd() *cobra.Command {
 			// cancels the OIDC device-flow polling (DeviceAuth/DeviceAccessToken)
 			// promptly instead of leaving `login` hung waiting for browser approval.
 			ctx := cmdCtx(cmd)
+			// Both flags given: the server config was not fetched. Ask once
+			// (best effort) only to learn whether the device flow is relayed.
+			relayCfg := serverCfg
+			if manual && relayCfg == nil {
+				relayCfg, _ = fetchServerOIDCConfigCtx(ctx, serverURL)
+			}
+			if manual && relayCfg != nil && relayCfg.DeviceRelay {
+				return errors.New("--issuer and --client-id cannot be used when the server relays the device flow")
+			}
 			// A controller that holds the device client secret relays the device
 			// flow; the CLI must not talk to the IdP directly then.
 			if serverCfg != nil && serverCfg.DeviceRelay {
@@ -165,18 +178,23 @@ func newLoginCmd() *cobra.Command {
 				expiry = exp
 			}
 			refresh := token.RefreshToken
+			client := "device"
+			if manual {
+				// No refresh token (and no login client) is stored: see above.
+				refresh, client = "", ""
+			}
 			if err := persistLogin(configPath, serverURL, api.CLITokenResponse{
 				IDToken:      apiToken,
 				RefreshToken: refresh,
 				Expiry:       expiry,
-			}, "device", false); err != nil {
+			}, client, false); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "\nLogged in. Token saved to %s\n", configPath)
 			if !expiry.IsZero() {
 				fmt.Fprintf(cmd.OutOrStdout(), "Expires: %s\n", expiry.Format(time.RFC3339))
 			}
-			if refresh == "" {
+			if refresh == "" && !manual {
 				fmt.Fprintln(cmd.ErrOrStderr(), noRefreshTokenWarning)
 			}
 			return nil

@@ -156,7 +156,7 @@ func TestLogout_NoRevocationEndpointSkipsRevoke(t *testing.T) {
 	path := seedLogin(t, l.srv.URL, "browser", false)
 	_, errs, err := runLogout(t, path)
 	require.NoError(t, err)
-	assert.Empty(t, errs)
+	assert.Equal(t, "warning: the identity provider has no revocation endpoint; the refresh token stays valid until it expires\n", errs)
 	assert.Zero(t, l.revokeCalls.Load())
 	assertLoggedOut(t, path, l.srv.URL)
 }

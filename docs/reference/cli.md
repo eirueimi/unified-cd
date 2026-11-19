@@ -958,9 +958,15 @@ controller with browser SSO enabled (`oidc.clientSecret` set); otherwise it fail
 `browser login is not configured on this server`, and a controller that predates this
 feature gives `this server does not support browser login for the CLI; upgrade the
 controller or use the device flow`. The CLI opens your browser (the URL is also
-printed) and waits up to 5 minutes. When the controller holds
+printed) and waits up to 5 minutes. The browser first shows a confirmation page
+("Sign in unified-cli on this computer (port N)?") that you must accept with
+Continue; this guards against a start link planted by another local program. If the
+login is refused (no role, or the IdP reports an error), the CLI stops with
+`browser login was refused: <code>`. When the controller holds
 `oidc.deviceClientSecret`, the device flow goes through the controller's relay, so
-no secret is needed on the CLI.
+no secret is needed on the CLI, and `--issuer` / `--client-id` are then rejected
+(`--issuer and --client-id cannot be used when the server relays the device flow`).
+A login with `--issuer` or `--client-id` stores no refresh token.
 
 ```bash
 unified-cli login --server http://unified-cd.example.com
@@ -1004,7 +1010,9 @@ CLI asks the IdP to revoke it (directly, or through the controller for relayed a
 browser logins). It then clears `token`, `refreshToken`, `tokenExpiry`, `loginClient`
 and `loginRelay` from the config file and keeps `server` and `headers`. If the
 revocation fails, it prints `warning: could not revoke the refresh token: <reason>` and
-still clears the local tokens. After a PAT login it only clears the token.
+still clears the local tokens. When a refresh token was stored but the server advertises
+no `revocation_endpoint`, it prints `warning: the identity provider has no revocation endpoint; the refresh token stays valid until it expires`.
+After a PAT login it only clears the token.
 
 ```bash
 unified-cli logout
@@ -1188,9 +1196,10 @@ token: dev-secret
 
 `token` holds either a manually-configured bearer token or the id_token written by
 `login` (OIDC device flow, `--browser` or PAT prompt) — both use the same field. After
-an SSO login the file also holds `refreshToken`, `tokenExpiry` (RFC 3339), `loginClient`
-(`device` or `browser`) and `loginRelay` when the IdP issued a refresh token; they are
-written with mode `0600` and cleared by `logout`. The CLI takes a lock file
+an SSO login the file also holds `tokenExpiry` (RFC 3339), `loginClient`
+(`device` or `browser`) and `loginRelay`, and `refreshToken` when the IdP issued one
+(a login with `--issuer` / `--client-id` stores no `refreshToken` and no `loginClient`).
+They are written with mode `0600` and cleared by `logout`. The CLI takes a lock file
 `<config>.lock` next to the config while it refreshes. There is no `agentId` field in
 this file.
 

@@ -7,9 +7,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -19,9 +21,13 @@ import (
 )
 
 // Browser login for the CLI. The CLI opens /api/v1/auth/cli/browser/start in a
-// browser with a loopback redirect and a PKCE challenge; the normal OIDC
-// callback then issues a one-time code instead of a session and sends the
-// browser to the loopback. The CLI redeems the code, proving possession of the
+// browser with a loopback redirect and a PKCE challenge. The start page asks
+// the user to confirm and binds the confirmation to that browser with a
+// cookie (RFC 8252 section 8.6: without it, anyone who can bind a loopback port
+// could send a victim a start link and receive the victim's code). Only then
+// does /continue send the browser to the IdP; the normal OIDC callback then
+// issues a one-time code instead of a session and sends the browser to the
+// loopback. The CLI redeems the code, proving possession of the
 // PKCE verifier, at /api/v1/auth/cli/browser/exchange. The tokens never travel
 // through the browser: only the code does, and it is useless without the
 // verifier, single use, and short lived.
@@ -31,7 +37,28 @@ const (
 	cliLoginCodeTTL = 2 * time.Minute
 
 	errBrowserLoginNeedsKM = "browser login requires the controller key manager"
+
+	// cliConfirmCookie carries the nonce that binds the continue step to the
+	// browser that opened the start page.
+	cliConfirmCookie = "ucd_cli_login"
+	cliBrowserPath   = "/api/v1/auth/cli/browser/"
+
+	errCLIConfirmRequired = "confirmation required: open the link printed by unified-cli login --browser on this computer"
 )
+
+var cliConfirmPage = template.Must(template.New("confirm").Parse(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in unified-cli</title></head>
+<body>
+<h1>Sign in unified-cli</h1>
+<p>Sign in unified-cli on this computer (port {{.Port}})? Only continue if you just ran <code>unified-cli login --browser</code> in a terminal on this computer.</p>
+<form method="post" action="/api/v1/auth/cli/browser/continue">
+<input type="hidden" name="state" value="{{.State}}">
+<button type="submit">Continue</button>
+</form>
+<p><a href="/">Cancel</a> (or just close this tab)</p>
+</body></html>
+`))
 
 // validateCLIRedirect accepts only the exact loopback callback the CLI listens
 // on: http://127.0.0.1:<port>/callback or http://[::1]:<port>/callback. There
@@ -94,7 +121,31 @@ func (s *Server) cliBrowserAvailable(w http.ResponseWriter, r *http.Request) boo
 	return true
 }
 
-// handleCLIBrowserStart begins a CLI browser login and redirects to the IdP.
+// setCLIPageHeaders marks a confirmation page response as uncacheable,
+// unframeable and free of referrer leaks.
+func setCLIPageHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+}
+
+// cliConfirmCookieFor builds the browser-binding cookie. maxAge < 0 deletes it.
+func (s *Server) cliConfirmCookieFor(value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name:     cliConfirmCookie,
+		Value:    value,
+		Path:     cliBrowserPath,
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   !s.cfg.InsecureCookies,
+		SameSite: http.SameSiteStrictMode,
+	}
+}
+
+// handleCLIBrowserStart begins a CLI browser login. It validates the request,
+// stores the state and answers with a confirmation page; the IdP is only
+// reached through handleCLIBrowserContinue, from the same browser.
 func (s *Server) handleCLIBrowserStart(w http.ResponseWriter, r *http.Request) {
 	if !s.cliBrowserAvailable(w, r) {
 		return
@@ -109,8 +160,9 @@ func (s *Server) handleCLIBrowserStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "challenge must be a base64url SHA-256 PKCE challenge", http.StatusBadRequest)
 		return
 	}
-	_, _, oauth2Cfg, err := s.oidcProvider(r.Context(), r.Host)
-	if err != nil {
+	// Discover the provider now so a misconfigured IdP is reported by the CLI
+	// preflight instead of after the user confirmed.
+	if _, _, _, err := s.oidcProvider(r.Context(), r.Host); err != nil {
 		slog.Warn("cli browser login: provider discovery failed")
 		http.Error(w, "OIDC provider error", http.StatusInternalServerError)
 		return
@@ -120,11 +172,83 @@ func (s *Server) handleCLIBrowserStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "state generation error", http.StatusInternalServerError)
 		return
 	}
-	if _, err := s.store.CreateCLIOIDCState(r.Context(), state, redirect, challenge, time.Now().Add(stateTTL)); err != nil {
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		http.Error(w, "state generation error", http.StatusInternalServerError)
+		return
+	}
+	nonceStr := base64.RawURLEncoding.EncodeToString(nonce)
+	if _, err := s.store.CreateCLIOIDCState(r.Context(), state, redirect, challenge, hashCLICode(nonceStr), time.Now().Add(stateTTL)); err != nil {
 		http.Error(w, "store error", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, oauth2Cfg.AuthCodeURL(state, s.authCodeOptions()...), http.StatusFound)
+	u, _ := url.Parse(redirect) // validated above
+	http.SetCookie(w, s.cliConfirmCookieFor(nonceStr, int(stateTTL.Seconds())))
+	setCLIPageHeaders(w)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = cliConfirmPage.Execute(w, struct{ Port, State string }{u.Port(), state})
+}
+
+// handleCLIBrowserContinue is the confirmation step. It requires the cookie
+// set by the start page of the same state (compared as a SHA-256 in constant
+// time) and only then sends the browser to the IdP.
+func (s *Server) handleCLIBrowserContinue(w http.ResponseWriter, r *http.Request) {
+	if !s.relayAllow(w, r, s.cliRelay.browserContinue, "cli-browser-continue") {
+		return
+	}
+	if !s.cliBrowserAvailable(w, r) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "malformed request", http.StatusBadRequest)
+		return
+	}
+	st, err := s.store.GetCLIOIDCState(r.Context(), r.PostForm.Get("state"))
+	if err != nil {
+		http.Error(w, "store error", http.StatusInternalServerError)
+		return
+	}
+	if st == nil {
+		http.Error(w, "invalid or expired state", http.StatusBadRequest)
+		return
+	}
+	c, err := r.Cookie(cliConfirmCookie)
+	if err != nil || c.Value == "" || st.CLIConfirmHash == "" ||
+		subtle.ConstantTimeCompare([]byte(hashCLICode(c.Value)), []byte(st.CLIConfirmHash)) != 1 {
+		http.Error(w, errCLIConfirmRequired, http.StatusForbidden)
+		return
+	}
+	_, _, oauth2Cfg, err := s.oidcProvider(r.Context(), r.Host)
+	if err != nil {
+		slog.Warn("cli browser login: provider discovery failed")
+		http.Error(w, "OIDC provider error", http.StatusInternalServerError)
+		return
+	}
+	http.SetCookie(w, s.cliConfirmCookieFor("", -1))
+	setCLIPageHeaders(w)
+	http.Redirect(w, r, oauth2Cfg.AuthCodeURL(st.State, s.authCodeOptions()...), http.StatusFound)
+}
+
+var cliErrorCodeRE = regexp.MustCompile(`^[a-z_]{1,64}$`)
+
+// redirectCLIBrowserError sends the browser to the loopback with an OAuth
+// error code, so the waiting CLI stops instead of timing out. Anything that is
+// not a plain lowercase code is replaced by server_error. It reports false,
+// writing nothing, when the stored redirect is not a valid loopback URL.
+func redirectCLIBrowserError(w http.ResponseWriter, st *store.OIDCState, code string) bool {
+	if !validateCLIRedirect(st.CLIRedirect) {
+		return false
+	}
+	if !cliErrorCodeRE.MatchString(code) {
+		code = "server_error"
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Location", st.CLIRedirect+"?error="+code)
+	w.WriteHeader(http.StatusFound)
+	return true
 }
 
 // cliLoginPayload is the encrypted content of a one-time code.
@@ -139,6 +263,11 @@ type cliLoginPayload struct {
 // the code. No session is created.
 func (s *Server) completeCLIBrowserLogin(w http.ResponseWriter, r *http.Request, st *store.OIDCState, claims map[string]any, refreshToken, rawIDToken string) {
 	if status, msg := s.admitOIDCClaims(r.Context(), claims); status != 0 {
+		// A refusal is reported to the waiting CLI too; a server error is not
+		// a refusal and keeps the plain error page.
+		if status == http.StatusForbidden && redirectCLIBrowserError(w, st, "access_denied") {
+			return
+		}
 		http.Error(w, msg, status)
 		return
 	}
