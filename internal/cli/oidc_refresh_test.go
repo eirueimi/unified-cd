@@ -405,3 +405,67 @@ func TestLogin_NoRefreshToken_Warns(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, saved.RefreshToken)
 }
+
+func TestRefresh_ServerOverride_NeverSendsStoredToken(t *testing.T) {
+	stored := newFakeSSO(t)
+	other := newFakeSSO(t)
+	path, c := staleConfig(t, stored, nil)
+
+	c.Server = other.srv.URL // --server / UNIFIED_SERVER override
+	got, err := refreshIfNeeded(context.Background(), path, c, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, "old-token", got.Token)
+	for _, f := range []*fakeSSO{stored, other} {
+		assert.Zero(t, f.idpCalls.Load()+f.relayCalls.Load())
+	}
+	saved, err := LoadConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, "old-token", saved.Token)
+
+	// Relay-stored token: same guarantee.
+	path2, c2 := staleConfig(t, stored, func(c *Config) { c.LoginRelay = true })
+	c2.Server = other.srv.URL
+	_, err = refreshIfNeeded(context.Background(), path2, c2, time.Now())
+	require.NoError(t, err)
+	assert.Zero(t, other.relayCalls.Load()+other.idpCalls.Load())
+	assert.Zero(t, stored.relayCalls.Load())
+}
+
+func TestRefresh_MatchingServerOverride_Refreshes(t *testing.T) {
+	f := newFakeSSO(t)
+	path, c := staleConfig(t, f, nil)
+	c.Server = f.srv.URL + "/" // same server, spelled differently
+	got, err := refreshIfNeeded(context.Background(), path, c, time.Now())
+	require.NoError(t, err)
+	assert.NotEqual(t, "old-token", got.Token)
+	assert.Equal(t, int32(1), f.idpCalls.Load())
+}
+
+func TestRefresh_HungServer_BoundedByTimeout(t *testing.T) {
+	prev := refreshTimeout
+	refreshTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { refreshTimeout = prev })
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	c := Config{Server: srv.URL, Token: "old-token", RefreshToken: "rt-0", TokenExpiry: time.Now().Add(-time.Minute), LoginClient: "device"}
+	require.NoError(t, SaveConfig(path, c))
+
+	var stderr bytes.Buffer
+	start := time.Now()
+	got := applyRefresh(context.Background(), path, c, false, time.Now(), &stderr)
+	assert.Less(t, time.Since(start), 3*time.Second)
+	assert.Equal(t, "old-token", got.Token)
+	assert.Contains(t, stderr.String(), "token refresh failed:")
+	_, statErr := os.Stat(path + ".lock")
+	assert.True(t, os.IsNotExist(statErr), "lock must be released")
+}

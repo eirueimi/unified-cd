@@ -54,6 +54,7 @@ func NewRoot() *cobra.Command {
 	// refreshes a stored SSO token that is about to expire (never one from
 	// --token or $UNIFIED_TOKEN), warning once on failure.
 	var refreshWarned bool
+	rootCtx := context.Background()
 	resolve := func() (Config, error) {
 		c, err := resolveWith(true)
 		if err != nil || refreshWarned {
@@ -65,7 +66,7 @@ func NewRoot() *cobra.Command {
 		}
 		overridden := os.Getenv("UNIFIED_TOKEN") != "" || tokenOverride != ""
 		var warn bytes.Buffer
-		c = applyRefresh(context.Background(), path, c, overridden, time.Now(), &warn)
+		c = applyRefresh(rootCtx, path, c, overridden, time.Now(), &warn)
 		if warn.Len() > 0 {
 			refreshWarned = true
 			_, _ = os.Stderr.Write(warn.Bytes())
@@ -78,6 +79,8 @@ func NewRoot() *cobra.Command {
 	// server host inside installHeaderTransport, so a bad header value surfaces
 	// early and headers never leak to other hosts.
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		// Let Ctrl-C (the command context) cancel a token refresh.
+		rootCtx = cmdCtx(cmd)
 		c, err := resolveWith(false)
 		if err != nil {
 			return err

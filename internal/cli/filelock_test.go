@@ -47,3 +47,29 @@ func TestLockFile_RemovesStaleLock(t *testing.T) {
 	require.NoError(t, err)
 	unlock()
 }
+
+func TestLockFile_UnlockKeepsForeignLock(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml.lock")
+	unlock, err := lockFile(p)
+	require.NoError(t, err)
+	// Another process broke our (apparently stale) lock and took its own.
+	require.NoError(t, os.WriteFile(p, []byte("someone-else"), 0o600))
+	unlock()
+	b, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.Equal(t, "someone-else", string(b))
+}
+
+func TestLockFile_StaleBreakLeavesNoStaleFiles(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml.lock")
+	require.NoError(t, os.WriteFile(p, []byte("dead"), 0o600))
+	old := time.Now().Add(-time.Minute)
+	require.NoError(t, os.Chtimes(p, old, old))
+	unlock, err := lockFile(p)
+	require.NoError(t, err)
+	unlock()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}

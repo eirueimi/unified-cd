@@ -184,7 +184,16 @@ func deviceScopes(cfg *serverOIDCConfig) []string {
 
 // fetchServerOIDCConfig fetches OIDC configuration from the master server's OIDC config endpoint.
 func fetchServerOIDCConfig(serverURL string) (*serverOIDCConfig, error) {
-	resp, err := http.Get(serverURL + "/api/v1/auth/oidc-config") //nolint:gosec
+	return fetchServerOIDCConfigCtx(context.Background(), serverURL)
+}
+
+// fetchServerOIDCConfigCtx is fetchServerOIDCConfig bound to ctx.
+func fetchServerOIDCConfigCtx(ctx context.Context, serverURL string) (*serverOIDCConfig, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL+"/api/v1/auth/oidc-config", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +285,16 @@ func verifyToken(ctx context.Context, serverURL, token string) error {
 
 // discoverOIDCEndpoint fetches endpoint information from the OIDC provider's well-known endpoint.
 func discoverOIDCEndpoint(issuer string) (oauth2.Endpoint, error) {
-	resp, err := http.Get(issuer + "/.well-known/openid-configuration") //nolint:gosec
+	return discoverOIDCEndpointCtx(context.Background(), issuer)
+}
+
+// discoverOIDCEndpointCtx is discoverOIDCEndpoint bound to ctx.
+func discoverOIDCEndpointCtx(ctx context.Context, issuer string) (oauth2.Endpoint, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, issuer+"/.well-known/openid-configuration", nil)
+	if err != nil {
+		return oauth2.Endpoint{}, err
+	}
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec
 	if err != nil {
 		return oauth2.Endpoint{}, err
 	}

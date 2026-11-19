@@ -19,6 +19,11 @@ import (
 // refreshSkew is how long before expiry the CLI refreshes the id_token.
 const refreshSkew = 60 * time.Second
 
+// refreshTimeout bounds one whole refresh (config fetch, discovery, token
+// call). It must stay well under lockStaleAfter, because the config lock is
+// held for the duration. A variable so tests can shorten it.
+var refreshTimeout = 15 * time.Second
+
 // refreshError is a failed refresh. Reason is safe to print: an OAuth error
 // code or a short transport reason, never a token or a response body.
 type refreshError struct{ Reason string }
@@ -112,6 +117,14 @@ func refreshIfNeeded(ctx context.Context, path string, c Config, now time.Time) 
 	if stored.RefreshToken == "" {
 		return c, nil
 	}
+	// The stored refresh token belongs to the stored server only. A --server /
+	// $UNIFIED_SERVER override is treated like a token override: no refresh,
+	// and nothing is ever sent to the overriding server.
+	if strings.TrimRight(c.Server, "/") != strings.TrimRight(stored.Server, "/") || stored.Server == "" {
+		return c, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	defer cancel()
 	if !tokenStale(stored, now) {
 		// Another process refreshed while we waited for the lock.
 		return withTokenFields(c, stored), nil
@@ -123,9 +136,9 @@ func refreshIfNeeded(ctx context.Context, path string, c Config, now time.Time) 
 		if stored.LoginClient == "browser" {
 			client = "browser"
 		}
-		tok, err = relayRefresh(ctx, c.Server, stored.RefreshToken, client)
+		tok, err = relayRefresh(ctx, stored.Server, stored.RefreshToken, client)
 	} else {
-		tok, err = directRefresh(ctx, c.Server, stored.RefreshToken)
+		tok, err = directRefresh(ctx, stored.Server, stored.RefreshToken)
 	}
 	if err != nil {
 		return c, err
@@ -201,7 +214,7 @@ func postRelay(ctx context.Context, server, path string, body []byte, out any) e
 // server's oidc-config, falling back to discovery of its issuer.
 func directRefresh(ctx context.Context, server, refreshToken string) (api.CLITokenResponse, error) {
 	var tok api.CLITokenResponse
-	cfg, err := fetchServerOIDCConfig(server)
+	cfg, err := fetchServerOIDCConfigCtx(ctx, server)
 	if err != nil {
 		return tok, &refreshError{Reason: "could not fetch the OIDC config from the server"}
 	}
@@ -211,7 +224,7 @@ func directRefresh(ctx context.Context, server, refreshToken string) (api.CLITok
 	}
 	tokenURL := cfg.TokenEndpoint
 	if tokenURL == "" {
-		ep, err := discoverOIDCEndpoint(cfg.Issuer)
+		ep, err := discoverOIDCEndpointCtx(ctx, cfg.Issuer)
 		if err != nil || ep.TokenURL == "" {
 			return tok, &refreshError{Reason: "could not discover the token endpoint"}
 		}
