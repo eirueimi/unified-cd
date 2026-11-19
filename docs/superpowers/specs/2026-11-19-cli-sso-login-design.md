@@ -141,17 +141,34 @@ The relay is stateless. Nothing is stored except the browser-login one-time code
    - It does not send the browser to the IdP yet. It answers with a confirmation page
      ("Sign in unified-cli on this computer (port N)? ...") and sets a `ucd_cli_login`
      cookie (random nonce, `HttpOnly`, `SameSite=Strict`, `Secure` unless insecure cookies);
-     only its SHA-256 is stored with the state (`cli_confirm_hash`). This closes RFC 8252
-     section 8.6 client impersonation: a start link planted by another local program cannot
-     be continued without the cookie of the browser that opened it.
+     only its SHA-256 is stored with the state (`cli_confirm_hash`). A start link planted
+     by another local program cannot be continued without the cookie of the browser that
+     opened it.
    - `POST /api/v1/auth/cli/browser/continue` (unauthenticated, rate limited) checks that
      cookie against the stored hash in constant time (403 `confirmation required: ...`
-     otherwise) and then sends the browser to the IdP exactly as the web login does.
-   - When admission fails or the IdP callback carries `error=`, the browser is redirected
+     otherwise). It then generates a second nonce, stores its SHA-256 on the state
+     (`cli_callback_hash`), sets it as the `ucd_cli_cb` cookie (`HttpOnly`,
+     `SameSite=Lax` because the IdP-to-callback hop is a cross-site top-level GET,
+     `Secure` unless insecure cookies, path `/api/v1/auth/oidc-callback`, lifetime of the
+     state) and sends the browser to the IdP exactly as the web login does. Its 400/403
+     responses carry the same page headers as the confirmation page.
+   - The callback requires that cookie (see step 4). The confirmation page plus this
+     browser-bound callback cookie means a one-time code is only issued to the browser
+     that confirmed: an attacker who scripts start and continue with its own cookie jar
+     and opens the resulting IdP link in the victim's browser gets a 403 and no code.
+     The remaining precondition is stated honestly: an attacker who can also drive the
+     victim's own browser through the confirmation page is out of scope.
+   - When admission fails or the IdP callback (with a valid `ucd_cli_cb` cookie) carries `error=`, the browser is redirected
      to the loopback with `?error=access_denied` (or the IdP's lowercase error code) so the
      CLI stops instead of waiting.
 4. **The callback becomes a one-time code.** The existing `/api/v1/auth/oidc-callback`
    handles a CLI state differently from a web login:
+   - Immediately after reading the state it requires the `ucd_cli_cb` cookie and compares
+     its SHA-256 with `cli_callback_hash` in constant time. On any mismatch (or an empty
+     stored hash) it clears the cookie and answers 403 `confirmation required: ...`
+     without exchanging the IdP code, issuing a code or redirecting to the loopback (not
+     even with `?error=`). This runs before the IdP-error branch and the token exchange.
+     Web states are unaffected.
    - It runs the same token exchange and id_token verification.
    - It does not create a session or set a cookie.
    - It creates a **one-time code**: 32 random bytes, stored hashed, with a 2-minute TTL.

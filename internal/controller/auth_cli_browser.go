@@ -25,9 +25,15 @@ import (
 // the user to confirm and binds the confirmation to that browser with a
 // cookie (RFC 8252 section 8.6: without it, anyone who can bind a loopback port
 // could send a victim a start link and receive the victim's code). Only then
-// does /continue send the browser to the IdP; the normal OIDC callback then
-// issues a one-time code instead of a session and sends the browser to the
-// loopback. The CLI redeems the code, proving possession of the
+// does /continue send the browser to the IdP, and it sets a second cookie
+// (ucd_cli_cb) bound to the state. The normal OIDC callback requires that
+// cookie before it does anything else, so a one-time code is only ever issued
+// to the browser that confirmed: an IdP authorization URL taken from a
+// scripted /continue and opened in another browser is refused. The callback
+// then issues a one-time code instead of a session and sends the browser to the
+// loopback. Remaining precondition: an attacker who can also drive the victim's
+// own browser through the confirmation page is out of scope. The CLI redeems
+// the code, proving possession of the
 // PKCE verifier, at /api/v1/auth/cli/browser/exchange. The tokens never travel
 // through the browser: only the code does, and it is useless without the
 // verifier, single use, and short lived.
@@ -42,6 +48,11 @@ const (
 	// browser that opened the start page.
 	cliConfirmCookie = "ucd_cli_login"
 	cliBrowserPath   = "/api/v1/auth/cli/browser/"
+
+	// cliCallbackCookie carries the second nonce that binds the IdP callback to
+	// the browser that confirmed.
+	cliCallbackCookie = "ucd_cli_cb"
+	cliCallbackPath   = "/api/v1/auth/oidc-callback"
 
 	errCLIConfirmRequired = "confirmation required: open the link printed by unified-cli login --browser on this computer"
 )
@@ -143,6 +154,27 @@ func (s *Server) cliConfirmCookieFor(value string, maxAge int) *http.Cookie {
 	}
 }
 
+// cliCallbackCookieFor builds the cookie that binds the IdP callback to the
+// browser that confirmed. It is SameSite=Lax because the IdP-to-callback hop is
+// a cross-site top-level GET, which Strict would not carry. maxAge < 0 deletes it.
+func (s *Server) cliCallbackCookieFor(value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name:     cliCallbackCookie,
+		Value:    value,
+		Path:     cliCallbackPath,
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   !s.cfg.InsecureCookies,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+// cliPageError answers a confirmation-page error with the page headers.
+func cliPageError(w http.ResponseWriter, msg string, status int) {
+	setCLIPageHeaders(w)
+	http.Error(w, msg, status)
+}
+
 // handleCLIBrowserStart begins a CLI browser login. It validates the request,
 // stores the state and answers with a confirmation page; the IdP is only
 // reached through handleCLIBrowserContinue, from the same browser.
@@ -192,7 +224,8 @@ func (s *Server) handleCLIBrowserStart(w http.ResponseWriter, r *http.Request) {
 
 // handleCLIBrowserContinue is the confirmation step. It requires the cookie
 // set by the start page of the same state (compared as a SHA-256 in constant
-// time) and only then sends the browser to the IdP.
+// time), binds the IdP callback to this browser with a second cookie, and only
+// then sends the browser to the IdP.
 func (s *Server) handleCLIBrowserContinue(w http.ResponseWriter, r *http.Request) {
 	if !s.relayAllow(w, r, s.cliRelay.browserContinue, "cli-browser-continue") {
 		return
@@ -202,30 +235,43 @@ func (s *Server) handleCLIBrowserContinue(w http.ResponseWriter, r *http.Request
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "malformed request", http.StatusBadRequest)
+		cliPageError(w, "malformed request", http.StatusBadRequest)
 		return
 	}
 	st, err := s.store.GetCLIOIDCState(r.Context(), r.PostForm.Get("state"))
 	if err != nil {
-		http.Error(w, "store error", http.StatusInternalServerError)
+		cliPageError(w, "store error", http.StatusInternalServerError)
 		return
 	}
 	if st == nil {
-		http.Error(w, "invalid or expired state", http.StatusBadRequest)
+		cliPageError(w, "invalid or expired state", http.StatusBadRequest)
 		return
 	}
 	c, err := r.Cookie(cliConfirmCookie)
 	if err != nil || c.Value == "" || st.CLIConfirmHash == "" ||
 		subtle.ConstantTimeCompare([]byte(hashCLICode(c.Value)), []byte(st.CLIConfirmHash)) != 1 {
-		http.Error(w, errCLIConfirmRequired, http.StatusForbidden)
+		cliPageError(w, errCLIConfirmRequired, http.StatusForbidden)
 		return
 	}
 	_, _, oauth2Cfg, err := s.oidcProvider(r.Context(), r.Host)
 	if err != nil {
 		slog.Warn("cli browser login: provider discovery failed")
-		http.Error(w, "OIDC provider error", http.StatusInternalServerError)
+		cliPageError(w, "OIDC provider error", http.StatusInternalServerError)
 		return
 	}
+	// Bind the IdP callback to this browser with a second nonce: the callback
+	// issues a one-time code only to a request that carries it.
+	cbNonce := make([]byte, 32)
+	if _, err := rand.Read(cbNonce); err != nil {
+		cliPageError(w, "state generation error", http.StatusInternalServerError)
+		return
+	}
+	cbNonceStr := base64.RawURLEncoding.EncodeToString(cbNonce)
+	if err := s.store.SetCLIOIDCStateCallbackHash(r.Context(), st.State, hashCLICode(cbNonceStr)); err != nil {
+		cliPageError(w, "store error", http.StatusInternalServerError)
+		return
+	}
+	http.SetCookie(w, s.cliCallbackCookieFor(cbNonceStr, int(stateTTL.Seconds())))
 	http.SetCookie(w, s.cliConfirmCookieFor("", -1))
 	setCLIPageHeaders(w)
 	http.Redirect(w, r, oauth2Cfg.AuthCodeURL(st.State, s.authCodeOptions()...), http.StatusFound)

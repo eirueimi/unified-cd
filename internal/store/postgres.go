@@ -2944,11 +2944,11 @@ func (p *Postgres) CreateCLIOIDCState(ctx context.Context, state, cliRedirect, c
 // GetCLIOIDCState reads a CLI state without deleting it. It returns nil, nil
 // when the state does not exist, has expired or is not a CLI state.
 func (p *Postgres) GetCLIOIDCState(ctx context.Context, state string) (*OIDCState, error) {
-	const q = `SELECT id, state, redirect_to, cli_redirect, cli_challenge, cli_confirm_hash, created_at, expires_at
+	const q = `SELECT id, state, redirect_to, cli_redirect, cli_challenge, cli_confirm_hash, cli_callback_hash, created_at, expires_at
 		FROM oidc_states WHERE state = $1 AND expires_at > NOW() AND cli_redirect <> ''`
 	var s OIDCState
 	err := p.pool.QueryRow(ctx, q, state).
-		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CLIConfirmHash, &s.CreatedAt, &s.ExpiresAt)
+		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CLIConfirmHash, &s.CLICallbackHash, &s.CreatedAt, &s.ExpiresAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -2958,13 +2958,27 @@ func (p *Postgres) GetCLIOIDCState(ctx context.Context, state string) (*OIDCStat
 	return &s, nil
 }
 
+// SetCLIOIDCStateCallbackHash records the SHA-256 of the callback-binding nonce
+// on a live CLI state. It errors when no such state exists.
+func (p *Postgres) SetCLIOIDCStateCallbackHash(ctx context.Context, state, hash string) error {
+	tag, err := p.pool.Exec(ctx, `UPDATE oidc_states SET cli_callback_hash = $2
+		WHERE state = $1 AND expires_at > NOW() AND cli_redirect <> ''`, state, hash)
+	if err != nil {
+		return fmt.Errorf("set cli oidc state callback hash: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("set cli oidc state callback hash: state not found")
+	}
+	return nil
+}
+
 func (p *Postgres) createOIDCState(ctx context.Context, state, redirectTo, cliRedirect, cliChallenge, confirmHash string, expiresAt time.Time) (*OIDCState, error) {
 	const q = `INSERT INTO oidc_states(state, redirect_to, cli_redirect, cli_challenge, cli_confirm_hash, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, state, redirect_to, cli_redirect, cli_challenge, cli_confirm_hash, created_at, expires_at`
+		RETURNING id, state, redirect_to, cli_redirect, cli_challenge, cli_confirm_hash, cli_callback_hash, created_at, expires_at`
 	var s OIDCState
 	err := p.pool.QueryRow(ctx, q, state, redirectTo, cliRedirect, cliChallenge, confirmHash, expiresAt).
-		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CLIConfirmHash, &s.CreatedAt, &s.ExpiresAt)
+		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CLIConfirmHash, &s.CLICallbackHash, &s.CreatedAt, &s.ExpiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("create oidc state: %w", err)
 	}
@@ -2975,10 +2989,10 @@ func (p *Postgres) createOIDCState(ctx context.Context, state, redirectTo, cliRe
 // Returns nil, nil if the state is not found or has expired.
 func (p *Postgres) GetAndDeleteOIDCState(ctx context.Context, state string) (*OIDCState, error) {
 	const q = `DELETE FROM oidc_states WHERE state = $1 AND expires_at > NOW()
-		RETURNING id, state, redirect_to, cli_redirect, cli_challenge, cli_confirm_hash, created_at, expires_at`
+		RETURNING id, state, redirect_to, cli_redirect, cli_challenge, cli_confirm_hash, cli_callback_hash, created_at, expires_at`
 	var s OIDCState
 	err := p.pool.QueryRow(ctx, q, state).
-		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CLIConfirmHash, &s.CreatedAt, &s.ExpiresAt)
+		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CLIConfirmHash, &s.CLICallbackHash, &s.CreatedAt, &s.ExpiresAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil

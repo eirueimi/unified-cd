@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -291,6 +292,21 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil || savedState == nil {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
 		return
+	}
+
+	// A CLI login is only completed in the browser that confirmed it: the
+	// callback cookie set by /cli/browser/continue must match the hash stored on
+	// the state. This runs before the IdP-error branch and the token exchange so
+	// a refused request never reaches the loopback and never spends the IdP code.
+	if savedState.CLIRedirect != "" {
+		c, cerr := r.Cookie(cliCallbackCookie)
+		if cerr != nil || c.Value == "" || savedState.CLICallbackHash == "" ||
+			subtle.ConstantTimeCompare([]byte(hashCLICode(c.Value)), []byte(savedState.CLICallbackHash)) != 1 {
+			http.SetCookie(w, s.cliCallbackCookieFor("", -1))
+			cliPageError(w, errCLIConfirmRequired, http.StatusForbidden)
+			return
+		}
+		http.SetCookie(w, s.cliCallbackCookieFor("", -1))
 	}
 
 	// The IdP reported an error (for example access_denied): a CLI login hands

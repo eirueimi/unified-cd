@@ -146,23 +146,56 @@ func (f *browserFixture) continueWith(state string, cookie *http.Cookie) *httpte
 }
 
 // confirmedState runs start and continue (as the same browser) and returns the
-// state the browser carries to the IdP.
-func (f *browserFixture) confirmedState(t *testing.T) string {
+// state the browser carries to the IdP and the callback cookie it holds.
+func (f *browserFixture) confirmedState(t *testing.T) (string, *http.Cookie) {
 	t.Helper()
 	_, state, cookie := f.startPage(t, cliLoopback)
 	rec := f.continueWith(state, cookie)
 	require.Equal(t, http.StatusFound, rec.Code, rec.Body.String())
-	return state
+	return state, callbackCookieOf(t, rec)
+}
+
+// callbackCookieOf returns the browser-bound callback cookie set by continue.
+func callbackCookieOf(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == cliCallbackCookie {
+			return c
+		}
+	}
+	require.FailNow(t, "continue must set the callback cookie")
+	return nil
+}
+
+// callbackWith requests the IdP callback URL, optionally with the callback cookie.
+func (f *browserFixture) callbackWith(target string, cookie *http.Cookie) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.RemoteAddr = "192.0.2.10:4444"
+	if cookie != nil {
+		req.AddCookie(&http.Cookie{Name: cookie.Name, Value: cookie.Value})
+	}
+	rec := httptest.NewRecorder()
+	f.s.Router().ServeHTTP(rec, req)
+	return rec
+}
+
+func (f *browserFixture) idpTokenCalls() int {
+	f.idp.mu.Lock()
+	defer f.idp.mu.Unlock()
+	return len(f.idp.tokenForms)
 }
 
 // login runs start, continue and the IdP callback and returns the one-time
 // code the callback handed to the loopback redirect.
 func (f *browserFixture) login(t *testing.T) string {
 	t.Helper()
-	state := f.confirmedState(t)
-	rec2 := f.do(http.MethodGet, callbackForState(state), nil)
+	state, cb := f.confirmedState(t)
+	rec2 := f.callbackWith(callbackForState(state), cb)
 	require.Equal(t, http.StatusFound, rec2.Code, rec2.Body.String())
-	assert.Empty(t, rec2.Result().Cookies(), "a CLI login must not create a web session")
+	for _, c := range rec2.Result().Cookies() {
+		assert.Equal(t, cliCallbackCookie, c.Name, "a CLI login must not create a web session")
+		assert.Negative(t, c.MaxAge, "the callback cookie is cleared")
+	}
 	back, err := url.Parse(rec2.Header().Get("Location"))
 	require.NoError(t, err)
 	assert.Equal(t, "127.0.0.1:5555", back.Host)
@@ -305,6 +338,20 @@ func TestCLIBrowser_ContinueRequiresTheStartingBrowser(t *testing.T) {
 	assert.True(t, cleared, "continue clears the cookie")
 }
 
+func TestCLIBrowser_ContinueErrorsCarryPageHeaders(t *testing.T) {
+	f := newBrowserFixture(t, true)
+	_, state, _ := f.startPage(t, cliLoopback)
+	for name, rec := range map[string]*httptest.ResponseRecorder{
+		"403": f.continueWith(state, nil),
+		"400": f.continueWith("unknown-state", nil),
+	} {
+		assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"), name)
+		assert.Equal(t, "no-referrer", rec.Header().Get("Referrer-Policy"), name)
+		assert.Equal(t, "DENY", rec.Header().Get("X-Frame-Options"), name)
+		assert.Contains(t, rec.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'", name)
+	}
+}
+
 func TestCLIBrowser_ContinueRateLimit(t *testing.T) {
 	f := newBrowserFixture(t, true)
 	var last int
@@ -327,9 +374,16 @@ func TestCLIBrowser_FullFlow(t *testing.T) {
 	assert.Equal(t, "code", loc.Query().Get("response_type"))
 	assert.Equal(t, state, loc.Query().Get("state"))
 
-	rec2 := f.do(http.MethodGet, callbackForState(state), nil)
+	cb := callbackCookieOf(t, rec)
+	assert.True(t, cb.HttpOnly)
+	assert.Equal(t, http.SameSiteLaxMode, cb.SameSite)
+	assert.Equal(t, cliCallbackPath, cb.Path)
+	assert.Greater(t, cb.MaxAge, 0)
+	rec2 := f.callbackWith(callbackForState(state), cb)
 	require.Equal(t, http.StatusFound, rec2.Code, rec2.Body.String())
-	assert.Empty(t, rec2.Result().Cookies(), "a CLI login must not create a web session")
+	for _, c := range rec2.Result().Cookies() {
+		assert.Equal(t, cliCallbackCookie, c.Name, "a CLI login must not create a web session")
+	}
 	back, err := url.Parse(rec2.Header().Get("Location"))
 	require.NoError(t, err)
 	assert.Equal(t, "127.0.0.1:5555", back.Host)
@@ -352,6 +406,62 @@ func TestCLIBrowser_FullFlow(t *testing.T) {
 	rec = f.exchange(code, cliVerifier)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.JSONEq(t, `{"error":"invalid_grant"}`, rec.Body.String())
+}
+
+// An attacker drives start and continue with its own cookie jar and hands the
+// IdP link to a victim: the victim's browser has no callback cookie, so the
+// callback must refuse and must not reach the loopback or the IdP.
+func TestCLIBrowser_CallbackRequiresTheConfirmingBrowser(t *testing.T) {
+	const want = "confirmation required: open the link printed by unified-cli login --browser on this computer"
+	check := func(t *testing.T, f *browserFixture, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+		assert.Equal(t, want, strings.TrimSpace(rec.Body.String()))
+		assert.Empty(t, rec.Header().Get("Location"), "no redirect to the loopback, not even with an error")
+		assert.Equal(t, int32(0), f.st.created.Load(), "no code is issued")
+		assert.Equal(t, 0, f.idpTokenCalls(), "the IdP code is not exchanged")
+	}
+
+	t.Run("no cookie", func(t *testing.T) {
+		f := newBrowserFixture(t, true)
+		state, _ := f.confirmedState(t)
+		check(t, f, f.callbackWith(callbackForState(state), nil))
+	})
+	t.Run("cookie of a different login", func(t *testing.T) {
+		f := newBrowserFixture(t, true)
+		state, _ := f.confirmedState(t)
+		_, otherCB := f.confirmedState(t)
+		check(t, f, f.callbackWith(callbackForState(state), otherCB))
+	})
+	t.Run("confirm cookie is not a callback cookie", func(t *testing.T) {
+		f := newBrowserFixture(t, true)
+		_, state, confirm := f.startPage(t, cliLoopback)
+		require.Equal(t, http.StatusFound, f.continueWith(state, confirm).Code)
+		check(t, f, f.callbackWith(callbackForState(state), &http.Cookie{Name: cliCallbackCookie, Value: confirm.Value}))
+	})
+	t.Run("state never confirmed", func(t *testing.T) {
+		f := newBrowserFixture(t, true)
+		_, state, _ := f.startPage(t, cliLoopback)
+		check(t, f, f.callbackWith(callbackForState(state), &http.Cookie{Name: cliCallbackCookie, Value: "x"}))
+	})
+	t.Run("IdP error without cookie", func(t *testing.T) {
+		f := newBrowserFixture(t, true)
+		state, _ := f.confirmedState(t)
+		check(t, f, f.callbackWith("/api/v1/auth/oidc-callback?state="+url.QueryEscape(state)+"&error=access_denied", nil))
+	})
+	t.Run("refusal clears the cookie and burns the state", func(t *testing.T) {
+		f := newBrowserFixture(t, true)
+		state, cb := f.confirmedState(t)
+		rec := f.callbackWith(callbackForState(state), nil)
+		var cleared bool
+		for _, c := range rec.Result().Cookies() {
+			if c.Name == cliCallbackCookie && c.MaxAge < 0 {
+				cleared = true
+			}
+		}
+		assert.True(t, cleared)
+		assert.Equal(t, http.StatusBadRequest, f.callbackWith(callbackForState(state), cb).Code)
+	})
 }
 
 func TestCLIBrowser_WrongVerifierBurnsTheCode(t *testing.T) {
@@ -387,12 +497,14 @@ func TestCLIBrowser_CodeTTLIsTwoMinutes(t *testing.T) {
 func TestCLIBrowser_AdmissionDeniedRedirectsWithAccessDenied(t *testing.T) {
 	f := newBrowserFixture(t, true)
 	f.groups = []string{"nobody"}
-	state := f.confirmedState(t)
-	rec := f.do(http.MethodGet, callbackForState(state), nil)
+	state, cb := f.confirmedState(t)
+	rec := f.callbackWith(callbackForState(state), cb)
 	require.Equal(t, http.StatusFound, rec.Code, rec.Body.String())
 	assert.Equal(t, "http://127.0.0.1:5555/callback?error=access_denied", rec.Header().Get("Location"))
 	assert.Equal(t, int32(0), f.st.created.Load(), "no code is issued")
-	assert.Empty(t, rec.Result().Cookies())
+	for _, c := range rec.Result().Cookies() {
+		assert.Equal(t, cliCallbackCookie, c.Name)
+	}
 }
 
 func TestCLIBrowser_WebAdmissionDeniedKeepsErrorPage(t *testing.T) {
@@ -413,8 +525,8 @@ func TestCLIBrowser_IdPErrorIsHandedToTheLoopback(t *testing.T) {
 		{"login_required", "login_required"},
 		{"Bad Code!&x=1", "server_error"},
 	} {
-		state := f.confirmedState(t)
-		rec := f.do(http.MethodGet, "/api/v1/auth/oidc-callback?state="+url.QueryEscape(state)+"&error="+url.QueryEscape(tc.idp), nil)
+		state, cb := f.confirmedState(t)
+		rec := f.callbackWith("/api/v1/auth/oidc-callback?state="+url.QueryEscape(state)+"&error="+url.QueryEscape(tc.idp), cb)
 		require.Equal(t, http.StatusFound, rec.Code, rec.Body.String())
 		assert.Equal(t, "http://127.0.0.1:5555/callback?error="+tc.want, rec.Header().Get("Location"))
 		// The state is consumed.
@@ -434,10 +546,10 @@ func TestCLIBrowser_WebIdPErrorKeepsErrorPage(t *testing.T) {
 
 func TestCLIBrowser_StateIsSingleUse(t *testing.T) {
 	f := newBrowserFixture(t, true)
-	state := f.confirmedState(t)
-	cb := callbackForState(state)
-	assert.Equal(t, http.StatusFound, f.do(http.MethodGet, cb, nil).Code)
-	assert.Equal(t, http.StatusBadRequest, f.do(http.MethodGet, cb, nil).Code)
+	state, cb := f.confirmedState(t)
+	target := callbackForState(state)
+	assert.Equal(t, http.StatusFound, f.callbackWith(target, cb).Code)
+	assert.Equal(t, http.StatusBadRequest, f.callbackWith(target, cb).Code)
 	assert.Equal(t, int32(1), f.st.created.Load())
 }
 

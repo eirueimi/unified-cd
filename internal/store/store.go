@@ -613,6 +613,10 @@ type Store interface {
 	// GetCLIOIDCState reads a CLI state by value without consuming it. It
 	// returns nil, nil when the state is unknown, expired or not a CLI state.
 	GetCLIOIDCState(ctx context.Context, state string) (*OIDCState, error)
+	// SetCLIOIDCStateCallbackHash records the SHA-256 (hex) of the nonce the
+	// confirmation step set as a cookie; the IdP callback must present it. It
+	// fails when the state is unknown, expired or not a CLI state.
+	SetCLIOIDCStateCallbackHash(ctx context.Context, state, hash string) error
 	GetAndDeleteOIDCState(ctx context.Context, state string) (*OIDCState, error)
 	DeleteExpiredOIDCStates(ctx context.Context) error
 	// CreateCLILoginCode stores a one-time CLI login code (by hash) and drops
@@ -718,8 +722,11 @@ type OIDCState struct {
 	// CLIConfirmHash is the SHA-256 (hex) of the nonce the start page set as a
 	// cookie; the continue step must present the matching cookie.
 	CLIConfirmHash string
-	CreatedAt      time.Time
-	ExpiresAt      time.Time
+	// CLICallbackHash is the SHA-256 (hex) of the nonce the confirmation step
+	// set as a cookie; the IdP callback must present it. Empty until confirmed.
+	CLICallbackHash string
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
 }
 
 // CLILoginCode is a redeemed one-time CLI login code: the PKCE challenge it is

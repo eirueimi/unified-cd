@@ -87,6 +87,7 @@ func TestOIDCState_CarriesCLIFields(t *testing.T) {
 	assert.Equal(t, "challenge", got.CLIChallenge)
 	assert.Equal(t, "http://127.0.0.1:5555/callback", got.CLIRedirect)
 	assert.Equal(t, "confirm-hash", got.CLIConfirmHash)
+	assert.Empty(t, got.CLICallbackHash)
 	gone, err := pg.GetCLIOIDCState(ctx, "s-cli")
 	require.NoError(t, err)
 	assert.Nil(t, gone, "consumed state is gone")
@@ -113,6 +114,32 @@ func TestOIDCState_CarriesCLIFields(t *testing.T) {
 	assert.Nil(t, old)
 }
 
+func TestOIDCState_CallbackHashRoundTrip(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	_, err := pg.CreateCLIOIDCState(ctx, "s-cb", "http://127.0.0.1:5555/callback", "challenge", "confirm-hash", time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	require.NoError(t, pg.SetCLIOIDCStateCallbackHash(ctx, "s-cb", "cb-hash"))
+	peek, err := pg.GetCLIOIDCState(ctx, "s-cb")
+	require.NoError(t, err)
+	require.NotNil(t, peek)
+	assert.Equal(t, "cb-hash", peek.CLICallbackHash)
+	got, err := pg.GetAndDeleteOIDCState(ctx, "s-cb")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "cb-hash", got.CLICallbackHash)
+
+	// Unknown, consumed, expired and web states cannot be bound.
+	assert.Error(t, pg.SetCLIOIDCStateCallbackHash(ctx, "s-cb", "x"))
+	assert.Error(t, pg.SetCLIOIDCStateCallbackHash(ctx, "nope", "x"))
+	_, err = pg.CreateOIDCState(ctx, "s-web", "/ui/", time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	assert.Error(t, pg.SetCLIOIDCStateCallbackHash(ctx, "s-web", "x"))
+	_, err = pg.CreateCLIOIDCState(ctx, "s-old", "http://127.0.0.1:5555/callback", "c", "h", time.Now().Add(-time.Second))
+	require.NoError(t, err)
+	assert.Error(t, pg.SetCLIOIDCStateCallbackHash(ctx, "s-old", "x"))
+}
+
 func TestMigration032CLILoginCodesUpDown(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
@@ -123,12 +150,12 @@ func TestMigration032CLILoginCodesUpDown(t *testing.T) {
 	present := func() (tables, cols int) {
 		require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_name = 'cli_login_codes'`).Scan(&tables))
 		require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
-			WHERE table_name = 'oidc_states' AND column_name IN ('cli_redirect','cli_challenge','cli_confirm_hash')`).Scan(&cols))
+			WHERE table_name = 'oidc_states' AND column_name IN ('cli_redirect','cli_challenge','cli_confirm_hash','cli_callback_hash')`).Scan(&cols))
 		return
 	}
 	tb, cl := present()
 	require.Equal(t, 1, tb)
-	require.Equal(t, 3, cl)
+	require.Equal(t, 4, cl)
 	_, err = pg.pool.Exec(ctx, string(down))
 	require.NoError(t, err)
 	tb, cl = present()
@@ -138,5 +165,5 @@ func TestMigration032CLILoginCodesUpDown(t *testing.T) {
 	require.NoError(t, err)
 	tb, cl = present()
 	require.Equal(t, 1, tb)
-	require.Equal(t, 3, cl)
+	require.Equal(t, 4, cl)
 }
