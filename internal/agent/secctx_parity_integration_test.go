@@ -171,7 +171,7 @@ func runSecCtxHostClaim(t *testing.T, a *Agent, caseBase string, n int, c parity
 	h := newParityHostHarness()
 	inner := newParityHostServer(t, secCtxAgentID, h)
 	srv := newSecCtxServer(t, inner.URL, c.Artifacts)
-	a.Client = NewClient(srv.URL, "tok")
+	a.Client = newStreamClient(srv.URL, "tok")
 
 	workDir := filepath.Join(caseBase, fmt.Sprintf("working%d", n))
 	require.NoError(t, prepareWorkspace(context.Background(), workDir, "isolated", nil, false, a.containerRuntime, a.ToolsDir))
@@ -262,7 +262,7 @@ func TestSecCtx_Integration_UploadFallbackReadsOwnerOnlyFile(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	a.Client = NewClient(srv.URL, "tok")
+	a.Client = newStreamClient(srv.URL, "tok")
 
 	workDir := filepath.Join(caseBase, "working")
 	require.NoError(t, prepareWorkspace(context.Background(), workDir, "isolated", nil, false, a.containerRuntime, a.ToolsDir))

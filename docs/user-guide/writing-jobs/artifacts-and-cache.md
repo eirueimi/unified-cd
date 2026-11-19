@@ -32,7 +32,7 @@ Artifacts are stored in the S3-compatible object store. Artifact names must be u
 
 The `path`/`destDir` of an artifact step must be workspace-relative — see [Artifact and cache path rules](#artifact-and-cache-path-rules) below.
 
-Artifacts work on both the standard and Kubernetes agents; on the k8s-agent, transfers are handled by an auto-injected workspace sidecar (`unified-artifact`) that moves the archive to or from the object store with URLs the controller issues for the run — see [Kubernetes Integration: How the sidecar reaches the object store](../../operator-manual/kubernetes-integration.md#how-the-sidecar-reaches-the-object-store). There is nothing to configure for it and no Secret to create: the sidecar holds no store credentials, and artifact and cache steps need no k8s-agent setting beyond the controller URL the agent already uses.
+Artifacts work on both the standard and Kubernetes agents; the standard agent moves them with URLs the controller issues for the run (see [Object transfer](../../operator-manual/agents.md#object-transfer-objecttransfer)); on the k8s-agent, transfers are handled by an auto-injected workspace sidecar (`unified-artifact`) that moves the archive to or from the object store with URLs the controller issues for the run — see [Kubernetes Integration: How the sidecar reaches the object store](../../operator-manual/kubernetes-integration.md#how-the-sidecar-reaches-the-object-store). There is nothing to configure for it and no Secret to create: the sidecar holds no store credentials, and artifact and cache steps need no k8s-agent setting beyond the controller URL the agent already uses.
 
 ### Downloading from another run (`runId`)
 
@@ -103,7 +103,7 @@ unified-cli artifact download a1b2c3d4 app-binary --dest ./out
 
 ## Cache
 
-Cache directories (e.g. dependency downloads) across runs on the same agent or across agents when S3 is configured.
+Cache directories (e.g. dependency downloads) across runs on the same agent or across agents. The controller's object store holds the entries; agents need no cache configuration (the host agent's old `cacheEndpoint`/`cacheKey`/`cacheSecret`/`cacheBucket` settings were removed, see the [migration guide](../../operator-manual/migrations/2026-11-20-run-scoped-object-access.md)). The cache is never silently disabled.
 
 ```yaml
 steps:

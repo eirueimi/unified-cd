@@ -120,14 +120,6 @@ services:
     volumes:
       - agent-credentials:/var/lib/unified-cd-agent
       - ../edgecase/sideeffect-data:/data
-    environment:
-      # Same four cache vars as agent1/agent2. All four are required and none
-      # has a default; a missing one disables the cache SILENTLY
-      # (base file's own note, and README §"The object store").
-      UNIFIED_CACHE_ENDPOINT: garage:3900
-      UNIFIED_CACHE_BUCKET: unified-cd-cache
-      UNIFIED_CACHE_KEY: garageadmin
-      UNIFIED_CACHE_SECRET: garageadmin12345
     command:
       - "--server"
       - "http://nginx:8080"

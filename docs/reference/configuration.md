@@ -222,10 +222,8 @@ unified-cd-agent [FLAGS]
   --id                    string    Agent identifier (optional; adopted from the enrollment token / persisted credential when unset, asserted when set; env: UNIFIED_AGENT_ID)
   --labels                string    Comma-separated labels, e.g. "kind:linux,env:prod" (env: UNIFIED_AGENT_LABELS)
   --expose-env            string    Comma-separated env vars to allow into job steps; steps get ONLY these plus a minimal OS baseline, never the agent's full environment (env: UNIFIED_AGENT_EXPOSE_ENV)
-  --cache-endpoint        string    S3/MinIO endpoint for cache storage
-  --cache-key             string    Cache storage access key ID
-  --cache-secret          string    Cache storage secret access key
-  --cache-bucket          string    Cache storage bucket name
+  --object-transfer       string    How artifacts and caches reach the object store: direct (default; presigned URLs, the agent must reach the store endpoint) or controller (streamed through the controller) (env: UNIFIED_OBJECT_TRANSFER, config: objectTransfer)
+  --cache-endpoint        string    REMOVED: the agent refuses to start when set (also --cache-key, --cache-secret, --cache-bucket); see the migration guide below
   --max-concurrent        int       Max simultaneous runs (default: 1)
   --max-detached-concurrent int     Max simultaneous detached (spec.detached) runs, from a pool separate from --max-concurrent; 0/unset=default 16, negative=off (env: UNIFIED_AGENT_MAX_DETACHED)
   --disable-native        bool      Disable native (host process, no isolation) execution: the agent does not advertise the native capability and fails any native run that still reaches it (default false; env: UNIFIED_AGENT_DISABLE_NATIVE, config: disableNative)
@@ -263,15 +261,13 @@ for how to pin the runner by digest.
 | `UNIFIED_AGENT_ENROLLMENT_AUDIENCE` | Audience for the cloud identity proof (env equivalent of `--enrollment-audience`) |
 | `UNIFIED_AGENT_ID` | Agent identifier (optional; adopted from the enrollment token / persisted credential when unset, asserted when set) |
 | `UNIFIED_AGENT_LABELS` | Comma-separated labels, e.g. `kind:docker,env:prod` |
-| `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps. **This is an allowlist, not an add-on.** A native (`spec.native: true`) step no longer inherits the agent's process environment at all — it only sees an OS baseline plus whatever is named here plus the orchestrator's own step env (`env:`, secrets). The baseline covers shell essentials **and** the well-known per-user config/data/cache directory variables common toolchains resolve their config from — Windows: `PATH`, `PATHEXT`, `SystemRoot`, `SystemDrive`, `COMSPEC`, `TEMP`, `TMP`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `ALLUSERSPROFILE`, `USERNAME`, `HOMEDRIVE`, `HOMEPATH`, `NUMBER_OF_PROCESSORS`, `PROCESSOR_ARCHITECTURE`; Linux/macOS: `PATH`, `HOME`, `PWD`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ`, `USER`, `LOGNAME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` (so tools like Unity, npm, dotnet, and pip work without extra config). Any other variable a job reads must be named here explicitly, or the step sees it unset. Agent credentials (`UNIFIED_CACHE_KEY`, `UNIFIED_CACHE_SECRET`, `UNIFIED_TOKEN`) are dropped unconditionally even if named here — there is no way to expose them to a step. |
+| `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps. **This is an allowlist, not an add-on.** A native (`spec.native: true`) step no longer inherits the agent's process environment at all — it only sees an OS baseline plus whatever is named here plus the orchestrator's own step env (`env:`, secrets). The baseline covers shell essentials **and** the well-known per-user config/data/cache directory variables common toolchains resolve their config from — Windows: `PATH`, `PATHEXT`, `SystemRoot`, `SystemDrive`, `COMSPEC`, `TEMP`, `TMP`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `ALLUSERSPROFILE`, `USERNAME`, `HOMEDRIVE`, `HOMEPATH`, `NUMBER_OF_PROCESSORS`, `PROCESSOR_ARCHITECTURE`; Linux/macOS: `PATH`, `HOME`, `PWD`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ`, `USER`, `LOGNAME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` (so tools like Unity, npm, dotnet, and pip work without extra config). Any other variable a job reads must be named here explicitly, or the step sees it unset. Agent credentials (`UNIFIED_TOKEN`, and the removed `UNIFIED_CACHE_KEY`/`UNIFIED_CACHE_SECRET`, kept as a defence) are dropped unconditionally even if named here — there is no way to expose them to a step. |
 | `UNIFIED_AGENT_WORKSPACE_DIR` | Base directory for run workspaces (default: current directory at agent startup) |
 | `UNIFIED_AGENT_DISABLE_NATIVE` | `true` disables native (host process) execution on the standard agent: `native` is not advertised and a native run that still arrives is failed (env equivalent of `--disable-native`; default `false`). An unparseable value is ignored. See [Disabling native execution](../operator-manual/agents.md#disabling-native-execution) |
 | `UNIFIED_AGENT_FINALLY_TIMEOUT` | Go duration bounding each of a run's post-DAG cleanup phases: the [`spec.finally`](../user-guide/writing-jobs/approval-and-finally.md#finally-block-finally) pipeline, and each `post:`/`cache:` hook drain (env equivalent of `--finally-timeout`). Unset or non-positive → **10m**; an unparseable value here is ignored (leaving 10m), while an unparseable `--finally-timeout` flag or `finallyTimeout:` config key is a startup error. These phases deliberately survive run cancellation, which also discards the job-level `spec.timeoutMinutes` deadline — this is the ceiling that replaces it. Four phases carry it (each hook drain, the `finally` pipeline, and scope/claim-pod teardown), so the worst-case post-DAG time is **4 ×** this value. The k8s agent's equivalent is `finallyTimeout` / `UNIFIED_K8S_FINALLY_TIMEOUT`; the behaviour is identical on both agents because the cleanup phases run in the shared orchestration loop — with one difference in the arithmetic, not the semantics: the k8s agent adds a fifth window (its claim Pod is deleted or pooled after that loop returns), where the standard agent tears its claim pod down inside the fourth. |
 | `UNIFIED_AGENT_LOG_LEVEL` | Log level: `debug`, `info` (default), `warn`, `error` |
-| `UNIFIED_CACHE_ENDPOINT` | S3/MinIO endpoint for cache storage (env equivalent of `--cache-endpoint`) |
-| `UNIFIED_CACHE_KEY` | Cache storage access key ID (env equivalent of `--cache-key`) |
-| `UNIFIED_CACHE_SECRET` | Cache storage secret access key (env equivalent of `--cache-secret`) |
-| `UNIFIED_CACHE_BUCKET` | Cache storage bucket name (env equivalent of `--cache-bucket`) |
+| `UNIFIED_OBJECT_TRANSFER` | `direct` (default) or `controller`: how the host agent moves artifact and cache archives (env equivalent of `--object-transfer`, config key `objectTransfer`). See [Object transfer](../operator-manual/agents.md#object-transfer-objecttransfer) |
+| `UNIFIED_CACHE_ENDPOINT`, `UNIFIED_CACHE_KEY`, `UNIFIED_CACHE_SECRET`, `UNIFIED_CACHE_BUCKET` | **Removed.** The agent refuses to start when any of them is set; caches use controller-issued URLs and need no agent configuration. See the [migration guide](../operator-manual/migrations/2026-11-20-run-scoped-object-access.md) |
 | `UNIFIED_AGENT_MIN_FREE_DISK` | Minimum free space required to keep claiming runs (env equivalent of `--min-free-disk`): a percentage of the filesystem (`1%`), a size (`10GiB`, `10Gi`, `500MB`) or a bare byte count (`5368709120`, the legacy form, same meaning as before). **Default `1%`**; `0` or `off` disables the check. Applies to the workspace filesystem **and** to each named volume. A malformed value is a startup error naming `UNIFIED_AGENT_MIN_FREE_DISK` (it used to be ignored). **Host agent only** — the k8s-agent has its own `minFreeDisk` field / `UNIFIED_K8S_MIN_FREE_DISK`. |
 | `UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS` | Age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC (env equivalent of `--workspace-retention-days`). `0` (default) disables the GC entirely. **Host agent only.** |
 
@@ -310,10 +306,9 @@ exposeEnv:
   - PATH
   - GOPATH
 
-cacheEndpoint: garage.internal:3900
-cacheKey: garageadmin
-cacheSecret: garageadmin12345
-cacheBucket: unified-cd-cache
+# objectTransfer: direct      # direct (default) or controller; see the agents guide
+# cacheEndpoint/cacheKey/cacheSecret/cacheBucket were removed: setting any of them
+# makes the agent refuse to start (see the migration guide).
 
 maxConcurrent: 4
 cleanWorkspace: false          # no longer has any effect (see --clean-workspace above); accepted so existing configs start

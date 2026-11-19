@@ -137,8 +137,9 @@ the runbook's own steps** — both runbooks specify every call it makes.
 ### The object store, and the S3 interposer (W3+)
 
 `test/ha/docker-compose.ha.yaml` now runs **Garage** and points the
-controllers (`UNIFIED_S3_*` → `unified-cd-logs`) and the agents
-(`UNIFIED_CACHE_*` → `unified-cd-cache`) at it. That turns on the log
+controllers (`UNIFIED_S3_*` → `unified-cd-logs`) at it; the agents hold no
+store credentials and use presigned URLs for that same endpoint
+(`objectTransfer: direct`). That turns on the log
 archiver, cache cleanup, artifact upload and the agent cache, all of which were
 silently off before. **Consequences you must plan for:**
 
@@ -151,13 +152,11 @@ silently off before. **Consequences you must plan for:**
   (`internal/objectstore/s3.go:41-49`) and `cmd/controller/main.go:311-313`
   does `os.Exit(1)`. This constrains injection ordering for any scenario that
   both faults the store and restarts a replica.
-- **All four `UNIFIED_CACHE_*` vars are required and none has a default.**
-  `cmd/unified-cd-agent/main.go:204` gates the cache store on
-  `endpoint != "" && key != "" && secret != "" && bucket != ""`. A missing one
-  disables the cache **silently** — the only trace is the absence of the
-  `cache enabled` INFO line at `:215`. Verified live: with the bucket unset and
-  everything else identical, agent1 registered normally and logged no cache
-  line at all.
+- **The agents' `UNIFIED_CACHE_*` variables are gone.** The agent now refuses
+  to start when any cache store setting is present, and caches always work: they
+  use controller-issued presigned URLs, in the controllers' bucket under
+  `caches/`. (Earlier W3 write-ups below describe the old per-agent store and
+  the separate `unified-cd-cache` bucket; they are historical.)
 
 - **Out-of-band object manipulation goes through the `mc` service.** Garage's
   own CLI cannot delete an S3 object — `garage bucket` (v2.3.0) offers
@@ -172,10 +171,10 @@ silently off before. **Consequences you must plan for:**
 
 - `compose/s3proxy.override.yaml` + `compose/nginx-s3.conf` — the **S3
   interposer**, an nginx on port 3900 between the unified-cd processes and
-  Garage. Both sides are repointed at it, and **side selection is by bucket**,
-  which is the first path segment of a path-style S3 request:
-  `unified-cd-logs/runs/` and `unified-cd-logs/artifacts/` are the controller's,
-  `unified-cd-cache/caches/` is the agent's. Verbs:
+  Garage. The controllers and, through the URLs the controllers issue, the
+  agents go through it; there is a single bucket now, so select by key prefix:
+  `unified-cd-logs/runs/` and `unified-cd-logs/artifacts/` are log archives and
+  artifacts, `unified-cd-logs/caches/` is the caches. Verbs:
 
   | Command | Effect |
   |---|---|

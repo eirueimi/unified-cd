@@ -9,12 +9,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/artifact"
+	"github.com/eirueimi/unified-cd/internal/objtransfer"
 )
 
 // HTTPError represents a non-successful HTTP status returned by the server.
@@ -32,6 +34,29 @@ type Client struct {
 	base   string
 	source TokenSource
 	http   *http.Client
+	// forceController is the agent's "objectTransfer: controller" setting:
+	// artifacts use the controller's streaming routes and never a presigned URL.
+	forceController bool
+}
+
+// SetObjectTransferController makes every artifact and cache transfer made
+// through this Client stream through the controller (objectTransfer:
+// controller) instead of using presigned URLs. Call it before the Client is
+// shared.
+func (c *Client) SetObjectTransferController(controller bool) { c.forceController = controller }
+
+// ObjectsFor returns the presign client for one run. It authenticates with the
+// agent's own credential source, so token refresh is shared with every other
+// controller call. Its HTTP client is left to objtransfer: a transfer of an
+// archive must not be bound by this Client's 60s request timeout.
+func (c *Client) ObjectsFor(runID string) *objtransfer.Client {
+	return &objtransfer.Client{
+		BaseURL:         c.base,
+		RunID:           runID,
+		Auth:            c.authorize,
+		TempDir:         os.TempDir(),
+		ForceController: c.forceController,
+	}
 }
 
 // invalidatingTokenSource can discard a rejected access credential. It is
@@ -386,6 +411,14 @@ func (c *Client) UploadArtifactIn(ctx context.Context, runID, name, root, path s
 func (c *Client) uploadArtifactBody(ctx context.Context, runID, name string, body io.ReadCloser) error {
 	defer body.Close()
 
+	if !c.forceController {
+		key, err := artifact.ArtifactKey(runID, name)
+		if err != nil {
+			return err
+		}
+		return c.ObjectsFor(runID).Artifacts().Put(ctx, key, body, -1)
+	}
+
 	url := c.base + fmt.Sprintf("/api/v1/runs/%s/artifacts/%s", runID, name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
@@ -408,21 +441,23 @@ func (c *Client) uploadArtifactBody(ctx context.Context, runID, name string, bod
 }
 
 // DownloadArtifact downloads an artifact from the master server and extracts it into destDir.
-// Fetches the stream from GET /api/v1/runs/{runID}/artifacts/{name} and extracts it.
-func (c *Client) DownloadArtifact(ctx context.Context, runID, name, destDir string) error {
-	return c.DownloadArtifactExcluding(ctx, runID, name, destDir, nil)
+// runID is the run that produced the artifact; claimRunID is the run being
+// executed, whose presign endpoint authorizes a read of another run's artifact.
+// In controller mode it fetches the stream from GET /api/v1/runs/{runID}/artifacts/{name}.
+func (c *Client) DownloadArtifact(ctx context.Context, claimRunID, runID, name, destDir string) error {
+	return c.DownloadArtifactExcluding(ctx, claimRunID, runID, name, destDir, nil)
 }
 
 // DownloadArtifactExcluding is DownloadArtifact that extracts nothing at or
 // below the paths in exclude: the mount points of the volumes under destDir.
-func (c *Client) DownloadArtifactExcluding(ctx context.Context, runID, name, destDir string, exclude []string) error {
-	return c.DownloadArtifactWritten(ctx, runID, name, destDir, exclude, nil)
+func (c *Client) DownloadArtifactExcluding(ctx context.Context, claimRunID, runID, name, destDir string, exclude []string) error {
+	return c.DownloadArtifactWritten(ctx, claimRunID, runID, name, destDir, exclude, nil)
 }
 
 // DownloadArtifactWritten is DownloadArtifactExcluding that records what it
 // extracted in w (nil records nothing).
-func (c *Client) DownloadArtifactWritten(ctx context.Context, runID, name, destDir string, exclude []string, w *artifact.Written) error {
-	return c.downloadArtifact(ctx, runID, name, destDir, func(r io.Reader, dest string) error {
+func (c *Client) DownloadArtifactWritten(ctx context.Context, claimRunID, runID, name, destDir string, exclude []string, w *artifact.Written) error {
+	return c.downloadArtifact(ctx, claimRunID, runID, name, destDir, func(r io.Reader, dest string) error {
 		_, err := artifact.ExtractTarZstdDir(r, dest, exclude, true, w)
 		return err
 	})
@@ -431,14 +466,31 @@ func (c *Client) DownloadArtifactWritten(ctx context.Context, runID, name, destD
 // DownloadArtifactIn is DownloadArtifactWritten confined to root: destDir must
 // lie at or below root and nothing is written through a symlink that leads out
 // of root, including one swapped in after the caller's checks.
-func (c *Client) DownloadArtifactIn(ctx context.Context, runID, name, root, destDir string, exclude []string, w *artifact.Written) error {
-	return c.downloadArtifact(ctx, runID, name, destDir, func(r io.Reader, dest string) error {
+func (c *Client) DownloadArtifactIn(ctx context.Context, claimRunID, runID, name, root, destDir string, exclude []string, w *artifact.Written) error {
+	return c.downloadArtifact(ctx, claimRunID, runID, name, destDir, func(r io.Reader, dest string) error {
 		_, err := artifact.ExtractTarZstdDirIn(r, root, dest, exclude, true, w)
 		return err
 	})
 }
 
-func (c *Client) downloadArtifact(ctx context.Context, runID, name, destDir string, extract func(io.Reader, string) error) error {
+func (c *Client) downloadArtifact(ctx context.Context, claimRunID, runID, name, destDir string, extract func(io.Reader, string) error) error {
+	if !c.forceController {
+		key, err := artifact.ArtifactKey(runID, name)
+		if err != nil {
+			return err
+		}
+		// runID is the run that produced the artifact; when it is not the
+		// claimed run the controller authorizes the cross-run read.
+		rc, err := c.ObjectsFor(claimRunID).Artifacts().Get(ctx, key)
+		if err != nil {
+			return err
+		}
+		defer rc.Close()
+		if destDir == "" {
+			destDir = "."
+		}
+		return extract(rc, destDir)
+	}
 	url := c.base + fmt.Sprintf("/api/v1/runs/%s/artifacts/%s", runID, name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

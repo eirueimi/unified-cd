@@ -64,7 +64,7 @@ func runUploadStep(t *testing.T, native bool, vols []string, mounts []dsl.Volume
 	workDir := t.TempDir()
 	seed(workDir, m)
 
-	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok"), PauseImage: "pause:img", RunnerImage: "runner:img", Volumes: m}
+	a := &Agent{ID: agentID, Client: newStreamClient(srv.URL, "tok"), PauseImage: "pause:img", RunnerImage: "runner:img", Volumes: m}
 	a.runtimeOnce.Do(func() {})
 	a.resolvedRuntime = &podFakeRT{}
 
@@ -249,7 +249,9 @@ func newCacheHarness(t *testing.T, g exclusionScenario, routes ...func(*http.Ser
 	h.m, _ = newTestVolumes(t, cfgs...)
 	h.b, h.workDir = isolatedBackendWithVolumes(t, h.m, mounts...)
 	h.store = objectstore.NewLocalObjectStore(t.TempDir())
-	h.b.a = &Agent{ID: "a1", Client: NewClient(srv.URL, "tok"), CacheStore: h.store}
+	cli := newStreamClient(srv.URL, "tok")
+	cli.SetObjectTransferController(true) // the stub serves the controller-mode artifact routes
+	h.b.a = &Agent{ID: "a1", Client: cli, cacheStoreOverride: h.store}
 	h.b.runID = "r1"
 	return h
 }

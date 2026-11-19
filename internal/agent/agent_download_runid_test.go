@@ -54,7 +54,7 @@ func downloadRunIDHarness(t *testing.T, stepRunID, serveRunID string) (finalStat
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	a := &Agent{ID: agentID, Client: newStreamClient(srv.URL, "tok")}
 	resp := api.ClaimResponse{
 		Native:  true,
 		RunID:   runID,
@@ -160,7 +160,7 @@ func TestExecuteRun_CallThenDownloadChildArtifact(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	a := &Agent{ID: agentID, Client: newStreamClient(srv.URL, "tok")}
 	resp := api.ClaimResponse{
 		Native:  true,
 		RunID:   runID,

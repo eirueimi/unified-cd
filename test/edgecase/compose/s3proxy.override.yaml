@@ -9,13 +9,12 @@
 #   docker compose $COMPOSE_FILES up -d --build
 #   ../edgecase/tools/inject.sh s3-probe            # confirm the proxy is live
 #
-# Both sides are repointed, not just the controllers: the agent cache uses the
-# agent's OWN S3 client (cmd/unified-cd-agent/main.go:204-217), so a fault
-# armed only on the controller's endpoint would never touch the cache path.
-# Side selection is then done by key prefix instead of by endpoint — the two
-# sides use two different buckets, and the bucket is the first path segment:
-#   unified-cd-logs/   = controller (runs/, artifacts/)
-#   unified-cd-cache/  = agent (caches/)
+# The controllers are repointed; the agents hold no store credentials and
+# reach the store through presigned URLs for that same endpoint, so a fault
+# armed here touches the cache and artifact paths of both. Select by key prefix
+# (there is a single bucket, unified-cd-logs):
+#   runs/, artifacts/ = log archives and artifacts
+#   caches/           = caches
 #
 # The controllers still `depends_on` garage directly (from the base file) AND
 # s3proxy here: NewS3ObjectStore's BucketExists is eager and a failure is
@@ -53,9 +52,10 @@ services:
   controller2: *ctrlproxy
   controller3: *ctrlproxy
 
+  # The agents hold no store credentials: they use presigned URLs for the
+  # controllers' UNIFIED_S3_ENDPOINT (s3proxy above), so they only need the
+  # proxy to be up.
   agent1: &agentproxy
-    environment:
-      UNIFIED_CACHE_ENDPOINT: s3proxy:3900
     depends_on:
       agent-enroll:
         condition: service_completed_successfully
