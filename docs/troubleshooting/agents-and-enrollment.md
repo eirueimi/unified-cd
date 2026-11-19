@@ -227,11 +227,14 @@ empty, and `kubectl -n <namespace> get pvc` lists both `<agentName>-<volume>` an
 `<agentName>.<volume>`.
 
 **Cause:** PVCs are now named `<agentName>.<volume>`. The agent creates that claim empty and never
-adopts, patches or deletes an old `<agentName>-<volume>` one.
+adopts, patches or deletes an old `<agentName>-<volume>` one. It logs
+`k8s: a PVC from the pre-0.17 naming is ignored; see docs/operator-manual/migrations/2026-11-20-k8s-volume-pvc-names.md`
+once per such claim (attribute `pvc`).
 
 **Fix:** copy the data to the new claim and delete the old one, as described in
-[Kubernetes volume PVC names](../operator-manual/migrations/2026-11-20-k8s-volume-pvc-names.md). Do not
-change `agentName`.
+[Kubernetes volume PVC names](../operator-manual/migrations/2026-11-20-k8s-volume-pvc-names.md). Delete
+an old claim only after the rollout has finished and no old agent pod is running, or the old pod
+creates it again, empty. Do not change `agentName`.
 
 ### A Kubernetes agent fails at startup with `agentName "..." is not usable in a PVC name`
 

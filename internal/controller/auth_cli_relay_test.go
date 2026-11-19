@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -551,4 +552,24 @@ func TestCLIRelay_HungDiscoveryIsAbandonedAndNotCached(t *testing.T) {
 	_, _, _, err = s.relayProvider(t.Context(), "h")
 	require.NoError(t, err, "the failure was not cached")
 	assert.Equal(t, int32(2), p.discoveryCalls.Load())
+}
+
+func TestCLIRelay_PanickingDiscoveryBecomesErrorAndClearsFlight(t *testing.T) {
+	var c relayDiscoveryCache
+	_, err := c.get(t.Context(), "k", func(context.Context) (*oidc.Provider, error) {
+		panic("boom")
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "panic")
+
+	c.mu.RLock()
+	flight := c.flight
+	c.mu.RUnlock()
+	assert.Nil(t, flight, "the flight is cleared")
+
+	// A later call starts a fresh discovery instead of waiting on the dead one.
+	_, err = c.get(t.Context(), "k", func(context.Context) (*oidc.Provider, error) {
+		return nil, assert.AnError
+	})
+	assert.ErrorIs(t, err, assert.AnError)
 }

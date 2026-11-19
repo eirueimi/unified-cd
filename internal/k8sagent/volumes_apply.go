@@ -84,6 +84,8 @@ type volumeState struct {
 	// the volume's current absence from the set; it is cleared when the volume is
 	// delivered again or reclaimed.
 	reclaimLogged map[string]bool
+	// legacyLogged remembers the pre-0.17 PVCs already reported as ignored.
+	legacyLogged map[string]bool
 }
 
 // offered returns the volumes currently offered, by name.
@@ -243,11 +245,15 @@ func (a *K8sAgent) applyVolumes(ctx context.Context, desired []api.DesiredVolume
 	if s.reclaimLogged == nil {
 		s.reclaimLogged = map[string]bool{}
 	}
+	if s.legacyLogged == nil {
+		s.legacyLogged = map[string]bool{}
+	}
 	s.mu.Unlock()
 
 	var owned map[string]*corev1.PersistentVolumeClaim
 	if a.kube != nil {
 		owned = a.ownedPVCs(ctx)
+		a.warnLegacyPVCs(owned)
 	}
 
 	// First pass, without volMu: validate, create or annotate each PVC.
@@ -372,6 +378,31 @@ func (a *K8sAgent) ownedPVCs(ctx context.Context) map[string]*corev1.PersistentV
 		out[l.Items[i].Name] = &l.Items[i]
 	}
 	return out
+}
+
+// warnLegacyPVCs logs, once per PVC, a claim left from the pre-0.17 naming
+// (<agentName>-<volume>): it is ignored, never adopted or reclaimed.
+func (a *K8sAgent) warnLegacyPVCs(owned map[string]*corev1.PersistentVolumeClaim) {
+	s := &a.volState
+	names := make([]string, 0, len(owned))
+	for n := range owned {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		pvc := owned[n]
+		v := pvc.Labels[labelVolumeName]
+		if v == "" || pvc.Labels[labelVolumeOwner] != a.cfg.AgentName || pvc.Name != a.cfg.AgentName+"-"+v {
+			continue
+		}
+		s.mu.Lock()
+		first := !s.legacyLogged[pvc.Name]
+		s.legacyLogged[pvc.Name] = true
+		s.mu.Unlock()
+		if first {
+			slog.Warn("k8s: a PVC from the pre-0.17 naming is ignored; see docs/operator-manual/migrations/2026-11-20-k8s-volume-pvc-names.md", "pvc", pvc.Name)
+		}
+	}
 }
 
 // stagedVolume is a delivered volume after its PVC has been ensured, waiting

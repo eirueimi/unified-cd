@@ -228,7 +228,16 @@ func (c *relayDiscoveryCache) get(ctx context.Context, key string, discover func
 		go func() {
 			dctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
-			provider, err := discover(dctx)
+			provider, err := func() (p *oidc.Provider, err error) {
+				// A panic in discover must not leave the flight open: every
+				// waiter would block until its own context ended.
+				defer func() {
+					if r := recover(); r != nil {
+						p, err = nil, fmt.Errorf("OIDC discovery panic: %v", r)
+					}
+				}()
+				return discover(dctx)
+			}()
 			c.mu.Lock()
 			if err == nil {
 				c.provider, c.key, c.at = provider, key, c.clock()

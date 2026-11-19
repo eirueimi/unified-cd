@@ -256,3 +256,42 @@ func TestReclaim_VolumeNotOfferedWhenPVCDeleteIsIssued(t *testing.T) {
 	require.Equal(t, int32(1), deletes.Load())
 	assert.False(t, offeredAtDelete.Load(), "the volume is still offered when its PVC is deleted")
 }
+
+func legacyPVC(name, volume string) *corev1.PersistentVolumeClaim {
+	return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+		Name: name, Namespace: testVolNS,
+		Labels: map[string]string{labelVolumeOwner: "agent1", labelVolumeName: volume},
+	}}
+}
+
+func TestLegacyPVCWarnedOncePerClaim(t *testing.T) {
+	var buf syncBuf
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ctx := context.Background()
+	cs := fake.NewSimpleClientset(legacyPVC("agent1-cache", "cache"))
+	a := newApplyAgent(cs)
+	count := func() int { return strings.Count(buf.String(), "PVC from the pre-0.17 naming is ignored") }
+
+	a.applyVolumes(ctx, nil)
+	a.applyVolumes(ctx, nil)
+	assert.Equal(t, 1, count(), "one warning for a legacy PVC across applies")
+	assert.Contains(t, buf.String(), "pvc=agent1-cache")
+	assert.Contains(t, buf.String(), "2026-11-20-k8s-volume-pvc-names.md")
+}
+
+func TestLegacyPVCNotWarnedForCurrentName(t *testing.T) {
+	var buf syncBuf
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ctx := context.Background()
+	cs := fake.NewSimpleClientset(legacyPVC("agent1.cache", "cache"))
+	a := newApplyAgent(cs)
+	a.applyVolumes(ctx, nil)
+	a.applyVolumes(ctx, nil)
+	assert.NotContains(t, buf.String(), "pre-0.17 naming")
+}
