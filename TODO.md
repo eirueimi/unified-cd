@@ -25,12 +25,12 @@ No active items.
 
 ## Medium
 
-### 46. Cache and scope-pod configuration gaps between host and k8s agents
+### 46. Scope-pod configuration gaps between host and k8s agents
 
 - **Status:** Open
-- **Impact:** (a) The host cache store cannot use an HTTPS-only endpoint such as AWS S3, and a job with `cache:` on a host agent without `--cache-*` silently does nothing (the run log says nothing; k8s warns). (b) A k8s `uses:` scope pod ignores the job's pull secrets, node placement and service account, so a private or GPU/arch-pinned scope image works on the host and can fail on k8s. (c) k8s puts the first caller's resolved step env, including `{{ .Secrets.X }}` values, into the scope Pod spec (readable with `pods get`, stored in etcd); non-scoped steps send env only on the exec call. (d) Likely, verify first: a host scope container sets `WorkDir: /workspace` with nothing mounted, so a non-root scope image may be unable to write there; k8s mounts a 0777 emptyDir.
-- **Evidence:** (a) `cmd/unified-cd-agent/main.go:263` builds `S3Config` with no `UseSSL`/`Region`; `internal/agent/backend_host.go:219,261` return silently when `CacheStore == nil`, while the k8s agent warns via `warnRun` for cache steps without a sidecar secret. (b) `internal/k8sagent/scopepod.go` (`buildScopePod`) takes no podTemplate. (c) `internal/k8sagent/backend.go:848` (`envMap := imageStepEnv(step)` merged with the caller's expanded env, passed to `buildScopePod` at :857). (d) `internal/agent/scope.go:59,94`.
-- **Done when:** The host cache store accepts a TLS/region setting and a run with cache steps and no cache store logs one run-log warning; the k8s scope pod gets an operator-level defaults block (`imagePullSecrets`, `nodeSelector`, `serviceAccountName`) or the limitation is documented in `templates-and-reuse.md`; the scope pod spec contains no resolved step env (env travels per exec) with a test asserting it; (d) is reproduced with a non-root scope image and then fixed or closed as not reproducible.
+- **Impact:** (b) A k8s `uses:` scope pod ignores the job's pull secrets, node placement and service account, so a private or GPU/arch-pinned scope image works on the host and can fail on k8s. (c) k8s puts the first caller's resolved step env, including `{{ .Secrets.X }}` values, into the scope Pod spec (readable with `pods get`, stored in etcd); non-scoped steps send env only on the exec call. (d) Likely, verify first: a host scope container sets `WorkDir: /workspace` with nothing mounted, so a non-root scope image may be unable to write there; k8s mounts a 0777 emptyDir.
+- **Evidence:** (b) `internal/k8sagent/scopepod.go` (`buildScopePod`) takes no podTemplate. (c) `internal/k8sagent/backend.go:848` (`envMap := imageStepEnv(step)` merged with the caller's expanded env, passed to `buildScopePod` at :857). (d) `internal/agent/scope.go:59,94`.
+- **Done when:** The k8s scope pod gets an operator-level defaults block (`imagePullSecrets`, `nodeSelector`, `serviceAccountName`) or the limitation is documented in `templates-and-reuse.md`; the scope pod spec contains no resolved step env (env travels per exec) with a test asserting it; (d) is reproduced with a non-root scope image and then fixed or closed as not reproducible.
 
 ### 47. Strict config loading in the Kubernetes agent
 

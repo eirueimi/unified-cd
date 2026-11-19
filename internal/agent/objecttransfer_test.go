@@ -29,6 +29,7 @@ type objFake struct {
 	mu    sync.Mutex
 	seen  []string // "METHOD path" or "presign <kind>/<op>"
 	auth  []string
+	gets  []api.PresignRequest // cache get requests, in order
 	blobs map[string][]byte
 }
 
@@ -99,7 +100,20 @@ func (f *objFake) presign(w http.ResponseWriter, req api.PresignRequest) {
 	switch req.Op {
 	case api.ObjectOpGet:
 		f.mu.Lock()
+		if req.Kind == api.ObjectKindCache {
+			f.gets = append(f.gets, req)
+		}
 		_, ok := f.blobs[id]
+		matched := req.Key
+		if !ok && req.Kind == api.ObjectKindCache {
+			for _, rk := range req.RestoreKeys {
+				for bid := range f.blobs {
+					if strings.HasPrefix(bid, "cache-"+rk) {
+						id, ok, matched = bid, true, strings.TrimPrefix(bid, "cache-")
+					}
+				}
+			}
+		}
 		f.mu.Unlock()
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
@@ -111,7 +125,7 @@ func (f *objFake) presign(w http.ResponseWriter, req api.PresignRequest) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(api.PresignResponse{
-			Mode: api.ObjectModeDirect, MatchedKey: req.Key,
+			Mode: api.ObjectModeDirect, MatchedKey: matched,
 			Request: &api.PresignedRequest{Method: http.MethodGet, URL: f.srv.URL + "/blob/" + id},
 		})
 	case api.ObjectOpCommit:
@@ -124,10 +138,10 @@ func (f *objFake) presign(w http.ResponseWriter, req api.PresignRequest) {
 	}
 }
 
-func cacheStepRun(t *testing.T, a *Agent, workDir, key string) []deferredHook {
+func cacheStepRun(t *testing.T, a *Agent, workDir, key string, restoreKeys ...string) []deferredHook {
 	t.Helper()
 	sctx := &safeStepCtx{data: dsl.TemplateData{}}
-	step := api.ClaimStep{Index: 0, Name: "c", Cache: &dsl.CacheStep{Path: "dir", Key: key}}
+	step := api.ClaimStep{Index: 0, Name: "c", Cache: &dsl.CacheStep{Path: "dir", Key: key, RestoreKeys: restoreKeys}}
 	var mu sync.Mutex
 	var hooks []deferredHook
 	require.NoError(t, executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &mu, &hooks,
@@ -234,4 +248,29 @@ func TestClient_ArtifactDirectModeCrossRunAsksTheClaimedRun(t *testing.T) {
 	err := c.DownloadArtifact(t.Context(), "claimed", "src9", "art1", t.TempDir())
 	require.Error(t, err) // the fake holds no such artifact
 	assert.Equal(t, "presign artifact/get", f.requests()[0])
+}
+
+// A restore that misses the exact key but matches a restoreKeys prefix comes
+// back through the presign path with the entry's own key, and the files land
+// in the workspace.
+func TestHostBackend_CacheDirectRestoreKeysMatch(t *testing.T) {
+	f := newObjFake(t)
+	a := &Agent{ID: "a1", Client: NewClient(f.srv.URL, "tok")}
+
+	hooks := cacheStepRun(t, a, seedCacheDir(t), "k-old")
+	require.Len(t, hooks, 1)
+	hooks[0].fn(context.Background())
+
+	workDir := t.TempDir()
+	cacheStepRun(t, a, workDir, "k-new", "k-")
+
+	got, err := os.ReadFile(filepath.Join(workDir, "dir", "f.txt"))
+	require.NoError(t, err, "the restoreKeys match must restore into the workspace")
+	assert.Equal(t, "x", string(got))
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	last := f.gets[len(f.gets)-1]
+	assert.Equal(t, "k-new", last.Key)
+	assert.Equal(t, []string{"k-"}, last.RestoreKeys)
 }

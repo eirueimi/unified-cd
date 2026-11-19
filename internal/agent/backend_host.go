@@ -18,6 +18,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/objtransfer"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 )
@@ -78,6 +79,10 @@ type hostBackend struct {
 	// (resolveInVolumeMount), and an archive of an ancestor leaves it out
 	// (excludeVolumes).
 	volumeRefs []volumeMountRef
+
+	// objects is the claim's presign client for caches (see cacheRemote).
+	objectsOnce sync.Once
+	objects     *objtransfer.Client
 }
 
 // newHostBackend constructs the ExecBackend for one claim's executeRun call.
@@ -220,7 +225,10 @@ func (b *hostBackend) cacheRemote() cache.Remote {
 	if b.a.cacheStoreOverride != nil {
 		return &cache.StoreRemote{Store: b.a.cacheStoreOverride, JobName: b.jobName}
 	}
-	return b.a.Client.ObjectsFor(b.runID).Caches()
+	// One client per claim, so a controller-mode fallback learned from one
+	// presign answer applies to every later cache operation of the claim.
+	b.objectsOnce.Do(func() { b.objects = b.a.Client.ObjectsFor(b.runID) })
+	return b.objects.Caches()
 }
 
 // CacheRestore restores a cache entry into path (host workspace path, or

@@ -78,10 +78,12 @@ func (c *Client) controllerUpload(ctx context.Context, tmpl api.PresignRequest, 
 		return c.controllerUploadOnce(ctx, endpoint, tmpl.Kind, body)
 	}
 	_, err = retryObjectCall(ctx, func() (struct{}, error) {
-		if _, err := rs.Seek(start, io.SeekStart); err != nil {
-			return struct{}{}, err
-		}
-		return struct{}{}, c.controllerUploadOnce(ctx, endpoint, tmpl.Kind, rs)
+		return retryUnauthorized(c, func() (struct{}, error) {
+			if _, err := rs.Seek(start, io.SeekStart); err != nil {
+				return struct{}{}, err
+			}
+			return struct{}{}, c.controllerUploadOnce(ctx, endpoint, tmpl.Kind, rs)
+		})
 	})
 	return err
 }
@@ -140,28 +142,36 @@ func (c *Client) controllerDownload(ctx context.Context, req api.PresignRequest)
 		return nil, api.PresignResponse{}, err
 	}
 	resp, err := retryObjectCall(ctx, func() (*http.Response, error) {
-		hr, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-		if err != nil {
-			return nil, fmt.Errorf("build controller download request: %w", err)
-		}
-		if c.Auth != nil {
-			if err := c.Auth(ctx, hr); err != nil {
-				return nil, fmt.Errorf("authenticate controller download: %w", err)
-			}
-		}
-		resp, err := c.httpClient().Do(hr)
-		if err != nil {
-			return nil, fmt.Errorf("controller download: %w", redactErr(err))
-		}
-		if resp.StatusCode != http.StatusOK {
-			defer resp.Body.Close()
-			return nil, objectResponseError(resp, req.Kind+"/stream-get")
-		}
-		return resp, nil
+		return retryUnauthorized(c, func() (*http.Response, error) { return c.controllerGetOnce(ctx, endpoint, req.Kind) })
 	})
 	if err != nil {
 		return nil, api.PresignResponse{}, err
 	}
+	return c.controllerDownloadResult(req, resp)
+}
+
+func (c *Client) controllerGetOnce(ctx context.Context, endpoint, kind string) (*http.Response, error) {
+	hr, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build controller download request: %w", err)
+	}
+	if c.Auth != nil {
+		if err := c.Auth(ctx, hr); err != nil {
+			return nil, fmt.Errorf("authenticate controller download: %w", err)
+		}
+	}
+	resp, err := c.httpClient().Do(hr)
+	if err != nil {
+		return nil, fmt.Errorf("controller download: %w", redactErr(err))
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		return nil, objectResponseError(resp, kind+"/stream-get")
+	}
+	return resp, nil
+}
+
+func (c *Client) controllerDownloadResult(req api.PresignRequest, resp *http.Response) (io.ReadCloser, api.PresignResponse, error) {
 	out := api.PresignResponse{Mode: api.ObjectModeController, Size: resp.ContentLength}
 	if h := resp.Header.Get(cacheKeyHeader); h != "" {
 		matched, err := url.PathUnescape(h)

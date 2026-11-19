@@ -33,6 +33,11 @@ type Client struct {
 	// Auth sets the credentials of a controller request. It is called for
 	// presign requests only, never for requests to the store.
 	Auth func(context.Context, *http.Request) error
+	// OnUnauthorized, when set, is called after the controller answers 401 to
+	// a request authenticated by Auth, so the credential source can discard
+	// the rejected token; the request is then retried once (a one-shot upload
+	// body is not retried). Nil means a 401 is final.
+	OnUnauthorized func()
 	// HTTP is used for both controller and store requests; nil means
 	// http.DefaultClient.
 	HTTP *http.Client
@@ -122,7 +127,9 @@ func (c *Client) presign(ctx context.Context, req api.PresignRequest) (api.Presi
 	if c.useController() {
 		return api.PresignResponse{}, errControllerMode
 	}
-	resp, err := retryObjectCall(ctx, func() (api.PresignResponse, error) { return c.presignOnce(ctx, req) })
+	resp, err := retryObjectCall(ctx, func() (api.PresignResponse, error) {
+		return retryUnauthorized(c, func() (api.PresignResponse, error) { return c.presignOnce(ctx, req) })
+	})
 	if err != nil {
 		return api.PresignResponse{}, err
 	}
@@ -131,6 +138,18 @@ func (c *Client) presign(ctx context.Context, req api.PresignRequest) (api.Presi
 		return api.PresignResponse{}, errControllerMode
 	}
 	return resp, nil
+}
+
+// retryUnauthorized runs fn and, if the controller rejected the credential
+// (401) and OnUnauthorized is set, invalidates it and runs fn once more.
+func retryUnauthorized[T any](c *Client, fn func() (T, error)) (T, error) {
+	v, err := fn()
+	var pe *presignError
+	if err != nil && c.OnUnauthorized != nil && errors.As(err, &pe) && pe.Status == http.StatusUnauthorized {
+		c.OnUnauthorized()
+		return fn()
+	}
+	return v, err
 }
 
 // useController reports whether transfers stream through the controller:

@@ -120,7 +120,7 @@ type AgentConfig struct {
 	// controller, for agents that cannot reach the store endpoint.
 	// Env: UNIFIED_OBJECT_TRANSFER.
 	ObjectTransfer string `yaml:"objectTransfer"`
-	MaxConcurrent      int      `yaml:"maxConcurrent"`
+	MaxConcurrent  int    `yaml:"maxConcurrent"`
 	// MaxDetachedConcurrent caps how many detached (spec.detached) runs this
 	// agent claims concurrently, from a pool separate from MaxConcurrent.
 	// 0 / unset -> the agent applies the default (16), so detached jobs are

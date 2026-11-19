@@ -45,6 +45,14 @@ type Client struct {
 // shared.
 func (c *Client) SetObjectTransferController(controller bool) { c.forceController = controller }
 
+// invalidateToken discards a credential the controller rejected, when the
+// token source supports it, so the next request obtains a fresh one.
+func (c *Client) invalidateToken() {
+	if source, ok := c.source.(invalidatingTokenSource); ok {
+		source.Invalidate()
+	}
+}
+
 // ObjectsFor returns the presign client for one run. It authenticates with the
 // agent's own credential source, so token refresh is shared with every other
 // controller call. Its HTTP client is left to objtransfer: a transfer of an
@@ -56,6 +64,7 @@ func (c *Client) ObjectsFor(runID string) *objtransfer.Client {
 		Auth:            c.authorize,
 		TempDir:         os.TempDir(),
 		ForceController: c.forceController,
+		OnUnauthorized:  c.invalidateToken,
 	}
 }
 

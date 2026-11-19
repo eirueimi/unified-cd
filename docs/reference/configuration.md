@@ -223,7 +223,7 @@ unified-cd-agent [FLAGS]
   --labels                string    Comma-separated labels, e.g. "kind:linux,env:prod" (env: UNIFIED_AGENT_LABELS)
   --expose-env            string    Comma-separated env vars to allow into job steps; steps get ONLY these plus a minimal OS baseline, never the agent's full environment (env: UNIFIED_AGENT_EXPOSE_ENV)
   --object-transfer       string    How artifacts and caches reach the object store: direct (default; presigned URLs, the agent must reach the store endpoint) or controller (streamed through the controller) (env: UNIFIED_OBJECT_TRANSFER, config: objectTransfer)
-  --cache-endpoint        string    REMOVED: the agent refuses to start when set (also --cache-key, --cache-secret, --cache-bucket); see the migration guide below
+  --cache-endpoint        string    REMOVED: the agent refuses to start when set (also --cache-key, --cache-secret, --cache-bucket); see the [migration guide](../operator-manual/migrations/2026-11-20-run-scoped-object-access.md)
   --max-concurrent        int       Max simultaneous runs (default: 1)
   --max-detached-concurrent int     Max simultaneous detached (spec.detached) runs, from a pool separate from --max-concurrent; 0/unset=default 16, negative=off (env: UNIFIED_AGENT_MAX_DETACHED)
   --disable-native        bool      Disable native (host process, no isolation) execution: the agent does not advertise the native capability and fails any native run that still reaches it (default false; env: UNIFIED_AGENT_DISABLE_NATIVE, config: disableNative)

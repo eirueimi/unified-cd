@@ -120,6 +120,15 @@ services:
     volumes:
       - agent-credentials:/var/lib/unified-cd-agent
       - ../edgecase/sideeffect-data:/data
+    environment:
+      # This v0.4.0 agent predates the removal of the cache store settings, so
+      # it still needs them (HEAD agents refuse to start with them). All four
+      # are required; a missing one disables its cache silently. The bucket is
+      # the controllers' one, which holds caches/ now.
+      UNIFIED_CACHE_ENDPOINT: garage:3900
+      UNIFIED_CACHE_BUCKET: unified-cd-logs
+      UNIFIED_CACHE_KEY: garageadmin
+      UNIFIED_CACHE_SECRET: garageadmin12345
     command:
       - "--server"
       - "http://nginx:8080"

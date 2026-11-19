@@ -49,7 +49,7 @@ func TestLoadAgent_ObjectTransferValues(t *testing.T) {
 	err := loadAndValidateAgentConfig(writeAgentConfig(t, "objectTransfer: bogus\n"), nil)
 	require.Error(t, err)
 	assert.Equal(t, `objectTransfer: must be "direct" or "controller", got "bogus"`, err.Error())
-	err = loadAndValidateAgentConfig(writeAgentConfig(t, "server: https://c.example.com\n"),[]string{"--object-transfer", "bogus"})
+	err = loadAndValidateAgentConfig(writeAgentConfig(t, "server: https://c.example.com\n"), []string{"--object-transfer", "bogus"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `got "bogus"`)
 }
