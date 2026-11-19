@@ -169,6 +169,7 @@ type Server struct {
 	km                            secrets.KeyManager      // Secret API returns 501 when nil.
 	gitCreds                      *GitCredentialResolver  // GitHub App job tokens; nil = not configured.
 	oidcCfg                       *OIDCConfig             // OIDC endpoints return 404 when nil.
+	overageWarn                   overageLimiter          // Rate-limits the bearer-path groups overage warning.
 	dexProxy                      *httputil.ReverseProxy  // /dex/* returns 404 when nil.
 	uiProxy                       *httputil.ReverseProxy  // /ui/* returns 404 when nil (when WebDir is not set).
 	metrics                       *metrics.Metrics        // nil = middleware no-ops and /metrics returns 404.

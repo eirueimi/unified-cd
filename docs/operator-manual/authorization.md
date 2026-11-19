@@ -171,7 +171,7 @@ oidc:
 
 Rules:
 
-- `groups` keys are compared to the values of `rolesClaim`. `users` keys are compared to the token's `email` **and** `sub` (both, not first-hit; `users` is additive, unlike `userMap`).
+- `groups` keys are compared to the values of `rolesClaim`. `users` keys are compared to the token's `email` **and** `sub` (both, not first-hit; `users` is additive, unlike `userMap`). When the token reports `email_verified: false` (boolean or the string `"false"`), the email is not used for matching, only `sub` is; see [Identity providers](identity-providers.md#how-unified-cd-reads-identity-what-every-idp-must-satisfy).
 - A role name in a grant expands to its bundle; on a folder only the bundle's folder-scopable permissions apply.
 - Naming a **global-only** permission in a folder entry is a startup error: the operator would believe it is scoped when it cannot be.
 - `permissions.global` takes global-only permissions as well, for example `token.create` for everyone.
@@ -220,7 +220,9 @@ oidc:
 
 Scalars `rolesClaim` and `defaultRole` can also come from `UNIFIED_OIDC_ROLES_CLAIM` / `UNIFIED_OIDC_DEFAULT_ROLE`. **`roleMap`, `userMap` and `permissions` are maps and can only be set in the config file** (there is no env var for them). The requested OIDC scopes can be overridden with `oidc.scopes` / `UNIFIED_OIDC_SCOPES` (see [Identity providers](identity-providers.md#how-unified-cd-reads-identity-what-every-idp-must-satisfy)).
 
-> `groups` is NOT a standard OIDC claim — whether it exists and what it contains is entirely up to the IdP. `rolesClaim` lets you point at whatever claim your IdP emits (`groups`, `roles`, a namespaced claim, or even `email`).
+> **Verified email only.** `userMap` and `permissions.*.users` match an email only when the IdP does not report it as unverified. If the token carries `email_verified: false` (the JSON boolean or the string `"false"`), the email is ignored and matching falls back to `sub`. An absent `email_verified` claim leaves matching unchanged. Sessions and PATs created before an upgrade keep their stored email; see the upgrade note under [Identity providers](identity-providers.md#how-unified-cd-reads-identity-what-every-idp-must-satisfy) (delete such PATs with `unified-cli token delete`; users log out and in again for sessions).
+
+> `groups` is NOT a standard OIDC claim — whether it exists and what it contains is entirely up to the IdP. `rolesClaim` lets you point at whatever claim your IdP emits (`groups`, `roles`, a namespaced claim, a nested claim such as `realm_access.roles`, or even `email`). The name is tried as an exact top-level key first, then as a `.`-separated path.
 
 ## How a caller's permissions are resolved
 

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/authz"
 )
@@ -85,14 +86,41 @@ func (s *Server) roleMapping() RoleMapping {
 	}
 }
 
+// lookupClaim resolves a roles-claim name against decoded claims. An empty name
+// means "groups". The name is first tried as an exact top-level key, so
+// namespaced claims such as "https://example.com/roles" keep working; only when
+// no such key exists is it split on "." and walked through nested objects (for
+// example Keycloak's "realm_access.roles").
+func lookupClaim(claims map[string]any, name string) (any, bool) {
+	if name == "" {
+		name = "groups"
+	}
+	if v, ok := claims[name]; ok {
+		return v, true
+	}
+	if !strings.Contains(name, ".") {
+		return nil, false
+	}
+	var cur any = claims
+	for _, seg := range strings.Split(name, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		if cur, ok = m[seg]; !ok {
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
 // extractRoleValues pulls the configured claim from a decoded claims map as
 // a []string. Accepts a string, []string, or []any of strings. Defaults the
-// claim name to "groups". Returns nil when the claim is absent.
+// claim name to "groups". Returns nil when the claim is absent. The claim name
+// is resolved by lookupClaim: an exact top-level key first, then a
+// "."-separated path into nested objects.
 func extractRoleValues(claims map[string]any, rolesClaim string) []string {
-	if rolesClaim == "" {
-		rolesClaim = "groups"
-	}
-	v, ok := claims[rolesClaim]
+	v, ok := lookupClaim(claims, rolesClaim)
 	if !ok {
 		return nil
 	}
