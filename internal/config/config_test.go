@@ -576,3 +576,70 @@ func TestAgentEffectiveAllowInsecureHTTP(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, eff.AllowInsecureHTTP)
 }
+
+func TestControllerOIDCDeviceClientSecret_FromFile(t *testing.T) {
+	path := writeFile(t, `
+oidc:
+  issuer: https://idp.example.com
+  clientId: c
+  deviceClientId: cli
+  deviceClientSecret: file-device-secret
+`)
+	eff, err := config.ControllerEffective(path)
+	require.NoError(t, err)
+	assert.Equal(t, "file-device-secret", eff.OIDC.DeviceClientSecret)
+}
+
+func TestControllerOIDCDeviceClientSecret_EnvAndFilePrecedence(t *testing.T) {
+	t.Setenv("UNIFIED_OIDC_ISSUER", "https://idp.example.com")
+	t.Setenv("UNIFIED_OIDC_CLIENT_ID", "c")
+	t.Setenv("UNIFIED_OIDC_DEVICE_CLIENT_ID", "cli")
+	t.Setenv("UNIFIED_OIDC_DEVICE_CLIENT_SECRET", "env-device-secret")
+
+	eff, err := config.ControllerEffective("")
+	require.NoError(t, err)
+	assert.Equal(t, "env-device-secret", eff.OIDC.DeviceClientSecret)
+
+	path := writeFile(t, "oidc:\n  deviceClientSecret: file-device-secret\n")
+	eff, err = config.ControllerEffective(path)
+	require.NoError(t, err)
+	assert.Equal(t, "file-device-secret", eff.OIDC.DeviceClientSecret, "file overrides env, like clientSecret")
+}
+
+func TestControllerOIDCDeviceClientSecret_RequiresDeviceClientID(t *testing.T) {
+	path := writeFile(t, `
+oidc:
+  issuer: https://idp.example.com
+  clientId: c
+  deviceClientSecret: s
+`)
+	_, err := config.ControllerEffective(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deviceClientId")
+}
+
+func TestControllerOIDCAuthParams(t *testing.T) {
+	path := writeFile(t, `
+oidc:
+  issuer: https://idp.example.com
+  clientId: c
+  authParams:
+    access_type: offline
+    prompt: consent
+`)
+	eff, err := config.ControllerEffective(path)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"access_type": "offline", "prompt": "consent"}, eff.OIDC.AuthParams)
+}
+
+func TestControllerOIDCAuthParams_RejectsReservedKeys(t *testing.T) {
+	for _, key := range []string{"client_id", "redirect_uri", "response_type", "scope", "state", "code_challenge", "code_challenge_method", "nonce"} {
+		t.Run(key, func(t *testing.T) {
+			path := writeFile(t, "oidc:\n  issuer: https://idp.example.com\n  clientId: c\n  authParams:\n    "+key+": x\n")
+			_, err := config.ControllerEffective(path)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), key)
+			assert.Contains(t, err.Error(), "authParams")
+		})
+	}
+}

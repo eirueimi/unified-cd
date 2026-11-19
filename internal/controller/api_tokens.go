@@ -356,14 +356,22 @@ func (s *Server) handleOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		"clientId":          s.oidcCfg.ClientID,
 		"deviceClientId":    deviceClientID,
 		"browserSSOEnabled": s.oidcCfg.ClientSecret != "",
+		// True when the controller relays the CLI logins; the secret itself is never returned.
+		"deviceRelay": s.oidcCfg.DeviceClientSecret != "",
 		// The scopes the CLI device flow must request (shared with the web login).
 		"scopes": oidcScopes(s.oidcCfg.RolesClaim, s.oidcCfg.Scopes),
 	}
 	// Fetch the actual endpoints via discovery (Dex device authorization is at /device/code) and return them.
 	// When IssuerInternal is set, discovery is performed via the internal network.
-	if _, _, oauth2cfg, err := s.oidcProvider(r.Context(), r.Host); err == nil {
+	if _, provider, oauth2cfg, err := s.oidcProvider(r.Context(), r.Host); err == nil {
 		resp["deviceAuthEndpoint"] = oauth2cfg.Endpoint.DeviceAuthURL
 		resp["tokenEndpoint"] = oauth2cfg.Endpoint.TokenURL
+		var disc struct {
+			RevocationEndpoint string `json:"revocation_endpoint"`
+		}
+		if provider.Claims(&disc) == nil && disc.RevocationEndpoint != "" {
+			resp["revocationEndpoint"] = disc.RevocationEndpoint
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

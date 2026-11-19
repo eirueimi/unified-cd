@@ -139,6 +139,10 @@ type OIDCConfig struct {
 	ClientID       string
 	ClientSecret   string
 	DeviceClientID string // Public client ID for the CLI device flow (defaults to ClientID when omitted).
+	// DeviceClientSecret, when set, makes the controller relay the CLI logins. Never sent to clients.
+	DeviceClientSecret string
+	// AuthParams are extra authorization-request parameters for the browser login.
+	AuthParams map[string]string
 	// Scopes overrides the requested OIDC scopes when non-empty (see oidcScopes).
 	Scopes []string
 

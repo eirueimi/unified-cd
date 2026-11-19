@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -155,24 +157,55 @@ func (s *Server) verifierProvider() (*oidc.Provider, error) {
 	return s.oidcProviderV, s.oidcProviderVErr
 }
 
-// verifyOIDCBearer verifies a Bearer token as a Dex-issued id_token.
-// Used to accept id_tokens obtained via the CLI device flow for API authentication.
-// Prefers the CLI public client (DeviceClientID) as the audience.
+// verifyOIDCBearer verifies a Bearer token as an IdP-issued id_token.
+// Used to accept id_tokens obtained via the CLI login flows for API authentication.
+// The audience must be one of bearerAudiences(); signature, issuer and expiry
+// are verified on every attempt (SkipClientIDCheck is never used).
 func (s *Server) verifyOIDCBearer(ctx context.Context, rawToken string) (*oidc.IDToken, error) {
 	provider, err := s.verifierProvider()
 	if err != nil {
 		return nil, err
 	}
-	verifier := provider.Verifier(&oidc.Config{ClientID: s.bearerAudience()})
-	return verifier.Verify(ctx, rawToken)
+	var firstErr error
+	for _, aud := range s.bearerAudiences() {
+		idToken, err := provider.Verifier(&oidc.Config{ClientID: aud}).Verify(ctx, rawToken)
+		if err == nil {
+			return idToken, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return nil, firstErr
 }
 
-// bearerAudience is the audience CLI id_tokens are issued for.
-func (s *Server) bearerAudience() string {
-	if s.oidcCfg.DeviceClientID != "" {
-		return s.oidcCfg.DeviceClientID
+// bearerAudiences is the allow-list of audiences CLI id_tokens may carry: the
+// device client (when set) followed by the browser client, without duplicates
+// or empty entries.
+func (s *Server) bearerAudiences() []string {
+	var out []string
+	for _, aud := range []string{s.oidcCfg.DeviceClientID, s.oidcCfg.ClientID} {
+		if aud == "" || slices.Contains(out, aud) {
+			continue
+		}
+		out = append(out, aud)
 	}
-	return s.oidcCfg.ClientID
+	return out
+}
+
+// authCodeOptions returns the extra authorization-request parameters configured
+// through oidc.authParams, in a stable order.
+func (s *Server) authCodeOptions() []oauth2.AuthCodeOption {
+	keys := make([]string, 0, len(s.oidcCfg.AuthParams))
+	for k := range s.oidcCfg.AuthParams {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var opts []oauth2.AuthCodeOption
+	for _, k := range keys {
+		opts = append(opts, oauth2.SetAuthURLParam(k, s.oidcCfg.AuthParams[k]))
+	}
+	return opts
 }
 
 // verifyIDTokenClaims verifies a raw id_token for the given audience and
@@ -197,9 +230,20 @@ func (s *Server) verifyIDTokenClaims(ctx context.Context, raw, audience string) 
 	return claims, nil
 }
 
-// verifyBearerClaims verifies a Bearer id_token (CLI device flow) and returns its claims.
+// verifyBearerClaims verifies a Bearer id_token (CLI login flows) against the
+// audience allow-list and returns its claims.
 func (s *Server) verifyBearerClaims(ctx context.Context, raw string) (map[string]any, error) {
-	return s.verifyIDTokenClaims(ctx, raw, s.bearerAudience())
+	var firstErr error
+	for _, aud := range s.bearerAudiences() {
+		claims, err := s.verifyIDTokenClaims(ctx, raw, aud)
+		if err == nil {
+			return claims, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return nil, firstErr
 }
 
 // handleOIDCLogin initiates the OIDC Authorization Code Flow.
@@ -227,7 +271,7 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, oauth2Cfg.AuthCodeURL(state), http.StatusFound)
+	http.Redirect(w, r, oauth2Cfg.AuthCodeURL(state, s.authCodeOptions()...), http.StatusFound)
 }
 
 // handleOIDCCallback handles the callback from the IdP.

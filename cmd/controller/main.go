@@ -485,18 +485,20 @@ func main() {
 	oidcConfigured := false
 	if eff.OIDC != nil && eff.OIDC.Issuer != "" && eff.OIDC.ClientID != "" {
 		srv.SetOIDCConfig(&controller.OIDCConfig{
-			Issuer:         eff.OIDC.Issuer,
-			IssuerInternal: eff.OIDC.IssuerInternal,
-			ExternalURL:    eff.OIDC.ExternalURL,
-			ClientID:       eff.OIDC.ClientID,
-			ClientSecret:   eff.OIDC.ClientSecret,
-			DeviceClientID: eff.OIDC.DeviceClientID,
-			Scopes:         eff.OIDC.Scopes,
-			RolesClaim:     eff.OIDC.RolesClaim,
-			RoleMap:        eff.OIDC.RoleMap,
-			UserMap:        eff.OIDC.UserMap,
-			DefaultRole:    eff.OIDC.DefaultRole,
-			Policy:         eff.OIDC.Policy,
+			Issuer:             eff.OIDC.Issuer,
+			IssuerInternal:     eff.OIDC.IssuerInternal,
+			ExternalURL:        eff.OIDC.ExternalURL,
+			ClientID:           eff.OIDC.ClientID,
+			ClientSecret:       eff.OIDC.ClientSecret,
+			DeviceClientID:     eff.OIDC.DeviceClientID,
+			DeviceClientSecret: eff.OIDC.DeviceClientSecret,
+			AuthParams:         eff.OIDC.AuthParams,
+			Scopes:             eff.OIDC.Scopes,
+			RolesClaim:         eff.OIDC.RolesClaim,
+			RoleMap:            eff.OIDC.RoleMap,
+			UserMap:            eff.OIDC.UserMap,
+			DefaultRole:        eff.OIDC.DefaultRole,
+			Policy:             eff.OIDC.Policy,
 		})
 		oidcConfigured = true
 		if err := controller.WarnRoleOnlyPATs(ctx, st, eff.OIDC.Policy, slog.Default()); err != nil {

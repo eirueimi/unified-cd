@@ -110,6 +110,14 @@ type ControllerOIDCConfig struct {
 	// Using a separate secret-less public client distinct from the confidential ClientID (for browser SSO)
 	// allows the device flow to work without exposing secrets to the CLI. Falls back to ClientID when not set.
 	DeviceClientID string `yaml:"deviceClientId"`
+	// DeviceClientSecret is the secret of the device client. When set, the controller
+	// relays the CLI device and browser logins so the secret never leaves it. Requires
+	// DeviceClientID. Never returned by any endpoint.
+	DeviceClientSecret string `yaml:"deviceClientSecret"`
+	// AuthParams are extra query parameters added to the browser login's authorization
+	// request (e.g. access_type: offline). Config file only. Keys the controller sets
+	// itself are rejected.
+	AuthParams map[string]string `yaml:"authParams"`
 	// Scopes, when non-empty, replaces the scopes requested from the IdP by the
 	// browser login and the CLI device flow (openid is prepended if missing and the
 	// automatic rolesClaim scope is not added). Entries must not contain whitespace.
@@ -309,15 +317,16 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	oidcClientID := os.Getenv("UNIFIED_OIDC_CLIENT_ID")
 	if oidcIssuer != "" || oidcClientID != "" {
 		eff.OIDC = &ControllerOIDCConfig{
-			Issuer:         oidcIssuer,
-			IssuerInternal: os.Getenv("UNIFIED_OIDC_ISSUER_INTERNAL"),
-			ExternalURL:    os.Getenv("UNIFIED_OIDC_EXTERNAL_URL"),
-			ClientID:       oidcClientID,
-			ClientSecret:   os.Getenv("UNIFIED_OIDC_CLIENT_SECRET"),
-			DeviceClientID: os.Getenv("UNIFIED_OIDC_DEVICE_CLIENT_ID"),
-			RolesClaim:     os.Getenv("UNIFIED_OIDC_ROLES_CLAIM"),
-			DefaultRole:    os.Getenv("UNIFIED_OIDC_DEFAULT_ROLE"),
-			Scopes:         SplitCSV(os.Getenv("UNIFIED_OIDC_SCOPES")),
+			Issuer:             oidcIssuer,
+			IssuerInternal:     os.Getenv("UNIFIED_OIDC_ISSUER_INTERNAL"),
+			ExternalURL:        os.Getenv("UNIFIED_OIDC_EXTERNAL_URL"),
+			ClientID:           oidcClientID,
+			ClientSecret:       os.Getenv("UNIFIED_OIDC_CLIENT_SECRET"),
+			DeviceClientID:     os.Getenv("UNIFIED_OIDC_DEVICE_CLIENT_ID"),
+			DeviceClientSecret: os.Getenv("UNIFIED_OIDC_DEVICE_CLIENT_SECRET"),
+			RolesClaim:         os.Getenv("UNIFIED_OIDC_ROLES_CLAIM"),
+			DefaultRole:        os.Getenv("UNIFIED_OIDC_DEFAULT_ROLE"),
+			Scopes:             SplitCSV(os.Getenv("UNIFIED_OIDC_SCOPES")),
 		}
 		if err := validateOIDCScopes(eff.OIDC.Scopes); err != nil {
 			return nil, err
@@ -328,6 +337,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		return nil, err
 	}
 	if filePath == "" {
+		if err := validateOIDCDevice(eff.OIDC); err != nil {
+			return nil, err
+		}
 		return eff, nil
 	}
 
@@ -417,6 +429,12 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		if file.OIDC.DeviceClientID != "" {
 			eff.OIDC.DeviceClientID = file.OIDC.DeviceClientID
 		}
+		if file.OIDC.DeviceClientSecret != "" {
+			eff.OIDC.DeviceClientSecret = file.OIDC.DeviceClientSecret
+		}
+		if len(file.OIDC.AuthParams) > 0 {
+			eff.OIDC.AuthParams = file.OIDC.AuthParams
+		}
 		if len(file.OIDC.Scopes) > 0 {
 			eff.OIDC.Scopes = file.OIDC.Scopes
 		}
@@ -442,6 +460,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	// Compile only here: roleMap, userMap and permissions are config-file only,
 	// so the early return above for an empty config path has nothing to compile
 	// or warn about.
+	if err := validateOIDCDevice(eff.OIDC); err != nil {
+		return nil, err
+	}
 	if eff.OIDC != nil {
 		policy, warnings, err := authz.Compile(eff.OIDC.Permissions, authz.Legacy{
 			RolesClaim:  eff.OIDC.RolesClaim,
@@ -520,6 +541,29 @@ func SplitCSV(v string) []string {
 		}
 	}
 	return out
+}
+
+// oidcReservedAuthParams are the authorization-request parameters the controller
+// sets itself; authParams must not override them.
+var oidcReservedAuthParams = []string{
+	"client_id", "redirect_uri", "response_type", "scope", "state",
+	"code_challenge", "code_challenge_method", "nonce",
+}
+
+// validateOIDCDevice checks the device client secret and authParams settings.
+func validateOIDCDevice(o *ControllerOIDCConfig) error {
+	if o == nil {
+		return nil
+	}
+	if o.DeviceClientSecret != "" && o.DeviceClientID == "" {
+		return fmt.Errorf("oidc.deviceClientSecret requires oidc.deviceClientId")
+	}
+	for _, k := range oidcReservedAuthParams {
+		if _, ok := o.AuthParams[k]; ok {
+			return fmt.Errorf("oidc.authParams must not set %q: the controller sets it itself", k)
+		}
+	}
+	return nil
 }
 
 // validateOIDCScopes rejects a scope entry containing whitespace: scopes are
