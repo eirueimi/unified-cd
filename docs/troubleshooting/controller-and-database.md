@@ -150,6 +150,41 @@ For SSO: nothing in `userMap` / `roleMap` / `defaultRole` produced a role **and*
 
 Map the user's group or email to a role or a grant, or set `defaultRole`. Re-create a role-less PAT with a role.
 
+## CLI login and token refresh problems
+
+**Symptom**
+
+One of these appears with `unified-cli login`, `login --browser`, or any command after a login:
+
+- `token refresh failed: <reason>; run "unified-cli login" again` (stderr; the command still runs with the old token and then usually gets `server: unauthorized`)
+- `the identity provider issued no refresh token; you will need to log in again when the token expires` (stderr after `login`)
+- `this server does not support browser login for the CLI; upgrade the controller or use the device flow`
+- `browser login is not configured on this server`
+- `browser login failed: server returned 503: browser login requires the controller key manager`
+- `browser login failed: server returned 400: redirect must be http://127.0.0.1:<port>/callback or http://[::1]:<port>/callback`
+- `browser login failed: invalid_grant` (the one-time code was already used, expired after 2 minutes, or the PKCE verifier did not match)
+- `timed out after 5m0s waiting for the browser login`
+- `device access token error: invalid_grant` / `device access token error: expired_token` / `server returned 429`
+- `warning: could not revoke the refresh token: <reason>` (from `logout`)
+- the browser shows a connection error on `http://127.0.0.1:<port>/callback` after the IdP login
+
+**Cause**
+
+- `token refresh failed: invalid_grant`: the refresh token was revoked, expired, or already rotated (for example by another machine, or after `logout`); a user whose IdP session ended also gets this. Other reasons are an unreachable IdP or controller.
+- No refresh token was issued: the IdP issues one only on request. Okta, Entra ID and Keycloak need `offline_access` in `oidc.scopes`; Google needs `access_type: offline` (and `prompt: consent`) in `oidc.authParams`, or the TV client for the device flow. See [Identity providers](../operator-manual/identity-providers.md).
+- The old-controller message: the controller predates browser login (it answers 401 or 404 to `/api/v1/auth/cli/browser/start`).
+- `browser login is not configured`: `oidc.clientSecret` is not set, so browser SSO is off.
+- 503 `browser login requires the controller key manager`: the one-time codes are encrypted, so the controller needs its key manager (`UNIFIED_CONTROLLER_KEY_FILE`, or Vault/OpenBao Transit; see [Secrets](../user-guide/secrets.md#setting-unified_controller_key_file-required)).
+- 400 on `start` or a refused loopback redirect: the redirect target must be `http://127.0.0.1:<port>/callback` or `http://[::1]:<port>/callback` and the challenge must be a base64url SHA-256 value. Anything else is refused, including `localhost`. A browser on another machine than the CLI cannot reach the CLI's loopback listener (for example over SSH); use the device flow there.
+- Timeout after 5 minutes: the browser never returned to the CLI. A user the web login would refuse (no role: the browser shows the `403 forbidden: no role assigned` page) gets no code, so the CLI just waits. Check that page, or the controller's roles, and run `unified-cli login --browser` again.
+- 400 `invalid_grant` on `/api/v1/auth/cli/browser/exchange`: the code is single use (any attempt consumes it, including one with a wrong verifier) and valid for 2 minutes. Run `login --browser` again.
+- 429 `rate_limited`: each relay endpoint is limited per client IP. Behind a reverse proxy or load balancer without `trustedProxies`, every user shares the proxy's address and one bucket.
+- A `logout` revocation warning is harmless for the local state (the tokens are cleared anyway); the refresh token stays valid at the IdP until it expires or you revoke it there.
+
+**Fix**
+
+Run `unified-cli login` (or `login --browser`) again. For a missing refresh token, change the scopes or `authParams` as above and log in again. For `429`s behind a proxy, set `trustedProxies` to the proxy's address range (see [High availability](../operator-manual/high-availability.md)). Details: [Authentication: CLI login](../operator-manual/authentication.md#cli-login-device-flow).
+
 ## Token creation is refused: `cannot create a token`
 
 **Symptom**

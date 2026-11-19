@@ -293,8 +293,62 @@ unified-cli login --server http://localhost:8080
 unified-cli apply -f examples/hello.yaml --server http://localhost:8080
 ```
 
-> id_tokens expire (Dex default ~24 hours). Run `login` again after expiry.
-> Automatic refresh via refresh token is not currently supported.
+#### Token lifetime and automatic refresh
+
+The saved id_token expires on the IdP's schedule (Dex default about 24 hours, Google about 1 hour). When the IdP also issued a **refresh token**, `login` saves it too (config fields `refreshToken`, `tokenExpiry`, `loginClient`, `loginRelay`; the file stays mode `0600`), and the CLI refreshes the id_token by itself:
+
+- Before every command that talks to the controller, the CLI checks `tokenExpiry`. If the token expires within 60 seconds, it refreshes first and runs the command with the new token. The expiry is the `exp` claim of the id_token.
+- Concurrent commands take an exclusive lock file next to the config (`<config>.lock`), re-read the config and use the token another process already refreshed. A refresh gives up after 15 seconds.
+- A device-flow login against a controller **without** `deviceClientSecret` refreshes directly at the IdP's token endpoint as a public client. Logins that went through the relay (`deviceClientSecret` set) and `--browser` logins refresh through the controller (`POST /api/v1/auth/cli/refresh`).
+- Refresh is **skipped** when the token comes from `--token` or `UNIFIED_TOKEN`, and when the effective server (`--server` / `UNIFIED_SERVER`) differs from the `server` stored in the config file. The stored refresh token belongs to the stored server and is never sent anywhere else.
+- If a refresh fails, the CLI keeps the old token, prints `token refresh failed: <reason>; run "unified-cli login" again` to stderr once, and still runs the command. The server's `401` is the final word.
+- If the IdP issued no refresh token, `login` prints `the identity provider issued no refresh token; you will need to log in again when the token expires` and the behavior is the old one: run `login` again after expiry. See [Identity providers](identity-providers.md) for how to make each IdP issue one (`offline_access`, Google `authParams`).
+
+The controller keeps no refresh tokens. It only relays them, and it does not re-check admission on refresh: each request is still checked against the claims of the id_token it carries.
+
+### CLI login with a device client secret (relay)
+
+Some IdPs (Google's "TVs and limited-input devices" client) require a client secret for the device flow. The CLI must not hold it, so set `oidc.deviceClientSecret` (or `UNIFIED_OIDC_DEVICE_CLIENT_SECRET`) on the controller. It requires `deviceClientId`; the controller refuses to start without it (`oidc.deviceClientSecret requires oidc.deviceClientId`). Then:
+
+- `GET /api/v1/auth/oidc-config` reports `deviceRelay: true` (and `revocationEndpoint` when the issuer has one). It never contains the secret.
+- `unified-cli login` runs the device flow through the controller's relay endpoints, which add the secret and talk only to the configured issuer's own endpoints. They pass the IdP's OAuth error codes (`authorization_pending`, `slow_down`, `expired_token`, `invalid_grant`) through unchanged.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/v1/auth/cli/device/start` | Start the device authorization |
+| `POST /api/v1/auth/cli/device/token` | Poll once for the token (`{deviceCode}`) |
+| `POST /api/v1/auth/cli/refresh` | Refresh an id_token (`{refreshToken, client}`, `client` is `device` or `browser`) |
+| `POST /api/v1/auth/cli/revoke` | Revoke a refresh token (`{refreshToken, client}`); 404 when the issuer has no revocation endpoint |
+| `POST /api/v1/auth/cli/browser/exchange` | Redeem a browser-login one-time code (`{code, codeVerifier}`) |
+
+These endpoints are unauthenticated and rate limited **per client IP**, separately for each endpoint (device token polling: burst 50, one request per 100 ms; refresh: burst 50, one per 200 ms; device start, revoke and browser exchange: burst 20, one per second), sized so that about 50 users behind one address can log in at once. A rate-limited call gets `429` with `rate_limited`. Behind a reverse proxy or load balancer, set `trustedProxies` (see [High availability](high-availability.md) and the [trusted proxies migration](migrations/2026-11-09-trusted-proxies.md)); otherwise every request is attributed to the proxy and all users share one bucket. The relay never logs tokens, device codes or refresh tokens.
+
+An old CLI against such a controller keeps working when no secret is set (the direct device flow is unchanged); a new CLI against an old controller falls back to the direct flow because the new `oidc-config` fields are absent.
+
+### CLI login with the browser (`--browser`)
+
+```bash
+unified-cli login --browser --server https://unified-cd.example.com
+```
+
+This uses the controller's existing browser SSO and the existing web client, so no extra IdP client is needed. It is offered when the controller has `clientSecret` set (`browserSSOEnabled: true` in `oidc-config`) and it requires the controller key manager (otherwise `/api/v1/auth/cli/browser/start` answers 503 `browser login requires the controller key manager`).
+
+1. The CLI listens on `127.0.0.1:<random port>` and opens `GET /api/v1/auth/cli/browser/start?redirect=http://127.0.0.1:<port>/callback&challenge=<PKCE S256>` in your browser (the URL is also printed).
+2. The controller accepts only a loopback `redirect` (`http://127.0.0.1:<port>/callback` or `http://[::1]:<port>/callback`) and a base64url S256 challenge, then sends the browser through the normal IdP login.
+3. After login, the same admission check as the web login runs, without creating a session. The controller stores the tokens encrypted under a **one-time code** (stored hashed, valid for 2 minutes) and redirects the browser to the loopback address with `?code=...`.
+4. The CLI redeems the code at `/api/v1/auth/cli/browser/exchange` together with the PKCE verifier. The code is single use: any attempt, including one with a wrong verifier, consumes it.
+
+The CLI waits 5 minutes for the browser. `--browser` cannot be combined with `--issuer` or `--client-id`. The controller accepts id_tokens issued to either `deviceClientId` or `clientId` as bearer tokens, so browser-login tokens work for API calls. A controller older than this feature answers 401 or 404 to the start URL; the CLI then prints `this server does not support browser login for the CLI; upgrade the controller or use the device flow`.
+
+`oidc.authParams` adds extra parameters to this login's authorization request (and to the web login's), for example `access_type: offline` for Google.
+
+### CLI logout
+
+```bash
+unified-cli logout
+```
+
+Revokes the stored refresh token at the IdP when the server advertises a `revocation_endpoint` (directly for a direct device login, through `/api/v1/auth/cli/revoke` for relayed and browser logins), then clears `token`, `refreshToken`, `tokenExpiry`, `loginClient` and `loginRelay` from the config. `server` and extra `headers` are kept. If revocation fails the CLI prints `warning: could not revoke the refresh token: <reason>` and still clears the local tokens. After a PAT login, `logout` only clears the token.
 
 ### Cookies over plain HTTP (`--insecure-cookies`)
 
@@ -327,8 +381,8 @@ For IdPs other than Dex (Auth0, Keycloak, Okta, etc.), see [Identity provider se
 2. Environment variables `UNIFIED_SERVER` / `UNIFIED_TOKEN` (applied only when config file field is empty)
 3. Flags `--server` / `--token` (highest priority)
 
-The token obtained via `unified-cli login` is written to the config file, so after login
-you only need `--server` (or `server` in the config file) without specifying a token.
+The token obtained via `unified-cli login` is written to the config file (the path given by `--config`, if any), so after login
+you only need `--server` (or `server` in the config file) without specifying a token. `login` keeps any existing `headers` in that file. Automatic refresh applies only to a token that comes from the config file, and only when the effective server matches the one stored there.
 
 ---
 
@@ -336,7 +390,7 @@ you only need `--server` (or `server` in the config file) without specifying a t
 
 | Symptom | Cause and fix |
 |---------|---------------|
-| `server: unauthorized` (apply etc.) | Token not set or expired. For non-SSO: check `UNIFIED_TOKEN`. For SSO: re-run `unified-cli login`. id_tokens expire in ~24h. |
+| `server: unauthorized` (apply etc.) | Token not set or expired. For non-SSO: check `UNIFIED_TOKEN`. For SSO: re-run `unified-cli login`. id_tokens expire on the IdP's schedule (Dex ~24h, Google ~1h) and are refreshed automatically only when the IdP issued a refresh token; see [CLI login](#cli-login-device-flow) and [Troubleshooting: CLI login](../troubleshooting/controller-and-database.md#cli-login-and-token-refresh-problems). |
 | `OIDC provider discovery error: HTTP 404` | Controller is old or OIDC is not configured. Verify SSO compose is running and `/api/v1/auth/oidc-config` returns JSON. |
 | `Unregistered redirect_uri ("/device/callback")` | Dex is running with old config. Run `docker compose ... restart dex`. Check that `/device/callback` is registered in `dex-config.sso.yaml`. |
 | `invalid_client / Invalid client credentials` (device callback) | CLI is using the confidential client. Verify `UNIFIED_OIDC_DEVICE_CLIENT_ID=unified-cd-cli` (public, no secret) is set and that client exists in Dex. |

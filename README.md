@@ -82,7 +82,9 @@ Point the CLI at the server and give it a token — pick any one:
 
 ```bash
 # a) Interactive login: OIDC SSO device flow, or a PAT prompt when SSO is off.
-#    Saves server + token to ~/.config/unified-cd/config.yaml.
+#    Saves server + token to ~/.config/unified-cd/config.yaml and refreshes the
+#    token automatically when the IdP issues a refresh token.
+#    (--browser logs in through the browser instead; `unified-cli logout` signs out.)
 unified-cli login --server http://localhost:8080
 
 # b) Environment variables (handy for CI/scripts):

@@ -11,14 +11,16 @@ It does not repeat the permission catalogue or the resolution rules. For those, 
 These points come from the controller implementation and decide what a working IdP setup looks like.
 
 - **One issuer.** unified-cd is a relying party for exactly one `oidc.issuer`. To combine several sources (for example GitHub plus Google), put Dex in front. See [Dex as broker](#dex-as-broker).
-- **Two clients.** A **confidential** web client (`clientId` / `clientSecret`) for the browser Authorization Code flow, and a **public** client without a secret (`deviceClientId`) for the CLI device flow (RFC 8628). If `deviceClientId` is unset the CLI falls back to `clientId`, which only works when the IdP lets a confidential client run the device flow without sending the secret (most do not).
+- **Two clients.** A **confidential** web client (`clientId` / `clientSecret`) for the browser Authorization Code flow, and a **public** client without a secret (`deviceClientId`) for the CLI device flow (RFC 8628). If `deviceClientId` is unset the CLI falls back to `clientId`, which only works when the IdP lets a confidential client run the device flow without sending the secret (most do not). If the device client has a secret (Google's "TVs and limited-input devices" client does), set `oidc.deviceClientSecret` (`UNIFIED_OIDC_DEVICE_CLIENT_SECRET`): the controller then relays the CLI's device login, token refresh and logout revocation and adds the secret itself, so it never reaches the CLI. See [Authentication: CLI login](authentication.md#cli-login-device-flow).
 - **Redirect URI.** Register exactly one URI for the web client: `<base>/api/v1/auth/oidc-callback`, where `<base>` is `oidc.externalUrl` (`UNIFIED_OIDC_EXTERNAL_URL`) if set, otherwise `http://<request host>`. Behind TLS or a reverse proxy, set `externalUrl` to the public `https://` URL so the registered URI matches. The CLI device flow sends no redirect URI of its own.
 - **Claims come from the ID token only.** The controller reads the roles claim from the verified ID token. It does not call the `userinfo` endpoint and does not read the access token. A claim that the IdP only exposes through `userinfo` or the access token is invisible to unified-cd.
 - **Top-level claim name only.** `rolesClaim` is looked up as a single key of the ID token. A dotted name such as `realm_access.roles` is treated as one literal key and will not match the nested JSON object. Namespaced URL claims (Auth0) are top-level keys and work. The default is `groups`.
 - **Accepted value shapes.** A JSON array of strings, or a single string, which is treated as one value. A comma- or space-separated string is **not** split: `"a b"` is the one value `a b`. Non-string array elements are dropped.
 - **Scopes requested.** `openid`, `email`, `profile`, plus `rolesClaim` itself as an extra scope when the claim name contains neither `/` nor `:` (so `groups` adds the scope `groups`, `roles` adds the scope `roles`; a namespaced Auth0 claim adds nothing). The CLI reads the same list from `GET /api/v1/auth/oidc-config` (`scopes`). To change this, set `oidc.scopes` (YAML list, or `UNIFIED_OIDC_SCOPES` comma-separated): when non-empty it is requested exactly, in order, with `openid` prepended if missing and duplicates dropped, and the automatic `rolesClaim` scope is **not** added. Use it when the IdP rejects the extra scope, or when you need a scope the default list lacks. Each entry is one scope; an entry containing whitespace (for example `"openid email profile"`) is a startup error. The CLI device flow uses the same override through `/api/v1/auth/oidc-config`. When the roles claim only appears if its scope is requested (Dex `groups`, Okta `groups`), keep that scope in the list yourself.
 - **Identity matching.** `userMap` and `permissions.*.users` match the token's `email` and its `sub`. If the token has no `email`, the controller uses `sub` in its place. The `email_verified` claim is **not** checked, so only use IdPs where users cannot choose an unverified email address of their own.
-- **Group changes** reach unified-cd at the next browser login (the ID token is re-issued then) and on silent session refresh when the refreshed ID token still carries the claim. CLI id_tokens carry the groups from login time until they expire.
+- **Group changes** reach unified-cd at the next browser login (the ID token is re-issued then) and on silent session refresh when the refreshed ID token still carries the claim. CLI id_tokens carry the groups from login time until they expire; a CLI that refreshes its token gets the IdP's new id_token, so group changes reach it at the next refresh. The controller does not re-check admission on refresh.
+- **Refresh tokens (CLI).** The CLI refreshes its id_token automatically only when the IdP issued a refresh token at login. Most IdPs issue one only when asked: Okta, Entra ID and Keycloak need the `offline_access` scope in `oidc.scopes`, and Google needs `access_type=offline` in `oidc.authParams` (browser login) or a TV client (device flow). Without a refresh token `unified-cli login` still succeeds but warns `the identity provider issued no refresh token; you will need to log in again when the token expires`.
+- **`authParams`.** `oidc.authParams` (config file only) adds extra query parameters to the authorization request of the web login and of `unified-cli login --browser`. The names `client_id`, `redirect_uri`, `response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method` and `nonce` are reserved; setting one is a startup error.
 
 ## Which topology to choose
 
@@ -26,7 +28,7 @@ These points come from the controller implementation and decide what a working I
 |---|---|
 | One OIDC-compliant IdP that can emit a flat top-level `groups`/`roles` claim in the ID token (Okta, Keycloak, Auth0, Entra with App Roles) | Direct to the IdP. |
 | GitHub | Dex only. GitHub is not an OIDC provider. |
-| Google Workspace groups | Dex only (Google emits no groups claim). |
+| Google Workspace groups | Dex only (Google emits no groups claim). Google sign-in and `unified-cli login` without groups work directly; see the [Google Workspace](#google-workspace) section. |
 | Several sources at once, or you want to normalise group value shapes | Dex. |
 | GitLab, when you need ancestor groups or the device flow | Dex (see the GitLab section). |
 
@@ -84,6 +86,7 @@ IdP side (menu names vary by version):
 2. Under **App roles**, create roles for users and groups (for example values `admin`, `team-a`, `team-b`).
 3. In **Enterprise applications > (your app) > Users and groups**, assign users or groups to those roles. Assigned app roles appear in the ID token's `roles` claim.
 4. For the CLI, create a second registration (or enable **Allow public client flows** on a registration) and use its application ID as `deviceClientId`. Entra's device code flow needs a public client.
+5. For CLI token refresh, add `offline_access` to `oidc.scopes` (see the scope gotcha below). Without it Entra issues no refresh token and the CLI asks for a new login when the id_token expires.
 
 unified-cd config:
 
@@ -124,7 +127,7 @@ Gotchas:
 
 - **Groups overage.** A JWT carries at most 200 groups. Beyond that Entra drops the `groups` claim and puts a link in `_claim_names` / `_claim_sources` instead. unified-cd does not follow that link, so the user appears to have no groups. Use App Roles, or limit the claim to groups assigned to the application (see [Entra optional claims](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims)).
 - **GUIDs vs names.** Without extra configuration the claim contains GUIDs, not names. Comment your config with the group names. Entra can emit on-premises `sAMAccountName` values for synced groups through the `groups` optional claim, and cloud group display names with the `cloud_displayname` option together with "groups assigned to the application". Prefer GUIDs or App Roles unless you need names.
-- **Scope name.** By default unified-cd adds `rolesClaim` as a scope (`roles` or `groups`) because it is a bare word. Entra does not define scopes with those names, and whether the v2.0 endpoint ignores or rejects them was not verified here. App Roles and the `groups` claim are emitted from the app registration, not from a scope, so set `scopes: [openid, email, profile]` under `oidc` to stop the extra scope from being requested. If you would rather not connect Entra directly, put Dex in front with the generic `oidc` connector (`insecureEnableGroups: true`, and map the Entra claim to Dex groups; the claim-mapping option names depend on the Dex version) and set `rolesClaim: groups` in unified-cd. Test in a non-production tenant first.
+- **Scope name.** By default unified-cd adds `rolesClaim` as a scope (`roles` or `groups`) because it is a bare word. Entra does not define scopes with those names, and whether the v2.0 endpoint ignores or rejects them was not verified here. App Roles and the `groups` claim are emitted from the app registration, not from a scope, so set `scopes: [openid, email, profile, offline_access]` under `oidc` to stop the extra scope from being requested and to get a refresh token for the CLI (drop `offline_access` if you do not want CLI refresh). If you would rather not connect Entra directly, put Dex in front with the generic `oidc` connector (`insecureEnableGroups: true`, and map the Entra claim to Dex groups; the claim-mapping option names depend on the Dex version) and set `rolesClaim: groups` in unified-cd. Test in a non-production tenant first.
 - Users without an assignment get no `roles` claim; `defaultRole: deny` then refuses them unless a `permissions` entry matches.
 
 ## Okta
@@ -138,6 +141,7 @@ IdP side:
     - **Org authorization server** (issuer `https://<org>.okta.com`): on the app's **Sign On** tab, edit **OpenID Connect ID Token**, keep the claim name `groups` and set a filter (for example matches regex `team-.*`). The `groups` scope must be requested; unified-cd does so when `rolesClaim` is `groups`.
     - **Custom authorization server** (for example issuer `https://<org>.okta.com/oauth2/default`): **Security > API > (server) > Claims > Add Claim**, name `groups`, include in **ID Token** (always), value type **Groups**, filter by regex. A custom server also needs a scope named `groups` (**Scopes** tab) because unified-cd always requests it.
 3. For the CLI: create a second app integration of type **Native** (public, no secret) and enable the **Device Authorization** grant type. Its client ID is `deviceClientId`. Add the same groups claim for that app (or server-wide on the custom server).
+4. For CLI token refresh, enable the **Refresh Token** grant type on the apps and add `offline_access` to `oidc.scopes`. Okta issues a refresh token only for that scope, and `scopes` replaces the default list, so keep `openid`, `email`, `profile` and `groups` in it: `scopes: [openid, email, profile, groups, offline_access]`.
 
 unified-cd config:
 
@@ -178,6 +182,7 @@ IdP side:
 2. Create the group claim: on the client (or in a shared client scope), **Mappers > Add mapper > By configuration > Group Membership**. Token claim name `groups`, **Add to ID token** on. Decide **Full group path** now: it changes the values you write in the controller config.
 3. To use realm roles instead of groups, add a **User Realm Role** mapper (multivalued) with token claim name `roles` and **Add to ID token** on, and set `rolesClaim: roles`. Do not rely on the default `realm_access.roles` claim: it is nested and `rolesClaim` cannot reach it.
 4. CLI: create a second client with **Client authentication off** (public) and the **OAuth 2.0 Device Authorization Grant** enabled, and add the same mapper to it. Its ID is `deviceClientId`.
+5. For CLI token refresh, add `offline_access` to `oidc.scopes` (Keycloak issues an offline refresh token only for that scope; the client needs the `offline_access` role, which users have by default). Keep the scopes you already rely on in the list, for example `scopes: [openid, email, profile, groups, offline_access]`.
 
 unified-cd config (Full group path **on**):
 
@@ -220,7 +225,8 @@ IdP side (direct):
 
 1. In Google Cloud Console, **APIs & Services > Credentials > Create OAuth client ID**, type **Web application**. Authorized redirect URI: `https://unified-cd.example.com/api/v1/auth/oidc-callback`.
 2. Restrict sign-in to your organisation, for example by setting the OAuth consent screen user type to **Internal**.
-3. CLI device flow: Google's device flow uses a separate "TVs and limited-input devices" client type that has a client secret, and allows only a small scope set. unified-cd's public-client device flow sends no secret, so use Dex in front if you need `unified-cli login` with Google. This was not verified end to end.
+3. CLI device flow: create a second OAuth client of type **TVs and limited-input devices**. Google requires its client secret at the token endpoint, so set it as `oidc.deviceClientSecret` on the controller. The controller then relays the CLI's device login, refresh and logout and adds the secret itself; the CLI never sees it. Google allows only a small scope set for this client type, so keep `oidc.scopes` to `openid`, `email`, `profile` (see the config below; the default list adds a `groups` scope Google would reject).
+4. Refresh tokens: Google issues a refresh token to a web client only when the authorization request carries `access_type=offline` (and `prompt=consent` for repeat logins). Set `oidc.authParams` as shown below; it applies to the web login and to `unified-cli login --browser`. The TV client issues refresh tokens for the device flow without it.
 
 Direct config (grants by user email only):
 
@@ -230,6 +236,12 @@ oidc:
   externalUrl: https://unified-cd.example.com
   clientId: <client-id>.apps.googleusercontent.com
   clientSecret: <client-secret>
+  deviceClientId: <tv-client-id>.apps.googleusercontent.com   # "TVs and limited-input devices" client
+  deviceClientSecret: <tv-client-secret>                      # kept on the controller; or UNIFIED_OIDC_DEVICE_CLIENT_SECRET
+  scopes: [openid, email, profile]
+  authParams:
+    access_type: offline    # without this Google issues no refresh token to the web client
+    prompt: consent         # needed to get a refresh token again on a repeat login
   defaultRole: deny
   userMap:
     alice@example.com: admin
@@ -240,6 +252,8 @@ oidc:
           bob@example.com: developer
           carol@example.com: [job.read, run.trigger]
 ```
+
+> **Unverified assumptions.** These Google behaviors come from general knowledge of Google's OAuth documentation and have not been tested against a real Google tenant: the TV client's device flow returns a refresh token and an `id_token` for the `openid email profile` scopes; Google returns a refresh token to a web client only with `access_type=offline`; and Google returns a new `id_token` on refresh. Test `unified-cli login`, `--browser` and a refresh in a non-production project first. If a login prints the "issued no refresh token" warning, check `authParams` first.
 
 Via Dex (groups):
 

@@ -938,16 +938,29 @@ Allowed calls are not written to the audit log; denied calls are.
 
 ## login
 
-Authenticate using OIDC (SSO) device flow and save the token to the config file.
+Authenticate using OIDC (SSO) and save the token to the config file (the `--config`
+path when given; existing `headers` in the file are kept). The default is the device
+flow; `--browser` uses the controller's browser SSO instead.
 `--server` is required (or set `UNIFIED_SERVER`).
 
 ```
-unified-cli login --server <url>
+unified-cli login --server <url> [--browser]
 
   --server     string   Controller server URL (required)
+  --browser             Log in through the controller's browser SSO with a loopback callback
+                        instead of the device flow
   --issuer     string   OIDC issuer URL (auto-discovered from server if omitted)
   --client-id  string   OIDC device flow client ID (auto-discovered if omitted)
 ```
+
+`--browser` cannot be combined with `--issuer` or `--client-id`. It requires a
+controller with browser SSO enabled (`oidc.clientSecret` set); otherwise it fails with
+`browser login is not configured on this server`, and a controller that predates this
+feature gives `this server does not support browser login for the CLI; upgrade the
+controller or use the device flow`. The CLI opens your browser (the URL is also
+printed) and waits up to 5 minutes. When the controller holds
+`oidc.deviceClientSecret`, the device flow goes through the controller's relay, so
+no secret is needed on the CLI.
 
 ```bash
 unified-cli login --server http://unified-cd.example.com
@@ -960,13 +973,43 @@ unified-cli login --server http://unified-cd.example.com
 # => Expires: 2026-07-05T14:12:38Z
 ```
 
-On success, the verifiable id_token (JWT) from the device flow is written to the
-`token` field of `~/.config/unified-cd/config.yaml`, along with its expiry printed
-to stdout (Dex default: ~24 hours). Re-run `login` when your token expires. If the
-server has no SSO configured, `login` instead prompts for an existing PAT
-(see [`token create`](#token-create)) and stores that instead.
+On success, the verifiable id_token (JWT) is written to the `token` field of
+`~/.config/unified-cd/config.yaml`, and its expiry (the token's `exp`) is printed to
+stdout. If the IdP issued a refresh token, it is saved too and the CLI refreshes the
+id_token automatically: before each command, a token that expires within 60 seconds
+is refreshed first (never when the token comes from `--token` / `UNIFIED_TOKEN`, or
+when `--server` / `UNIFIED_SERVER` differs from the server stored in the config). A
+failed refresh prints `token refresh failed: <reason>; run "unified-cli login" again`
+once to stderr and the command still runs. If the IdP issued no refresh token, `login`
+prints `the identity provider issued no refresh token; you will need to log in again
+when the token expires` (Dex default lifetime: about 24 hours, Google: about 1 hour);
+re-run `login` when the token expires. If the server has no SSO configured, `login`
+instead prompts for an existing PAT (see [`token create`](#token-create)) and stores
+that instead.
 
 See the [Authentication Guide](../operator-manual/authentication.md) for full SSO setup details.
+
+---
+
+## logout
+
+Revoke the stored refresh token and clear the saved login.
+
+```
+unified-cli logout
+```
+
+When a refresh token is stored and the server advertises a `revocation_endpoint`, the
+CLI asks the IdP to revoke it (directly, or through the controller for relayed and
+browser logins). It then clears `token`, `refreshToken`, `tokenExpiry`, `loginClient`
+and `loginRelay` from the config file and keeps `server` and `headers`. If the
+revocation fails, it prints `warning: could not revoke the refresh token: <reason>` and
+still clears the local tokens. After a PAT login it only clears the token.
+
+```bash
+unified-cli logout
+# => Logged out.
+```
 
 ---
 
@@ -1144,8 +1187,12 @@ token: dev-secret
 ```
 
 `token` holds either a manually-configured bearer token or the id_token written by
-`login` (OIDC device flow or PAT prompt) — both use the same field. There is no
-`agentId` field in this file.
+`login` (OIDC device flow, `--browser` or PAT prompt) — both use the same field. After
+an SSO login the file also holds `refreshToken`, `tokenExpiry` (RFC 3339), `loginClient`
+(`device` or `browser`) and `loginRelay` when the IdP issued a refresh token; they are
+written with mode `0600` and cleared by `logout`. The CLI takes a lock file
+`<config>.lock` next to the config while it refreshes. There is no `agentId` field in
+this file.
 
 Override the path with `--config /path/to/config.yaml`.
 

@@ -80,7 +80,7 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_OIDC_CLIENT_ID` | No (SSO only) | OIDC client ID for browser SSO (confidential client) |
 | `UNIFIED_OIDC_CLIENT_SECRET` | No (SSO only) | OIDC client secret |
 | `UNIFIED_OIDC_DEVICE_CLIENT_ID` | No (SSO only) | OIDC public client ID for CLI device flow. Falls back to `UNIFIED_OIDC_CLIENT_ID` if unset. |
-| `UNIFIED_OIDC_DEVICE_CLIENT_SECRET` | No (SSO only) | Secret of the device client (`oidc.deviceClientSecret`). When set, the controller keeps it and relays the CLI logins, so the CLI never sees it; `oidc-config` then reports `deviceRelay: true` but never the secret. Requires `UNIFIED_OIDC_DEVICE_CLIENT_ID` (or `oidc.deviceClientId`); the controller refuses to start otherwise. |
+| `UNIFIED_OIDC_DEVICE_CLIENT_SECRET` | No (SSO only) | Secret of the device client (`oidc.deviceClientSecret`). When set, the controller keeps it and relays the CLI's device login, token refresh and logout revocation (`/api/v1/auth/cli/*`), so the CLI never sees it; `oidc-config` then reports `deviceRelay: true` but never the secret. Requires `UNIFIED_OIDC_DEVICE_CLIENT_ID` (or `oidc.deviceClientId`); the controller refuses to start otherwise. |
 | `UNIFIED_OIDC_ROLES_CLAIM` | No (SSO only) | ID-token claim that carries group/role values (default `groups`). See [Authorization](../operator-manual/authorization.md). |
 | `UNIFIED_OIDC_SCOPES` | No (SSO only) | Comma-separated OIDC scopes to request instead of the default list (`openid email profile` plus `rolesClaim` when it is a bare word); spaces around entries and empty entries are dropped. `openid` is added if missing. See [Identity providers](../operator-manual/identity-providers.md#how-unified-cd-reads-identity-what-every-idp-must-satisfy). |
 | `UNIFIED_OIDC_DEFAULT_ROLE` | No (SSO only) | Global role for a user nothing in `roleMap` / `userMap` matches; `""` or `deny` means no global role. |
@@ -130,7 +130,7 @@ oidc:
   clientId: unified-cd
   clientSecret: unified-cd-secret        # set => browser SSO enabled
   deviceClientId: unified-cd-cli         # public client for the CLI device flow
-  deviceClientSecret: ''                 # optional; set => the controller relays CLI logins and keeps this secret (needs deviceClientId); env: UNIFIED_OIDC_DEVICE_CLIENT_SECRET
+  deviceClientSecret: ''                 # optional; set => the controller relays the CLI device login, refresh and logout and keeps this secret (needs deviceClientId); env: UNIFIED_OIDC_DEVICE_CLIENT_SECRET
   rolesClaim: groups
   scopes: [openid, email, profile]       # optional; replaces the default scope list (no automatic rolesClaim scope)
   authParams:                            # optional, config file only; extra query parameters for the browser login's authorization request
