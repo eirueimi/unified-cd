@@ -1,17 +1,18 @@
 # Background workers
 
-The controller runs twelve goroutines on tickers, launched from
+The controller runs thirteen goroutines on tickers, launched from
 `cmd/controller/main.go`. None of them has a caller waiting on a result, which
 is what makes them worth a page of their own: **a worker that fails every pass
 has nothing to surface it** except the metrics and log lines it emits itself.
 
-## The twelve
+## The thirteen
 
 | Worker | File | Interval | Leader-elected |
 |---|---|---|---|
 | `RunScheduler` | `scheduler.go` | 200ms | yes |
 | `RunGitResolver` | `scheduler.go` | 200ms | **no** — see below |
 | `RunCacheCleanup` | `scheduler.go` | 24h | yes |
+| `RunMultipartSweep` | `multipart_sweep.go` | 1h | yes |
 | `RunLogArchiver` | `archiver.go` | 30s | yes |
 | `RunLogTrim` | `log_trim.go` | 1h | yes |
 | `RunRunRetention` | `run_retention.go` | 1h | yes |
@@ -31,9 +32,19 @@ store can report object age (`objectstore.Statter`), it also removes data archiv
 that have had no `.meta` for longer than `cache.OrphanGrace` (24 hours): an upload
 that never completed, or whose `.meta` was never committed.
 
+`RunMultipartSweep` aborts multipart uploads under `artifacts/` and `caches/` that
+were initiated more than 24 hours ago (lock key `multipartSweepLockKey`, `'mprt'`,
+task `multipart_sweep`). Presigned part URLs live 15 minutes and are re-requested
+as an upload proceeds, so a day-old upload is abandoned. It runs only when the
+object store can presign (`objectstore.Presigner`; not the local filesystem
+store). It backs up the run-end abort: when an agent reports a run finished,
+`abortRunUploads` aborts, in the background, the uploads under that run's
+artifact prefix, and under its job's cache prefix unless another run of the job
+is still active (runs of one job share the cache prefix).
+
 ## The shape they share
 
-Eleven of the twelve follow the same skeleton:
+Twelve of the thirteen follow the same skeleton:
 
 ```go
 func RunX(ctx, st, ...) {
@@ -85,7 +96,7 @@ intent, and do not assume the leader-election skeleton above applies to it.
 
 ## Instrumentation, and why the per-item counts exist
 
-Nine of the twelve report through `metrics.ObservePass`, which records pass
+Ten of the thirteen report through `metrics.ObservePass`, which records pass
 duration, pass outcome, and **per-item results**:
 
 - `unifiedcd_background_task_runs_total{task,outcome}` — outcome is `success`

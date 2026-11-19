@@ -33,8 +33,8 @@ unified-cd-controller [FLAGS]
   --git-timeout           duration Maximum time for one controller-side git operation before its process tree is killed (default: 5m, env: UNIFIED_GIT_TIMEOUT)
   --git-max-repo-bytes    int      Abort a controller-side git fetch whose repository exceeds this many bytes; 0 = no limit (default: 1073741824, env: UNIFIED_GIT_MAX_REPO_BYTES)
   --max-request-body-bytes int     Max size of an API request body; larger bodies get 413. Default 1048576 (1 MiB). Webhook ingress, agent log routes (16 MiB) and artifact upload have their own limits (env: UNIFIED_MAX_REQUEST_BODY_BYTES)
-  --store-credential-rate-burst int        Burst size of the per-client-address rate limit on POST /api/v1/store-credentials (default 200, env: UNIFIED_STORE_CREDENTIAL_RATE_BURST)
-  --store-credential-rate-per-second float Sustained requests per second per client address on POST /api/v1/store-credentials (default 20, env: UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND)
+  --store-credential-rate-burst int        Burst size of the rate limit on POST /api/v1/store-credentials (per client address) and POST /api/v1/runs/{runID}/objects/presign (per agent, or per client address for sidecars) (default 200, env: UNIFIED_STORE_CREDENTIAL_RATE_BURST)
+  --store-credential-rate-per-second float Sustained requests per second of the same rate limits (default 20, env: UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND)
   --trusted-proxies       string   Comma-separated CIDRs/IPs of reverse proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the client address; empty ignores those headers (env: UNIFIED_TRUSTED_PROXIES)
 ```
 
@@ -79,8 +79,8 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_TRUSTED_PROXIES` | No | Comma-separated CIDRs or IPs of the reverse proxies in front of the controller. Only a request whose TCP peer is in this list has its `X-Forwarded-For` / `X-Real-IP` honoured for the client address (rate limits, access log). Default empty: those headers are ignored. See [Reverse Proxy](../operator-manual/reverse-proxy.md). |
 | `UNIFIED_MAX_REQUEST_BODY_BYTES` | No | Maximum size, in bytes, of an API request body (default `1048576`, 1 MiB). A larger body is rejected with `413`. Applies to every route except webhook ingress (`UNIFIED_WEBHOOK_MAX_BODY_BYTES`), artifact upload and agent log routes. See [Reverse Proxy and Request Limits](../operator-manual/reverse-proxy.md). |
 | `UNIFIED_WEBHOOK_MAX_BODY_BYTES` | No | Maximum size, in bytes, of a webhook ingress request body (default `1048576`); larger bodies get `413`. |
-| `UNIFIED_STORE_CREDENTIAL_RATE_BURST` | No | Burst size of the per-client-address rate limit on `POST /api/v1/store-credentials` (default `200`). Raise it when very many job sidecars share one source address. |
-| `UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND` | No | Sustained requests per second per client address on `POST /api/v1/store-credentials` (default `20`). |
+| `UNIFIED_STORE_CREDENTIAL_RATE_BURST` | No | Burst size of the rate limit on `POST /api/v1/store-credentials` (per client address) and on `POST /api/v1/runs/{runID}/objects/presign` (per agent for agent bearers, per client address for job Pod sidecars) (default `200`). Raise it when very many job sidecars share one source address. |
+| `UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND` | No | Sustained requests per second of the same rate limits (default `20`). |
 | `UNIFIED_OIDC_CLIENT_ID` | No (SSO only) | OIDC client ID for browser SSO (confidential client) |
 | `UNIFIED_OIDC_CLIENT_SECRET` | No (SSO only) | OIDC client secret |
 | `UNIFIED_OIDC_DEVICE_CLIENT_ID` | No (SSO only) | OIDC public client ID for CLI device flow. Falls back to `UNIFIED_OIDC_CLIENT_ID` if unset. |
@@ -121,7 +121,7 @@ uiProxyTarget: http://localhost:5173 # dev only: proxy /ui/* to a Vite dev serve
 stderrPlain: false                   # true => run-log stderr is the same color as stdout
 insecureCookies: false                # true => drop Secure attribute on session cookies (plain-HTTP deployments only)
 maxRequestBodyBytes: 1048576          # max API request body (default 1 MiB); larger => 413
-storeCredentialRateLimit:             # per client address, per controller replica
+storeCredentialRateLimit:             # store-credentials and objects/presign; per requester, per controller replica
   burst: 200
   perSecond: 20
 trustedProxies: []                    # CIDRs/IPs of reverse proxies trusted to set X-Forwarded-For / X-Real-IP, e.g. ["10.244.3.17/32"] (never the whole pod CIDR)

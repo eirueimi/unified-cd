@@ -227,13 +227,13 @@ func main() {
 			return eff.StoreCredentialRateLimit.Burst
 		}
 		return 200
-	}(), "burst size of the per-client-address rate limit on POST /api/v1/store-credentials (env: UNIFIED_STORE_CREDENTIAL_RATE_BURST)")
+	}(), "burst size of the rate limit on POST /api/v1/store-credentials (per client address) and POST /api/v1/runs/{runID}/objects/presign (per agent, or per client address for sidecars) (env: UNIFIED_STORE_CREDENTIAL_RATE_BURST)")
 	storeCredPerSecond := flag.Float64("store-credential-rate-per-second", func() float64 {
 		if eff.StoreCredentialRateLimit.PerSecond > 0 {
 			return eff.StoreCredentialRateLimit.PerSecond
 		}
 		return 20
-	}(), "sustained requests per second per client address on POST /api/v1/store-credentials (env: UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND)")
+	}(), "sustained requests per second of the same rate limits (env: UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
 	auditRetentionDays := flag.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
 	runRetentionDays := flag.Int("run-retention-days", runRetentionDaysDefault(), "days to keep terminal runs incl. their logs, log archives, and artifacts; 0 = keep forever (env: UNIFIED_RUN_RETENTION_DAYS)")
@@ -562,6 +562,10 @@ func main() {
 	if obj != nil {
 		go controller.RunLogArchiver(ctx, backgroundSt, obj, 30*time.Second)
 		go controller.RunCacheCleanup(ctx, backgroundSt, obj)
+		if p, ok := obj.(objectstore.Presigner); ok {
+			// Abort multipart uploads abandoned for more than 24h.
+			go controller.RunMultipartSweep(ctx, backgroundSt, p, time.Hour)
+		}
 	}
 	go controller.RunApprovalReaper(ctx, backgroundSt, time.Minute)
 	go controller.RunStuckRunReaper(ctx, backgroundSt, 30*time.Second, 90*time.Second, 60*time.Second)

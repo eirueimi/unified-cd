@@ -68,6 +68,7 @@ note after install when an Ingress is enabled.
 |---|---|---|
 | `POST /api/v1/agents/enroll`, `POST /api/v1/agents/token/refresh` | provider, client address, policy | burst 5, then one request per 6 seconds |
 | `POST /api/v1/store-credentials` | client address | burst 200, then 20 requests per second (configurable) |
+| `POST /api/v1/runs/{runID}/objects/presign` | agent ID for an agent bearer; client address for a job Pod sidecar (checked before its TokenReview) | the same setting and defaults as `store-credentials`, in separate buckets |
 
 A rejected request gets `429 Too Many Requests`. The counters are per controller replica and are
 kept in memory (4096 keys, least recently used evicted first).

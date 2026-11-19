@@ -641,7 +641,7 @@ sum by (credential) (increase(unifiedcd_git_credential_tokens_total{purpose="job
 
 ### Watching the background workers
 
-Nine background workers run on tickers with no caller waiting on them, so a
+Background workers run on tickers with no caller waiting on them, so a
 worker that fails every pass has nothing else to surface it. `outcome="error"`
 catches a pass that failed outright.
 
@@ -653,8 +653,8 @@ worker whose every single item failed, and without the per-item counter a
 dashboard cannot tell "nothing to archive" from "nothing archivable".
 
 Instrumented tasks: `log_archiver`, `log_trim`, `run_retention`,
-`audit_retention`, `cache_cleanup`, `approval_reaper`, `stuck_run_reaper`,
-`queued_run_reaper`, `appsource_sync_reaper`.
+`audit_retention`, `cache_cleanup`, `multipart_sweep`, `approval_reaper`,
+`stuck_run_reaper`, `queued_run_reaper`, `appsource_sync_reaper`.
 
 Not instrumented: the scheduler, the git resolver, and the AppSource
 reconciler. Their loop bodies carry leader state inline rather than through a

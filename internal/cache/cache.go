@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -186,6 +187,61 @@ func Lookup(ctx context.Context, store objectstore.ObjectStore, jobName, key str
 		return bestKey + ".tar.zst", best.OriginalKey, nil
 	}
 	return "", "", ErrCacheMiss
+}
+
+// LookupExisting is Lookup for a caller that hands out a URL to the archive
+// instead of opening it, so a dead URL must never be returned: each candidate's
+// archive is checked with st.Stat. An exact hit whose archive is missing falls
+// back to the restoreKeys scan, and the scan skips entries whose archive is
+// missing. It returns the archive's ObjectInfo along with the keys, or
+// ErrCacheMiss.
+func LookupExisting(ctx context.Context, store objectstore.ObjectStore, st objectstore.Statter, jobName, key string, restoreKeys []string) (dataKey, matchedKey string, info objectstore.ObjectInfo, err error) {
+	if jobName == "" {
+		return "", "", objectstore.ObjectInfo{}, fmt.Errorf("cache restore: jobName must not be empty")
+	}
+	stat := func(k string) (objectstore.ObjectInfo, bool, error) {
+		info, err := st.Stat(ctx, k)
+		if errors.Is(err, objectstore.ErrNotFound) {
+			return objectstore.ObjectInfo{}, false, nil
+		}
+		if err != nil {
+			return objectstore.ObjectInfo{}, false, fmt.Errorf("stat cache object: %w", err)
+		}
+		return info, true, nil
+	}
+	m, err := readMeta(ctx, store, metaKey(jobName, key))
+	switch {
+	case err == nil:
+		if m.OwnerJob == jobName {
+			info, ok, err := stat(DataKey(jobName, key))
+			if err != nil {
+				return "", "", objectstore.ObjectInfo{}, err
+			}
+			if ok {
+				return DataKey(jobName, key), key, info, nil
+			}
+		}
+	case errors.Is(err, objectstore.ErrNotFound):
+	default:
+		return "", "", objectstore.ObjectInfo{}, fmt.Errorf("get cache meta: %w", err)
+	}
+	if len(restoreKeys) == 0 {
+		return "", "", objectstore.ObjectInfo{}, ErrCacheMiss
+	}
+	cands, err := matchCandidates(ctx, store, jobName, restoreKeys)
+	if err != nil {
+		return "", "", objectstore.ObjectInfo{}, ErrCacheMiss
+	}
+	for _, c := range cands {
+		info, ok, err := stat(c.stem + ".tar.zst")
+		if err != nil {
+			return "", "", objectstore.ObjectInfo{}, err
+		}
+		if ok {
+			return c.stem + ".tar.zst", c.meta.OriginalKey, info, nil
+		}
+	}
+	return "", "", objectstore.ObjectInfo{}, ErrCacheMiss
 }
 
 // Save compresses path as tar+zstd and stores it through remote under key,
@@ -372,12 +428,26 @@ func DeleteExpired(ctx context.Context, store objectstore.ObjectStore, past time
 // skipped as defense in depth against a mis-keyed object. It returns a nil
 // Meta when nothing matches.
 func findBestMatch(ctx context.Context, store objectstore.ObjectStore, jobName string, prefixes []string) (*Meta, string, error) {
-	keys, err := store.List(ctx, JobPrefix(jobName))
-	if err != nil {
+	cands, err := matchCandidates(ctx, store, jobName, prefixes)
+	if err != nil || len(cands) == 0 {
 		return nil, "", err
 	}
-	var best *Meta
-	var bestKey string
+	return &cands[0].meta, cands[0].stem, nil
+}
+
+type candidate struct {
+	meta Meta
+	stem string // object key without extension
+}
+
+// matchCandidates returns every unexpired entry of jobName whose original key
+// has one of prefixes, longest remaining TTL first (see findBestMatch).
+func matchCandidates(ctx context.Context, store objectstore.ObjectStore, jobName string, prefixes []string) ([]candidate, error) {
+	keys, err := store.List(ctx, JobPrefix(jobName))
+	if err != nil {
+		return nil, err
+	}
+	var out []candidate
 	now := time.Now()
 	for _, k := range keys {
 		if !strings.HasSuffix(k, ".meta") {
@@ -392,14 +462,11 @@ func findBestMatch(ctx context.Context, store objectstore.ObjectStore, jobName s
 		}
 		for _, prefix := range prefixes {
 			if strings.HasPrefix(m.OriginalKey, prefix) {
-				if best == nil || m.ExpiresAt.After(best.ExpiresAt) {
-					mm := m
-					best = &mm
-					bestKey = strings.TrimSuffix(k, ".meta")
-				}
+				out = append(out, candidate{meta: m, stem: strings.TrimSuffix(k, ".meta")})
 				break
 			}
 		}
 	}
-	return best, bestKey, nil
+	sort.SliceStable(out, func(i, j int) bool { return out[i].meta.ExpiresAt.After(out[j].meta.ExpiresAt) })
+	return out, nil
 }

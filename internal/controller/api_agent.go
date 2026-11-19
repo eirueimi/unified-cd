@@ -1068,6 +1068,13 @@ func (s *Server) handleAgentFinishRun(w http.ResponseWriter, r *http.Request) {
 	if st == api.RunFailed || st == api.RunCancelled {
 		cancelDescendantRuns(r.Context(), s.store, id)
 	}
+	// Abort multipart uploads the run left in progress (in the background;
+	// the periodic sweep catches anything missed).
+	if s.presigner != nil {
+		if job, found, err := s.store.RunJobName(r.Context(), id); err == nil && found {
+			s.abortRunUploads(r.Context(), id, job)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

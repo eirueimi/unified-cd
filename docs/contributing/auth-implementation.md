@@ -142,6 +142,41 @@ store-credential broker; item 6 is enrollment policy and is not.
     quietly make them equal. See
     [Invariants](invariants.md#the-two-token-audiences-must-stay-different).
 
+## Object URL requesters
+
+`POST /api/v1/runs/{runID}/objects/presign` (`api_objects.go`) hands out
+15-minute presigned URLs for one object and one operation each. It is
+registered outside every auth middleware (`unauthenticated` in `routeTable`)
+because it accepts two kinds of caller, and `authenticateObjectRequester`
+(`object_requester.go`) authenticates both itself:
+
+- **An agent bearer (`uca_`).** It goes through `authenticateAgentBearer`, the
+  same code `agentAuth` runs, is rate-limited by agent ID, and must then pass
+  `agentRunGuard(..., false)` for the run in the path: the agent must have
+  claimed the run. A finished run still gets URLs, as with
+  `handleArtifactUpload`, so late uploads land.
+- **Any other bearer: a job Pod sidecar's projected ServiceAccount token.** It
+  is rate-limited by client address first (the `TokenReview` is a call to the
+  cluster API), then verified by `verifyStoreCredentialToken` (audience
+  `unified-cd-store-credentials`, `VerifyProjectedToken` items 1–5 above), then
+  checked against the `StoreCredentialClusters` namespace and ServiceAccount
+  allow-list. **The run binding is mandatory**: the Pod must be the one the
+  run's `run_pod_bindings` row names. No row yet is `409 binding-pending` with
+  `Retry-After: 1` (the k8s agent reports the binding on its next heartbeat);
+  a different Pod is `403`. `Config.RequireRunBinding` is never consulted
+  here: a URL is for one run's object, so there is no permissive mode.
+
+Both rate limits use the `StoreCredentialRate*` settings. After
+authentication the handler derives every key itself: artifacts as
+`artifact.ArtifactKey(run, name)`, caches as `cache.DataKey(job, key)` where
+the job is always the run record's (`store.RunJobName`), never a client value.
+It never signs a cache `.meta` key; the cache `commit` operation writes `.meta`
+server-side with the size from a `Stat` of the archive and an expiry bounded
+by the run spec's own `cache.ttlDays`. Reading another run's artifact
+(`sourceRunId`, `get`/`head` only) needs only that the run exists, which is the
+existing download route's rule for machine principals. The URLs are bearer
+credentials: never log or audit them.
+
 ## What an agent credential may not do
 
 An enrolled `uca_` credential is **not** a general API token. It cannot create

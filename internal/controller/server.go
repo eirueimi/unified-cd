@@ -164,6 +164,7 @@ type Server struct {
 	shuttingDown                  atomic.Bool
 	claimDrainCh                  chan struct{}           // Closed on shutdown to immediately drain all claim long-polls.
 	objStore                      objectstore.ObjectStore // Archive endpoints return 501 when nil.
+	presigner                     objectstore.Presigner   // objStore when it can presign; nil means the presign endpoint answers mode "controller".
 	archLogs                      *archivedLogs           // Serves log reads for trimmed runs; nil when objStore is nil.
 	cacheStore                    objectstore.ObjectStore // nil = skip TTL cleanup
 	km                            secrets.KeyManager      // Secret API returns 501 when nil.
@@ -176,7 +177,8 @@ type Server struct {
 	claimedBy                     *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
 	enrollmentLimiter             *enrollmentLimiter
 	storeCredentialLimiter        *enrollmentLimiter
-	cliRelay                      *cliRelayLimiters // Per-IP limiters for the CLI relay routes.
+	presignLimiter                *enrollmentLimiter // Per-requester budget of the presign endpoint (StoreCredentialRate*).
+	cliRelay                      *cliRelayLimiters  // Per-IP limiters for the CLI relay routes.
 	credentialTouches             *credentialTouchLimiter
 	kubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
 	cloudEnrollmentVerifiers      map[string]CloudEnrollmentVerifier
@@ -213,7 +215,7 @@ type Server struct {
 
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
-	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), storeCredentialLimiter: newStoreCredentialLimiter(cfg), cliRelay: newCLIRelayLimiters(), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters, storeCredentialS3: cfg.StoreCredentialS3}
+	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), storeCredentialLimiter: newStoreCredentialLimiter(cfg), presignLimiter: newStoreCredentialLimiter(cfg), cliRelay: newCLIRelayLimiters(), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters, storeCredentialS3: cfg.StoreCredentialS3}
 	s.cloudEnrollmentVerifiers = defaultCloudEnrollmentVerifiers()
 	for provider, verifier := range cfg.CloudEnrollmentVerifiers {
 		s.cloudEnrollmentVerifiers[provider] = verifier
@@ -292,6 +294,7 @@ func (s *Server) Close() {
 // SetObjectStore sets the object store used for log archiving. Archive endpoints return 501 when nil.
 func (s *Server) SetObjectStore(obj objectstore.ObjectStore) {
 	s.objStore = obj
+	s.presigner, _ = obj.(objectstore.Presigner)
 	if obj != nil {
 		s.archLogs = newArchivedLogs(obj)
 	} else {
@@ -699,6 +702,12 @@ func (s *Server) routes() {
 	// one, which defeats the point: this endpoint exists so a Pod that holds
 	// nothing but its own projected token can still get store credentials.
 	s.r.Post("/api/v1/store-credentials", s.handleStoreCredentials)
+
+	// The presign endpoint authenticates in the handler for the same reason:
+	// it accepts either an agent bearer or a job Pod sidecar's projected
+	// ServiceAccount token (see authenticateObjectRequester), and must answer
+	// both with its own JSON error codes.
+	s.r.Post("/api/v1/runs/{runID}/objects/presign", s.handlePresignObject)
 
 	s.registerAgentIdentityRoutes()
 
