@@ -195,7 +195,10 @@ func postRelay(ctx context.Context, server, path string, body []byte, out any) e
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	switch resp.StatusCode {
-	case http.StatusOK:
+	case http.StatusOK, http.StatusNoContent:
+		if out == nil {
+			return nil
+		}
 		if err := json.Unmarshal(b, out); err != nil {
 			return &refreshError{Reason: "invalid response from the server"}
 		}

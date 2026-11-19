@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,8 +37,36 @@ func cmdCtx(cmd *cobra.Command) context.Context {
 	return context.Background()
 }
 
+// configPathFor returns the config file the CLI was invoked with: the root
+// command's --config flag when set, else DefaultConfigPath. It matches the path
+// resolve() uses, and works for commands built outside the root (tests).
+func configPathFor(cmd *cobra.Command) string {
+	if f := cmd.Flag("config"); f != nil && f.Value.String() != "" {
+		return f.Value.String()
+	}
+	return DefaultConfigPath()
+}
+
+// persistLogin stores a fresh login at path under the config lock. The file is
+// re-read inside the lock so its other fields (extra headers, ...) survive;
+// only the server and token fields change.
+func persistLogin(path, server string, tok api.CLITokenResponse, client string, relay bool) error {
+	unlock, err := lockFile(path + ".lock")
+	if err != nil {
+		return fmt.Errorf("could not lock the config file: %w", err)
+	}
+	defer unlock()
+	existing, err := LoadConfig(path)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	existing.Server = server
+	return saveLogin(path, existing, tok, client, relay)
+}
+
 func newLoginCmd() *cobra.Command {
 	var oidcIssuer, clientID, serverURL string
+	var browser bool
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Log in via OIDC device flow and save the token",
@@ -50,13 +77,20 @@ func newLoginCmd() *cobra.Command {
 			if serverURL == "" {
 				return fmt.Errorf("--server is required (or set UNIFIED_SERVER)")
 			}
+			configPath := configPathFor(cmd)
+			if browser {
+				if oidcIssuer != "" || clientID != "" {
+					return errors.New("--browser cannot be combined with --issuer or --client-id")
+				}
+				return browserLogin(cmdCtx(cmd), cmd, serverURL, configPath)
+			}
 			// If --issuer / --client-id are not specified, fetch OIDC config from the server
 			var serverCfg *serverOIDCConfig
 			if oidcIssuer == "" || clientID == "" {
 				var err error
 				serverCfg, err = fetchServerOIDCConfig(serverURL)
 				if errors.Is(err, errOIDCNotConfigured) {
-					return tokenPromptLogin(cmd, serverURL, DefaultConfigPath())
+					return tokenPromptLogin(cmd, serverURL, configPath)
 				}
 				if err != nil {
 					return fmt.Errorf("failed to fetch OIDC config from server: %w\nSpecify --issuer and --client-id manually", err)
@@ -78,7 +112,7 @@ func newLoginCmd() *cobra.Command {
 			// A controller that holds the device client secret relays the device
 			// flow; the CLI must not talk to the IdP directly then.
 			if serverCfg != nil && serverCfg.DeviceRelay {
-				return relayDeviceLogin(ctx, cmd, serverURL)
+				return relayDeviceLogin(ctx, cmd, serverURL, configPath)
 			}
 			// Use the endpoints provided by the server if it has already performed discovery
 			// (the Dex device authorization endpoint is implementation-specific, e.g. /device/code,
@@ -131,8 +165,7 @@ func newLoginCmd() *cobra.Command {
 				expiry = exp
 			}
 			refresh := token.RefreshToken
-			configPath := DefaultConfigPath()
-			if err := saveLogin(configPath, Config{Server: serverURL}, api.CLITokenResponse{
+			if err := persistLogin(configPath, serverURL, api.CLITokenResponse{
 				IDToken:      apiToken,
 				RefreshToken: refresh,
 				Expiry:       expiry,
@@ -152,6 +185,7 @@ func newLoginCmd() *cobra.Command {
 	cmd.Flags().StringVar(&oidcIssuer, "issuer", "", "OIDC issuer URL")
 	cmd.Flags().StringVar(&clientID, "client-id", "", "OIDC client ID")
 	cmd.Flags().StringVar(&serverURL, "server", "", "master server URL (required)")
+	cmd.Flags().BoolVar(&browser, "browser", false, "log in through the controller's browser SSO (loopback callback) instead of the device flow")
 	return cmd
 }
 
@@ -168,6 +202,9 @@ type serverOIDCConfig struct {
 	// refresh (it holds the device client secret). Absent on older servers.
 	DeviceRelay        bool   `json:"deviceRelay"`
 	RevocationEndpoint string `json:"revocationEndpoint"`
+	// BrowserSSOEnabled is true when the controller offers browser login for
+	// the CLI. Absent on older servers.
+	BrowserSSOEnabled bool `json:"browserSSOEnabled"`
 	// Scopes are the scopes the server wants the device flow to request
 	// (including the roles claim). Absent on older servers.
 	Scopes []string `json:"scopes"`
@@ -245,13 +282,8 @@ func tokenPromptLogin(cmd *cobra.Command, serverURL, configPath string) error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-		return err
-	}
-	if err := SaveConfig(configPath, Config{
-		Server: serverURL,
-		Token:  token,
-	}); err != nil {
+	// A PAT login replaces any SSO login: no refresh token may survive.
+	if err := persistLogin(configPath, serverURL, api.CLITokenResponse{IDToken: token}, "", false); err != nil {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Logged in. Token saved to %s\n", configPath)
@@ -322,7 +354,7 @@ func discoverOIDCEndpointCtx(ctx context.Context, issuer string) (oauth2.Endpoin
 
 // relayDeviceLogin runs the device flow through the controller's relay
 // endpoints, using the shared default HTTP client so extra headers apply.
-func relayDeviceLogin(ctx context.Context, cmd *cobra.Command, serverURL string) error {
+func relayDeviceLogin(ctx context.Context, cmd *cobra.Command, serverURL, configPath string) error {
 	var start api.CLIDeviceStartResponse
 	if err := postRelay(ctx, serverURL, "/api/v1/auth/cli/device/start", nil, &start); err != nil {
 		return fmt.Errorf("device authentication error: %w", err)
@@ -354,7 +386,7 @@ func relayDeviceLogin(ctx context.Context, cmd *cobra.Command, serverURL string)
 		var tok api.CLITokenResponse
 		err := postRelay(ctx, serverURL, "/api/v1/auth/cli/device/token", body, &tok)
 		if err == nil {
-			return finishRelayLogin(cmd, serverURL, tok)
+			return finishRelayLogin(cmd, serverURL, configPath, tok)
 		}
 		switch err.Error() {
 		case "authorization_pending":
@@ -366,9 +398,8 @@ func relayDeviceLogin(ctx context.Context, cmd *cobra.Command, serverURL string)
 	}
 }
 
-func finishRelayLogin(cmd *cobra.Command, serverURL string, tok api.CLITokenResponse) error {
-	configPath := DefaultConfigPath()
-	if err := saveLogin(configPath, Config{Server: serverURL}, tok, "device", true); err != nil {
+func finishRelayLogin(cmd *cobra.Command, serverURL, configPath string, tok api.CLITokenResponse) error {
+	if err := persistLogin(configPath, serverURL, tok, "device", true); err != nil {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "\nLogged in. Token saved to %s\n", configPath)

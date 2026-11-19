@@ -76,6 +76,8 @@ var requestConstructors = map[string]int{
 	"gitcredential.go":    2,
 	"jobs.go":             4,
 	"login.go":            3,
+	"login_browser.go":    1,
+	"logout.go":           1,
 	"oidc_refresh.go":     2,
 	"logs.go":             1,
 	"run.go":              12,
@@ -283,6 +285,26 @@ func contractRows(t *testing.T) []contractRow {
 			return err
 		}, resp: map[string]string{"GET /api/v1/auth/oidc-config": `{"deviceClientId":"cli","tokenEndpoint":"http://idp.test/token"}`},
 			want: []string{get + " /api/v1/auth/oidc-config", post + " /token"}},
+		{name: "browser login preflights the start endpoint", call: func(ctx context.Context) error {
+			return preflightBrowserStart(ctx, "http://controller.test/api/v1/auth/cli/browser/start")
+		}, want: []string{get + " /api/v1/auth/cli/browser/start"}},
+		{name: "browser login exchanges the code", wantErr: true, call: func(ctx context.Context) error {
+			var tok map[string]any
+			return postRelay(ctx, "http://controller.test", "/api/v1/auth/cli/browser/exchange", nil, &tok)
+		}, resp: map[string]string{"POST /api/v1/auth/cli/browser/exchange": `not json`},
+			want: []string{post + " /api/v1/auth/cli/browser/exchange"}},
+
+		// logout: with nothing stored it makes no request; the revocation
+		// helpers are called directly.
+		{name: "logout with no stored login", leaf: "logout", args: []string{"logout"}, want: nil},
+		{name: "logout revokes through the controller relay", call: func(ctx context.Context) error {
+			return revokeStoredToken(ctx, Config{Server: "http://controller.test", RefreshToken: "rt", LoginClient: "browser"})
+		}, resp: map[string]string{"GET /api/v1/auth/oidc-config": `{"revocationEndpoint":"http://idp.test/revoke"}`},
+			want: []string{get + " /api/v1/auth/oidc-config", post + " /api/v1/auth/cli/revoke"}},
+		{name: "logout revokes directly at the IdP", call: func(ctx context.Context) error {
+			return revokeStoredToken(ctx, Config{Server: "http://controller.test", RefreshToken: "rt", LoginClient: "device"})
+		}, resp: map[string]string{"GET /api/v1/auth/oidc-config": `{"deviceClientId":"cli","revocationEndpoint":"http://idp.test/revoke"}`},
+			want: []string{get + " /api/v1/auth/oidc-config", post + " /revoke"}},
 	}
 }
 
