@@ -275,6 +275,11 @@ func TestHelperProcess(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "load:", err)
 		os.Exit(2)
 	}
+	// Best-effort marker: the lock file is already present when this child
+	// starts refreshing, so it will have to wait for the other child.
+	if _, statErr := os.Stat(path + ".lock"); statErr == nil {
+		fmt.Println("contended=1")
+	}
 	got, err := refreshIfNeeded(context.Background(), path, c, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "refresh:", err)
@@ -313,19 +318,32 @@ func TestRefresh_TwoProcesses_OneIdPCall(t *testing.T) {
 	}
 	require.NoError(t, os.WriteFile(path+".go", nil, 0o600))
 
+	// Drain both children before any assertion so TempDir cleanup cannot race
+	// a child that is still running (Windows cannot delete open files).
+	outs := make([]result, len(results))
+	for i, ch := range results {
+		outs[i] = <-ch
+	}
 	var tokens []string
-	for _, ch := range results {
-		r := <-ch
+	contended := 0
+	for _, r := range outs {
 		require.NoError(t, r.err)
 		var tok string
 		for _, line := range strings.Split(string(r.out), "\n") {
-			if v, ok := strings.CutPrefix(strings.TrimSpace(line), "token="); ok {
+			line = strings.TrimSpace(line)
+			if v, ok := strings.CutPrefix(line, "token="); ok {
 				tok = v
+			}
+			if line == "contended=1" {
+				contended++
 			}
 		}
 		require.NotEmpty(t, tok, "child output: %s", r.out)
 		tokens = append(tokens, tok)
 	}
+	// Timing decides whether the children really overlapped, so this is only
+	// logged: asserting it would make the test flaky.
+	t.Logf("children that found the lock already held: %d of 2", contended)
 	assert.Equal(t, int32(1), f.idpCalls.Load(), "exactly one IdP refresh call across both processes")
 	saved, err := LoadConfig(path)
 	require.NoError(t, err)

@@ -154,18 +154,34 @@ func (s *Server) oauth2Config(provider *oidc.Provider, host string) *oauth2.Conf
 }
 
 // relayDiscoveryTTL is how long a successful IdP discovery is reused by the
-// CLI relay and the CLI browser-login endpoints.
-const relayDiscoveryTTL = 10 * time.Minute
+// CLI relay and the CLI browser-login endpoints; relayDiscoveryTimeout bounds
+// one discovery request.
+const (
+	relayDiscoveryTTL     = 10 * time.Minute
+	relayDiscoveryTimeout = 10 * time.Second
+)
+
+// discoveryFlight is one in-progress discovery shared by all waiting callers.
+type discoveryFlight struct {
+	key      string
+	done     chan struct{}
+	provider *oidc.Provider
+	err      error
+}
 
 // relayDiscoveryCache holds the last successful discovery. It is keyed by the
 // issuer pair, so a config swap never serves a stale provider. Failures are
-// never stored. The zero value is ready to use; now is replaceable in tests.
+// never stored. Cache hits take only a read lock; the lock is never held
+// during I/O. The zero value is ready to use; now and timeout are replaceable
+// in tests.
 type relayDiscoveryCache struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	now      func() time.Time
+	timeout  time.Duration
 	key      string
 	provider *oidc.Provider
 	at       time.Time
+	flight   *discoveryFlight
 }
 
 func (c *relayDiscoveryCache) clock() time.Time {
@@ -175,26 +191,81 @@ func (c *relayDiscoveryCache) clock() time.Time {
 	return time.Now()
 }
 
+// fresh returns the cached provider for key when it is still valid. The caller
+// holds mu.
+func (c *relayDiscoveryCache) fresh(key string) *oidc.Provider {
+	if c.provider != nil && c.key == key && c.clock().Sub(c.at) < relayDiscoveryTTL {
+		return c.provider
+	}
+	return nil
+}
+
+// get returns the cached provider or runs discover once for all concurrent
+// callers. The shared discovery runs on its own context (see discover), so a
+// caller that gives up only stops waiting: it returns ctx.Err() and the
+// discovery carries on for the others.
+func (c *relayDiscoveryCache) get(ctx context.Context, key string, discover func(context.Context) (*oidc.Provider, error)) (*oidc.Provider, error) {
+	c.mu.RLock()
+	p := c.fresh(key)
+	c.mu.RUnlock()
+	if p != nil {
+		return p, nil
+	}
+
+	c.mu.Lock()
+	if p := c.fresh(key); p != nil {
+		c.mu.Unlock()
+		return p, nil
+	}
+	f := c.flight
+	if f == nil || f.key != key {
+		f = &discoveryFlight{key: key, done: make(chan struct{})}
+		c.flight = f
+		timeout := c.timeout
+		if timeout <= 0 {
+			timeout = relayDiscoveryTimeout
+		}
+		go func() {
+			dctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			provider, err := discover(dctx)
+			c.mu.Lock()
+			if err == nil {
+				c.provider, c.key, c.at = provider, key, c.clock()
+			}
+			if c.flight == f {
+				c.flight = nil
+			}
+			c.mu.Unlock()
+			f.provider, f.err = provider, err
+			close(f.done)
+		}()
+	}
+	c.mu.Unlock()
+
+	select {
+	case <-f.done:
+		return f.provider, f.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // relayProvider is oidcProvider backed by a 10-minute cache of successful
-// discovery. The mutex is held across the discovery request, so concurrent
-// callers share one request; a failed attempt leaves the cache empty and the
-// next caller retries. The oauth2.Config is rebuilt per call because its
-// RedirectURL depends on host.
+// discovery. Concurrent callers share one discovery request, bounded by its own
+// 10 s timeout and independent of any caller's request context. The
+// oauth2.Config is rebuilt per call because its RedirectURL depends on host.
 func (s *Server) relayProvider(ctx context.Context, host string) (context.Context, *oidc.Provider, *oauth2.Config, error) {
 	ctx = s.oidcHTTPContext(ctx)
-	key := s.oidcCfg.Issuer + "\x00" + s.oidcCfg.IssuerInternal
-	c := &s.relayDisc
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.provider == nil || c.key != key || c.clock().Sub(c.at) >= relayDiscoveryTTL {
-		provider, err := oidc.NewProvider(ctx, s.oidcCfg.Issuer)
-		if err != nil {
-			c.provider = nil
-			return ctx, nil, nil, fmt.Errorf("OIDC provider discovery: %w", err)
-		}
-		c.provider, c.key, c.at = provider, key, c.clock()
+	issuer := s.oidcCfg.Issuer
+	key := issuer + "\x00" + s.oidcCfg.IssuerInternal
+	provider, err := s.relayDisc.get(ctx, key, func(dctx context.Context) (*oidc.Provider, error) {
+		return oidc.NewProvider(s.oidcHTTPContext(dctx), issuer)
+	})
+	if err != nil {
+		return ctx, nil, nil, fmt.Errorf("OIDC provider discovery: %w", err)
 	}
-	return ctx, c.provider, s.oauth2Config(c.provider, host), nil
+	return ctx, provider, s.oauth2Config(provider, host), nil
 }
 
 // verifierProvider returns the lazily initialised, cached provider used to

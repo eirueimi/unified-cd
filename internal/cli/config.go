@@ -96,18 +96,26 @@ const (
 	renameRetryStep = 50 * time.Millisecond
 )
 
-// renameReplace renames src over dst. On Windows the rename fails with a
-// sharing or access violation (reported as fs.ErrPermission) while another
-// process, for example an antivirus scanner or a concurrent reader, has dst
-// open, so that error is retried every 50 ms for up to 2 s and the last error
-// is returned. Elsewhere, and for any other error, it is a plain os.Rename.
+// isRenameBusy reports whether a rename error means the destination is
+// temporarily held open by another process.
+func isRenameBusy(err error) bool {
+	return errors.Is(err, fs.ErrPermission) || isSharingViolation(err)
+}
+
+// renameReplace renames src over dst. On Windows the rename fails while
+// another process, for example an antivirus scanner or a concurrent reader, has
+// dst open: with access denied (fs.ErrPermission) or with a sharing or lock
+// violation (ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION; see
+// isRenameBusy). Those errors are retried every 50 ms for up to 2 s and the
+// last error is returned. Elsewhere, and for any other error, it is a plain
+// os.Rename.
 func renameReplace(src, dst string) error {
 	err := os.Rename(src, dst)
 	if runtime.GOOS != "windows" {
 		return err
 	}
 	deadline := time.Now().Add(renameRetryFor)
-	for err != nil && errors.Is(err, fs.ErrPermission) && time.Now().Before(deadline) {
+	for err != nil && isRenameBusy(err) && time.Now().Before(deadline) {
 		time.Sleep(renameRetryStep)
 		err = os.Rename(src, dst)
 	}
