@@ -664,6 +664,8 @@ func (s *Server) routes() {
 	s.r.Post("/api/v1/auth/cli/device/token", s.handleCLIDeviceToken)
 	s.r.Post("/api/v1/auth/cli/refresh", s.handleCLIRefresh)
 	s.r.Post("/api/v1/auth/cli/revoke", s.handleCLIRevoke)
+	s.r.Get("/api/v1/auth/cli/browser/start", s.handleCLIBrowserStart)
+	s.r.Post("/api/v1/auth/cli/browser/exchange", s.handleCLIBrowserExchange)
 	s.r.With(ServerAuth(s.store, s)).Get("/api/v1/auth/me", s.handleMe)
 
 	s.r.Route("/api/v1/agents", func(r chi.Router) {

@@ -2930,12 +2930,23 @@ func (p *Postgres) DeleteAgentVolume(ctx context.Context, name string) error {
 
 // CreateOIDCState saves an OIDC flow state to the database.
 func (p *Postgres) CreateOIDCState(ctx context.Context, state, redirectTo string, expiresAt time.Time) (*OIDCState, error) {
-	const q = `INSERT INTO oidc_states(state, redirect_to, expires_at)
-		VALUES ($1, $2, $3)
-		RETURNING id, state, redirect_to, created_at, expires_at`
+	return p.createOIDCState(ctx, state, redirectTo, "", "", expiresAt)
+}
+
+// CreateCLIOIDCState saves the state of a CLI browser login. The redirect is the
+// validated loopback URL the callback hands the one-time code to; the challenge
+// is the S256 PKCE challenge the code is bound to.
+func (p *Postgres) CreateCLIOIDCState(ctx context.Context, state, cliRedirect, cliChallenge string, expiresAt time.Time) (*OIDCState, error) {
+	return p.createOIDCState(ctx, state, "/ui/", cliRedirect, cliChallenge, expiresAt)
+}
+
+func (p *Postgres) createOIDCState(ctx context.Context, state, redirectTo, cliRedirect, cliChallenge string, expiresAt time.Time) (*OIDCState, error) {
+	const q = `INSERT INTO oidc_states(state, redirect_to, cli_redirect, cli_challenge, expires_at)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, state, redirect_to, cli_redirect, cli_challenge, created_at, expires_at`
 	var s OIDCState
-	err := p.pool.QueryRow(ctx, q, state, redirectTo, expiresAt).
-		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CreatedAt, &s.ExpiresAt)
+	err := p.pool.QueryRow(ctx, q, state, redirectTo, cliRedirect, cliChallenge, expiresAt).
+		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CreatedAt, &s.ExpiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("create oidc state: %w", err)
 	}
@@ -2946,10 +2957,10 @@ func (p *Postgres) CreateOIDCState(ctx context.Context, state, redirectTo string
 // Returns nil, nil if the state is not found or has expired.
 func (p *Postgres) GetAndDeleteOIDCState(ctx context.Context, state string) (*OIDCState, error) {
 	const q = `DELETE FROM oidc_states WHERE state = $1 AND expires_at > NOW()
-		RETURNING id, state, redirect_to, created_at, expires_at`
+		RETURNING id, state, redirect_to, cli_redirect, cli_challenge, created_at, expires_at`
 	var s OIDCState
 	err := p.pool.QueryRow(ctx, q, state).
-		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CreatedAt, &s.ExpiresAt)
+		Scan(&s.ID, &s.State, &s.RedirectTo, &s.CLIRedirect, &s.CLIChallenge, &s.CreatedAt, &s.ExpiresAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -2957,6 +2968,50 @@ func (p *Postgres) GetAndDeleteOIDCState(ctx context.Context, state string) (*OI
 		return nil, fmt.Errorf("get and delete oidc state: %w", err)
 	}
 	return &s, nil
+}
+
+// CreateCLILoginCode stores a one-time CLI login code by its hash. Expired rows
+// are deleted on the way in, so abandoned logins do not accumulate.
+func (p *Postgres) CreateCLILoginCode(ctx context.Context, codeHash, challenge string, dek, ct []byte, expiresAt time.Time) (string, error) {
+	if _, err := p.pool.Exec(ctx, `DELETE FROM cli_login_codes WHERE expires_at <= NOW()`); err != nil {
+		return "", fmt.Errorf("delete expired cli login codes: %w", err)
+	}
+	var id string
+	err := p.pool.QueryRow(ctx, `INSERT INTO cli_login_codes(code_hash, challenge, tokens_dek, tokens_ct, expires_at)
+		VALUES ($1, $2, $3, $4, $5) RETURNING id`, codeHash, challenge, dek, ct, expiresAt).Scan(&id)
+	if err != nil {
+		return "", fmt.Errorf("create cli login code: %w", err)
+	}
+	return id, nil
+}
+
+// SetCLILoginCodePayload stores the encrypted tokens of a code created with an
+// empty payload (the ciphertext is bound to the row id, known only after insert).
+func (p *Postgres) SetCLILoginCodePayload(ctx context.Context, id string, dek, ct []byte) error {
+	tag, err := p.pool.Exec(ctx, `UPDATE cli_login_codes SET tokens_dek = $2, tokens_ct = $3 WHERE id = $1`, id, dek, ct)
+	if err != nil {
+		return fmt.Errorf("set cli login code payload: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("cli login code not found")
+	}
+	return nil
+}
+
+// ConsumeCLILoginCode deletes and returns the row for codeHash. It returns nil,
+// nil when there is no such row or it has expired. The delete is atomic, so a
+// code can be redeemed once even under concurrent attempts.
+func (p *Postgres) ConsumeCLILoginCode(ctx context.Context, codeHash string) (*CLILoginCode, error) {
+	var c CLILoginCode
+	err := p.pool.QueryRow(ctx, `DELETE FROM cli_login_codes WHERE code_hash = $1 AND expires_at > NOW()
+		RETURNING id, challenge, tokens_dek, tokens_ct`, codeHash).Scan(&c.ID, &c.Challenge, &c.DEK, &c.CT)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("consume cli login code: %w", err)
+	}
+	return &c, nil
 }
 
 // DeleteExpiredOIDCStates deletes expired oidc_states rows.

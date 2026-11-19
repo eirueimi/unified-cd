@@ -31,18 +31,20 @@ const (
 
 // cliRelayLimiters holds one per-IP limiter for each relay route.
 type cliRelayLimiters struct {
-	deviceStart *enrollmentLimiter
-	deviceToken *enrollmentLimiter
-	refresh     *enrollmentLimiter
-	revoke      *enrollmentLimiter
+	deviceStart     *enrollmentLimiter
+	deviceToken     *enrollmentLimiter
+	refresh         *enrollmentLimiter
+	revoke          *enrollmentLimiter
+	browserExchange *enrollmentLimiter
 }
 
 func newCLIRelayLimiters() *cliRelayLimiters {
 	return &cliRelayLimiters{
-		deviceStart: newRateLimiter(nil, time.Second, 20),
-		deviceToken: newRateLimiter(nil, 100*time.Millisecond, 50),
-		refresh:     newRateLimiter(nil, 200*time.Millisecond, 50),
-		revoke:      newRateLimiter(nil, time.Second, 20),
+		deviceStart:     newRateLimiter(nil, time.Second, 20),
+		deviceToken:     newRateLimiter(nil, 100*time.Millisecond, 50),
+		refresh:         newRateLimiter(nil, 200*time.Millisecond, 50),
+		revoke:          newRateLimiter(nil, time.Second, 20),
+		browserExchange: newRateLimiter(nil, time.Second, 20),
 	}
 }
 
@@ -212,7 +214,7 @@ func (s *Server) relayTokens(ctx context.Context, w http.ResponseWriter, res *up
 		writeJSON(w, http.StatusBadGateway, api.CLIOAuthError{Error: "server_error", ErrorDescription: "identity provider returned an id_token that failed verification"})
 		return
 	}
-	exp, ok := claims["exp"].(float64)
+	expiry, ok := idTokenExpiry(claims)
 	if !ok {
 		writeJSON(w, http.StatusBadGateway, api.CLIOAuthError{Error: "server_error", ErrorDescription: "identity provider returned an id_token without exp"})
 		return
@@ -221,7 +223,7 @@ func (s *Server) relayTokens(ctx context.Context, w http.ResponseWriter, res *up
 	if refresh == "" {
 		refresh = fallbackRefresh
 	}
-	writeJSON(w, http.StatusOK, api.CLITokenResponse{IDToken: rawID, RefreshToken: refresh, Expiry: time.Unix(int64(exp), 0).UTC()})
+	writeJSON(w, http.StatusOK, api.CLITokenResponse{IDToken: rawID, RefreshToken: refresh, Expiry: expiry})
 }
 
 // handleCLIDeviceStart starts a device authorization as the device client.

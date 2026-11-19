@@ -29,6 +29,12 @@ func SessionRefreshBinding(sessionID string) Binding {
 	return Binding{kind: "session_refresh", fields: []string{sessionID}}
 }
 
+// CLILoginCodeBinding binds the encrypted tokens of a CLI browser-login code to
+// its row.
+func CLILoginCodeBinding(id string) Binding {
+	return Binding{kind: "cli_login_code", fields: []string{id}}
+}
+
 // canonical returns a length-prefixed encoding of the binding.
 //
 // Length prefixes are mandatory, not stylistic: with plain concatenation

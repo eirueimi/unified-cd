@@ -338,6 +338,11 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if savedState.CLIRedirect != "" {
+		s.completeCLIBrowserLogin(w, r, savedState, claims, oauthToken.RefreshToken, rawIDToken)
+		return
+	}
+
 	sessionToken, expiresAt, status, msg := s.completeOIDCLogin(r.Context(), claims, oauthToken.RefreshToken)
 	if status != 0 {
 		http.Error(w, msg, status)
@@ -348,28 +353,47 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, savedState.RedirectTo, http.StatusFound)
 }
 
+// oidcIdentity extracts the subject, e-mail (falling back to the subject) and
+// roles-claim values from verified id_token claims.
+func oidcIdentity(s *Server, claims map[string]any) (sub, email string, values []string) {
+	sub, _ = claims["sub"].(string)
+	email, _ = claims["email"].(string)
+	if email == "" {
+		email = sub
+	}
+	return sub, email, nonNilClaims(extractRoleValues(claims, s.oidcCfg.RolesClaim))
+}
+
+// admitOIDCClaims decides whether verified id_token claims may log in, for both
+// the web login and the CLI browser login. It refreshes the owner snapshot of
+// every PAT the user owns before deciding, so a denied login still drops stale
+// claims (spec 5.5). On failure it returns the HTTP status and message to
+// send; status is 0 when the user is admitted.
+func (s *Server) admitOIDCClaims(ctx context.Context, claims map[string]any) (status int, msg string) {
+	sub, email, values := oidcIdentity(s, claims)
+	_, _, admitted := s.identityGrants(values, email, sub)
+	if _, err := s.store.UpdatePATOwnerSnapshot(ctx, sub, email, values); err != nil {
+		return http.StatusInternalServerError, "session store error"
+	}
+	if !admitted {
+		return http.StatusForbidden, "forbidden: no role assigned"
+	}
+	return 0, ""
+}
+
 // completeOIDCLogin turns verified id_token claims into a stored session. It
 // admits the user when the legacy role resolution succeeds or an
 // oidc.permissions entry matches, stores the claim values on the session, and
 // refreshes the owner snapshot of every PAT the user owns. On failure it
 // returns the HTTP status and message to send; status is 0 on success.
 func (s *Server) completeOIDCLogin(ctx context.Context, claims map[string]any, refreshToken string) (sessionToken string, expiresAt time.Time, status int, msg string) {
-	sub, _ := claims["sub"].(string)
-	email, _ := claims["email"].(string)
-	if email == "" {
-		email = sub
+	// Admission (and the PAT owner snapshot refresh) runs before the session
+	// exists, so a failure leaves no orphaned session row.
+	if status, msg := s.admitOIDCClaims(ctx, claims); status != 0 {
+		return "", time.Time{}, status, msg
 	}
-	values := nonNilClaims(extractRoleValues(claims, s.oidcCfg.RolesClaim))
-	role, _, admitted := s.identityGrants(values, email, sub)
-	// Refresh the owner snapshot of the user's PATs before deciding admission,
-	// so a denied login still drops stale claims (spec 5.5), and before the
-	// session exists so a failure leaves no orphaned session row.
-	if _, err := s.store.UpdatePATOwnerSnapshot(ctx, sub, email, values); err != nil {
-		return "", time.Time{}, http.StatusInternalServerError, "session store error"
-	}
-	if !admitted {
-		return "", time.Time{}, http.StatusForbidden, "forbidden: no role assigned"
-	}
+	sub, email, values := oidcIdentity(s, claims)
+	role, _, _ := s.identityGrants(values, email, sub)
 
 	if s.km == nil {
 		return "", time.Time{}, http.StatusInternalServerError, "key manager not configured"

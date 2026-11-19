@@ -960,6 +960,12 @@ type CLIRefreshRequest struct {
 	Client       string `json:"client"`
 }
 
+// CLIBrowserExchangeRequest is the body of POST /api/v1/auth/cli/browser/exchange.
+type CLIBrowserExchangeRequest struct {
+	Code         string `json:"code"`
+	CodeVerifier string `json:"codeVerifier"`
+}
+
 // CLITokenResponse carries the tokens relayed to the CLI. Expiry is the
 // id_token exp claim.
 type CLITokenResponse struct {

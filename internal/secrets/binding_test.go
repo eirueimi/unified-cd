@@ -30,3 +30,8 @@ func TestBinding_StringDescribesIdentity(t *testing.T) {
 	require.Contains(t, b.String(), "secret")
 	assert.Contains(t, b.String(), "AWS_KEY")
 }
+
+func TestBinding_CLILoginCodeDistinct(t *testing.T) {
+	assert.NotEqual(t, SessionRefreshBinding("x").canonical(), CLILoginCodeBinding("x").canonical())
+	assert.NotEqual(t, CLILoginCodeBinding("a").canonical(), CLILoginCodeBinding("b").canonical())
+}
