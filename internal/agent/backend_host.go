@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -56,6 +57,14 @@ type hostBackend struct {
 	// claimSince, when non-zero, bounds sidecar log streaming to output after
 	// the claim started (a reused pod's containers predate the run).
 	claimSince time.Time
+
+	// poolKey, when set, is where CloseScopes releases the claim pod instead of
+	// removing it (podTemplate.reuse). execInterrupted records that an exec in
+	// the pod was cut off by context cancellation: the client-side kill leaves
+	// the exec's process running inside the container, so such a pod is never
+	// reused.
+	poolKey         *hostPoolKey
+	execInterrupted atomic.Bool
 
 	// mountPath is the in-container path the host workspace is bind-mounted
 	// at for an isolated claim's pod containers (pod.mountPath, itself
@@ -147,7 +156,7 @@ func (b *hostBackend) getScopes() (*scopeManager, error) {
 // declared interpreter argv (RunStepWithShell) when set.
 func (b *hostBackend) RunDefault(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
 	if b.pod != nil {
-		return b.pod.Exec(ctx, "", script, step.Shell, env, stdout, stderr)
+		return b.podExec(ctx, "", script, step.Shell, env, stdout, stderr)
 	}
 	if len(step.Shell) > 0 {
 		return runStepWithShellFn(ctx, step.Shell, script, stdout, stderr, env, b.a.ExposeEnv, b.workDir)
@@ -174,7 +183,16 @@ func (b *hostBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep,
 	if b.pod == nil {
 		return -1, fmt.Errorf("container: %q requires an isolated job (this claim is native)", container)
 	}
-	return b.pod.Exec(ctx, container, script, step.Shell, env, stdout, stderr)
+	return b.podExec(ctx, container, script, step.Shell, env, stdout, stderr)
+}
+
+// podExec runs an exec in the claim pod and notes when the context cut it off.
+func (b *hostBackend) podExec(ctx context.Context, container, script string, shell, env []string, stdout, stderr io.Writer) (int, error) {
+	code, err := b.pod.Exec(ctx, container, script, shell, env, stdout, stderr)
+	if ctx.Err() != nil {
+		b.execInterrupted.Store(true)
+	}
+	return code, err
 }
 
 // EnsureScope provisions (or reuses) the step's uses-scope container.
@@ -213,9 +231,21 @@ func (b *hostBackend) CloseScopes(ctx context.Context) {
 		scopes.closeAll(ctx)
 	}
 
-	if b.pod != nil {
-		b.pod.CloseAll(ctx)
+	if b.pod == nil {
+		return
 	}
+	if b.poolKey == nil || b.a.hostPool == nil {
+		b.pod.CloseAll(ctx)
+		return
+	}
+	// Pooled: the pod outlives the run only if nothing in it can still be
+	// running this run's work and every container is up.
+	healthy := !b.execInterrupted.Load()
+	if healthy {
+		pr, ok := b.pod.rt.(crt.PodRuntime)
+		healthy = ok && podRunning(ctx, pr, b.pod)
+	}
+	b.a.hostPool.Release(ctx, b.poolKey.workDir, b.poolKey.jobName, b.poolKey.fingerprint, b.pod, healthy)
 }
 
 // CacheRestore restores a cache entry into path (host workspace path, or
@@ -566,7 +596,7 @@ func (b *hostBackend) RunPostHook(ctx context.Context, scope ScopeHandle, contai
 		return err
 	}
 	if b.pod != nil {
-		_, err := b.pod.Exec(ctx, container, script, shell, env, stdout, stderr)
+		_, err := b.podExec(ctx, container, script, shell, env, stdout, stderr)
 		return err
 	}
 	if len(shell) > 0 {

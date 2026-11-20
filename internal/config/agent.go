@@ -147,6 +147,16 @@ type AgentConfig struct {
 	PodPullTimeout  time.Duration `yaml:"podPullTimeout"`
 	PodStartTimeout time.Duration `yaml:"podStartTimeout"`
 
+	// PoolIdleTimeout is how long an idle pooled claim pod
+	// (podTemplate.reuse: true) is kept before it is removed; PoolMaxIdle caps
+	// the idle pods the agent holds. Pointers, so that an explicit 0 (never
+	// evict by age / pooling off) is told apart from unset: nil means the
+	// defaults, 30m and 4 (PoolIdleTimeoutOrDefault, PoolMaxIdleOrDefault).
+	// Host-only. Env: UNIFIED_AGENT_POOL_IDLE_TIMEOUT,
+	// UNIFIED_AGENT_POOL_MAX_IDLE.
+	PoolIdleTimeout *time.Duration `yaml:"poolIdleTimeout"`
+	PoolMaxIdle     *int           `yaml:"poolMaxIdle"`
+
 	// MinFreeDisk is the minimum free space required on the workspace
 	// filesystem for the host agent to keep claiming runs: a percentage
 	// ("1%"), a size ("10GiB"), a byte count, or 0/"off" to disable. Unset
@@ -305,6 +315,17 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 		}
 	}
 
+	if v := os.Getenv("UNIFIED_AGENT_POOL_IDLE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			eff.PoolIdleTimeout = &d
+		}
+	}
+	if v := os.Getenv("UNIFIED_AGENT_POOL_MAX_IDLE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			eff.PoolMaxIdle = &n
+		}
+	}
+
 	if filePath == "" {
 		return eff, nil
 	}
@@ -388,6 +409,12 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	if file.PodStartTimeout != 0 {
 		eff.PodStartTimeout = file.PodStartTimeout
 	}
+	if file.PoolIdleTimeout != nil {
+		eff.PoolIdleTimeout = file.PoolIdleTimeout
+	}
+	if file.PoolMaxIdle != nil {
+		eff.PoolMaxIdle = file.PoolMaxIdle
+	}
 	if file.MinFreeDisk.Set {
 		eff.MinFreeDisk = file.MinFreeDisk
 	}
@@ -395,6 +422,30 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 		eff.WorkspaceRetentionDays = file.WorkspaceRetentionDays
 	}
 	return eff, nil
+}
+
+// Defaults of the host agent's claim-pod pool.
+const (
+	DefaultPoolIdleTimeout = 30 * time.Minute
+	DefaultPoolMaxIdle     = 4
+)
+
+// PoolIdleTimeoutOrDefault is PoolIdleTimeout, or 30m when unset. An explicit 0
+// stays 0 (never evict by age).
+func (a *AgentConfig) PoolIdleTimeoutOrDefault() time.Duration {
+	if a.PoolIdleTimeout == nil {
+		return DefaultPoolIdleTimeout
+	}
+	return *a.PoolIdleTimeout
+}
+
+// PoolMaxIdleOrDefault is PoolMaxIdle, or 4 when unset. An explicit 0 stays 0
+// (pooling off).
+func (a *AgentConfig) PoolMaxIdleOrDefault() int {
+	if a.PoolMaxIdle == nil {
+		return DefaultPoolMaxIdle
+	}
+	return *a.PoolMaxIdle
 }
 
 // LabelsString returns Labels as a comma-separated string for use as a flag default.

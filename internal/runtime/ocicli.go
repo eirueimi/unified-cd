@@ -360,6 +360,27 @@ func (r *ociCLI) LogsSince(ctx context.Context, h ContainerHandle, since time.Ti
 	return fmt.Errorf("%s logs -f --since: %w", r.bin, err)
 }
 
+// LastLogTime returns the runtime-stamped time of the container's last log
+// line (`logs --timestamps --tail 1`), or the zero time for a container with
+// no output. Both streams are read: stdout lines arrive on stdout and stderr
+// lines on stderr, but --tail 1 yields exactly one line in total.
+func (r *ociCLI) LastLogTime(ctx context.Context, h ContainerHandle) (time.Time, error) {
+	out, err := execCommand(ctx, r.bin, "logs", "--timestamps", "--tail", "1", h.ID).CombinedOutput()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%s logs --tail 1: %w", r.bin, err)
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return time.Time{}, nil
+	}
+	ts, _, _ := strings.Cut(line, " ")
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%s logs --timestamps: unparseable timestamp %q: %w", r.bin, ts, err)
+	}
+	return t, nil
+}
+
 // ImageUser returns the image's Config.User. If the image is not present
 // locally (any inspect failure) it is pulled and the inspect retried once.
 func (r *ociCLI) ImageUser(ctx context.Context, image string) (string, error) {

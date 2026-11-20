@@ -112,6 +112,9 @@ func (f *sinceRT) LogsSince(_ context.Context, h crt.ContainerHandle, since time
 	f.sinces = append(f.sinces, since)
 	return nil
 }
+func (f *sinceRT) LastLogTime(context.Context, crt.ContainerHandle) (time.Time, error) {
+	return time.Time{}, nil
+}
 func (f *sinceRT) ImageID(context.Context, string) (string, bool, error) { return "", false, nil }
 func (f *sinceRT) ContainerRunning(context.Context, crt.ContainerHandle) (bool, error) {
 	return false, nil

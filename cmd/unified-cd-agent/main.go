@@ -120,6 +120,8 @@ func main() {
 	runnerImage := flag.String("runner-image", orDefault(eff.RunnerImage, defaultRunnerImage()), "default primary container image for isolated jobs without a podTemplate job container")
 	podPullTimeout := flag.Duration("pod-pull-timeout", eff.PodPullTimeout, "maximum time for the claim pod's image-pull step (isolated jobs); 0/unset=default 30m (host agent only) (env: UNIFIED_AGENT_POD_PULL_TIMEOUT, config: podPullTimeout)")
 	podStartTimeout := flag.Duration("pod-start-timeout", eff.PodStartTimeout, "maximum time to create and start the claim pod's containers after the pull (isolated jobs); 0/unset=default 5m (host agent only) (env: UNIFIED_AGENT_POD_START_TIMEOUT, config: podStartTimeout)")
+	poolIdleTimeout := flag.Duration("pool-idle-timeout", eff.PoolIdleTimeoutOrDefault(), "how long an idle pooled claim pod (podTemplate.reuse: true) is kept before it is removed; 0 never evicts by age; default 30m (host agent only; the Kubernetes agent's default differs) (env: UNIFIED_AGENT_POOL_IDLE_TIMEOUT, config: poolIdleTimeout)")
+	poolMaxIdle := flag.Int("pool-max-idle", eff.PoolMaxIdleOrDefault(), "maximum idle pooled claim pods the agent keeps; the oldest is removed first; 0 disables pooling; default 4 (host agent only) (env: UNIFIED_AGENT_POOL_MAX_IDLE, config: poolMaxIdle)")
 	minFreeDisk := flag.String("min-free-disk", eff.MinFreeDisk.String(), "minimum free space on the workspace filesystem required to keep claiming runs: a percentage of the filesystem (1%), a size (10GiB) or a byte count; 0 disables the check; default 1% (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)")
 	workspaceRetentionDays := flag.Int("workspace-retention-days", eff.WorkspaceRetentionDays, "age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; workspaces are already emptied around every run, so this only reclaims what an agent crash left behind) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)")
 	flag.Parse()
@@ -229,6 +231,8 @@ func main() {
 	a.RunnerImage = *runnerImage
 	a.PodPullTimeout = *podPullTimeout
 	a.PodStartTimeout = *podStartTimeout
+	a.PoolIdleTimeout = *poolIdleTimeout
+	a.PoolMaxIdle = *poolMaxIdle
 	a.ToolsDir = toolsDir
 	a.WorkspaceDir = resolvedWorkspaceDir
 

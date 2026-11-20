@@ -119,6 +119,30 @@ func TestOCI_PodRuntimeArgs(t *testing.T) {
 		require.NoError(t, r.LogsSince(ctx, ContainerHandle{ID: "c1"}, since, &strings.Builder{}, &strings.Builder{}))
 		assert.Equal(t, []string{"docker", "logs", "-f", "--since", "2026-01-02T03:04:05.000000006Z", "c1"}, rec[0])
 	})
+
+	t.Run("LastLogTime", func(t *testing.T) {
+		var rec [][]string
+		withHelperExec(t, &rec, func([]string) string { return "0|2026-01-02T03:04:05.123456789Z hello world\n" })
+		got, err := r.LastLogTime(ctx, ContainerHandle{ID: "c1"})
+		require.NoError(t, err)
+		assert.True(t, got.Equal(time.Date(2026, 1, 2, 3, 4, 5, 123456789, time.UTC)))
+		assert.Equal(t, []string{"docker", "logs", "--timestamps", "--tail", "1", "c1"}, rec[0])
+	})
+
+	t.Run("LastLogTime no output", func(t *testing.T) {
+		var rec [][]string
+		withHelperExec(t, &rec, func([]string) string { return "0|" })
+		got, err := r.LastLogTime(ctx, ContainerHandle{ID: "c1"})
+		require.NoError(t, err)
+		assert.True(t, got.IsZero())
+	})
+
+	t.Run("LastLogTime unparseable", func(t *testing.T) {
+		var rec [][]string
+		withHelperExec(t, &rec, func([]string) string { return "0|garbage line\n" })
+		_, err := r.LastLogTime(ctx, ContainerHandle{ID: "c1"})
+		require.Error(t, err)
+	})
 }
 
 func TestOCI_ListContainers_SkipsBadInspect(t *testing.T) {

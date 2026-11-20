@@ -107,6 +107,13 @@ type PodRuntime interface {
 	ListContainers(ctx context.Context, labels map[string]string) ([]ContainerInfo, error)
 	// LogsSince follows the container's logs starting at since.
 	LogsSince(ctx context.Context, h ContainerHandle, since time.Time, stdout, stderr io.Writer) error
+	// LastLogTime returns the timestamp of the container's most recent log
+	// line, as stamped by the container runtime's own clock (logs
+	// --timestamps), or the zero time when the container has logged nothing.
+	// It is the boundary a reused pod's sidecar log stream resumes after: both
+	// it and LogsSince's since are compared by the runtime, so the agent's own
+	// clock (which a VM-backed or remote runtime may not share) never enters.
+	LastLogTime(ctx context.Context, h ContainerHandle) (time.Time, error)
 }
 
 // Mount is a host-path bind mount for a long-lived container: the host

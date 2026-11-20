@@ -32,6 +32,7 @@ type podFakeRT struct {
 	containers map[string]crt.ContainerInfo
 	running    map[string]bool
 	imageIDs   map[string]string
+	logTimes   map[string]time.Time
 }
 
 func (f *podFakeRT) ImageID(_ context.Context, image string) (string, bool, error) {
@@ -59,6 +60,11 @@ func (f *podFakeRT) ListContainers(_ context.Context, labels map[string]string) 
 }
 func (f *podFakeRT) LogsSince(context.Context, crt.ContainerHandle, time.Time, io.Writer, io.Writer) error {
 	return nil
+}
+
+// logTimes are the runtime-clock timestamps LastLogTime reports per container.
+func (f *podFakeRT) LastLogTime(_ context.Context, h crt.ContainerHandle) (time.Time, error) {
+	return f.logTimes[h.ID], nil
 }
 
 func (f *podFakeRT) Name() string                                  { return "fake" }

@@ -343,6 +343,33 @@ container daemon (`docker info`, daemon logs).
 unset value means the 5m default). On the Kubernetes agent the equivalent setting is
 [`podStartTimeout`](../operator-manual/kubernetes-integration.md), which also covers the image pull.
 
+## A host agent run fails with `spec.volumes cannot be combined with podTemplate.reuse`
+
+**Symptom.** A run on a host agent fails before any step starts, and the run log (step -1) shows:
+
+```
+spec.volumes cannot be combined with podTemplate.reuse: a reused pod keeps the volumes it was created with, which contradicts a volume's lifecycle
+```
+
+**What it means.** The job sets both `podTemplate.reuse: true` and `spec.volumes`. A pooled claim pod
+keeps the mounts it was created with, so it cannot serve runs that mount different volumes. The
+Kubernetes agent rejects the same combination.
+
+**Fix.** Remove `reuse: true`, or move the data off `spec.volumes`.
+
+## A host agent logs `reused claim pod could not be prepared; creating a fresh one`
+
+**Symptom.** The agent log (Info) shows `reused claim pod could not be prepared; creating a fresh one`
+with an `error` attribute, and the run starts slower than a pooled run normally does.
+
+**What it means.** The run was about to reuse a pooled claim pod, but emptying its workspace or
+re-applying its `fsGroup` failed, or the container runtime could not report the sidecars' log times.
+The agent removed that pod and started a fresh one, so the run itself is not affected.
+
+**What to check.** The `error` attribute. A pause image without `rm`, or a runtime whose log driver does
+not support `docker logs` (for example `none`), makes every reuse attempt fall back. See [Claim-pod
+pool](../operator-manual/agents.md#claim-pod-pool-podtemplatereuse).
+
 ## A host agent is not claiming: `free disk space below minimum, skipping claim`
 
 **Symptom**
