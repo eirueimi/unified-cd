@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"io"
+	"net"
+	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -193,4 +197,103 @@ func TestBootstrapTokenWarning(t *testing.T) {
 	assert.Equal(t, want, bootstrapTokenWarning("https://idp.example.com", "t"))
 	assert.Empty(t, bootstrapTokenWarning("", "t"))
 	assert.Empty(t, bootstrapTokenWarning("https://idp.example.com", ""))
+}
+
+// TestServeUntilShutdown_WaitsForInFlightRequest proves the stop sequence
+// does not return (so main does not exit and run its deferred closers) until
+// an in-flight slow request has completed with a full response.
+func TestServeUntilShutdown_WaitsForInFlightRequest(t *testing.T) {
+	const handlerDelay = 500 * time.Millisecond
+
+	started := make(chan struct{})
+	var handlerDone atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		time.Sleep(handlerDelay)
+		handlerDone.Store(true)
+		_, _ = w.Write([]byte("done"))
+	})
+	httpSrv := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var drained atomic.Bool
+	returned := make(chan error, 1)
+	go func() {
+		returned <- serveUntilShutdown(ctx, httpSrv, ln, func() { drained.Store(true) }, 50*time.Millisecond, 5*time.Second)
+	}()
+
+	type result struct {
+		body string
+		code int
+		err  error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		resp, err := http.Get("http://" + ln.Addr().String() + "/slow")
+		if err != nil {
+			resCh <- result{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(resp.Body)
+		resCh <- result{body: string(b), code: resp.StatusCode, err: err}
+	}()
+
+	<-started
+	cancel() // simulate SIGTERM while the request is in flight
+
+	if err := <-returned; err != nil {
+		t.Fatalf("serveUntilShutdown: %v", err)
+	}
+	if !handlerDone.Load() {
+		t.Fatal("serveUntilShutdown returned before the in-flight handler finished")
+	}
+	if !drained.Load() {
+		t.Fatal("onDrain was not called")
+	}
+	res := <-resCh
+	if res.err != nil || res.code != http.StatusOK || res.body != "done" {
+		t.Fatalf("in-flight request got code=%d body=%q err=%v, want 200 \"done\"", res.code, res.body, res.err)
+	}
+}
+
+// TestServeUntilShutdown_ForcesCloseAfterTimeout checks a handler that
+// outlives the shutdown timeout does not hang the stop sequence.
+func TestServeUntilShutdown_ForcesCloseAfterTimeout(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/stuck", func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+	})
+	httpSrv := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	returned := make(chan error, 1)
+	go func() {
+		returned <- serveUntilShutdown(ctx, httpSrv, ln, nil, 0, 100*time.Millisecond)
+	}()
+	go func() { _, _ = http.Get("http://" + ln.Addr().String() + "/stuck") }()
+	<-started
+	cancel()
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatalf("serveUntilShutdown: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("serveUntilShutdown hung past the shutdown timeout")
+	}
 }

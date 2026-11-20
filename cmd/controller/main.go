@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -634,16 +636,6 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	go func() {
-		<-ctx.Done()
-		slog.Info("received shutdown signal, draining...")
-		srv.SetShuttingDown()
-		time.Sleep(2 * time.Second)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = httpSrv.Shutdown(shutdownCtx)
-	}()
-
 	keySource := "file"
 	switch {
 	case resolved.Ephemeral:
@@ -661,11 +653,68 @@ func main() {
 		LogTrimDays:  *logTrimDays,
 	})
 
-	slog.Info("controller listening", "addr", *addr)
-	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
 		slog.Error("listen", "error", err)
 		os.Exit(1)
 	}
+	slog.Info("controller listening", "addr", *addr)
+	// serveUntilShutdown returns only after in-flight requests have drained
+	// (or the shutdown timeout elapsed), so the deferred pg.Close(),
+	// srv.Close() and key-source Close() below never run under live handlers.
+	if err := serveUntilShutdown(ctx, httpSrv, ln, srv.SetShuttingDown, shutdownDrainDelay, shutdownTimeout); err != nil {
+		slog.Error("serve", "error", err)
+		os.Exit(1)
+	}
+}
+
+const (
+	// shutdownDrainDelay is how long the controller keeps serving after the
+	// shutdown signal (health endpoints already 503, long-lived streams
+	// ended) so load balancers and clients can move to another replica.
+	shutdownDrainDelay = 2 * time.Second
+	// shutdownTimeout bounds how long http.Server.Shutdown waits for
+	// in-flight requests. drainDelay + timeout must stay well under the
+	// pod's terminationGracePeriodSeconds (30 in the Helm chart).
+	shutdownTimeout = 10 * time.Second
+)
+
+// serveUntilShutdown serves httpSrv on ln until ctx is cancelled, then runs
+// the graceful stop sequence: onDrain (flip health checks to 503 and end
+// long-lived streams), wait drainDelay, then http.Server.Shutdown bounded by
+// shutdownTimeout. It returns only after Shutdown has finished, which is the
+// point of the function: Serve returns http.ErrServerClosed as soon as
+// Shutdown is called, so a caller that returned on that alone would exit
+// while handlers are still running. A Shutdown timeout is logged and the
+// remaining connections are force-closed; it is not an error. Only a Serve
+// failure other than http.ErrServerClosed is returned.
+func serveUntilShutdown(ctx context.Context, httpSrv *http.Server, ln net.Listener, onDrain func(), drainDelay, timeout time.Duration) error {
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- httpSrv.Serve(ln) }()
+
+	select {
+	case err := <-serveErr:
+		// Serve stopped on its own before any signal.
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+	}
+
+	slog.Info("received shutdown signal, draining...")
+	if onDrain != nil {
+		onDrain()
+	}
+	time.Sleep(drainDelay)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Warn("graceful shutdown did not finish, forcing close", "error", err)
+		_ = httpSrv.Close()
+	}
+	<-serveErr
+	return nil
 }
 
 var inClusterKubernetesConfig = rest.InClusterConfig

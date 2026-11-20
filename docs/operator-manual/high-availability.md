@@ -275,9 +275,13 @@ fast and re-dispatch in-flight requests to a healthy replica.
 
 On SIGINT/SIGTERM, the controller shuts down in stages:
 
-1. Calls `SetShuttingDown()`, causing `/healthz` and `/readyz` to return **503** → the LB stops sending new traffic (drain begins).
-2. Waits ~2 seconds, then gracefully shuts down the HTTP server with up to a 10-second grace period.
-3. Agent claim long-polls are immediately drained via `claimDrainCh`.
+1. `/healthz` and `/readyz` start returning **503**, so the load balancer stops sending new traffic (drain begins).
+2. Agent claim long-polls and live log streams (`/api/v1/runs/{id}/events`) end immediately. Agents simply claim again and the web UI reopens its log stream; both land on another replica. `unified-cd logs -f` polls rather than holding a stream, so it is unaffected.
+3. The controller keeps serving for ~2 seconds so load balancers can observe the 503s.
+4. The HTTP server then shuts down gracefully: it stops accepting connections and waits up to **10 seconds** for in-flight requests to finish. The process does not exit (and the database connection is not closed) until that wait ends. Requests still running after 10 seconds are cut off.
+5. The process exits.
+
+The whole sequence takes at most ~12 seconds, which fits within the Helm chart's `terminationGracePeriodSeconds: 30`. If you run the controller under another orchestrator, set its termination grace period to at least 15 seconds.
 
 This enables one-at-a-time rolling deploys with no downtime.
 

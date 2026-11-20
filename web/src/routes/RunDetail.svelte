@@ -20,6 +20,7 @@
     selectedStep = null,
     selectedParallelGroup = null,
     abortController = null,
+    sseReconnectTimer = null,
     stepsTimer = null;
   let approvalComments = {};
 
@@ -683,6 +684,10 @@
   // missing or hidden: step polling, the event stream and pending log fetches.
   function stopAllStreams() {
     stopStepPolling();
+    if (sseReconnectTimer) {
+      clearTimeout(sseReconnectTimer);
+      sseReconnectTimer = null;
+    }
     if (abortController) {
       abortController.abort();
       abortController = null;
@@ -781,7 +786,23 @@
         stopStepPolling();
     }, 3000);
   }
+  // How long to wait before reopening a log stream the server closed while
+  // the run was still active (controller restart / rolling deploy). The
+  // controller ends open streams on shutdown; the fresh connection reaches
+  // another replica and its backfill replays whatever was missed.
+  const SSE_RECONNECT_DELAY_MS = 2000;
+  function scheduleSSEReconnect() {
+    if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+    sseReconnectTimer = setTimeout(() => {
+      sseReconnectTimer = null;
+      startSSE();
+    }, SSE_RECONNECT_DELAY_MS);
+  }
   async function startSSE() {
+    if (sseReconnectTimer) {
+      clearTimeout(sseReconnectTimer);
+      sseReconnectTimer = null;
+    }
     invalidateLogTailScroll();
     if (abortController) {
       abortController.abort();
@@ -877,6 +898,7 @@
       }
     }
     abortController = new AbortController();
+    const streamController = abortController;
     const headers = {};
     const t = get(token);
     if (t) headers["Authorization"] = "Bearer " + t;
@@ -895,7 +917,19 @@
       let buf = "";
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          // The server closed the stream without a terminal status event
+          // (e.g. the controller is shutting down). Unless this connection
+          // was superseded/aborted or the run already finished, reconnect.
+          if (
+            streamController === abortController &&
+            !streamController.signal.aborted &&
+            !(run && ["Succeeded", "Failed", "Cancelled"].includes(run.status))
+          ) {
+            scheduleSSEReconnect();
+          }
+          break;
+        }
         buf += decoder.decode(value, { stream: true });
         const parts = buf.split("\n\n");
         buf = parts.pop();
@@ -1149,6 +1183,7 @@
     window.addEventListener("resize", measureLogMetrics);
   onDestroy(() => {
     invalidateLogTailScroll();
+    if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
     if (abortController) abortController.abort();
     stopStepPolling();
     if (logSearchDebounce) clearTimeout(logSearchDebounce);

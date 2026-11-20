@@ -237,6 +237,25 @@ describe('RunDetail — single SSE/events connection per run (TODO #10)', () => 
 // stream delivers the terminal status and closes. The stream mirrors what
 // internal/controller/sse.go handleRunEvents writes for an already-terminal
 // run: the stored "log" events, then one "status" event, then EOF.
+describe('RunDetail — log stream reconnects when the server closes it mid-run', () => {
+  it('reopens /events after the stream ends without a terminal status', async () => {
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return emptyEventsResponse();
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-r', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { unmount } = render(RunDetail, { props: { params: { id: 'run-r' } } });
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(1));
+    // The reconnect is delayed (2s); the stream must be reopened without any user action.
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBeGreaterThanOrEqual(2), { timeout: 5000 });
+    unmount();
+  });
+});
+
 describe('RunDetail — cancelled run keeps its historical logs', () => {
   it('keeps backfilled lines rendered after the terminal status event and stream close, with one connection', async () => {
     const enc = new TextEncoder();

@@ -370,7 +370,7 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	for {
 		// Return an empty response immediately during shutdown (prevents errors before the DB connection closes).
 		select {
-		case <-s.claimDrainCh:
+		case <-s.shutdownCh:
 			writeJSON(w, http.StatusOK, api.ClaimResponse{})
 			return
 		default:
@@ -479,7 +479,7 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		select {
-		case <-s.claimDrainCh:
+		case <-s.shutdownCh:
 			// Return an empty response immediately on shutdown to release the agent.
 			writeJSON(w, http.StatusOK, api.ClaimResponse{})
 			return
