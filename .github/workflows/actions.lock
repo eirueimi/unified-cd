@@ -29,6 +29,9 @@ workflows:
         - 'actions/checkout@v4.4.0'
         - 'actions/setup-go@v5.6.0'
         - 'goreleaser/goreleaser-action@v6.4.0'
+    '.github/workflows/vulncheck.yml':
+        - 'actions/checkout@v4.4.0'
+        - 'actions/setup-go@v5.6.0'
 dependencies:
     'actions/checkout@v4.4.0':
         ref: 'v4.4.0'
