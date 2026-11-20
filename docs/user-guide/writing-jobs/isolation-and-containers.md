@@ -479,6 +479,8 @@ steps:
 
 ### Reusing a slow-to-create volume (CSI clone)
 
+This pattern applies to the Kubernetes agent: `ephemeral` claim templates and CSI cloning are Kubernetes volume features.
+
 A pooled pod (`reuse: true`) keeps every pod-level volume between runs; only the contents of the
 workspace mount are emptied. That makes `reuse` a way to pay for a slow volume once per pooled pod
 instead of once per run. The typical case is a generic `ephemeral` volume whose claim template

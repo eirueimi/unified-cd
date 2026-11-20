@@ -401,6 +401,12 @@ func (r *ociCLI) LastLogTime(ctx context.Context, h ContainerHandle) (time.Time,
 // (podman), "time=\"...\" level=..." (logrus text format), and docker's
 // "WARNING: ...". Keep the list small: an unlisted diagnostic makes
 // LastLogTime fail, which only costs a fresh pod.
+//
+// This assumes every container log line from `logs --timestamps` starts with a
+// runtime timestamp, so a skipped prefix is only ever a CLI diagnostic. A
+// runtime that ignored --timestamps, combined with a sidecar whose last line
+// starts with one of these prefixes, would skip that line and yield a zero
+// boundary.
 var cliDiagnosticPrefixes = []string{"WARN[", "WARNING:", "time=\"", "level="}
 
 func isCLIDiagnostic(line string) bool {

@@ -274,18 +274,20 @@ instead — same symptom, different command.)
 
 **Cause**
 
-This is expected, not a bug. Claim pod containers are long-lived (`/.ucd/ucd-sh pause`, not
-`--rm`) and are torn down by the agent itself when a claim finishes; if the agent exits ungracefully
-mid-claim, that teardown never runs. Unlike the k8s-agent, whose orphaned pods are eventually
-reaped by the cluster's own pod garbage collection, **the host agent has no automatic container
-GC** — see [Crash-orphaned claim containers](../operator-manual/agents.md#crash-orphaned-claim-containers).
+Claim pod containers are long-lived (`/.ucd/ucd-sh pause`, not `--rm`) and are torn down by the agent
+itself when a claim finishes; if the agent exits ungracefully mid-claim, that teardown never runs. The
+host agent labels its containers and removes its own leftovers with a startup sweep, so a crash is
+normally cleaned up the next time the same agent starts. See
+[Crash-orphaned claim containers](../operator-manual/agents.md#crash-orphaned-claim-containers).
 
 **Fix**
 
-Treat this as routine hygiene: periodically prune claim-pod-shaped containers on agent hosts
-(e.g. a `docker container prune`-style sweep, or one scoped to containers made from the
-`pauseImage`/`runnerImage`/podTemplate images), rather than assuming a crash cleans up after
-itself.
+Restart the agent with the same agent ID: the sweep removes the containers labelled with it. Containers
+that persist after that are either from an agent that never restarted under that ID (decommissioned, or
+renamed), or were created by a version from before the labels existed (they carry no labels and are never
+swept). Remove those by hand, for example with `docker ps -a --filter label=unified-cd/agent-id=<id>`
+for the first case and the `ancestor=<pauseImage>` filter described in the linked section for the
+second.
 
 ---
 

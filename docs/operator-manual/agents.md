@@ -780,6 +780,12 @@ and sends no `FinishRun`, because the controller already holds the run's final s
 [Agents and Enrollment troubleshooting](../troubleshooting/agents-and-enrollment.md#a-host-agent-run-fails-with-claim-pod-image-pull-exceeded-podpulltimeout)
 for the timeout failures.
 
+Creating a claim pod's containers can be slow, notably on the `vfs` storage driver and on fuse-overlayfs
+(rootless docker/podman), where every container layer is copied or emulated in userspace. Setting
+`podTemplate.reuse: true` amortises that cost across runs (see
+[Claim-pod pool](#claim-pod-pool-podtemplatereuse)); changing the storage driver is outside what the agent
+manages.
+
 See [Configuration Reference: Agent Flags](../reference/configuration.md#agent-flags) for
 the full flag list. For `podTemplate.reuse`, see [Claim-pod pool](#claim-pod-pool-podtemplatereuse).
 
