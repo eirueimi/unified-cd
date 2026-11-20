@@ -298,6 +298,37 @@ dropping it would turn a persistent workspace into an ephemeral one.
 **Fix:** remove the block and move the persistence to a named volume, following the [migration
 guide](../operator-manual/migrations/2026-10-20-named-volumes.md#workspacepvc-is-removed).
 
+## A host agent run fails with `claim pod image pull failed`
+
+**Symptom.** A run on a host agent fails before any step starts, and the run log (step -1) shows one of:
+
+```
+claim pod image pull failed: pull image "myapp:latest": <runtime error>
+claim pod image pull failed: image "myapp:latest" is not present after pull
+```
+
+**What it means.** Before creating any container, the agent pulls the claim pod's images. An image
+whose reference has no digest and either no tag or the tag `latest` is pulled on **every claim**, even
+when it is already on the host, and that pull failed. The first form carries the container runtime's
+own error (`pull access denied`, `manifest unknown`, `toomanyrequests`, a network error); the second
+means the pull reported success but the runtime has no such image afterwards.
+
+**Likely causes.**
+
+- The image exists only on the host (built or loaded locally, never pushed) and is referenced as
+  `:latest` or with no tag.
+- The host is offline or cannot reach the registry (air-gapped host, proxy, DNS).
+- The registry needs authentication the container runtime does not have (`docker login`).
+- A rate limit, typically Docker Hub for an untagged sidecar such as `redis` or `postgres`
+  (`toomanyrequests`).
+
+**Fix.** Use a tag other than `latest`, or pin the image by digest: such an image is pulled only when
+it is missing from the host. For an image that is only local, push it to a registry the agent can
+reach (or a mirror) and reference it there. For auth or rate limits, log the runtime in to the
+registry, use a mirror, or switch to a tag. Run `docker pull <image>` (or `podman`/`nerdctl`) as the
+agent's user on the agent host to reproduce. See
+[Migrating: host agent claim-pod behaviour](../operator-manual/migrations/2026-11-20-host-claim-pod-parity.md).
+
 ## A host agent run fails with `claim pod image pull exceeded podPullTimeout`
 
 **Symptom.** A run on a host agent fails before any step starts, and the run log (step -1) shows:

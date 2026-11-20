@@ -296,6 +296,38 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		},
 	}
 
+	// Register scope/pod/pump teardown BEFORE the secrets fetch (whose failure
+	// returns early and must still release the claim pod, which may be a pool
+	// hit) and BEFORE SetMasker starts the host
+	// sidecar pump (SetMasker spawns `docker logs -f` goroutines when
+	// b.pod != nil — see hostBackend.SetMasker). CloseScopes is nil-safe (it
+	// guards sidecarPump/scopes/pod independently), so deferring it this
+	// early is free today; the point is that ANY future early-return between
+	// here and the pump's start can no longer skip teardown and leak the
+	// pump's subprocesses/goroutines.
+	defer func() {
+		// Bounded, like every other post-DAG phase — see DefaultFinallyBudget
+		// for the one-sentence rule (every phase that EXECUTES something has a
+		// ceiling; only the controller report does not, see finishCtx below).
+		// Scope/pod teardown executes container-runtime and Kubernetes API
+		// calls and can wedge exactly as a cleanup hook can, and it runs on
+		// context.WithoutCancel for the same reason, so it inherited the same
+		// unboundedness.
+		//
+		// Unlike the other phases this one is NOT recorded into the run's log:
+		// it runs after FinishRun has already made the run terminal, and what
+		// leaks when it is cut short (a scope container, a claim pod) is a
+		// property of the agent host, not of the job's result — the operator
+		// who can act on it is reading the agent's log, not the run's.
+		scopeCtx, cancelScopes := context.WithTimeout(context.WithoutCancel(ctx), phaseBudget)
+		defer cancelScopes()
+		b.CloseScopes(scopeCtx)
+		if errors.Is(scopeCtx.Err(), context.DeadlineExceeded) {
+			slog.Warn("scope/pod teardown truncated by its finallyTimeout budget; containers or a claim pod may have leaked",
+				"runId", c.RunID, "budget", phaseBudget)
+		}
+	}()
+
 	// Fetch the secrets needed for this Run and build the masker
 	var masker *secrets.Masker
 	if len(c.SecretsNeeded) > 0 {
@@ -394,36 +426,6 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			Line:      line,
 		}})
 	}
-
-	// Register scope/pod/pump teardown BEFORE SetMasker starts the host
-	// sidecar pump (SetMasker spawns `docker logs -f` goroutines when
-	// b.pod != nil — see hostBackend.SetMasker). CloseScopes is nil-safe (it
-	// guards sidecarPump/scopes/pod independently), so deferring it this
-	// early is free today; the point is that ANY future early-return between
-	// here and the pump's start can no longer skip teardown and leak the
-	// pump's subprocesses/goroutines.
-	defer func() {
-		// Bounded, like every other post-DAG phase — see DefaultFinallyBudget
-		// for the one-sentence rule (every phase that EXECUTES something has a
-		// ceiling; only the controller report does not, see finishCtx below).
-		// Scope/pod teardown executes container-runtime and Kubernetes API
-		// calls and can wedge exactly as a cleanup hook can, and it runs on
-		// context.WithoutCancel for the same reason, so it inherited the same
-		// unboundedness.
-		//
-		// Unlike the other phases this one is NOT recorded into the run's log:
-		// it runs after FinishRun has already made the run terminal, and what
-		// leaks when it is cut short (a scope container, a claim pod) is a
-		// property of the agent host, not of the job's result — the operator
-		// who can act on it is reading the agent's log, not the run's.
-		scopeCtx, cancelScopes := context.WithTimeout(context.WithoutCancel(ctx), phaseBudget)
-		defer cancelScopes()
-		b.CloseScopes(scopeCtx)
-		if errors.Is(scopeCtx.Err(), context.DeadlineExceeded) {
-			slog.Warn("scope/pod teardown truncated by its finallyTimeout budget; containers or a claim pod may have leaked",
-				"runId", c.RunID, "budget", phaseBudget)
-		}
-	}()
 
 	// The masker is born here (after secrets are fetched), so it is installed
 	// via SetMasker rather than passed to the backend's constructor.

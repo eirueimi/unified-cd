@@ -336,7 +336,7 @@ spec:
         - name: job
           image: golang:1.24-alpine
 
-    reuse: false              # pool the pod for the next run on the same job and slot (only the workspace is emptied; both agents pool)
+    reuse: false              # pool the pod for the next run of the same job (only the workspace is emptied; both agents pool; the host agent also keeps one per maxConcurrent slot)
     cleanWorkspace: false     # wipe a volume mounted at "." before the run (an ordinary workspace is always emptied)
     override:                 # merge additional containers/volumes into base spec
       containers:

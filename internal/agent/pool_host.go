@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +20,10 @@ import (
 
 // minPoolEvictionInterval is the floor of the idle-eviction tick.
 const minPoolEvictionInterval = 30 * time.Second
+
+// maxPoolEvictionInterval is its ceiling, so a long idleTimeout is still
+// enforced to within a minute.
+const maxPoolEvictionInterval = time.Minute
 
 // hostReuseWithVolumesMsg is the run failure for a claim that combines
 // podTemplate.reuse with spec.volumes. It is the Kubernetes agent's message
@@ -69,6 +74,11 @@ type pooledHostPod struct {
 	jobName     string
 	fingerprint string
 	idleSince   time.Time
+	// dirInfo is the identity of the workspace directory the pod bind-mounts,
+	// recorded when the pod was released. A run that is not pooled removes and
+	// recreates the directory (a new inode); a pod mounted on the old one would
+	// write into a deleted directory.
+	dirInfo os.FileInfo
 }
 
 // hostPodPool keeps idle claim pods of jobs with podTemplate.reuse: true. It
@@ -127,7 +137,7 @@ func (p *hostPodPool) Acquire(ctx context.Context, workDir, jobName, fp string) 
 	if e == nil {
 		return nil, false
 	}
-	if e.jobName == jobName && e.fingerprint == fp {
+	if e.jobName == jobName && e.fingerprint == fp && sameWorkDir(workDir, e.dirInfo) {
 		if pr, ok := p.rt.(crt.PodRuntime); ok && podRunning(ctx, pr, e.pod) {
 			return e.pod, true
 		}
@@ -136,11 +146,33 @@ func (p *hostPodPool) Acquire(ctx context.Context, workDir, jobName, fp string) 
 	return nil, false
 }
 
+// sameWorkDir reports whether workDir is still the directory (same inode) the
+// pod was released with. Any stat error counts as a mismatch.
+func sameWorkDir(workDir string, recorded os.FileInfo) bool {
+	if recorded == nil {
+		return false
+	}
+	cur, err := os.Stat(workDir)
+	return err == nil && os.SameFile(recorded, cur)
+}
+
 // Release returns a pod at the end of its run. An unhealthy pod, or one that
 // arrives after Close, is removed; otherwise it becomes the idle pod for
 // workDir. The oldest idle pod is removed while the pool exceeds maxIdle.
 func (p *hostPodPool) Release(ctx context.Context, workDir, jobName, fp string, m *claimPodManager, healthy bool) {
 	var evicted []*claimPodManager
+	// The workspace identity is read outside the lock. A directory that cannot
+	// be inspected cannot be proven to be the pod's mount later, so the pod is
+	// not pooled.
+	dirInfo, statErr := os.Stat(workDir)
+	if statErr != nil {
+		healthy = false
+	} else {
+		// On Windows os.Stat resolves a file's identity lazily, by reopening
+		// its path at the first os.SameFile; resolve it now, while the path
+		// still names the pod's directory.
+		_ = os.SameFile(dirInfo, dirInfo)
+	}
 	p.mu.Lock()
 	if !healthy || p.closed || p.maxIdle <= 0 {
 		p.mu.Unlock()
@@ -150,7 +182,7 @@ func (p *hostPodPool) Release(ctx context.Context, workDir, jobName, fp string, 
 	if old := p.idle[workDir]; old != nil {
 		evicted = append(evicted, old.pod)
 	}
-	p.idle[workDir] = &pooledHostPod{pod: m, jobName: jobName, fingerprint: fp, idleSince: p.now()}
+	p.idle[workDir] = &pooledHostPod{pod: m, jobName: jobName, fingerprint: fp, idleSince: p.now(), dirInfo: dirInfo}
 	for len(p.idle) > p.maxIdle {
 		var oldestKey string
 		var oldest *pooledHostPod
@@ -189,17 +221,28 @@ func (p *hostPodPool) evictExpired(ctx context.Context, now time.Time) {
 	}
 }
 
-// StartEviction removes idle pods once they pass idleTimeout, checking every
-// idleTimeout/2 (at least 30s). It is a no-op when idleTimeout is 0, which
-// never evicts by age. Close stops it.
+// evictionInterval is how often idle pods are checked: a quarter of
+// idleTimeout, within [30s, 1m], so a pod is removed at most about 1.25x
+// idleTimeout after it went idle (or 30s late for short timeouts).
+func evictionInterval(idleTimeout time.Duration) time.Duration {
+	interval := idleTimeout / 4
+	if interval < minPoolEvictionInterval {
+		interval = minPoolEvictionInterval
+	}
+	if interval > maxPoolEvictionInterval {
+		interval = maxPoolEvictionInterval
+	}
+	return interval
+}
+
+// StartEviction removes idle pods once they pass idleTimeout, checking at
+// evictionInterval. It is a no-op when idleTimeout is 0, which never evicts by
+// age. Close stops it.
 func (p *hostPodPool) StartEviction(ctx context.Context) {
 	if p.idleTimeout <= 0 {
 		return
 	}
-	interval := p.idleTimeout / 2
-	if interval < minPoolEvictionInterval {
-		interval = minPoolEvictionInterval
-	}
+	interval := evictionInterval(p.idleTimeout)
 	ectx, cancel := context.WithCancel(ctx)
 	p.mu.Lock()
 	p.evictCancel = cancel
@@ -263,9 +306,21 @@ func (p *hostPodPool) Close(ctx context.Context) {
 
 // gcActiveSet is the workspace GC's active set: the directories of the claims
 // in flight plus those held by idle pooled pods. pool may be nil.
-func gcActiveSet(running []string, pool *hostPodPool) map[string]struct{} {
-	set := activeWorkDirSet(running)
-	for _, d := range pool.WorkDirs() {
+//
+// A pod moves between "in the pool" and "owned by an active run" without the
+// two sets sharing a lock, so reading one then the other can miss a directory
+// that moved in between. The active snapshot is therefore taken while the pool
+// lock is held: Acquire and Release cannot run meanwhile, and a pod that is not
+// in the pool is held by a run that is still active (Acquire happens after the
+// run registers its directory, Release before it deregisters it).
+func gcActiveSet(snapshot func() []string, pool *hostPodPool) map[string]struct{} {
+	if pool == nil {
+		return activeWorkDirSet(snapshot())
+	}
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	set := activeWorkDirSet(snapshot())
+	for d := range pool.idle {
 		set[d] = struct{}{}
 	}
 	return set

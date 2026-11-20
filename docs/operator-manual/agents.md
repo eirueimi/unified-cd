@@ -778,7 +778,10 @@ The host agent pulls the claim pod's images as a separate step bounded by `--pod
 pulled or the pod is starting, the agent abandons the claim: it removes any containers already created
 and sends no `FinishRun`, because the controller already holds the run's final status. See
 [Agents and Enrollment troubleshooting](../troubleshooting/agents-and-enrollment.md#a-host-agent-run-fails-with-claim-pod-image-pull-exceeded-podpulltimeout)
-for the timeout failures.
+for the timeout failures. Images whose reference has no digest and either no tag or the tag `latest` are
+pulled on every claim, even when already on the host; see
+[Migrating: host agent claim-pod behaviour](migrations/2026-11-20-host-claim-pod-parity.md) for what that
+means for local-only images and rate-limited registries.
 
 Creating a claim pod's containers can be slow, notably on the `vfs` storage driver and on fuse-overlayfs
 (rootless docker/podman), where every container layer is copied or emulated in userspace. Setting
@@ -934,10 +937,13 @@ time and are never part of the pod, so a later run does not inherit them. Treat 
 pod as shared between runs of the job: do not rely on a reused pod being clean.
 
 **Pool scope.** An idle pod is held per workspace directory, that is per job and per `maxConcurrent`
-slot. A run reuses a pod only when it is the same job on the same slot and the pod's fingerprint
-matches. With many slots, the same job lands on different slots and finds no idle pod there, so the hit
-rate is best with few slots. A different job (or a different fingerprint) on the slot removes the idle
-pod it finds there.
+slot. The workspace directory is per job, so another job never meets this job's idle pod. A run reuses
+a pod only when it is the same job on the same slot, the pod's fingerprint matches and the workspace
+directory is still the one the pod was released with (a run that is not pooled, for example after
+`reuse` was switched to `false` and back, replaces the directory, and the pod is then removed instead
+of reused). With many slots, the same job lands on different slots and finds no idle pod there, so the
+hit rate is best with few slots. A different fingerprint on the slot removes the idle pod it finds
+there.
 
 **Trust.** Anything a step writes outside the workspace persists to the next run of the same job on that
 slot, whatever triggered it (another branch, another user, a webhook): credentials a step leaves in `$HOME`
@@ -977,6 +983,9 @@ first lines. Output a sidecar printed while the pod sat idle belongs to neither 
 
 - The agent keeps at most `poolMaxIdle` idle pods; when a release would exceed it, the pod that has been
   idle the longest is removed. An idle pod is removed after `poolIdleTimeout`.
+- Idle pods are checked for expiry every quarter of `poolIdleTimeout`, but no more often than every 30
+  seconds and no less often than every minute, so a pod is removed up to about 25% (or up to 30
+  seconds, for a short timeout) after `poolIdleTimeout`.
 - `poolIdleTimeout` defaults to `30m` here, while the Kubernetes agent's `poolIdleTimeout` is unset by
   default (idle Pods are never evicted). Set it explicitly if you want the same behaviour on both.
 - Pooled pods exist only in the agent's memory and are not restored after a restart: the

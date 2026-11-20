@@ -372,9 +372,10 @@ func TestPool_IdleEviction(t *testing.T) {
 	p := newHostPodPool(f, 30*time.Minute, 4)
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	p.now = func() time.Time { return t0 }
-	m := newClaimPodManager(f, "/w", "/workspace", "pause", "runner", "")
+	wd := t.TempDir()
+	m := newClaimPodManager(f, wd, "/workspace", "pause", "runner", "")
 	require.NoError(t, m.Start(context.Background(), mysqlTemplate()))
-	p.Release(context.Background(), "/w", "j", "fp", m, true)
+	p.Release(context.Background(), wd, "j", "fp", m, true)
 
 	p.evictExpired(context.Background(), t0.Add(29*time.Minute))
 	assert.Equal(t, 1, p.Len(), "kept before the idle timeout")
@@ -395,16 +396,18 @@ func TestPool_MaxIdleEvictsOldest(t *testing.T) {
 	p := newHostPodPool(f, 30*time.Minute, 2)
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var ids [3][]string
+	var dirs [3]string
 	for i := 0; i < 3; i++ {
+		dirs[i] = t.TempDir()
 		p.now = func() time.Time { return t0.Add(time.Duration(i) * time.Second) }
-		m := newClaimPodManager(f, "/w"+string(rune('0'+i)), "/workspace", "pause", "runner", "")
+		m := newClaimPodManager(f, dirs[i], "/workspace", "pause", "runner", "")
 		require.NoError(t, m.Start(context.Background(), &dsl.PodTemplate{Reuse: true}))
 		ids[i] = []string{"c" + string(rune('0'+2*i)), "c" + string(rune('0'+2*i+1))}
-		p.Release(context.Background(), "/w"+string(rune('0'+i)), "j", "fp", m, true)
+		p.Release(context.Background(), dirs[i], "j", "fp", m, true)
 	}
 	assert.Equal(t, 2, p.Len())
 	assert.ElementsMatch(t, ids[0], f.removedIDs(), "the pod idle the longest is removed")
-	assert.Equal(t, []string{"/w1", "/w2"}, p.WorkDirs())
+	assert.ElementsMatch(t, []string{dirs[1], dirs[2]}, p.WorkDirs())
 }
 
 func TestPool_InterruptedExecDiscardsPod(t *testing.T) {
@@ -509,7 +512,7 @@ func TestGCWorkspaces_SkipsPooledWorkDirs(t *testing.T) {
 	require.NoError(t, m.Start(context.Background(), &dsl.PodTemplate{Reuse: true}))
 	p.Release(context.Background(), held, "pooled-job", "fp", m, true)
 
-	removed, err := gcWorkspaces(context.Background(), base, 7*24*time.Hour, gcActiveSet(nil, p), time.Now(), noRuntime, "")
+	removed, err := gcWorkspaces(context.Background(), base, 7*24*time.Hour, gcActiveSet(func() []string { return nil }, p), time.Now(), noRuntime, "")
 	require.NoError(t, err)
 	assert.DirExists(t, held, "a directory the pool's pod mounts survives")
 	assert.NoDirExists(t, other)
@@ -519,17 +522,18 @@ func TestGCWorkspaces_SkipsPooledWorkDirs(t *testing.T) {
 func TestPool_CloseRemovesIdle(t *testing.T) {
 	f := &poolRT{}
 	p := newHostPodPool(f, 30*time.Minute, 4)
-	m := newClaimPodManager(f, "/w", "/workspace", "pause", "runner", "")
+	wd := t.TempDir()
+	m := newClaimPodManager(f, wd, "/workspace", "pause", "runner", "")
 	require.NoError(t, m.Start(context.Background(), &dsl.PodTemplate{Reuse: true}))
-	p.Release(context.Background(), "/w", "j", "fp", m, true)
+	p.Release(context.Background(), wd, "j", "fp", m, true)
 	p.Close(context.Background())
 	assert.Equal(t, 0, p.Len())
 	assert.ElementsMatch(t, []string{"c0", "c1"}, f.removedIDs())
 
 	// A pod released after Close is removed, not pooled.
-	m2 := newClaimPodManager(f, "/w", "/workspace", "pause", "runner", "")
+	m2 := newClaimPodManager(f, wd, "/workspace", "pause", "runner", "")
 	require.NoError(t, m2.Start(context.Background(), &dsl.PodTemplate{Reuse: true}))
-	p.Release(context.Background(), "/w", "j", "fp", m2, true)
+	p.Release(context.Background(), wd, "j", "fp", m2, true)
 	assert.Equal(t, 0, p.Len())
 }
 
@@ -615,4 +619,121 @@ func TestPool_ReuseWithSilentSidecarStreamsWholeLog(t *testing.T) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	assert.Empty(t, f.sinces, "no sidecar output yet: the pump needs no boundary")
+}
+
+// replaceDir swaps dir for a new empty directory of the same name. The old one
+// is moved aside rather than deleted so a filesystem that recycles file
+// identities (NTFS, ext4) cannot hand the new directory the old identity, which
+// would make the tests below vacuous.
+func replaceDir(t *testing.T, dir string) {
+	t.Helper()
+	require.NoError(t, os.Rename(dir, dir+".old"))
+	require.NoError(t, os.Mkdir(dir, 0o755))
+}
+
+// TestPool_AcquireMissesWhenWorkDirWasRecreated: a pooled pod bind-mounts the
+// workspace directory it was released with. If that directory was removed and
+// recreated (a new inode) in the meantime, the pod would write into a deleted
+// directory, so Acquire discards it.
+func TestPool_AcquireMissesWhenWorkDirWasRecreated(t *testing.T) {
+	f := &poolRT{}
+	p := newHostPodPool(f, 30*time.Minute, 4)
+	wd := filepath.Join(t.TempDir(), "job")
+	require.NoError(t, os.Mkdir(wd, 0o755))
+	m := newClaimPodManager(f, wd, "/workspace", "pause", "runner", "")
+	require.NoError(t, m.Start(context.Background(), &dsl.PodTemplate{Reuse: true}))
+	p.Release(context.Background(), wd, "j", "fp", m, true)
+	require.Equal(t, 1, p.Len())
+
+	// Same inode: a hit.
+	got, hit := p.Acquire(context.Background(), wd, "j", "fp")
+	require.True(t, hit)
+	p.Release(context.Background(), wd, "j", "fp", got, true)
+
+	replaceDir(t, wd)
+
+	got, hit = p.Acquire(context.Background(), wd, "j", "fp")
+	assert.False(t, hit)
+	assert.Nil(t, got)
+	assert.Equal(t, 0, p.Len())
+	assert.ElementsMatch(t, []string{"c0", "c1"}, f.removedIDs(), "the stale pod is removed")
+}
+
+// TestPool_ReleaseOfUninspectableWorkDirIsNotPooled: a workspace that cannot be
+// stat-ed cannot be proven to be the pod's mount later.
+func TestPool_ReleaseOfUninspectableWorkDirIsNotPooled(t *testing.T) {
+	f := &poolRT{}
+	p := newHostPodPool(f, 30*time.Minute, 4)
+	m := newClaimPodManager(f, filepath.Join(t.TempDir(), "gone"), "/workspace", "pause", "runner", "")
+	require.NoError(t, m.Start(context.Background(), &dsl.PodTemplate{Reuse: true}))
+	p.Release(context.Background(), m.workDir, "j", "fp", m, true)
+	assert.Equal(t, 0, p.Len())
+	assert.ElementsMatch(t, []string{"c0", "c1"}, f.removedIDs())
+}
+
+// TestExecuteRun_PooledPodNotReusedAcrossWorkspaceRecreation: run 1 pools a
+// pod; run 2 (not poolable, e.g. reuse: false in between) removes and
+// recreates the workspace as runLoop's prepareWorkspace/finishWorkspace do;
+// run 3 (poolable again, same fingerprint) must get a fresh pod, not the one
+// mounted on the deleted directory.
+func TestExecuteRun_PooledPodNotReusedAcrossWorkspaceRecreation(t *testing.T) {
+	f := &poolRT{}
+	e := newPoolEnv(t, f)
+	wd := filepath.Join(t.TempDir(), "job")
+	require.NoError(t, os.Mkdir(wd, 0o755))
+	require.Equal(t, "Succeeded", e.run(e.claim("r1", "job-a", reuseTemplate("1")), wd, poolable))
+	require.Len(t, f.created, 3)
+	require.Equal(t, 1, e.a.hostPool.Len())
+
+	// Run 2 is not poolable: it never calls Acquire, and its workspace
+	// preparation and cleanup (keepDir false) replace the directory.
+	require.Equal(t, "Succeeded", e.run(e.claim("r2", "job-a", &dsl.PodTemplate{Spec: reuseTemplate("1").Spec}), wd, claimOpts{}))
+	replaceDir(t, wd)
+	require.Equal(t, 1, e.a.hostPool.Len(), "run 1's pod is still idle")
+	createdBefore := len(f.created)
+
+	require.Equal(t, "Succeeded", e.run(e.claim("r3", "job-a", reuseTemplate("1")), wd, poolable))
+	assert.Len(t, f.created, createdBefore+3, "run 3 gets a fresh pod")
+	assert.Subset(t, f.removedIDs(), []string{"c0", "c1", "c2"}, "run 1's stale pod is removed")
+	assert.Equal(t, 1, e.a.hostPool.Len())
+}
+
+// TestRunClaim_SecretFetchFailureReleasesClaimPod: a failed secrets fetch
+// returns before any step runs, but the claim pod (possibly a pool hit) must
+// still be closed or released, and exactly one FinishRun is sent.
+func TestRunClaim_SecretFetchFailureReleasesClaimPod(t *testing.T) {
+	// The isolated harness serves no secrets endpoint, so the fetch fails.
+	for _, tc := range []struct {
+		name     string
+		opts     claimOpts
+		wantPool int
+	}{
+		{"not pooled: pod is removed", claimOpts{}, 0},
+		{"pooled: pod is released to the pool", poolable, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &poolRT{}
+			e := newPoolEnv(t, f)
+			c := e.claim("r1", "job-a", reuseTemplate("1"))
+			c.SecretsNeeded = []string{"TOKEN"}
+			assert.Equal(t, "Failed", e.run(c, t.TempDir(), tc.opts))
+			e.h.mu.Lock()
+			assert.Equal(t, 1, e.h.finishCalls, "exactly one FinishRun")
+			e.h.mu.Unlock()
+			assert.Contains(t, e.sysLog(), "fetch secrets for run r1")
+			assert.Equal(t, tc.wantPool, e.a.hostPool.Len())
+			if tc.wantPool == 0 {
+				assert.ElementsMatch(t, []string{"c0", "c1", "c2"}, f.removedIDs(), "the claim pod is closed")
+			} else {
+				assert.Empty(t, f.removedIDs())
+			}
+		})
+	}
+}
+
+func TestEvictionInterval(t *testing.T) {
+	assert.Equal(t, 30*time.Second, evictionInterval(time.Second), "floor")
+	assert.Equal(t, 30*time.Second, evictionInterval(2*time.Minute))
+	assert.Equal(t, 45*time.Second, evictionInterval(3*time.Minute), "a quarter of the timeout")
+	assert.Equal(t, time.Minute, evictionInterval(30*time.Minute), "ceiling")
 }

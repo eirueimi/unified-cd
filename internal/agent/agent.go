@@ -651,7 +651,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		// in use by ANOTHER live agent process sharing this wsBase would have
 		// to be younger than retention (days-scale) to survive anyway, since a
 		// truly stuck/abandoned dir is exactly what this GC exists to reclaim.
-		if removed, err := gcWorkspaces(runCtx, wsBase, retention, gcActiveSet(activeWorkDirs.Snapshot(), a.hostPool), time.Now(), a.containerRuntime, a.ToolsDir); err != nil {
+		if removed, err := gcWorkspaces(runCtx, wsBase, retention, gcActiveSet(activeWorkDirs.Snapshot, a.hostPool), time.Now(), a.containerRuntime, a.ToolsDir); err != nil {
 			slog.Warn("workspace gc: startup sweep failed", "error", err)
 		} else if len(removed) > 0 {
 			slog.Info("workspace gc: startup sweep removed aged workspace dirs", "count", len(removed), "dirs", removed)
@@ -1006,7 +1006,7 @@ func (a *Agent) workspaceGCLoop(ctx context.Context, wsBase string, retention ti
 			return
 		case <-ticker.C:
 		}
-		removed, err := gcWorkspaces(ctx, wsBase, retention, gcActiveSet(activeWorkDirs.Snapshot(), a.hostPool), time.Now(), a.containerRuntime, a.ToolsDir)
+		removed, err := gcWorkspaces(ctx, wsBase, retention, gcActiveSet(activeWorkDirs.Snapshot, a.hostPool), time.Now(), a.containerRuntime, a.ToolsDir)
 		if err != nil {
 			slog.Warn("workspace gc: sweep failed", "error", err)
 			continue
@@ -1074,8 +1074,10 @@ func (a *Agent) claimWillPool(c api.ClaimResponse, o claimOpts, rt crt.Container
 		reason = "detached runs never share a pod"
 	case !hasPod:
 		reason = "the container runtime does not support pod reuse (no container inspection)"
-	case a.hostPool == nil || a.PoolMaxIdle <= 0:
+	case a.PoolMaxIdle <= 0:
 		reason = "pooling is disabled (poolMaxIdle is 0)"
+	case a.hostPool == nil:
+		reason = "the container runtime was unavailable when the agent started, so no pod pool was created"
 	}
 	if reason != "" {
 		slog.Info("podTemplate.reuse: claim pod not pooled", "runId", c.RunID, "reason", reason)
@@ -1264,9 +1266,12 @@ func (a *Agent) executeRunWith(ctx context.Context, c api.ClaimResponse, workDir
 				return
 			}
 			poolKey = &hostPoolKey{workDir: workDir, jobName: c.JobName, fingerprint: fp}
-			if m, ok := a.hostPool.Acquire(ctx, workDir, c.JobName, fp); ok {
+			// Acquire inspects the pooled pod's containers and may remove it, so
+			// it runs under the start phase's context: a wedged daemon is
+			// bounded by podStartTimeout and a cancelled run interrupts it.
+			hitCtx, cancelHit := context.WithTimeoutCause(wctx, startD, errStartTimeout)
+			if m, ok := a.hostPool.Acquire(hitCtx, workDir, c.JobName, fp); ok {
 				m.runLog, m.maxMappedID = pod.runLog, pod.maxMappedID
-				hitCtx, cancelHit := context.WithTimeoutCause(wctx, startD, errStartTimeout)
 				// The sidecar log boundary is read before the workspace is
 				// emptied and before any step runs.
 				since, herr := m.sidecarLogBoundary(hitCtx)
@@ -1284,6 +1289,8 @@ func (a *Agent) executeRunWith(ctx context.Context, c api.ClaimResponse, workDir
 					}
 					slog.Info("reused claim pod could not be prepared; creating a fresh one", "runId", c.RunID, "error", herr)
 				}
+			} else {
+				cancelHit()
 			}
 		}
 		if !reused {

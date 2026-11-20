@@ -56,7 +56,7 @@ spec:
     spec: <PodSpec map>
     workspace:
       mountPath: <string>         # where the (ephemeral) workspace is mounted; default /workspace
-    reuse: <bool>                 # pool the Pod for the next run on the same job and slot (only the workspace is emptied; both agents pool)
+    reuse: <bool>                 # pool the Pod for the next run of the same job (only the workspace is emptied; both agents pool; the host agent also keeps one per maxConcurrent slot)
     cleanWorkspace: <bool>        # same as spec.cleanWorkspace; the two are ORed
     override:
       containers: [<map>]

@@ -207,7 +207,7 @@ func TestClaimPod_PoolReuse_ExitedSidecarDiscardsPodOnAcquire(t *testing.T) {
 
 	pool := newHostPodPool(rt, time.Hour, 2)
 	assert.True(t, podRunning(ctx, pr, m), "everything is up right after Start")
-	pool.Release(ctx, "/w", "job", "fp", m, true)
+	pool.Release(ctx, m.workDir, "job", "fp", m, true)
 
 	m.mu.Lock()
 	svc := m.open["svc"]
@@ -221,7 +221,7 @@ func TestClaimPod_PoolReuse_ExitedSidecarDiscardsPodOnAcquire(t *testing.T) {
 		return err == nil && !up
 	}, 30*time.Second, 200*time.Millisecond, "the sidecar exits once told to")
 
-	got, hit := pool.Acquire(ctx, "/w", "job", "fp")
+	got, hit := pool.Acquire(ctx, m.workDir, "job", "fp")
 	assert.False(t, hit, "a pod with an exited sidecar is never handed out")
 	assert.Nil(t, got)
 	assert.Equal(t, 0, pool.Len())

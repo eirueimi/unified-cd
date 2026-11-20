@@ -153,6 +153,7 @@ nav:
           - "Host Agents Start Without a Native Shell": operator-manual/migrations/2026-11-12-optional-native-shell.md
           - "Volumes Declared on the Controller": operator-manual/migrations/2026-11-18-controller-declared-volumes.md
           - "Kubernetes Volume PVC Names": operator-manual/migrations/2026-11-20-k8s-volume-pvc-names.md
+          - "Host Agent Claim-Pod Behaviour": operator-manual/migrations/2026-11-20-host-claim-pod-parity.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md
