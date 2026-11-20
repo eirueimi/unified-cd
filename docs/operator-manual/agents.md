@@ -866,6 +866,11 @@ container, then logs `removed orphaned containers from a previous agent
 process` with a `count`. Nothing else is touched: containers of other agents,
 and containers without these labels, are left alone.
 
+The sweep is bounded to two minutes; if the runtime hangs, the agent logs a
+warning and continues starting. It is skipped, with an Info log line, when the
+agent has no ID, when no container runtime is available, or when the runtime is
+Apple `container`.
+
 Because the sweep trusts the label, **each agent process must have its own
 agent ID, and only one process may run per ID.** Two live processes sharing an
 ID would delete each other's running claim containers at startup. The same

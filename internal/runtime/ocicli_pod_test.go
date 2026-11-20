@@ -120,3 +120,44 @@ func TestOCI_PodRuntimeArgs(t *testing.T) {
 		assert.Equal(t, []string{"docker", "logs", "-f", "--since", "2026-01-02T03:04:05.000000006Z", "c1"}, rec[0])
 	})
 }
+
+func TestOCI_ListContainers_SkipsBadInspect(t *testing.T) {
+	ctx := context.Background()
+	r := &ociCLI{bin: "docker"}
+
+	t.Run("vanished container is skipped", func(t *testing.T) {
+		var rec [][]string
+		withHelperExec(t, &rec, func(args []string) string {
+			switch {
+			case args[0] == "ps":
+				return "0|gone\nok\n"
+			case args[len(args)-1] == "gone":
+				return "1|"
+			}
+			return `0|{"k":"v"}` + `
+`
+		})
+		infos, err := r.ListContainers(ctx, map[string]string{"k": "v"})
+		require.NoError(t, err)
+		require.Len(t, infos, 1)
+		assert.Equal(t, "ok", infos[0].Handle.ID)
+	})
+
+	t.Run("malformed labels JSON is skipped and listing continues", func(t *testing.T) {
+		var rec [][]string
+		withHelperExec(t, &rec, func(args []string) string {
+			switch {
+			case args[0] == "ps":
+				return "0|bad\nok\n"
+			case args[len(args)-1] == "bad":
+				return "0|not-json\n"
+			}
+			return `0|{"k":"v"}` + `
+`
+		})
+		infos, err := r.ListContainers(ctx, map[string]string{"k": "v"})
+		require.NoError(t, err)
+		require.Len(t, infos, 1)
+		assert.Equal(t, "ok", infos[0].Handle.ID)
+	})
+}

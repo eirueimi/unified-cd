@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
@@ -15,6 +16,10 @@ const (
 	labelClaimPod = "unified-cd/claim-pod"
 	labelScope    = "unified-cd/scope"
 )
+
+// sweepTimeout bounds the whole startup sweep so a wedged container runtime
+// cannot stall Agent.Run before any slot starts.
+var sweepTimeout = 2 * time.Minute // a var only so tests can shorten it
 
 // claimPodLabels returns the labels for a claim-pod container (pause, sidecar
 // or job); nil when agentID is empty (no sweep identity).
@@ -45,6 +50,13 @@ func sweepOrphanContainers(ctx context.Context, rt crt.ContainerRuntime, agentID
 		slog.Info("startup container sweep skipped", "agentIDSet", agentID != "", "labelSupport", ok)
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, sweepTimeout)
+	defer cancel()
+	defer func() {
+		if ctx.Err() == context.DeadlineExceeded {
+			slog.Warn("startup container sweep timed out; continuing startup", "timeout", sweepTimeout.String(), "removed", len(removed))
+		}
+	}()
 	infos, err := pr.ListContainers(ctx, map[string]string{labelAgentID: agentID})
 	if err != nil {
 		slog.Warn("startup container sweep: could not list containers", "error", err)

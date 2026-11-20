@@ -38,7 +38,7 @@ type scopeManager struct {
 	// agentID labels scope containers (scopeLabels) for the startup sweep.
 	agentID string
 	mu      sync.Mutex
-	open     map[string]crt.ContainerHandle
+	open    map[string]crt.ContainerHandle
 }
 
 func newScopeManager(rt crt.ContainerRuntime, toolsDir string) *scopeManager {

@@ -546,10 +546,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	// Claim-pod and scope containers a previous process of this agent ID left
 	// behind (crash, OOM, reboot): no claim of this process exists yet, so
 	// everything carrying this agent's label is an orphan.
-	if rt, rtErr := a.containerRuntime(); rtErr == nil {
-		if removed := sweepOrphanContainers(ctx, rt, a.ID); len(removed) > 0 {
-			slog.Info("removed orphaned containers from a previous agent process", "count", len(removed))
-		}
+	if rt, rtErr := a.containerRuntime(); rtErr != nil {
+		slog.Info("runtime unavailable; startup container sweep skipped", "error", rtErr)
+	} else if removed := sweepOrphanContainers(ctx, rt, a.ID); len(removed) > 0 {
+		slog.Info("removed orphaned containers from a previous agent process", "count", len(removed))
 	}
 
 	// Every volume is free at this point: the agent has lost all the runs it

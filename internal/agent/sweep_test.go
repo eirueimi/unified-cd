@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/stretchr/testify/assert"
@@ -62,4 +63,26 @@ func TestLabelHelpers(t *testing.T) {
 	assert.Nil(t, scopeLabels(""))
 	assert.Equal(t, map[string]string{labelAgentID: "a1", labelClaimPod: "true"}, claimPodLabels("a1"))
 	assert.Equal(t, map[string]string{labelAgentID: "a1", labelScope: "true"}, scopeLabels("a1"))
+}
+
+// blockingListRT blocks ListContainers until ctx is done.
+type blockingListRT struct{ *podFakeRT }
+
+func (b blockingListRT) ListContainers(ctx context.Context, _ map[string]string) ([]crt.ContainerInfo, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestStartupSweep_TimesOutOnWedgedRuntime(t *testing.T) {
+	prev := sweepTimeout
+	sweepTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { sweepTimeout = prev })
+	done := make(chan []string, 1)
+	go func() { done <- sweepOrphanContainers(context.Background(), blockingListRT{seededRT()}, "a1") }()
+	select {
+	case removed := <-done:
+		assert.Empty(t, removed)
+	case <-time.After(5 * time.Second):
+		t.Fatal("sweep did not return after its timeout")
+	}
 }
