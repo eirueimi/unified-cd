@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -43,6 +44,10 @@ func TestAgent_ClaimsDetachedOutsideMaxConcurrent(t *testing.T) {
 		MaxDetachedConcurrent: 1,
 		WorkspaceDir:          t.TempDir(),
 	}
+	// Pin "no container runtime": on a CI host with docker, runtime detection and
+	// the startup container sweep would otherwise eat most of the window before
+	// the claim loops start.
+	a.runtimeOnce.Do(func() { a.runtimeErr = errors.New("no container runtime in this test") })
 	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
 	defer cancel()
 	_ = a.Run(ctx)
