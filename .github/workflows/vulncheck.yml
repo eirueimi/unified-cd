@@ -1,0 +1,63 @@
+name: govulncheck
+
+# Reports known vulnerabilities that the shipped binaries (./cmd/...) actually
+# reach, including ones in the Go standard library, which Dependabot does not
+# cover. Test-only helpers (for example the Docker client the store tests use)
+# are out of scope, so an unfixable advisory there does not keep this red. Runs on
+# changes to the module files and daily. A scheduled run that finds something
+# opens (or comments on) one issue labelled "govulncheck".
+
+on:
+  push:
+    branches: [main]
+    paths: [go.mod, go.sum, .github/workflows/vulncheck.yml]
+  pull_request:
+    paths: [go.mod, go.sum, .github/workflows/vulncheck.yml]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run govulncheck
+        id: scan
+        run: |
+          set -o pipefail
+          go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./cmd/... | tee govulncheck.txt
+      - name: Open or update the issue
+        if: failure() && steps.scan.outcome == 'failure' && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create govulncheck --color B60205 --description "Found by the scheduled govulncheck run" 2>/dev/null || true
+          {
+            echo "The scheduled govulncheck run found vulnerabilities reachable from this module."
+            echo
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo '```'
+            head -c 60000 govulncheck.txt
+            echo '```'
+            echo
+            echo "A vulnerability in the standard library is fixed by raising the go directive (toolchain) in go.mod."
+          } > body.md
+          number=$(gh issue list --label govulncheck --state open --json number --jq '.[0].number')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file body.md
+          else
+            gh issue create --title "govulncheck: vulnerabilities found" --label govulncheck --body-file body.md
+          fi

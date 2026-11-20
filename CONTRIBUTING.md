@@ -61,6 +61,15 @@ See the "Development" section in the [README](https://github.com/eirueimi/unifie
 commands (`make build`, `make test`, `make dev-go`, `make dev-ui`, …). Please run
 the tests before opening a pull request.
 
+### Dependency vulnerabilities
+
+Two automations watch for vulnerable dependencies. Both stop at a pull request or an issue; a person reviews and merges the fix.
+
+- **Dependabot security updates** (`.github/dependabot.yml`) open a pull request when a Go module, an npm package in `web/` or `editors/vscode/`, or a GitHub Action has a published advisory with a fixed version. Updates of one ecosystem are grouped into one pull request, labelled `dependencies` and `security`. Routine version updates are turned off (`open-pull-requests-limit: 0`). Security updates must be enabled in the repository settings ("Code security": Dependabot alerts and Dependabot security updates).
+- **govulncheck** (`.github/workflows/vulncheck.yml`) scans the shipped binaries (`./cmd/...`) on every change to `go.mod` or `go.sum`, and daily. It reports only vulnerabilities the code can reach, and it covers the Go standard library, which Dependabot does not. A scheduled run that finds something opens one issue labelled `govulncheck`, or comments on the open one. A standard library fix means raising the `go` directive in `go.mod` together with the `golang:` base images in `docker/*.Dockerfile` and the version in `README.md`.
+
+Not covered: the base images of `docker/*.Dockerfile` (Dependabot has no security updates for container images) and test-only helpers, such as the Docker client used by the store tests.
+
 ### Integration tests
 
 `go test ./...` (and `make test`) runs the unit tests. Several groups of tests need a
