@@ -984,7 +984,8 @@ first lines. Output a sidecar printed while the pod sat idle belongs to neither 
 
 **When a claim is not pooled.** `reuse: true` is honoured only for isolated jobs on a docker, podman or
 nerdctl runtime. `wslc` runs through the same docker-compatible CLI code path, so it is pooled the same
-way, but it is not among the runtimes this was verified on; if its CLI lacks `logs --timestamps --tail`,
+way, but it is not among the runtimes this was verified on; if its CLI lacks `logs --timestamps --tail`
+or prints diagnostics on the log stream that the agent does not recognise (it fails closed rather than guess),
 every reuse attempt falls back to a fresh pod (see the next paragraph's log line). Otherwise the run behaves as if `reuse` were unset, the pod is removed when the run ends,
 and the agent logs one Info line, `podTemplate.reuse: claim pod not pooled`, with a `reason`:
 

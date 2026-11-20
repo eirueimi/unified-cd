@@ -149,10 +149,18 @@ func TestOCI_PodRuntimeArgs(t *testing.T) {
 
 	t.Run("LastLogTime warnings only means no output", func(t *testing.T) {
 		var rec [][]string
-		withHelperExec(t, &rec, func([]string) string { return "0|WARN[0000] something\n" })
+		withHelperExec(t, &rec, func([]string) string { return "0|WARN[0000] something\nWARNING: Error loading config file: x\n" })
 		got, err := r.LastLogTime(ctx, ContainerHandle{ID: "c1"})
 		require.NoError(t, err)
 		assert.True(t, got.IsZero())
+	})
+
+	t.Run("LastLogTime fails closed on an unrecognised line", func(t *testing.T) {
+		var rec [][]string
+		withHelperExec(t, &rec, func([]string) string { return "0|hello world\n" })
+		_, err := r.LastLogTime(ctx, ContainerHandle{ID: "c1"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "hello world")
 	})
 
 	t.Run("LastLogTime failure carries the CLI output", func(t *testing.T) {

@@ -365,12 +365,14 @@ func (r *ociCLI) LogsSince(ctx context.Context, h ContainerHandle, since time.Ti
 // no output.
 //
 // The container's stdout lines arrive on the CLI's stdout and its stderr lines
-// on the CLI's stderr, so the CLI's own warnings (rootless podman's
-// "WARN[0000] ...", docker's "WARNING: Error loading config file") share a
-// stream with container output. Every container line starts with a timestamp
-// and no warning does, so lines whose first token is not an RFC3339 time are
-// ignored, and the newest timestamp wins. Go's RFC3339Nano parse accepts docker's
-// "Z" suffix, podman's "+00:00" offset and any fractional precision.
+// on the CLI's stderr, so the CLI's own diagnostics share a stream with
+// container output. It fails closed: every container line starts with an
+// RFC3339 timestamp (Go's parse accepts docker's "Z", podman's "+00:00" and any
+// fractional precision), so the only lines skipped are those with a recognised
+// CLI diagnostic prefix (cliDiagnosticPrefixes). Any other line without a
+// leading timestamp is an error, because guessing "no output" would make the
+// caller replay a sidecar's whole log into the next run. No lines, or only
+// diagnostics, is a silent container: zero time, nil error.
 func (r *ociCLI) LastLogTime(ctx context.Context, h ContainerHandle) (time.Time, error) {
 	out, err := execCommand(ctx, r.bin, "logs", "--timestamps", "--tail", "1", h.ID).CombinedOutput()
 	if err != nil {
@@ -378,12 +380,36 @@ func (r *ociCLI) LastLogTime(ctx context.Context, h ContainerHandle) (time.Time,
 	}
 	var last time.Time
 	for _, line := range strings.Split(string(out), "\n") {
-		ts, _, _ := strings.Cut(strings.TrimSpace(line), " ")
-		if t, perr := time.Parse(time.RFC3339Nano, ts); perr == nil && t.After(last) {
+		line = strings.TrimSpace(line)
+		if line == "" || isCLIDiagnostic(line) {
+			continue
+		}
+		ts, _, _ := strings.Cut(line, " ")
+		t, perr := time.Parse(time.RFC3339Nano, ts)
+		if perr != nil {
+			return time.Time{}, fmt.Errorf("%s logs --timestamps: unrecognised output line (no timestamp): %s", r.bin, truncateOutput([]byte(line)))
+		}
+		if t.After(last) {
 			last = t
 		}
 	}
 	return last, nil
+}
+
+// cliDiagnosticPrefixes are the line prefixes of diagnostics the container CLIs
+// print themselves: logrus-style "WARN[0000] ..." and "level=warning ..."
+// (podman), "time=\"...\" level=..." (logrus text format), and docker's
+// "WARNING: ...". Keep the list small: an unlisted diagnostic makes
+// LastLogTime fail, which only costs a fresh pod.
+var cliDiagnosticPrefixes = []string{"WARN[", "WARNING:", "time=\"", "level="}
+
+func isCLIDiagnostic(line string) bool {
+	for _, p := range cliDiagnosticPrefixes {
+		if strings.HasPrefix(line, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // truncateOutput trims CLI output for inclusion in an error message.

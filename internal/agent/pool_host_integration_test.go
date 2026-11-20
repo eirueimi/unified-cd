@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -84,10 +85,12 @@ func (h *poolLogServer) take(idx int) []string {
 }
 
 // TestClaimPod_PoolReuse_SidecarLogsStartAfterPreviousRun runs two claims on one
-// pooled pod against a real runtime. The sidecar writes to stdout, then to
-// stderr as its last line before the pod is released, then keeps writing (to
-// stderr) while the pod is idle. The second run must see the same containers
-// and only sidecar lines newer than the ones that existed when it took the pod.
+// pooled pod against a real runtime. The sidecar writes to stdout, then ticks to
+// stderr (so its last line before the pod is released is a stderr line) only
+// while a step has marked the workspace; the marker is gone once the workspace
+// is emptied, so the pod is silent while idle and the last tick before the
+// second run is known exactly. The second run must reuse the pod and see its
+// sidecar's first line as the very next tick, with nothing replayed.
 func TestClaimPod_PoolReuse_SidecarLogsStartAfterPreviousRun(t *testing.T) {
 	if _, err := crt.Detect(testRuntimePref()); err != nil {
 		skipOrFailInCI(t, "no container runtime available (%s=%q): %v", containerRuntimeEnv, testRuntimePref(), err)
@@ -104,7 +107,7 @@ func TestClaimPod_PoolReuse_SidecarLogsStartAfterPreviousRun(t *testing.T) {
 	a.hostPool = newHostPodPool(rt, a.PoolIdleTimeout, a.PoolMaxIdle)
 	t.Cleanup(func() { a.hostPool.Close(context.Background()) })
 
-	sidecarScript := `echo boot-out; echo boot-err >&2; i=0; while true; do sleep 1; i=$((i+1)); echo tick-$i >&2; done`
+	sidecarScript := `echo boot-out; echo boot-err >&2; i=0; while true; do sleep 1; if [ -f /workspace/on ]; then i=$((i+1)); echo $i > /tmp/count; echo tick-$i >&2; fi; done`
 	pt := func() *dsl.PodTemplate {
 		return &dsl.PodTemplate{Reuse: true, Spec: map[string]any{"containers": []any{
 			map[string]any{"name": "svc", "image": poolBusybox, "command": []any{"sh", "-c", sidecarScript}},
@@ -112,7 +115,7 @@ func TestClaimPod_PoolReuse_SidecarLogsStartAfterPreviousRun(t *testing.T) {
 	}
 	claim := func(runID string) api.ClaimResponse {
 		return api.ClaimResponse{RunID: runID, JobName: "pool-reuse-job", PodTemplate: pt(),
-			Stages: []api.ClaimStage{{Step: &api.ClaimStep{Index: 0, Name: "wait", Run: "sleep 3"}}}}
+			Stages: []api.ClaimStage{{Step: &api.ClaimStep{Index: 0, Name: "wait", Run: "touch /workspace/on; sleep 3"}}}}
 	}
 	wd := rootCleanedTempDir(t, a)
 	sidecarIdx := dsl.SidecarLogIndex(0)
@@ -130,17 +133,36 @@ func TestClaimPod_PoolReuse_SidecarLogsStartAfterPreviousRun(t *testing.T) {
 	}
 	require.Positive(t, maxTick, "the sidecar ticked during the first run: %v", first)
 	require.Equal(t, 1, a.hostPool.Len())
-	time.Sleep(2500 * time.Millisecond) // the sidecar keeps writing while the pod is idle
+	// runLoop empties the workspace after a run; executeRunWith does not, so do
+	// it here: the marker goes away and the idle pod's sidecar falls silent.
+	pooled := a.hostPool.idle[wd]
+	require.NotNil(t, pooled)
+	code, err := rt.Exec(context.Background(), pooled.pod.pause, crt.ExecSpec{Script: "rm -f /workspace/on"}, io.Discard, io.Discard)
+	require.NoError(t, err)
+	require.Zero(t, code)
+	time.Sleep(2500 * time.Millisecond)
+
+	// The last tick the sidecar logged before the second run takes the pod.
+	pooled.pod.mu.Lock()
+	svc := pooled.pod.open["svc"]
+	pooled.pod.mu.Unlock()
+	var count strings.Builder
+	code, err = rt.Exec(context.Background(), svc, crt.ExecSpec{Script: "cat /tmp/count"}, &count, &count)
+	require.NoError(t, err)
+	require.Zero(t, code)
+	lastBefore, err := strconv.Atoi(strings.TrimSpace(count.String()))
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, lastBefore, maxTick)
 
 	a.executeRunWith(context.Background(), claim("pool-run-2"), wd, claimOpts{Poolable: true})
 	require.Equal(t, "Succeeded", <-h.finish)
 	second := h.take(sidecarIdx)
 	require.NotEmpty(t, second, "the second run sees its own sidecar output")
-	for _, l := range second {
+	for i, l := range second {
 		assert.NotContains(t, l, "boot-", "the previous run's output is not replayed: %q", l)
 		n, ok := tickNumber(l)
 		require.True(t, ok, "unexpected line %q", l)
-		assert.Greater(t, n, maxTick+1, "tick %d is from before this run took the pod (first run saw up to %d)", n, maxTick)
+		assert.Equal(t, lastBefore+1+i, n, "every line is a new tick, the first right after the last one before the run: %v", second)
 	}
 	require.Equal(t, 1, a.hostPool.Len(), "the same pod was reused and released again")
 }
@@ -174,7 +196,8 @@ func TestClaimPod_PoolReuse_ExitedSidecarDiscardsPodOnAcquire(t *testing.T) {
 	m.agentID = agentID
 	t.Cleanup(func() { m.CloseAll(context.Background()) })
 	pt := &dsl.PodTemplate{Reuse: true, Spec: map[string]any{"containers": []any{
-		map[string]any{"name": "svc", "image": poolBusybox, "command": []any{"sh", "-c", "sleep 2"}},
+		map[string]any{"name": "svc", "image": poolBusybox, "command": []any{"sh", "-c",
+			"while [ ! -f /workspace/stop ]; do sleep 0.2; done"}},
 	}}}
 	require.NoError(t, m.Start(ctx, pt))
 
@@ -186,11 +209,17 @@ func TestClaimPod_PoolReuse_ExitedSidecarDiscardsPodOnAcquire(t *testing.T) {
 	assert.True(t, podRunning(ctx, pr, m), "everything is up right after Start")
 	pool.Release(ctx, "/w", "job", "fp", m, true)
 
+	m.mu.Lock()
 	svc := m.open["svc"]
+	m.mu.Unlock()
+	// Make the sidecar exit now: the pause container shares the workspace.
+	code, err := rt.Exec(ctx, m.pause, crt.ExecSpec{Script: "touch /workspace/stop"}, io.Discard, io.Discard)
+	require.NoError(t, err)
+	require.Zero(t, code)
 	require.Eventually(t, func() bool {
 		up, err := pr.ContainerRunning(ctx, svc)
 		return err == nil && !up
-	}, 30*time.Second, 200*time.Millisecond, "the sidecar exits after 2s")
+	}, 30*time.Second, 200*time.Millisecond, "the sidecar exits once told to")
 
 	got, hit := pool.Acquire(ctx, "/w", "job", "fp")
 	assert.False(t, hit, "a pod with an exited sidecar is never handed out")
