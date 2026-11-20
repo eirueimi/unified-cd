@@ -198,9 +198,13 @@ func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Reques
 		return objectRequester{}, false
 	}
 	// Cancel, the reaper and the scheduler finish a run without deleting its
-	// bindings (only the agent's FinishRun does), so a still-alive Pod of a
-	// finished run is refused by status. The agent path deliberately accepts
-	// late uploads; a Pod's access ends with the run.
+	// bindings (only the claiming agent's FinishRun does), so a still-alive
+	// Pod of a finished run is refused by status. The agent path deliberately
+	// accepts late uploads; a Pod's access ends with the run. The exception is
+	// a Cancelled run: the orchestrator still drains post/cache hooks and runs
+	// `finally:` after a cancel, and on Kubernetes those transfers go through
+	// the sidecar, so a bound Pod keeps access until the agent finishes the
+	// run (which deletes the bindings) or cancelledRunObjectGrace passes.
 	run, err := s.store.GetRun(r.Context(), runID)
 	if errors.Is(err, store.ErrRunNotFound) {
 		writeObjectError(w, http.StatusNotFound, api.ObjectErrNotFound, "run not found")
@@ -211,9 +215,9 @@ func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Reques
 		writeObjectError(w, http.StatusInternalServerError, api.ObjectErrInternal, "run status lookup failed")
 		return objectRequester{}, false
 	}
-	if isTerminalStatus(string(run.Status)) {
-		s.auditPresignAction(r, req, action, runID, nil, http.StatusConflict)
-		writeObjectError(w, http.StatusConflict, api.ObjectErrRunFinished, "run "+runID+" has finished")
+	finished := isTerminalStatus(string(run.Status))
+	if finished && !s.withinCancelledRunGrace(run) {
+		s.refuseFinishedRun(w, r, req, action, runID)
 		return objectRequester{}, false
 	}
 	bindings, err := s.store.ListRunPodBindings(r.Context(), runID)
@@ -223,6 +227,12 @@ func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Reques
 		return objectRequester{}, false
 	}
 	if len(bindings) == 0 {
+		if finished {
+			// A Cancelled run with no bindings left: the agent already
+			// finished it, so there is nothing to wait for.
+			s.refuseFinishedRun(w, r, req, action, runID)
+			return objectRequester{}, false
+		}
 		w.Header().Set("Retry-After", "1")
 		writeObjectError(w, http.StatusConflict, api.ObjectErrBindingPending, "no pod is bound to this run yet; retry")
 		return objectRequester{}, false
@@ -240,6 +250,33 @@ func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Reques
 		return objectRequester{}, false
 	}
 	return req, true
+}
+
+// cancelledRunObjectGrace bounds how long after a run was cancelled its bound
+// Pods may still obtain object URLs. The agents' cleanup phases (hook drains,
+// `finally:`, teardown) each run under finallyTimeout, 10 minutes by default
+// and 50 minutes in total across the k8s agent's five windows; 1 hour covers
+// that. An agent configured with a larger finallyTimeout can outlast it, and
+// its transfers then fail with 409 run-finished.
+const cancelledRunObjectGrace = time.Hour
+
+// withinCancelledRunGrace reports whether a terminal run is a Cancelled one
+// still inside cancelledRunObjectGrace. A terminal run's updated_at is the
+// time it finished and no longer changes.
+func (s *Server) withinCancelledRunGrace(run *api.Run) bool {
+	if run.Status != api.RunCancelled {
+		return false
+	}
+	now := time.Now
+	if s.objectNow != nil {
+		now = s.objectNow
+	}
+	return now().Sub(run.UpdatedAt) <= cancelledRunObjectGrace
+}
+
+func (s *Server) refuseFinishedRun(w http.ResponseWriter, r *http.Request, req objectRequester, action, runID string) {
+	s.auditPresignAction(r, req, action, runID, nil, http.StatusConflict)
+	writeObjectError(w, http.StatusConflict, api.ObjectErrRunFinished, "run "+runID+" has finished")
 }
 
 // resolveRequesterRun checks that runID exists and records its job name. A

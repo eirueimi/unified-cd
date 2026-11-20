@@ -46,7 +46,7 @@ recorded, allowed or denied, for the following actions. A **denied read** is rec
 
 The agent secrets fetch also writes one row per GitHub App job token it hands out or refuses, and
 one per refused request for an App's private key (`gitcredential.token_issue`, see [GitHub App job tokens](#github-app-job-tokens)). The
-object URL endpoint writes a row for each write operation and each `403` refusal (`objects.presign`, see
+object URL endpoint writes a row for each write operation, each `403` refusal and each `409 run-finished` refusal (`objects.presign`, see
 [Object URL requests](#object-url-requests)). These are the only agent routes besides credential
 exchange and refresh that are audited.
 
@@ -178,7 +178,7 @@ audit row directly (it is outside the audit middleware):
 | `action` | `objects.presign` |
 | `actor` / `actorId` | `agent` / `agent:<agent id>` for an agent; `agent` with an empty `actorId` for a sidecar (its Pod UID is in `details.podUid`) |
 | `method` / `path` | `POST` / `/api/v1/runs/<run id>/objects/presign` |
-| `resource` | `artifact:<run id>/<artifact name>` or `cache:<job name>/<cache key>` for an operation (cut to 256 bytes); the run ID for a `403` refusal |
+| `resource` | `artifact:<run id>/<artifact name>` or `cache:<job name>/<cache key>` for an operation (cut to 256 bytes); the run ID for a `403` or `409 run-finished` refusal |
 | `status` | The status the requester saw |
 | `details` | `runId`, `kind` and `op` for an operation; `podUid` for a sidecar |
 
@@ -188,7 +188,8 @@ Rows are written for:
   `commit` (the cache metadata write), whatever their outcome;
 - every `403` refusal of an authenticated requester: another agent's run, a Pod that is not the one
   bound to the run, or a namespace/ServiceAccount outside the allow-list;
-- every `409 run-finished` refusal of a Pod's sidecar for a run that has already finished.
+- every `409 run-finished` refusal of a Pod's sidecar: the run has finished (or, for a cancelled run, its
+  one-hour cleanup window has passed or its Pods are no longer bound).
 
 Reads (`get`, `head`) and part-URL batches (`multipart-parts`) are not recorded. Neither are `401`
 (no or invalid credential; an invalid agent credential is logged as described in

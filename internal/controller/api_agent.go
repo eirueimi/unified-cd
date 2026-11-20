@@ -1092,8 +1092,14 @@ func (s *Server) handleAgentFinishRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !updated {
-		// Late/CAS-miss report: the run was already terminal. Report the
-		// no-op distinctly instead of a false-success 204.
+		// Late/CAS-miss report: the run was already terminal (cancelled, or
+		// reaped). Cancel and the reaper leave the bindings in place, so the
+		// claiming agent's finish report is what unbinds the Pods; the guard
+		// above already established that the caller is that agent.
+		if err := s.store.DeleteRunPodBindings(r.Context(), id); err != nil {
+			slog.Warn("finish run: failed to delete pod bindings", "runId", id, "error", err)
+		}
+		// Report the no-op distinctly instead of a false-success 204.
 		writeJSON(w, http.StatusOK, map[string]any{
 			"runId":            id,
 			"status":           string(st),

@@ -110,7 +110,7 @@ spec:
   **Failed**. The block as a whole is not unbounded, though — it runs until it
   finishes or until the agent's `finallyTimeout` expires, whichever comes
   first. See [How long `finally` may run](#how-long-finally-may-run).
-- On cancellation, `finally` still runs, but `failure()` is `false`.
+- On cancellation, `finally` still runs, but `failure()` is `false`. On Kubernetes its artifact and cache transfers keep working after the cancel, for up to an hour.
 - **A `finally` step that fails on a cancelled run still fails the run.** The
   cancellation ends the main `steps` DAG; it does not excuse cleanup. A
   `finally` step is reported `Failed` (not `Cancelled`) when it exits non-zero,

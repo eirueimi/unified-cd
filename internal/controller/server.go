@@ -135,6 +135,7 @@ type Server struct {
 	claimedBy                     *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
 	enrollmentLimiter             *enrollmentLimiter
 	objectLimiter                 *enrollmentLimiter // Per-requester budget of the object endpoints (StoreCredentialRate*).
+	objectNow                     func() time.Time   // Test clock for cancelledRunObjectGrace; nil means time.Now.
 	cliRelay                      *cliRelayLimiters  // Per-IP limiters for the CLI relay routes.
 	credentialTouches             *credentialTouchLimiter
 	kubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier

@@ -166,6 +166,9 @@ because it accepts two kinds of caller, and `authenticateObjectRequester`
   a different Pod is `403`. A run in a terminal state is refused with
   `409 run-finished` before the binding lookup (cancel, the reaper and the
   scheduler do not delete bindings), and the sidecar client does not retry it.
+  A Cancelled run is the exception for `cancelledRunObjectGrace` (1 hour after
+  `updated_at`) while Pods are still bound, because `finally:` and hook drains
+  run after a cancel; a Cancelled run with no bindings left is `run-finished`.
   There is no permissive mode: the
   deprecated `storeCredentialRequireRunBinding` setting is ignored, because a URL is for one
   run's object.

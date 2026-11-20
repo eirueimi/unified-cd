@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/store"
@@ -129,10 +130,11 @@ func TestPresign_SidecarBoundSucceeds(t *testing.T) {
 	assert.Equal(t, "artifacts/"+runID+"/a.tar.gz", urlKey(t, out.Request.URL))
 }
 
-// Cancel, the reaper and the scheduler finish a run without deleting its
-// bindings, so the run's still-alive Pod must be refused by run status.
-func TestPresign_SidecarRefusedOnceRunIsTerminal(t *testing.T) {
-	for _, status := range []api.RunStatus{api.RunCancelled, api.RunFailed, api.RunSucceeded} {
+// Succeeded and Failed runs refuse the sidecar even with a valid binding:
+// cancel, the reaper and the scheduler leave bindings in place, so the status
+// is what ends access. Each refusal is audited as a 409.
+func TestPresign_SidecarRefusedOnceRunSucceededOrFailed(t *testing.T) {
+	for _, status := range []api.RunStatus{api.RunFailed, api.RunSucceeded} {
 		t.Run(string(status), func(t *testing.T) {
 			s, st, _ := presignTestServer(t, sidecarPresignConfig([]string{"ci"}))
 			runID := seedRun(t, st, "job-a", "")
@@ -147,8 +149,75 @@ func TestPresign_SidecarRefusedOnceRunIsTerminal(t *testing.T) {
 			rec := doPresign(t, s, sidecarToken(), runID, api.PresignRequest{Kind: "artifact", Op: "put", Name: "a"})
 			requireObjectError(t, rec, http.StatusConflict, "run-finished")
 			assert.Empty(t, rec.Header().Get("Retry-After"))
+
+			// Without a binding the answer is the same final one, never binding-pending.
+			require.NoError(t, st.DeleteRunPodBindings(t.Context(), runID))
+			rec = doPresign(t, s, sidecarToken(), runID, api.PresignRequest{Kind: "artifact", Op: "put", Name: "a"})
+			requireObjectError(t, rec, http.StatusConflict, "run-finished")
+
+			rows, err := st.ListAuditLogs(t.Context(), 1000, 0)
+			require.NoError(t, err)
+			n := 0
+			for _, row := range rows {
+				if row.Action == "objects.presign" && row.Status == http.StatusConflict {
+					n++
+					assert.Equal(t, runID, row.Resource)
+				}
+			}
+			assert.Equal(t, 2, n, "each run-finished refusal is audited")
 		})
 	}
+}
+
+// A cancelled run's cleanup (hook drains, finally:) still transfers through
+// the sidecar: access continues while the Pod is bound, for a bounded window.
+func TestPresign_SidecarCancelledRunGrace(t *testing.T) {
+	s, st, _ := presignTestServer(t, sidecarPresignConfig([]string{"ci"}))
+	runID := seedRun(t, st, "job-a", "")
+	require.NoError(t, st.UpsertRunPodBinding(t.Context(), runID, "ucd-run-abc", "job-pod-uid"))
+	updated, err := st.FinishRun(t.Context(), runID, api.RunCancelled)
+	require.NoError(t, err)
+	require.True(t, updated)
+	req := api.PresignRequest{Kind: "artifact", Op: "put", Name: "a"}
+
+	out := decodePresign(t, doPresign(t, s, sidecarToken(), runID, req))
+	require.NotNil(t, out.Request, "within the window a bound Pod may still upload")
+
+	// A Pod that is not the bound one is still refused.
+	require.NoError(t, st.ReplaceRunPodBindings(t.Context(), runID, []store.RunPodBinding{{PodName: "ucd-run-other", PodUID: "other-pod-uid"}}))
+	requireObjectError(t, doPresign(t, s, sidecarToken(), runID, req), http.StatusForbidden, "forbidden")
+	require.NoError(t, st.UpsertRunPodBinding(t.Context(), runID, "ucd-run-abc", "job-pod-uid"))
+
+	// Past the window the binding no longer helps.
+	s.objectNow = func() time.Time { return time.Now().Add(cancelledRunObjectGrace + time.Minute) }
+	requireObjectError(t, doPresign(t, s, sidecarToken(), runID, req), http.StatusConflict, "run-finished")
+}
+
+// Once the claiming agent finishes the cancelled run its bindings are gone
+// (handleAgentFinishRun's alreadyFinalized path), and a cancelled run with no
+// binding is refused as finished, not as binding-pending.
+func TestPresign_SidecarCancelledRunAfterAgentFinish(t *testing.T) {
+	s, st, _ := presignTestServer(t, sidecarPresignConfig([]string{"ci"}))
+	token := issueAgentAccessForTest(t, st, "agent-a", nil, nil)
+	runID := seedClaimedRun(t, st, "job-a", "agent-a", "")
+	require.NoError(t, st.UpsertRunPodBinding(t.Context(), runID, "ucd-run-abc", "job-pod-uid"))
+	updated, err := st.FinishRun(t.Context(), runID, api.RunCancelled)
+	require.NoError(t, err)
+	require.True(t, updated)
+	req := api.PresignRequest{Kind: "artifact", Op: "put", Name: "a"}
+	require.NotNil(t, decodePresign(t, doPresign(t, s, sidecarToken(), runID, req)).Request)
+
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-a/runs/"+runID+"/finish", bytes.NewReader([]byte(`{"status":"Cancelled"}`)))
+	r.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, r)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "alreadyFinalized")
+
+	bindings, err := st.ListRunPodBindings(t.Context(), runID)
+	require.NoError(t, err)
+	assert.Empty(t, bindings)
+	requireObjectError(t, doPresign(t, s, sidecarToken(), runID, req), http.StatusConflict, "run-finished")
 }
 
 func TestPresign_SidecarWithoutBindingGets409(t *testing.T) {
