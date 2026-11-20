@@ -293,6 +293,10 @@ type claimPodManager struct {
 	maxMappedID int64
 	runLog      func(lines []string)
 
+	// agentID labels every container of the pod (claimPodLabels) so the
+	// startup sweep can find them after a crash. Empty = no labels.
+	agentID string
+
 	mu    sync.Mutex
 	pause crt.ContainerHandle
 	open  map[string]crt.ContainerHandle // container name → handle
@@ -391,6 +395,7 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 		Entrypoint: ucdShPause,
 		User:       "0:0",
 		Mounts:     m.containerMounts(),
+		Labels:     claimPodLabels(m.agentID),
 	})
 	if err != nil {
 		return fmt.Errorf("claim pod: start pause container (image %q): %w", m.pauseImage, err)
@@ -440,6 +445,7 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 			NetworkContainer: pause.ID,
 			Entrypoint:       entrypoint,
 			Args:             cargs,
+			Labels:           claimPodLabels(m.agentID),
 		})
 		if err != nil {
 			m.closeAllLocked(ctx)

@@ -845,22 +845,57 @@ log.
 
 ### Crash-orphaned claim containers
 
-The claim pod's pause and sidecar containers are started as long-lived
-processes (`/.ucd/ucd-sh pause`, not `--rm`) and are torn down by the agent
-itself when the claim finishes. If the agent process exits ungracefully
-mid-claim — killed, OOM, host reboot — that teardown never runs, and the
-pause container plus every podTemplate sidecar for that claim are left
-running on the host. Unlike the Kubernetes agent, where an orphaned pod is
-reaped by the agent's own pod garbage collector (`runPodGC`, see [High availability](high-availability.md)), **the host
-agent has no automatic container GC**: nothing on the host notices or
-cleans up an orphaned claim pod on its own. Operators running the host
-agent should treat this as routine hygiene — periodically prune
-claim-pod-shaped containers (e.g. a `docker container prune`-style sweep,
-or one scoped to containers made from `pauseImage`/`runnerImage`/podTemplate
-images) rather than assuming the agent will clean up after a crash. A
-labelled restart-time sweep — the agent tagging its own claim-pod
-containers and removing any stale ones with its own label on startup — is
-possible future work, not implemented today.
+The claim pod's pause and sidecar containers (and the containers of
+`runsIn.image` scopes) are long-lived processes, not `--rm`, and the agent
+tears them down itself when the claim finishes. If the agent process exits
+ungracefully mid-claim (killed, OOM, host reboot) that teardown never runs and
+the containers are left on the host.
+
+The host agent cleans these up on its next start. Every claim-pod container
+(pause, sidecars, job) and every scope container is created with these labels:
+
+| Label | Value |
+|-------|-------|
+| `unified-cd/agent-id` | the agent's ID |
+| `unified-cd/claim-pod` | `true` on claim-pod containers |
+| `unified-cd/scope` | `true` on scope containers |
+
+At startup, before any slot takes a claim, the agent lists the containers
+labelled with its own ID and removes each one that is a claim-pod or scope
+container, then logs `removed orphaned containers from a previous agent
+process` with a `count`. Nothing else is touched: containers of other agents,
+and containers without these labels, are left alone.
+
+Because the sweep trusts the label, **each agent process must have its own
+agent ID, and only one process may run per ID.** Two live processes sharing an
+ID would delete each other's running claim containers at startup. The same
+applies to the agent's registration: a restarted agent re-registers under the
+same ID, so give every host agent a distinct, stable ID.
+
+To inspect what the sweep would remove:
+
+```bash
+docker ps -a --filter label=unified-cd/agent-id=<id>
+```
+
+The same filter works with `podman` and `nerdctl`.
+
+Limits:
+
+- Containers created by an agent from before this change carry no labels and
+  are never swept. Remove them once by hand after upgrading, for example:
+
+  ```bash
+  docker ps -a --filter ancestor=<pauseImage>      # list, then docker rm -f <id> ...
+  podman ps -a --filter ancestor=<pauseImage>
+  ```
+
+  Sidecar and scope containers of those old claims use their own images; list
+  them with `docker ps -a` and remove the stale ones.
+- The sweep needs a docker, podman or nerdctl runtime. Apple `container` scope
+  containers are not labelled and are not swept.
+- The Kubernetes agent is unaffected: it reaps orphaned pods with its own pod
+  garbage collector (`runPodGC`, see [High availability](high-availability.md)).
 
 ---
 

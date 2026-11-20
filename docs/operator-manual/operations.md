@@ -115,11 +115,11 @@ Three pieces of agent-host state can accumulate over time and, unlike the k8s-ag
 - **Named volumes.** The one thing that persists between runs, and so the one thing that grows
   without bound. See [Named-Volume Hygiene](#named-volume-hygiene) below.
 - **Crash-orphaned claim containers.** If the standard agent process exits ungracefully
-  mid-claim (killed, OOM, host reboot), the claim pod's pause and sidecar containers are left
-  running (`/.ucd/ucd-sh pause`) instead of being torn down. The host agent has no automatic
-  container GC for these — periodically prune claim-pod-shaped containers on agent hosts (see
-  [Agent Labels and Routing: Crash-orphaned claim
-  containers](agents.md#crash-orphaned-claim-containers)).
+  mid-claim (killed, OOM, host reboot), the claim pod's pause and sidecar containers and any
+  scope containers are left running. The host agent labels them and removes its own orphans on
+  the next start; this needs one agent process per agent ID. Containers from an agent that
+  predates the labels need a one-time manual removal (see [Agent Labels and Routing:
+  Crash-orphaned claim containers](agents.md#crash-orphaned-claim-containers)).
 
 Two agent config knobs give operators direct levers over the workspace directories — a
 preflight to stop the bleeding, and an opt-in sweep to reclaim space — without

@@ -35,7 +35,9 @@ type scopeManager struct {
 	// it read-only at /.ucd, same as claim-pod containers (claim_pod.go).
 	// Empty means "no shim mount" (see ucdToolsMount).
 	toolsDir string
-	mu       sync.Mutex
+	// agentID labels scope containers (scopeLabels) for the startup sweep.
+	agentID string
+	mu      sync.Mutex
 	open     map[string]crt.ContainerHandle
 }
 
@@ -91,7 +93,7 @@ func (m *scopeManager) ensure(ctx context.Context, step api.ClaimStep, env []str
 	if step.ScopeResourceLimits != nil {
 		cpuLimit, memLimit = limitStrings(step.ScopeResourceLimits.CPU, step.ScopeResourceLimits.Memory)
 	}
-	h, err := m.rt.Create(ctx, crt.CreateSpec{Image: step.ScopeImage, Env: env, WorkDir: scopeWorkDir, Entrypoint: ucdShPause, Mounts: ucdToolsMount(m.toolsDir), CPULimit: cpuLimit, MemLimit: memLimit})
+	h, err := m.rt.Create(ctx, crt.CreateSpec{Image: step.ScopeImage, Env: env, WorkDir: scopeWorkDir, Entrypoint: ucdShPause, Mounts: ucdToolsMount(m.toolsDir), CPULimit: cpuLimit, MemLimit: memLimit, Labels: scopeLabels(m.agentID)})
 	if err != nil {
 		return crt.ContainerHandle{}, fmt.Errorf("provision scope %q (image %q): %w", step.ScopeID, step.ScopeImage, err)
 	}

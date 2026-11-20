@@ -543,6 +543,15 @@ func (a *Agent) Run(ctx context.Context) error {
 		slog.Info("removed a stale scratch directory", "dir", d)
 	}
 
+	// Claim-pod and scope containers a previous process of this agent ID left
+	// behind (crash, OOM, reboot): no claim of this process exists yet, so
+	// everything carrying this agent's label is an orphan.
+	if rt, rtErr := a.containerRuntime(); rtErr == nil {
+		if removed := sweepOrphanContainers(ctx, rt, a.ID); len(removed) > 0 {
+			slog.Info("removed orphaned containers from a previous agent process", "count", len(removed))
+		}
+	}
+
 	// Every volume is free at this point: the agent has lost all the runs it
 	// was executing, and the controller's lost-claim reconcile (above) has
 	// failed them. Remove the links they left, before any claim can mount one.
@@ -1060,6 +1069,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			return
 		}
 		pod = newClaimPodManager(rt, workDir, hostNamedMountPath(c.PodTemplate), a.PauseImage, a.RunnerImage, a.ToolsDir)
+		pod.agentID = a.ID
 		if len(c.Volumes) > 0 {
 			// workDir is already the root volume's directory if there is one,
 			// so only the other volumes are added as mounts.

@@ -132,6 +132,7 @@ func (b *hostBackend) getScopes() (*scopeManager, error) {
 		return nil, fmt.Errorf("uses-scope requires a container runtime: %w", err)
 	}
 	b.scopes = newScopeManager(rt, b.a.ToolsDir)
+	b.scopes.agentID = b.a.ID
 	return b.scopes, nil
 }
 
