@@ -1,0 +1,66 @@
+# Dependabot security updates only.
+#
+# open-pull-requests-limit: 0 turns off routine version-update PRs for each
+# ecosystem. Dependabot security updates (enabled in the repository settings
+# under "Code security") still open a PR whenever a dependency has a published
+# advisory with a fixed version, and they use the grouping, labels and commit
+# prefix configured here. Merging stays manual.
+#
+# Not covered here:
+# - The Go toolchain and standard library (the go directive in go.mod):
+#   .github/workflows/vulncheck.yml runs govulncheck daily and opens an issue.
+# - Container base images in docker/*.Dockerfile: Dependabot has no security
+#   updates for the docker ecosystem.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+    labels: [dependencies, security]
+    commit-message:
+      prefix: "fix(deps)"
+    groups:
+      go-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+    labels: [dependencies, security]
+    commit-message:
+      prefix: "fix(deps)"
+    groups:
+      web-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /editors/vscode
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+    labels: [dependencies, security]
+    commit-message:
+      prefix: "fix(deps)"
+    groups:
+      vscode-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+    labels: [dependencies, security]
+    commit-message:
+      prefix: "fix(deps)"
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
