@@ -25,8 +25,9 @@ func TestAgentBuiltPodsAreAdmittedUnderBaseline(t *testing.T) {
 	ctx := context.Background()
 	dry := metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}
 
-	for _, mode := range []string{SidecarS3SecretModeEnv, SidecarS3SecretModeFile, SidecarS3SecretModeBroker} {
-		sc := SidecarSpec{Image: "sidecar:test", S3SecretName: "ucd-s3", S3SecretMode: mode, BrokerURL: "https://c.example"}
+	{
+		const mode = "token"
+		sc := SidecarSpec{Image: "sidecar:test", ControllerURL: "https://c.example"}
 		vols := []PodVolume{{Name: "go-cache", ClaimName: "ci-main-go-cache", MountPath: "cache"}}
 		// Short prefix: BuildPod keeps only the first 16 characters of the run
 		// ID for the Pod name, and "baseline-broker-N" would end in "-".

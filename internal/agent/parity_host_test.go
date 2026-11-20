@@ -386,11 +386,11 @@ func runParityHostCase(t *testing.T, tc paritycases.Case) {
 	a := &Agent{
 		ID:     agentID,
 		Client: NewClient(srv.URL, "tok"),
-		// CacheStore: needed so cache: steps (e.g. cache-empty-key-skips)
+		// cacheStoreOverride: needed so cache: steps (e.g. cache-empty-key-skips)
 		// actually exercise executeCacheStep's cache branch instead of
 		// short-circuiting; a real filesystem-backed store rooted in a temp
 		// dir is sufficient (mirrors agent_cache_test.go's newCacheTestAgent).
-		CacheStore: objectstore.NewLocalObjectStore(t.TempDir()),
+		cacheStoreOverride: objectstore.NewLocalObjectStore(t.TempDir()),
 	}
 
 	claim := tc.Claim()

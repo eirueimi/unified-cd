@@ -36,17 +36,17 @@ func TestRestoreExcluding_SkipsEntriesAtAndBelowAnExcludedPath(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(src, f)), 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(src, f), []byte(f), 0o600))
 	}
-	require.NoError(t, Save(ctx, store, "job", src, "k", 7))
+	require.NoError(t, Save(ctx, &StoreRemote{Store: store, JobName: "job"}, src, "k", 7))
 
 	dest := t.TempDir()
-	hit, err := RestoreExcluding(ctx, store, "job", dest, "k", nil, []string{filepath.Join(dest, "vol"), filepath.Join(dest, "absent")})
+	hit, err := RestoreExcluding(ctx, &StoreRemote{Store: store, JobName: "job"}, dest, "k", nil, []string{filepath.Join(dest, "vol"), filepath.Join(dest, "absent")})
 	require.NoError(t, err)
 	require.True(t, hit)
 	require.Equal(t, []string{"keep.txt", "sub", "sub/keep.txt", "volume-lookalike.txt"}, treeEntries(t, dest))
 
 	// The fallback key path honours it too.
 	dest2 := t.TempDir()
-	hit, err = RestoreExcluding(ctx, store, "job", dest2, "k-no-exact", []string{"k"}, []string{filepath.Join(dest2, "vol")})
+	hit, err = RestoreExcluding(ctx, &StoreRemote{Store: store, JobName: "job"}, dest2, "k-no-exact", []string{"k"}, []string{filepath.Join(dest2, "vol")})
 	require.NoError(t, err)
 	require.True(t, hit)
 	require.Equal(t, []string{"keep.txt", "sub", "sub/keep.txt", "volume-lookalike.txt"}, treeEntries(t, dest2))

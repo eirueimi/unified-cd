@@ -73,7 +73,7 @@ func newSymlinkAgent(t *testing.T) (*Agent, *symlinkServer) {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &Agent{ID: "a1", Client: NewClient(srv.URL, "tok"), CacheStore: objectstore.NewLocalObjectStore(t.TempDir())}, s
+	return &Agent{ID: "a1", Client: newStreamClient(srv.URL, "tok"), cacheStoreOverride: objectstore.NewLocalObjectStore(t.TempDir())}, s
 }
 
 func tarTypes(t *testing.T, archive []byte) map[string]byte {

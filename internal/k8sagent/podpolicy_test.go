@@ -131,7 +131,7 @@ func TestJobPodPolicy_ErrorShape(t *testing.T) {
 }
 
 func TestJobPodPolicy_NeverAllowedSaysSo(t *testing.T) {
-	tmpl := inlineJob(map[string]any{"volumeMounts": []any{map[string]any{"name": sidecarS3CredentialsVolumeName, "mountPath": "/x"}}}, nil)
+	tmpl := inlineJob(map[string]any{"volumeMounts": []any{map[string]any{"name": sidecarTokenVolumeName, "mountPath": "/x"}}}, nil)
 	pe := policyErr(t, JobPodPolicy{}, nil, tmpl)
 	require.NotNil(t, pe)
 	assert.Equal(t, "", pe.Violations[0].Allow)

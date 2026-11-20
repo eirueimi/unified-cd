@@ -76,7 +76,7 @@ var podSpecFieldClass = map[string]fieldClass{
 	"schedulingGroup": classOptIn,
 	// Pod-level name resolution is shared by every container, the artifact
 	// sidecar included. A job that controls it controls where the sidecar's
-	// broker and object-store connections go.
+	// controller and object-store connections go.
 	"hostAliases": classOptIn, "dnsPolicy": classOptIn, "dnsConfig": classOptIn,
 
 	"ephemeralContainers": classNever,
@@ -175,11 +175,10 @@ var safeSysctls = map[string]bool{
 }
 
 // credentialVolumeNames are the agent-injected volumes carrying the artifact
-// sidecar's credentials (podbuilder.go). No job container may mount them,
+// sidecar's token (podbuilder.go). No job container may mount them,
 // under any policy (spec R7).
 var credentialVolumeNames = map[string]bool{
-	sidecarS3CredentialsVolumeName: true,
-	sidecarBrokerTokenVolumeName:   true,
+	sidecarTokenVolumeName: true,
 }
 
 // PodPolicyViolation is one job-supplied field the policy refused.
@@ -630,7 +629,7 @@ func (c *podPolicyChecker) hostProcess(path, subj string, w *corev1.WindowsSecur
 }
 
 // validate applies spec section 4's startup rules.
-func (p *JobPodPolicy) validate(sidecarSecret string) error {
+func (p *JobPodPolicy) validate() error {
 	for _, l := range []struct {
 		key   string
 		names []string
@@ -646,9 +645,6 @@ func (p *JobPodPolicy) validate(sidecarSecret string) error {
 				return fmt.Errorf("%s: %q is not a valid Kubernetes object name: %s", l.key, n, strings.Join(errs, "; "))
 			}
 		}
-	}
-	if sidecarSecret != "" && slices.Contains(p.AllowSecrets, sidecarSecret) {
-		return fmt.Errorf("allowSecrets: %q is sidecarS3SecretName, the artifact sidecar's credentials, which job containers must never read", sidecarSecret)
 	}
 	if err := validateEscapeList("allowPodSpecFields", "PodSpec field", p.AllowPodSpecFields, podSpecFieldClass, podSpecCategoryKey); err != nil {
 		return err

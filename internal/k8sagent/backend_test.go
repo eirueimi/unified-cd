@@ -77,9 +77,10 @@ func TestK8sBackend_CacheRestore_HonorsStdoutMarker(t *testing.T) {
 // the worst defect in this family: a cache step reporting a HIT for a cache it
 // never contacted.
 //
-// The shape reproduced here is exactly production's. With no
-// sidecarS3SecretName, `unified-sidecar cache restore` exits 1 ("cache requires
-// S3 configuration (UNIFIED_S3_*)") before touching S3 and prints no
+// The shape reproduced here is exactly production's. When the
+// sidecar cannot reach the controller (no UNIFIED_CONTROLLER_URL), `unified-sidecar
+// cache restore` exits 1 ("cache requires UNIFIED_CONTROLLER_URL ...") before any
+// transfer and prints no
 // UCD_CACHE_RESULT marker. Executor.execArgv maps that non-zero exit to
 // (1, nil) — a Go error is NOT produced — so CacheRestore used to discard the
 // exit code entirely (`_ = ec`) and derive hit/miss from the absent marker,

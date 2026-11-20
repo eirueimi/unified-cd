@@ -716,6 +716,11 @@ unified-cli artifact download <run-id> <name> [--dest DIR]
 Downloads the named artifact and extracts its tar+zstd archive into `--dest`
 (or the current directory if `--dest` is omitted).
 
+If the controller is configured with `objectStore.artifactDownload: redirect`, it answers with a redirect to a
+presigned object-store URL and the CLI follows it. The CLI sends the `Authorization` header only to the
+controller's own host: it drops it on any redirect to a different host (including a subdomain of the
+controller's), and the presigned URL carries its own short-lived credentials.
+
 ```bash
 # Extract into the current directory
 unified-cli artifact download run-abc123 cli-art

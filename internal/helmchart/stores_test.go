@@ -331,7 +331,7 @@ func TestProductionModeRendersNoSecretsOrStores(t *testing.T) {
 		assert.NotContainsf(t, []string{"postgres", "postgres-data", "garage", "garage-data", "garage-config", "unified-cd-kek-init"}, o.Name(), "%s", o.Kind())
 	}
 	assert.NotContains(t, agentConfig(t, objs), "sidecarS3SecretMode")
-	assert.NotContains(t, dig(t, controllerConfig(t, objs), "agentAuth"), "kubernetesStoreCredentialPolicies")
+	assert.Contains(t, dig(t, controllerConfig(t, objs), "agentAuth"), "kubernetesStoreCredentialPolicies")
 }
 
 func TestKEKJobHook(t *testing.T) {

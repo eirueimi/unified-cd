@@ -12,6 +12,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/objtransfer"
 )
 
 // stringSlice collects repeated flag values (e.g. --restore-key a --restore-key b).
@@ -20,49 +21,31 @@ type stringSlice []string
 func (s *stringSlice) String() string     { return fmt.Sprint([]string(*s)) }
 func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
 
-// storeProvider lazily builds (or obtains) the ObjectStore used by cache and
-// artifact subcommands. It is invoked only when a subcommand actually needs
-// the store — "idle" never calls it, so the sidecar can stay resident even
-// when no S3 configuration is present (degraded mode).
+// clientProvider lazily builds the presign client used by cache and artifact
+// subcommands. It is invoked only when a subcommand actually needs it: "idle"
+// never calls it, so the sidecar stays resident even without controller
+// settings (degraded mode).
 //
-// runID is the Pod's own executing run — extracted from the raw args by
-// extractBrokerRunID BEFORE any subcommand-specific flag.FlagSet parses
-// them (see run's doc comment for why that ordering is exactly the point).
-// A provider that ignores runID (every branch except the broker) is
-// unaffected; see s3ConfigFromEnv in main.go.
-type storeProvider func(ctx context.Context, runID string) (objectstore.ObjectStore, error)
+// runID is the Pod's own executing run, taken from --pod-run by extractPodRun
+// BEFORE any subcommand-specific flag.FlagSet parses the args, because the
+// client (and its presign path /api/v1/runs/{runID}/objects/presign) must
+// exist before the FlagSet does.
+type clientProvider func(runID string) (*objtransfer.Client, error)
 
-// extractBrokerRunID scans a subcommand's raw args for --broker-run-id
-// (accepting "--broker-run-id VALUE", "--broker-run-id=VALUE", and their
-// single-dash spellings), independent of the subcommand's own
-// flag.FlagSet — which is parsed later, deeper in runCache/runArtifact, by
-// which point the store (and therefore any store-credentials broker
-// request) has already been built. That ordering is why this exists as a
-// raw pre-scan rather than a value read off the subcommand's FlagSet: run()
-// must know the Pod's run BEFORE calling newStore, and the FlagSet that
-// would otherwise parse it does not exist until after that call.
+// extractPodRun scans a subcommand's raw args for --pod-run (accepting
+// "--pod-run VALUE", "--pod-run=VALUE", and their single-dash spellings),
+// independent of the subcommand's own flag.FlagSet.
 //
-// Deliberately its OWN flag, not artifact upload/download's existing --run:
-// that flag names which run's ARTIFACT to read or write, which a call: step
-// can point at a DIFFERENT run than the one this Pod is executing (see
-// api.DownloadArtifactStep) — reusing it here would send the broker the
-// wrong run and have it reject a legitimate cross-run download as a
-// binding mismatch (see objectstore.BrokerConfig's doc comment). cache
-// subcommands have no existing --run concept at all to conflict with, but
-// the same dedicated flag is used there too, for one consistent story
-// across every subcommand.
+// It is deliberately its OWN flag, not artifact upload/download's --run: that
+// flag names which run's ARTIFACT to read or write, which a call: step can
+// point at a DIFFERENT run than the one this Pod executes. The presign path
+// names the Pod's own run (the one the controller binds the Pod to); a
+// cross-run download is sent as sourceRunId.
 //
 // This is a raw, best-effort scan, not validation: every subcommand's own
-// flag.FlagSet — parsed afterward, inside runCache/runArtifact — is what
-// actually enforces correct usage of the flags it consumes; --broker-run-id
-// itself is declared (but unused) in each of their FlagSets purely so
-// Parse does not reject it as unrecognized. A missing or malformed value
-// here only means the broker's StoreCredentialsRequest.RunID goes out
-// empty, which degrades to the "unknown binding" case on the controller
-// side (see api.StoreCredentialsRequest.RunID's doc comment) rather than a
-// hard failure.
-func extractBrokerRunID(args []string) string {
-	const flagName = "broker-run-id"
+// FlagSet declares --pod-run so Parse accepts it. A missing value yields "".
+func extractPodRun(args []string) string {
+	const flagName = "pod-run"
 	for i, a := range args {
 		switch {
 		case a == "--"+flagName || a == "-"+flagName:
@@ -81,34 +64,41 @@ func extractBrokerRunID(args []string) string {
 	return ""
 }
 
-// run dispatches the sidecar subcommands. The store is obtained lazily via
-// newStore, only for cache/artifact subcommands; "idle" ignores it entirely.
-// Cache operations are best-effort (always exit 0 once the store is
+// clientError words a newClient failure for the subcommand group.
+func clientError(group string, err error) string {
+	if errors.Is(err, errNoControllerEnv) {
+		return group + " requires " + missingEnvMessage
+	}
+	return fmt.Sprintf("%s: %v", group, err)
+}
+
+// run dispatches the sidecar subcommands. The presign client is obtained lazily via
+// newClient, only for cache/artifact subcommands; "idle" ignores it entirely.
+// Cache operations are best-effort (always exit 0 once the client is
 // available); restore additionally emits a `UCD_CACHE_RESULT=hit|miss`
 // marker on stdout so the caller can distinguish a real hit from a miss,
 // without affecting the exit code. Artifact operations exit non-zero on
-// failure. If newStore fails (e.g. no S3 configuration in degraded mode),
+// failure. If newClient fails (e.g. no controller settings in degraded mode),
 // cache/artifact subcommands fail loudly with a clear message and a
 // non-zero exit code.
 //
 // Two gaps in "cache always exits 0" are load-bearing for the caller, because
 // between them they are every way a cache can be inert:
 //
-//   - The newStore failure above happens BEFORE runCache is entered, so a
-//     cache subcommand does exit non-zero when there is no S3 configuration.
-//     This is the common production case (no sidecarS3SecretName), and it is
-//     why k8sBackend.CacheRestore must check the exit code rather than trust
+//   - The newClient failure above happens BEFORE runCache is entered, so a
+//     cache subcommand does exit non-zero when the controller settings are
+//     missing. It is why k8sBackend.CacheRestore must check the exit code rather than trust
 //     the "always 0" half of this contract.
 //   - `cache restore`'s swallowed-error path exits 0 and emits NO marker.
 //
 // So a caller may see any of: non-zero exit, exit 0 with `hit`, exit 0 with
 // `miss`, or exit 0 with no marker at all. Only the second is a hit.
-func run(ctx context.Context, newStore storeProvider, args []string, stderr io.Writer) int {
+func run(ctx context.Context, newClient clientProvider, args []string, stderr io.Writer) int {
 	if len(args) == 1 && args[0] == "idle" {
 		<-ctx.Done()
 		return 0
 	}
-	// `version` needs no store and no arguments: it is how an operator checks
+	// `version` needs no client and no arguments: it is how an operator checks
 	// that a running sidecar container matches its k8s-agent (docs/operator-manual/operations.md
 	// requires the two to be upgraded in lockstep).
 	if isVersionCommand(args) {
@@ -122,26 +112,26 @@ func run(ctx context.Context, newStore storeProvider, args []string, stderr io.W
 	group, sub, rest := args[0], args[1], args[2:]
 	switch group {
 	case "cache":
-		store, err := newStore(ctx, extractBrokerRunID(rest))
+		client, err := newClient(extractPodRun(rest))
 		if err != nil {
-			fmt.Fprintf(stderr, "cache requires S3 configuration (UNIFIED_S3_*): %v\n", err)
+			fmt.Fprintln(stderr, clientError("cache", err))
 			return 1
 		}
-		return runCache(ctx, store, sub, rest, os.Stdout, stderr)
+		return runCache(ctx, client.Caches(), sub, rest, os.Stdout, stderr)
 	case "artifact":
-		store, err := newStore(ctx, extractBrokerRunID(rest))
+		client, err := newClient(extractPodRun(rest))
 		if err != nil {
-			fmt.Fprintf(stderr, "artifact requires S3 configuration (UNIFIED_S3_*): %v\n", err)
+			fmt.Fprintln(stderr, clientError("artifact", err))
 			return 1
 		}
-		return runArtifact(ctx, store, sub, rest, stderr)
+		return runArtifact(ctx, client.Artifacts(), sub, rest, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command group %q\n", group)
 		return 2
 	}
 }
 
-func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, args []string, stdout, stderr io.Writer) int {
+func runCache(ctx context.Context, remote cache.Remote, sub string, args []string, stdout, stderr io.Writer) int {
 	switch sub {
 	case "restore":
 		fs := flag.NewFlagSet("cache restore", flag.ContinueOnError)
@@ -149,15 +139,13 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		key := fs.String("key", "", "cache key")
 		root := fs.String("root", "", "directory every read and write is confined to (required): the Pod's workspace mount; a symlink or \"..\" that leads outside it is never followed")
 		path := fs.String("path", "", "destination path")
-		job := fs.String("job", "", "qualified job name owning this cache entry")
+		job := fs.String("job", "", "qualified job name (optional, used only in log lines; the controller reads the job from the run)")
 		var restoreKeys stringSlice
 		fs.Var(&restoreKeys, "restore-key", "fallback restore key prefix (repeatable)")
 		var exclude stringSlice
 		fs.Var(&exclude, "exclude", "path to leave alone, with everything below it: no archived entry is extracted there (repeatable)")
-		// Declared so Parse accepts it; the value itself is already consumed
-		// by run()'s extractBrokerRunID pre-scan, before this FlagSet ever
-		// runs — see storeProvider's and extractBrokerRunID's doc comments.
-		fs.String("broker-run-id", "", "the Pod's own executing run, used only to scope the store-credentials broker request")
+		// Declared so Parse accepts it; run() already consumed the value (see extractPodRun).
+		fs.String("pod-run", "", "the Pod's own executing run, which scopes the controller's presign endpoint")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
@@ -165,13 +153,9 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 			fmt.Fprintln(stderr, "cache restore: --root is required")
 			return 2
 		}
-		if *job == "" {
-			fmt.Fprintln(stderr, "cache restore: --job is required")
-			return 2
-		}
-		hit, skippedLinks, err := cache.RestoreIn(ctx, store, *job, *root, *path, *key, restoreKeys, exclude)
+		hit, matchedKey, skippedLinks, err := cache.RestoreIn(ctx, remote, *root, *path, *key, restoreKeys, exclude)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
-			fmt.Fprintf(stderr, "cache restore error (ignored): %v\n", err)
+			fmt.Fprintf(stderr, "cache restore error (ignored)%s: %v\n", jobLabel(*job), err)
 			// This path deliberately exits 0 (cache never fails a step) and
 			// emits NO marker. A marker-less exit-0 restore therefore means
 			// "the restore errored and nothing came back" — k8sBackend.
@@ -179,7 +163,7 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 			// "not restored", never a hit. Do not add a marker here without
 			// changing that reader: `hit` is false in this branch anyway.
 		} else if hit {
-			fmt.Fprintf(stderr, "cache hit: %s\n", *key)
+			fmt.Fprintf(stderr, "cache hit: %s%s\n", *key, matchedSuffix(*key, matchedKey))
 			if skippedLinks > 0 {
 				fmt.Fprintln(stderr, artifact.SkippedLinksWarning(skippedLinks))
 			}
@@ -195,11 +179,11 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		key := fs.String("key", "", "cache key")
 		root := fs.String("root", "", "directory every read and write is confined to (required): the Pod's workspace mount; a symlink or \"..\" that leads outside it is never followed")
 		path := fs.String("path", "", "source path")
-		job := fs.String("job", "", "qualified job name owning this cache entry")
+		job := fs.String("job", "", "qualified job name (optional, used only in log lines; the controller reads the job from the run)")
 		ttlDays := fs.Int("ttl-days", 30, "TTL in days")
 		var exclude stringSlice
 		fs.Var(&exclude, "exclude", "path to leave out of the archive, with everything below it (repeatable)")
-		fs.String("broker-run-id", "", "the Pod's own executing run, used only to scope the store-credentials broker request")
+		fs.String("pod-run", "", "the Pod's own executing run, which scopes the controller's presign endpoint")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
@@ -207,12 +191,8 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 			fmt.Fprintln(stderr, "cache save: --root is required")
 			return 2
 		}
-		if *job == "" {
-			fmt.Fprintln(stderr, "cache save: --job is required")
-			return 2
-		}
-		if err := cache.SaveIn(ctx, store, *job, *root, *path, *key, *ttlDays, exclude); err != nil {
-			fmt.Fprintf(stderr, "cache save error (ignored): %v\n", err)
+		if err := cache.SaveIn(ctx, remote, *root, *path, *key, *ttlDays, exclude); err != nil {
+			fmt.Fprintf(stderr, "cache save error (ignored)%s: %v\n", jobLabel(*job), err)
 		} else {
 			fmt.Fprintf(stderr, "cache saved: %s\n", *key)
 		}
@@ -230,17 +210,15 @@ func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string,
 		fs.SetOutput(stderr)
 		// --run is the artifact's OWN target run (the object-store key,
 		// artifacts/{run}/{name}.tar.gz) — deliberately NOT the same value
-		// as --broker-run-id, which may differ for a cross-run call (see
-		// extractBrokerRunID's doc comment). Declared here so Parse accepts
-		// it; --broker-run-id's value was already consumed before this
-		// FlagSet ever ran.
+		// as --pod-run, which may differ for a cross-run call (see
+		// extractPodRun's doc comment).
 		runID := fs.String("run", "", "run ID")
 		name := fs.String("name", "", "artifact name")
 		root := fs.String("root", "", "directory every read and write is confined to (required): the Pod's workspace mount; a symlink or \"..\" that leads outside it is never followed")
 		path := fs.String("path", "", "source path")
 		var exclude stringSlice
 		fs.Var(&exclude, "exclude", "path to leave out of the archive, with everything below it (repeatable)")
-		fs.String("broker-run-id", "", "the Pod's own executing run, used only to scope the store-credentials broker request")
+		fs.String("pod-run", "", "the Pod's own executing run, which scopes the controller's presign endpoint")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
@@ -265,7 +243,7 @@ func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string,
 		dest := fs.String("dest", ".", "destination directory")
 		var exclude stringSlice
 		fs.Var(&exclude, "exclude", "path to leave alone, with everything below it: no archived entry is extracted there (repeatable)")
-		fs.String("broker-run-id", "", "the Pod's own executing run, used only to scope the store-credentials broker request")
+		fs.String("pod-run", "", "the Pod's own executing run, which scopes the controller's presign endpoint")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
@@ -282,4 +260,21 @@ func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string,
 		fmt.Fprintf(stderr, "unknown artifact subcommand %q\n", sub)
 		return 2
 	}
+}
+
+// jobLabel words the optional --job value for a log line.
+func jobLabel(job string) string {
+	if job == "" {
+		return ""
+	}
+	return " for job " + job
+}
+
+// matchedSuffix names the entry a restore-key fallback actually matched, so a
+// hit on an older entry is visible in the step log.
+func matchedSuffix(key, matched string) string {
+	if matched == "" || matched == key {
+		return ""
+	}
+	return " (matched " + matched + ")"
 }

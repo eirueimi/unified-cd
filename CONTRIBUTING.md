@@ -63,13 +63,15 @@ the tests before opening a pull request.
 
 ### Integration tests
 
-`go test ./...` (and `make test`) runs the unit tests. Two groups of tests need a
+`go test ./...` (and `make test`) runs the unit tests. Several groups of tests need a
 real runtime and sit behind build tags, so they are skipped unless asked for:
 
 | Tag | What it needs | Run |
 |---|---|---|
 | `integration` | a container runtime (docker, podman or nerdctl) | `go test -tags integration ./internal/agent/ -run 'SecCtx\|ClaimPod\|ProbeSecurityContext' -count=1 -v` |
 | `k8s` | a Kubernetes cluster (kind) and a shim image | see the `k8s` job in `.github/workflows/ci.yml` |
+| `garage` | a running Garage (S3-compatible) server | start Garage with the `docker run` in the `garage` job of `.github/workflows/ci.yml`, then `UNIFIED_TEST_S3_ENDPOINT=localhost:3900 UNIFIED_TEST_S3_BUCKET=ucd-test UNIFIED_TEST_S3_KEY=garageadmin UNIFIED_TEST_S3_SECRET=garageadmin12345 go test -tags garage ./internal/objectstore/ -count=1 -v` |
+| `gcs` | a GCS bucket and HMAC credentials | `UNIFIED_TEST_GCS_BUCKET=... UNIFIED_TEST_GCS_KEY=... UNIFIED_TEST_GCS_SECRET=... go test -tags gcs ./internal/objectstore/ -run GCS -v` (skips without credentials; not run in CI) |
 
 Environment variables for the `integration` tests:
 

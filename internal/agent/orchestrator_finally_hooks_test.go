@@ -227,7 +227,7 @@ func TestExecuteRun_FinallyStepCacheSave_Runs(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(built, "built.txt"), []byte("artifact"), 0o644))
 
 	a := h.agent()
-	a.CacheStore = objectstore.NewLocalObjectStore(t.TempDir())
+	a.cacheStoreOverride = objectstore.NewLocalObjectStore(t.TempDir())
 
 	claim := api.ClaimResponse{
 		Native:  true,
@@ -249,7 +249,7 @@ func TestExecuteRun_FinallyStepCacheSave_Runs(t *testing.T) {
 	assert.Equal(t, "Succeeded", h.finishStatus(t))
 
 	restored := t.TempDir()
-	hit, err := cache.Restore(context.Background(), a.CacheStore, "finally-cache", restored, "finally-cache-key", nil)
+	hit, err := cache.Restore(context.Background(), &cache.StoreRemote{Store: a.cacheStoreOverride, JobName: "finally-cache"}, restored, "finally-cache-key", nil)
 	require.NoError(t, err)
 	require.True(t, hit, "a cache: step inside finally: must still get its deferred save drained")
 	got, err := os.ReadFile(filepath.Join(restored, "built.txt"))

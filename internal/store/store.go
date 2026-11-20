@@ -391,11 +391,11 @@ type Store interface {
 	// ordered by idx.
 	GetSidecarStatuses(ctx context.Context, runID string) ([]api.SidecarStatusRequest, error)
 	// UpsertRunPodBinding records that podName/podUID is the Kubernetes Pod
-	// currently executing runID, as reported by a Kubernetes agent's
+	// executing runID (replacing any others), as reported by a Kubernetes agent's
 	// heartbeat (api.HeartbeatRequest.PodBindings). This is what the
-	// store-credentials broker (internal/controller/api_store_credentials.go)
-	// checks a requesting Pod's verified identity against before handing out
-	// object-store credentials for a run. ON CONFLICT overwrites both
+	// presign endpoint (internal/controller/object_requester.go) checks a
+	// requesting sidecar's verified Pod identity against before issuing object
+	// URLs for a run. ON CONFLICT overwrites both
 	// columns, so a run reclaimed by a different Pod (after an agent
 	// restart, or a stuck-run reconcile) simply replaces the stale binding —
 	// there is no history to keep, and keeping one would only let a
@@ -406,9 +406,19 @@ type Store interface {
 	// when no Kubernetes agent has ever reported one for it — a host-agent
 	// run (which has no Kubernetes Pod at all), a run claimed before this
 	// field existed, or simply a run whose first heartbeat has not landed
-	// yet. The store-credentials broker treats ok=false as "unknown", not as
-	// "rejected" — see its RequireRunBinding config knob.
+	// yet. The presign endpoint treats an empty binding set as 409
+	// binding-pending (the sidecar retries), never as permission.
 	GetRunPodBinding(ctx context.Context, runID string) (binding RunPodBinding, ok bool, err error)
+	// ReplaceRunPodBindings makes pods the complete set of Pods bound to runID:
+	// a run may hold its claim Pod plus the isolated scope Pods the same agent
+	// created for it. Pods not listed are unbound. An empty set is a no-op.
+	ReplaceRunPodBindings(ctx context.Context, runID string, pods []RunPodBinding) error
+	// ListRunPodBindings returns every Pod bound to runID; the presign
+	// endpoint accepts a caller whose Pod UID is any of them.
+	ListRunPodBindings(ctx context.Context, runID string) ([]RunPodBinding, error)
+	// DeleteRunPodBindings removes every Pod binding of runID. Called when the
+	// run finishes so a pooled Pod's sidecar can no longer presign for it.
+	DeleteRunPodBindings(ctx context.Context, runID string) error
 	// UpsertAgent is the REGISTRATION path: it replaces the agent's labels/hostname/
 	// os/version/env wholesale (a registration is the authoritative identity).
 	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, volumes []string, env map[string]string) error

@@ -59,21 +59,15 @@ type Config struct {
 	// UNIFIED_K8S_FINALLY_TIMEOUT. The setting is identical on the host agent
 	// (`finallyTimeout` there too) because the phase it bounds is executed by
 	// the SHARED orchestration loop, not by either backend.
-	FinallyTimeout      string                      `yaml:"finallyTimeout,omitempty"`
-	PodTemplates        map[string]AgentPodTemplate `yaml:"podTemplates,omitempty"`
-	SidecarS3SecretName string                      `yaml:"sidecarS3SecretName,omitempty"`
+	FinallyTimeout string                      `yaml:"finallyTimeout,omitempty"`
+	PodTemplates   map[string]AgentPodTemplate `yaml:"podTemplates,omitempty"`
 
-	// SidecarS3SecretMode selects how the Secret named by SidecarS3SecretName
-	// reaches the sidecar.
-	//
-	//   "env"  (default) envFrom.secretRef, as today.
-	//   "file" mounted as a volume, with UNIFIED_S3_CREDENTIAL_FILE pointing at it.
-	//
-	// "file" is what makes a rotated or short-lived credential possible: an
-	// envFrom Secret is snapshotted into the container's environment at creation
-	// and never updates, while a mounted Secret is updated by the kubelet.
-	// It also lets the volume be optional, so a missing Secret degrades instead
-	// of failing the whole Pod. Env: UNIFIED_K8S_SIDECAR_S3_SECRET_MODE.
+	// SidecarS3SecretName and SidecarS3SecretMode are removed: the artifact
+	// sidecar holds no store credentials and uses controller-issued URLs. They
+	// stay on the struct only so that a config still setting them (yaml, or env
+	// UNIFIED_K8S_SIDECAR_S3_SECRET_NAME/MODE) is refused at startup with a
+	// pointer to the migration guide instead of being silently ignored.
+	SidecarS3SecretName string `yaml:"sidecarS3SecretName,omitempty"`
 	SidecarS3SecretMode string `yaml:"sidecarS3SecretMode,omitempty"`
 
 	// AgentName is the stable name this agent's volume claims are prefixed
@@ -174,16 +168,20 @@ func defaultPodImage() string {
 	return agentlib.DefaultRunnerImage()
 }
 
+// errSidecarS3SecretRemoved is returned at startup when sidecarS3SecretName or
+// sidecarS3SecretMode is set.
+var errSidecarS3SecretRemoved = errors.New("k8s-agent config: sidecarS3SecretName and sidecarS3SecretMode are no longer supported; the artifact sidecar uses controller-issued URLs (see docs/operator-manual/migrations/2026-11-20-run-scoped-object-access.md)")
+
 // defaultSidecarImage is the default value of Config.SidecarImage: the
 // fleet-wide artifact-transfer sidecar auto-injected into every k8s-agent pod
 // (see podbuilder.go's BuildPod/buildArtifactSidecarContainer) -- unlike
 // PodImage, this is never a job-author-controlled value, so the "job authors
 // can already run their own code" carve-out doesn't apply here. That sidecar
-// holds long-lived, bucket-scoped static S3 credentials (injected via
-// SidecarS3SecretName; see cmd/unified-sidecar/main.go and
-// docs/operator-manual/kubernetes-integration.md's threat model), making a
-// registry compromise of it a credential-exfiltration path, not just a
-// code-exec one.
+// holds a projected ServiceAccount token that the controller accepts for
+// presigned object URLs scoped to the run the Pod is bound to (see
+// cmd/unified-sidecar/main.go and docs/operator-manual/kubernetes-integration.md's
+// threat model), making a registry compromise of it a token-theft path, not
+// just a code-exec one.
 //
 // It is derived from the agent's stamped version like the other defaults, and
 // for the same reason is not digest-pinned: a digest can be recorded only
@@ -446,6 +444,9 @@ func (c *Config) Validate() error {
 	if v := os.Getenv("UNIFIED_K8S_SIDECAR_S3_SECRET_MODE"); v != "" {
 		c.SidecarS3SecretMode = v
 	}
+	if v := os.Getenv("UNIFIED_K8S_SIDECAR_S3_SECRET_NAME"); v != "" {
+		c.SidecarS3SecretName = v
+	}
 	if v := os.Getenv("UNIFIED_K8S_MIN_FREE_DISK"); v != "" {
 		// A malformed value is a refused start, never a silent fallback to
 		// the default: an operator who typed "10GB " expecting a gate must
@@ -458,6 +459,9 @@ func (c *Config) Validate() error {
 	}
 	if v := os.Getenv("UNIFIED_K8S_WORKSPACE_SIZE_LIMIT"); v != "" {
 		c.WorkspaceSizeLimit = v
+	}
+	if c.SidecarS3SecretName != "" || c.SidecarS3SecretMode != "" {
+		return errSidecarS3SecretRemoved
 	}
 	if c.Server == "" {
 		return fmt.Errorf("server is required")
@@ -484,16 +488,6 @@ func (c *Config) Validate() error {
 	}
 	if c.ShimImage == "" {
 		c.ShimImage = defaultShimImage()
-	}
-	if c.SidecarS3SecretMode == "" {
-		c.SidecarS3SecretMode = SidecarS3SecretModeEnv
-	}
-	if c.SidecarS3SecretMode != SidecarS3SecretModeEnv && c.SidecarS3SecretMode != SidecarS3SecretModeFile && c.SidecarS3SecretMode != SidecarS3SecretModeBroker {
-		// An unrecognised value must fail at startup, not silently fall back
-		// to "env" — a typo that goes unnoticed here would look identical to
-		// "file"/"broker" mode simply not doing anything, which is a much
-		// harder bug to track down than a refused start.
-		return fmt.Errorf("sidecarS3SecretMode %q: must be %q, %q, or %q", c.SidecarS3SecretMode, SidecarS3SecretModeEnv, SidecarS3SecretModeFile, SidecarS3SecretModeBroker)
 	}
 	// maxConcurrent: 0/unset -> default 100; negative -> unlimited (preserved
 	// as a sentinel; the run loop skips its semaphore); positive -> that bound.
@@ -545,7 +539,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("agentName %q is not usable in a PVC name: %s", c.AgentName, strings.Join(errs, "; "))
 		}
 	}
-	if err := c.JobPodPolicy.validate(c.SidecarS3SecretName); err != nil {
+	if err := c.JobPodPolicy.validate(); err != nil {
 		return fmt.Errorf("jobPodPolicy: %w", err)
 	}
 	return nil

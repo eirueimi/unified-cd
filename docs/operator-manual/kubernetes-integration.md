@@ -920,7 +920,7 @@ volume type added by a later Kubernetes library bump is denied until the agent c
 | `livenessProbe` / `readinessProbe` / `startupProbe` / `lifecycle` hook `httpGet.host` or `tcpSocket.host` | denied | `allowHostAccess: true` |
 | `env[].valueFrom.secretKeyRef`, `envFrom[].secretRef` | denied | `allowSecrets: [<name>]` |
 | `configMapKeyRef`, `fieldRef`, `resourceFieldRef`, `fileKeyRef`, `configMapRef` | allowed | none needed |
-| Mounting `sidecar-s3-credentials` or `sidecar-store-credential-token` | denied | nothing (see below) |
+| Mounting `sidecar-store-credential-token` | denied | nothing (see below) |
 
 | Volume type | Default | Setting that allows it |
 |---|---|---|
@@ -967,7 +967,7 @@ jobPodPolicy:
                                   # automountServiceAccountToken: true and projected serviceAccountToken /
                                   # podCertificate sources (checked against the Pod's effective account)
   allowSecrets: []                # Secrets a job may read: secretKeyRef, secretRef, secret volumes, projected
-                                  # secret sources. May not name sidecarS3SecretName.
+                                  # secret sources.
   allowImagePullSecrets: []       # imagePullSecrets a job may name (the kubelet pulls with the Secret; the
                                   # job cannot read it)
   allowPersistentVolumeClaims: [] # claimName values of persistentVolumeClaim volumes. A job that names
@@ -998,8 +998,6 @@ jobPodPolicy: ...`:
 - A name in `allowServiceAccounts`, `allowSecrets`, `allowImagePullSecrets` or
   `allowPersistentVolumeClaims` that is not a valid Kubernetes object name (a DNS-1123 subdomain).
   An entry containing `*` gets `wildcards are not supported; list each name`.
-- `allowSecrets` naming `sidecarS3SecretName`:
-  `allowSecrets: "<name>" is sidecarS3SecretName, the artifact sidecar's credentials, which job containers must never read`.
 - A job whose `podTemplate` mounts one of this agent's named-volume claims (`<agentName>.<volume>`)
   directly, whether or not `allowPersistentVolumeClaims` lists it. The volumes are delivered by the
   controller, so this is checked against the live set when the run is claimed, not at startup; the
@@ -1025,29 +1023,26 @@ policy: ..."](../troubleshooting/steps-and-execution.md#run-fails-immediately-on
 
 **Names that can never be allowed.**
 
-- The artifact sidecar's credential volumes, `sidecar-s3-credentials` (`file` mode) and
-  `sidecar-store-credential-token` (`broker` mode), can never be mounted by a job container. A
-  `volumeMounts` or `volumeDevices` entry naming either is refused whatever the policy says.
-- `allowSecrets` may not name `sidecarS3SecretName`, and `allowPersistentVolumeClaims` may not name
-  a named-volume claim. The agent refuses to start if the config lists them. A named volume is
-  reachable only through `spec.volumes`, behind its lock, and the sidecar's credentials must stay
-  out of job containers.
+- The artifact sidecar's token volume, `sidecar-store-credential-token`, can never be mounted by a
+  job container. A `volumeMounts` or `volumeDevices` entry naming it is refused whatever the policy
+  says.
+- `allowPersistentVolumeClaims` may not name a named-volume claim. The agent refuses to start if the
+  config lists one. A named volume is reachable only through `spec.volumes`, behind its lock.
 
 **`hostAliases`, `dnsPolicy` and `dnsConfig` are opt-in.** Name resolution is a Pod-wide setting,
 so it applies to the artifact sidecar as well as to the job containers. A job that could set it
-would decide where the sidecar's connections to the controller's store-credentials broker and to
-the object store go. Allow them only for jobs you trust, with `allowPodSpecFields: [hostAliases]`
+would decide where the sidecar's connections to the controller and to the object store go. Allow them only for jobs you trust, with `allowPodSpecFields: [hostAliases]`
 (and so on), or put them in an agent template, which is not filtered.
 
 **What the opt-in does not do.** Keeping these three fields out of a job's `podTemplate` stops a job
 from using the PodSpec fields; it does not isolate the sidecar's network path from a job container.
 Every container in the Pod shares one network namespace and the kubelet's single writable
 `/etc/hosts`. A job container that runs as root (the `baseline` profile allows root) can edit that
-`/etc/hosts` for the whole Pod, can listen on `127.0.0.1` on the port the sidecar's broker or
+`/etc/hosts` for the whole Pod, can listen on `127.0.0.1` on the port the sidecar's controller or
 object-store client uses, and, because `baseline` keeps `NET_RAW`, can sniff the Pod's traffic.
 The mitigations that work are:
 
-- **Serve the controller (the store-credentials broker) over TLS** and point the agent at an
+- **Serve the controller over TLS** and point the agent at an
   `https://` URL. The shipped install reaches it over plain HTTP, so an on-Pod attacker who can
   redirect or sniff the connection sees the sidecar's token. With TLS and certificate verification
   the redirect or sniff yields nothing usable.
@@ -1079,8 +1074,8 @@ workspace, but the sidecar follows them in its own filesystem, where its credent
 trust store live. So the sidecar opens the workspace mount (the `--root` it is given on every
 artifact and cache invocation) as a confined root and resolves every path beneath it: a symlink or
 `..` that leads outside the workspace is never followed, on upload or on download and restore. An
-`uploadArtifact` of `l/s3-credentials`, where `l` is a symlink to `/etc/unified-cd`, now fails
-instead of archiving the credential, and a download or cache restore into a path below a symlink
+`uploadArtifact` of `l/token`, where `l` is a symlink to `/var/run/secrets/unified-cd-store-credentials`, now fails
+instead of archiving the token, and a download or cache restore into a path below a symlink
 that points outside the workspace fails instead of writing there. A symlink inside the workspace
 that stays inside it keeps working as a path component. A symlink found while archiving a directory
 is stored as a link entry and its target is not read (the host agent does the same). The sidecar and the agent must be upgraded
@@ -1155,7 +1150,7 @@ The k8s-agent supports `uploadArtifact`, `downloadArtifact`, and `cache` steps v
 
 ### How it works
 
-When a job pod is created, the agent automatically adds a sidecar container named `unified-artifact` to the pod, running the `unified-sidecar` binary, always invoked by its absolute path `/usr/local/bin/unified-sidecar` (a static, distroless image — no shell, `tar`, or `curl` inside it). The container is kept alive with `unified-sidecar idle`; individual transfers are dispatched into it via `exec` with an explicit argv (e.g. `unified-sidecar artifact upload --run <id> --name <name> --path <dir>`), never through a shell string. The sidecar shares the pod's workspace volume and reads/writes objects in the S3-compatible bucket configured for the agent.
+When a job pod is created, the agent automatically adds a sidecar container named `unified-artifact` to the pod, running the `unified-sidecar` binary, always invoked by its absolute path `/usr/local/bin/unified-sidecar` (a static, distroless image — no shell, `tar`, or `curl` inside it). The container is kept alive with `unified-sidecar idle`; individual transfers are dispatched into it via `exec` with an explicit argv (e.g. `unified-sidecar artifact upload --run <id> --name <name> --path <dir>`), never through a shell string. The sidecar spools upload parts (and, on a store where multipart upload is unavailable such as GCS, the whole archive) into a dedicated `emptyDir` volume (`sidecar-spool`, mounted at `/var/lib/unified-sidecar/spool` and exported as `TMPDIR`), not into its container's writable layer, so it works with a read-only root filesystem. That volume counts toward the Pod's ephemeral storage like any `emptyDir`: leave headroom for one 64 MiB part per upload, or for the largest archive on GCS. The sidecar shares the pod's workspace volume and reads/writes objects in the S3-compatible bucket configured for the agent.
 
 Cache transfers additionally carry a `--job <qualifiedJobName>` argument (e.g. `unified-sidecar cache restore --key <key> --path <dir> --job team-a/build`), required and non-empty, so cache entries stay namespaced per job — see "Cache entries are namespaced per job" below.
 
@@ -1192,9 +1187,10 @@ Anonymously pullable, verified 2026-10-29 for v0.11.0 (`ghcr.io/eirueimi/unified
 an air-gapped or mirrored registry must carry it too.
 
 The default is a version-derived tag, not a digest. The sidecar is
-auto-injected into every job and scope Pod and holds long-lived, bucket-scoped
-S3 credentials, so a mutable tag would let a registry compromise exfiltrate
-those credentials from every Pod in the fleet. If that matters to you, set
+auto-injected into every job and scope Pod and holds a token the controller
+accepts for presigned object URLs, so a mutable tag would let a registry
+compromise steal those tokens and read job caches and artifacts from every Pod
+in the fleet. If that matters to you, set
 `sidecarImage` to a digest, as described under [Shim image: pin it in
 production](#shim-image-pin-it-in-production), which covers all the default
 images.
@@ -1225,157 +1221,32 @@ artifact upload fails, and the cache reads as "not restored". Roll the sidecar i
 agent together. See [the troubleshooting
 entry](../troubleshooting/artifacts-and-storage.md#artifact-upload-fails-or-a-cache-is-never-restored-flag-provided-but-not-defined-exclude).
 
-### S3 credentials (required)
+### How the sidecar reaches the object store
 
-This section describes the default (`sidecarS3SecretMode: env`, and `file`,
-its rotation-capable sibling). A third mode, `broker`, needs **no Secret at
-all** — see "`sidecarS3SecretMode: broker`" below if you would rather not
-manage one.
+The sidecar holds **no object-store credentials** and needs no Secret. There is no `sidecarS3SecretName` or `sidecarS3SecretMode` any more, and the agent refuses to start while either is set (see below). Each transfer works like this:
 
-The operator must create a Kubernetes `Secret` **in the namespace the agent's `namespace:` config field points at** — the namespace job Pods are created in, which in the shipped manifests is `ci`, **not** the `unified-cd` namespace the agent Deployment itself runs in.
+1. The agent adds a **projected ServiceAccount token** volume to the job Pod, mounted into the sidecar container only, and gives the sidecar two environment variables: `UNIFIED_CONTROLLER_URL` (the agent's own `server` URL) and `UNIFIED_POD_TOKEN_FILE` (the path of the token). The kubelet mints the token from the Pod spec, so the agent needs no new RBAC. The token has its own audience, `unified-cd-store-credentials`, which differs from the agent's enrollment audience, so neither kind of token can be used as the other.
+2. For every cache or artifact transfer the sidecar asks the controller (`POST /api/v1/runs/{runID}/objects/presign`) for a **presigned URL**, sending the token as a bearer. The controller verifies it with a `TokenReview`, checks that the Pod's namespace and ServiceAccount are allowed by `agentAuth.kubernetesStoreCredentialPolicies`, and checks that the Pod is **bound to that run** (below).
+3. The sidecar sends the archive to, or fetches it from, the object store with that URL. Each URL covers one object key and one operation, expires after 15 minutes, and carries no other privilege. The controller derives the object key itself (an artifact from the run and name, a cache from the run's job and the cache key); the sidecar never names a raw key and cannot read or write any other object.
 
-This distinction is the single most common way this setup fails. The sidecar is a container inside the job Pod, and the agent attaches the Secret to it with a `LocalObjectReference` (`envFrom.secretRef`), which has **no namespace field** — Kubernetes always resolves it in the Pod's own namespace. A Secret sitting in the agent's namespace is invisible to it.
+**Binding.** The controller serves a Pod only for a run it is bound to. A run is bound to its claim Pod and to every isolated scope Pod (an image scope) the agent creates for it, because each scope Pod runs its own sidecar with its own token; the agent reports the scope Pod as an extra binding when it creates it and withdraws it when the Pod is deleted, and the controller accepts a request whose Pod is any of the run's bound Pods. A Pod bound to one run still cannot ask for another run's objects. The controller records a Pod binding only from the agent that has claimed the run and only while the run is not finished, so one agent cannot bind its Pod to another agent's run. All bindings of a run are deleted when the agent finishes the run, and a late heartbeat does not bring them back. A run that ends any other way (cancelled, reaped as stuck, or failed by the scheduler) keeps its bindings until the claiming agent reports the run finished, which also deletes them for a run that was already terminal. So the controller also refuses a sidecar request for a run that has finished, by any means, with `409 run-finished`; the sidecar treats that answer as final and does not retry. One exception: a **cancelled** run's cleanup (hook drains, `finally:` steps) still transfers objects through the sidecar, so a bound Pod keeps access to a cancelled run until the agent finishes it or one hour (`cancelledRunObjectGrace`) has passed since the cancel, whichever comes first. If the agent's `finallyTimeout` is long enough for cleanup to outlast that hour, the late transfers fail with `409 run-finished`. Either way a pooled Pod's sidecar can no longer ask for objects of a run it has finished. URLs already issued stay valid until they expire (at most 15 minutes). The agent reports each Pod's name and UID in its heartbeat (the `podBindingSets` field; older agents send one Pod in `podBindings`, which the controller still reads) as soon as the Pod is created, and sends that heartbeat immediately instead of waiting for the next 15-second tick (a heartbeat already in progress, such as a volume apply, can delay it by up to 30 seconds). A sidecar request that arrives before the controller has recorded the binding is answered `409 binding-pending` and retried for up to 30 seconds, so a pooled Pod's first step does not fail while the binding is in flight. If the controller never learns the binding (for example the agent cannot reach it), the transfer fails with an error naming `binding-pending`.
 
-It is also why the controller's S3 credentials are not enough on their own: logs travel agent → controller → S3, so the controller's configuration covers them, but Kubernetes artifact and cache transfers go from the sidecar **straight to S3**, and need their own copy of the credentials in the job namespace.
+**`kubernetesStoreCredentialPolicies` keeps its name.** The setting authorizes which job Pods (cluster, namespace, ServiceAccount) may ask the controller for object access. It predates presigned URLs, when the same list authorized fetching store credentials, and it keeps the name so existing configuration is unchanged. The Helm chart renders it whenever the controller is installed, with the job namespace and the `default` ServiceAccount; set `controller.config.agentAuth.kubernetesStoreCredentialPolicies` if your jobs run under another ServiceAccount. The related rate limit (`UNIFIED_STORE_CREDENTIAL_RATE_*`) now bounds presign requests.
 
-The Secret carries the same S3 env vars used by the controller/standard agent:
+**Job Pods must reach the store endpoint.** The sidecar transfers bytes to the object store itself, so the endpoint the controller puts in the presigned URL (the controller's own `UNIFIED_S3_ENDPOINT`) must be reachable from the job namespace's Pods, over the same scheme the controller advertises. The Pods also need to reach the controller URL in the agent's `server`. For an object store that cannot presign (a local filesystem store, or a store without presign support), the controller answers `mode: "controller"` and the archive streams through the controller instead; no store access is needed then.
 
-```
-UNIFIED_S3_ENDPOINT     # required
-UNIFIED_S3_BUCKET       # required
-UNIFIED_S3_KEY          # required
-UNIFIED_S3_SECRET       # required
-UNIFIED_S3_USE_SSL      # optional, bool (default: derived from endpoint scheme)
-UNIFIED_S3_REGION       # optional
-```
+**What changed for operators.**
 
-Point the agent at it via `sidecarS3SecretName` in the config file:
-
-```yaml
-# k8s-agent-config.yaml
-namespace: ci                          # job Pods are created here
-sidecarS3SecretName: unified-cd-s3-creds   # ...so this Secret must exist HERE too
-```
-
-The Secret is injected into the sidecar container only, via `envFrom`.
-
-**Unset and "named but missing" are not the same failure — do not treat them as interchangeable:**
-
-| `sidecarS3SecretName` | What happens |
-| --- | --- |
-| Unset | The Pod starts normally. The sidecar simply has no S3 credentials, so **artifact steps fail** and **cache steps no-op** with one loud per-run warning. Everything else in the job runs. The agent detects a doomed artifact step at claim time and fails the run immediately, before creating a Pod, naming the offending steps — but only for a step that would actually have run and actually have failed the run: `continueOnError: true` steps are exempt, and `if:`-guarded steps are warned about rather than failed, since the guard cannot be evaluated before the run starts. |
-| Set, but no such Secret in the **job Pod's** namespace | **Every job breaks, artifact-related or not.** `envFrom.secretRef` is not marked `optional: true`, so the kubelet cannot configure the sidecar container at all and fails the Pod with `CreateContainerConfigError: secret "…" not found`. The Pod never reaches `Running`, so no step of any kind executes. |
-
-The second row is what an operator hits after creating the Secret in the agent's namespace instead of the job namespace. The agent surfaces the kubelet's reason and message in the run's failure (see [Troubleshooting](../troubleshooting/artifacts-and-storage.md#job-pods-never-start-with-createcontainerconfigerror)), so the `secret "…" not found` text appears in the run itself rather than only under `kubectl describe pod`.
-
-### S3 credential delivery mode: `sidecarS3SecretMode`
-
-By default the sidecar's S3 Secret reaches it the way described above: `envFrom.secretRef`, injected once when the container is created. That has a consequence worth naming explicitly — **a Secret consumed via `envFrom` is snapshotted into the container's environment at creation and never updates.** If you rotate the Secret's value, every already-running sidecar keeps using the old one until its Pod is replaced. There is no way to push a refreshed or short-lived credential into a live Pod under this mode; the shape doesn't support it.
-
-`sidecarS3SecretMode: file` is the opt-in alternative that removes that ceiling:
-
-```yaml
-# k8s-agent-config.yaml
-sidecarS3SecretName: unified-cd-s3-creds
-sidecarS3SecretMode: file   # default: env
-```
-
-(Env override: `UNIFIED_K8S_SIDECAR_S3_SECRET_MODE`.)
-
-In `file` mode the same-named Secret is instead mounted as a **volume** into the sidecar container, and the sidecar is told where to find it via `UNIFIED_S3_CREDENTIAL_FILE`, not `envFrom`. A Secret mounted as a volume **is** kept up to date by the kubelet — rewriting it eventually reaches the running Pod. This is the mode a rotated or refreshed credential needs; `env` mode cannot deliver one no matter how the Secret is managed.
-
-**`file` mode expects a differently-shaped Secret than `env` mode.** `envFrom` needs `UNIFIED_S3_KEY` and `UNIFIED_S3_SECRET` as separate top-level Secret keys, one per env var. `file` mode instead expects a single key named `credentials`, whose value is:
-
-```
-UNIFIED_S3_KEY=<your key>
-UNIFIED_S3_SECRET=<your secret>
-```
-
-(the same two variables, just both inside one value). Switching a Secret from one mode to the other means re-authoring it, not just flipping the config field — the sidecar will not find `UNIFIED_S3_KEY`/`UNIFIED_S3_SECRET` as top-level keys of a `file`-mode Secret, or the `credentials` key in an `env`-mode one.
-
-The volume is mounted `optional: true` and `defaultMode: 0400`, mirroring how the controller's own KEK is mounted. `optional: true` matters independently of rotation: unlike `envFrom.secretRef` (which is never optional and makes a missing or misnamed Secret fail the **whole Pod** with `CreateContainerConfigError` — see the table above), a missing Secret under `file` mode simply leaves the mount empty and the sidecar without credentials, degrading the same way as leaving `sidecarS3SecretName` unset entirely (artifact steps fail, cache steps no-op, everything else in the job runs).
-
-**What `file` mode does not do.** It is a delivery mechanism only — it does not by itself produce short-lived or automatically-rotating credentials. Nothing in this project rotates the Secret's value for you; an operator (or an external secret-rotation tool) still has to rewrite it, exactly as today, just with a mode that can actually deliver the new value to a running Pod. Building automatic issuance — an agent-projected credential, or a cloud-issued short-lived one — is future work; see the `2026-08-26-sidecar-credential-delivery-design.md` design spec, §5.5, for the seam this implements and why it was built ahead of that decision.
-
-`env` remains the default: existing deployments that never set `sidecarS3SecretMode` see no change in behaviour.
-
-### `sidecarS3SecretMode: broker` — no operator-created Secret at all
-
-`env` and `file` both still require the operator to create an S3 Secret in
-every job namespace, keep it in step with the controller's own credentials,
-and — the trap §3 of the design spec below is written about — get it into
-the **job Pod's** namespace, not the agent's. `broker` removes that Secret
-entirely:
-
-```yaml
-# k8s-agent-config.yaml
-namespace: ci
-sidecarS3SecretMode: broker   # default: env — no sidecarS3SecretName needed
-```
-
-(Env override: `UNIFIED_K8S_SIDECAR_S3_SECRET_MODE=broker`.)
-
-In this mode the agent adds a **projected ServiceAccount token volume** to
-the job Pod — a Kubernetes primitive the kubelet mints directly from the
-Pod spec, needing no RBAC beyond what writing that Pod spec already
-requires — mounted into the sidecar container only, with its own audience
-(`unified-cd-store-credentials`, distinct from the agent's own enrollment
-audience). The sidecar presents that token to the controller's
-`POST /api/v1/store-credentials`, which verifies it with a `TokenReview`
-(the same mechanism used for Kubernetes agent enrollment, against a
-different audience so neither kind of token can be used as the other) and,
-if the Pod's namespace and ServiceAccount are on the controller's
-`agentAuth.kubernetesStoreCredentialPolicies` allowlist for that cluster,
-returns object-store credentials.
-
-**What this does and does not change:**
-
-- **No Secret in any job namespace.** The operator's per-namespace Secret,
-  and the trap of creating it in the wrong one, both disappear.
-- **No new agent RBAC.** The agent adds a volume to a Pod spec it already
-  writes; it still never touches a Secret and still cannot read or write
-  one.
-- **The credential returned today is the controller's own, passed through
-  unscoped — not per-run, not short-lived.** Every Pod authorized by the
-  allowlist gets the identical credential the controller itself uses, for
-  as long as the controller's own credential is valid. This is a real,
-  deliberate limitation, not an oversight: scoping the credential to a run's
-  object-store prefix needs STS support (`AssumeRoleWithWebIdentity`) that
-  is not available on every store this project supports — notably Garage,
-  which the bundled evaluation manifests use, and whose support for it is
-  unconfirmed. Passthrough works everywhere. The response shape already
-  carries an expiry and a session token, so a future scoped or short-lived
-  credential is a change of what the controller returns, not a wire-format
-  change every sidecar has to catch up to — but that work has not landed
-  yet. Do not treat `broker` mode as least-privilege per run: today it is
-  the same bucket-wide blast radius as `env`/`file`, delivered without a
-  Secret.
-- **The data path is unchanged.** Artifact and cache bytes still go
-  straight from the sidecar to the object store; only the one-time
-  credential fetch at the start of a transfer passes through the
-  controller.
-
-The controller needs `agentAuth.kubernetesStoreCredentialPolicies` configured
-for the same cluster the k8s-agent enrolls against, naming the job Pod's
-namespace(s) and ServiceAccount(s) — a separate list from
-`kubernetesEnrollmentPolicies`, because the two authorize different
-identities: the agent's own (e.g. `unified-cd`/`unified-cd-k8s-agent`) versus
-the job Pod's (e.g. `ci`/whatever ServiceAccount runs your jobs, `default`
-if none is set). With the Helm chart, `bundledStores.enabled=true` configures this by default (the
-agent gets `sidecarS3SecretMode: broker`, and the controller gets a policy for the job
-namespace and the `default` ServiceAccount), as does the bundled `install.yaml`;
-with `bundledStores.enabled=false` and in `core-install.yaml` the mode stays `env`.
-To opt in, set `agent.config.sidecarS3SecretMode: broker` and add
-`controller.config.agentAuth.kubernetesStoreCredentialPolicies` to your values.
-
-See `docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md`
-§5.6 for the full design and the reasoning behind passthrough-only for now.
+- No Secret in any job namespace, and no `UNIFIED_S3_*` variables for the sidecar. Delete the old `sidecarS3SecretName` Secrets once every agent is upgraded.
+- The agent no longer fails an artifact claim at claim time for a missing Secret, and cache steps no longer degrade silently without one.
+- The sidecar image ships with the agent and must be upgraded with it: an older sidecar still reads `UNIFIED_S3_*` and will fail against the new controller.
+- Setting `sidecarS3SecretName` or `sidecarS3SecretMode` (in the config file or through `UNIFIED_K8S_SIDECAR_S3_SECRET_NAME` / `UNIFIED_K8S_SIDECAR_S3_SECRET_MODE`) makes the k8s-agent exit at startup with `k8s-agent config: sidecarS3SecretName and sidecarS3SecretMode are no longer supported; the artifact sidecar uses controller-issued URLs (see docs/operator-manual/migrations/2026-11-20-run-scoped-object-access.md)`. Remove the keys.
 
 ### Security note / threat model
 
-Bucket-scoped S3 credentials reach the sidecar one of three ways (`env`, `file`, or `broker`; see above), but in every mode they land in the **sidecar container's** environment or a mount only — **by default** the job container never sees them (container-boundary isolation, the same trust boundary Argo Workflows and Tekton use for their artifact sidecars/init-containers). Six things keep that true: the [Job Pod field policy](#job-pod-field-policy) refuses a job's `secretKeyRef` / `secret` volume for any Secret the operator has not listed (and `allowSecrets` can never name `sidecarS3SecretName`) and refuses any mount of the agent-injected credential volumes; it refuses a job-chosen workspace or volume mount path over the sidecar's binaries, libraries, configuration or credential mounts (checked on the path as the agent will mount it, and the agent runs the sidecar by absolute path), the sidecar confines all of its file access to the workspace so a job-planted symlink cannot make it read its own credentials or write over its own files, and it denies `hostAliases`, `dnsPolicy` and `dnsConfig` unless the operator opts in, so a job cannot set Pod-wide name resolution (this does not stop a root job container from editing the shared `/etc/hosts` or listening in the shared network namespace; see "What the opt-in does not do" above); no step can target the sidecar (`container: unified-artifact` is rejected at apply time, after `uses:` resolution, and on the k8s-agent at claim and exec time); and the default policy does not allow `shareProcessNamespace`. The remaining exceptions are operator opt-ins, and none should be set on an agent that runs untrusted jobs: `jobPodPolicy.allowPodSpecFields: [shareProcessNamespace]` lets the job container read the sidecar's `/proc/<pid>/environ` and root filesystem and so defeats the container boundary, and `[hostAliases, dnsPolicy, dnsConfig]` let a job set Pod-wide name resolution that redirects the sidecar's broker and object-store connections. Even without them, a job container running as root can edit the Pod's shared `/etc/hosts` or listen and sniff in the shared network namespace; the real mitigations are serving the broker over TLS (the shipped install uses plain HTTP) and running job containers non-root with `readOnlyRootFilesystem` and `NET_RAW` dropped. Under all three modes the credential is today the SAME long-lived, bucket-scoped one: any workload able to exec into the `unified-artifact` container (or, under `env`/`file`, read the Secret directly if RBAC allows `get`/`list` on Secrets in the namespace) can read/write the whole bucket for as long as that credential is valid.
+The sidecar holds a projected token, not store credentials. The token is mounted into the **sidecar container** only; **by default** the job container never sees it (container-boundary isolation, the same trust boundary Argo Workflows and Tekton use for their artifact sidecars/init-containers). Six things keep that true: the [Job Pod field policy](#job-pod-field-policy) refuses a job's `secretKeyRef` / `secret` volume for any Secret the operator has not listed and refuses any mount of the agent-injected token volume; it refuses a job-chosen workspace or volume mount path over the sidecar's binaries, libraries, configuration or token mount (checked on the path as the agent will mount it, and the agent runs the sidecar by absolute path), the sidecar confines all of its file access to the workspace so a job-planted symlink cannot make it read its own token or write over its own files, and it denies `hostAliases`, `dnsPolicy` and `dnsConfig` unless the operator opts in, so a job cannot set Pod-wide name resolution (this does not stop a root job container from editing the shared `/etc/hosts` or listening in the shared network namespace; see "What the opt-in does not do" above); no step can target the sidecar (`container: unified-artifact` is rejected at apply time, after `uses:` resolution, and on the k8s-agent at claim and exec time); and the default policy does not allow `shareProcessNamespace`. The remaining exceptions are operator opt-ins, and none should be set on an agent that runs untrusted jobs: `jobPodPolicy.allowPodSpecFields: [shareProcessNamespace]` lets the job container read the sidecar's `/proc/<pid>/environ` and root filesystem and so defeats the container boundary, and `[hostAliases, dnsPolicy, dnsConfig]` let a job set Pod-wide name resolution that redirects the sidecar's controller and object-store connections. Even without them, a job container running as root can edit the Pod's shared `/etc/hosts` or listen and sniff in the shared network namespace; the real mitigations are serving the controller over TLS (the shipped install uses plain HTTP) and running job containers non-root with `readOnlyRootFilesystem` and `NET_RAW` dropped.
 
-This is comparable to how most CI systems hand artifact/cache sidecars static bucket credentials, but it is **not** least-privilege per run, under any of the three modes. `broker` (§5.6 above) removes the per-namespace Secret and is the mechanism a future short-lived or per-pod-scoped credential would be built on — bare-metal, EKS and GKE alike, unlike IAM Roles for Service Accounts (IRSA, EKS-only) or Workload Identity (GKE-only) — but it does not deliver that scoping today; see the `broker` section above for exactly what it does and does not change. Until a scoped credential ships, restrict RBAC `get`/`list`/`watch` on Secrets and `pods/exec` in the agent's namespace to trusted operators under `env`/`file`, and restrict `agentAuth.kubernetesStoreCredentialPolicies` to only the namespaces/ServiceAccounts that actually run jobs under `broker`.
+This is a narrower exposure than the bucket-wide credential the sidecar held before. A stolen token is valid only while the Pod exists (the kubelet projects it for one hour and refreshes it), only authorizes presign requests for **the one run the Pod is bound to**, and only yields URLs for that run's own artifacts and its job's caches, each good for one object and 15 minutes. It cannot list the bucket, read another job's cache or write another run's artifact. It does let a holder read the job's caches and, given a run ID and an artifact name, any existing run's artifact (the same reach as `downloadArtifact` with `run:`), so restrict `pods/exec` in the job namespace to trusted operators, and restrict `agentAuth.kubernetesStoreCredentialPolicies` to the namespaces and ServiceAccounts that actually run jobs.
 
 ---
 

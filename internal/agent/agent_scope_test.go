@@ -132,7 +132,7 @@ func TestExecuteRun_UploadArtifact_ScopedRoutesToScopeContainer(t *testing.T) {
 
 	a := &Agent{
 		ID:     agentID,
-		Client: NewClient(srv.URL, "tok"),
+		Client: newStreamClient(srv.URL, "tok"),
 		// Force containerRuntime() to resolve to our fake without touching
 		// Detect()/RuntimePref: pre-seed the resolved runtime via runtimeOnce.
 	}
@@ -250,7 +250,7 @@ func TestExecuteRun_DownloadArtifact_ScopedUsesAbsoluteContainerPath(t *testing.
 	defer srv.Close()
 
 	rt := &copyInTrackingRT{}
-	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	a := &Agent{ID: agentID, Client: newStreamClient(srv.URL, "tok")}
 	a.runtimeOnce.Do(func() {})
 	a.resolvedRuntime = rt
 
@@ -350,7 +350,7 @@ func TestExecuteRun_ScopedCache_ScopeUnavailable_WarnAndSkip(t *testing.T) {
 	defer srv.Close()
 
 	rt := &failingCreateRT{}
-	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	a := &Agent{ID: agentID, Client: newStreamClient(srv.URL, "tok")}
 	a.runtimeOnce.Do(func() {})
 	a.resolvedRuntime = rt
 
@@ -433,7 +433,7 @@ func TestExecuteRun_ScopedStep_RunsInScopeContainer(t *testing.T) {
 	defer srv.Close()
 
 	rt := &fakeRT{}
-	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	a := &Agent{ID: agentID, Client: newStreamClient(srv.URL, "tok")}
 	a.runtimeOnce.Do(func() {})
 	a.resolvedRuntime = rt
 
@@ -584,7 +584,7 @@ func TestExecuteRun_ParallelScopedSteps_ConcurrentProvisioning(t *testing.T) {
 	defer srv.Close()
 
 	rt := &concurrentRT{}
-	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	a := &Agent{ID: agentID, Client: newStreamClient(srv.URL, "tok")}
 	a.runtimeOnce.Do(func() {})
 	a.resolvedRuntime = rt
 
@@ -676,7 +676,7 @@ func TestExecuteRun_ScopedStep_PostHookRunsInScopeContainer(t *testing.T) {
 	defer srv.Close()
 
 	rt := &concurrentRT{}
-	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	a := &Agent{ID: agentID, Client: newStreamClient(srv.URL, "tok")}
 	a.runtimeOnce.Do(func() {})
 	a.resolvedRuntime = rt
 
@@ -782,7 +782,7 @@ func TestGetScopes_ConcurrentLazyInit(t *testing.T) {
 	defer srv.Close()
 
 	rt := &concurrentRT{}
-	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	a := &Agent{ID: agentID, Client: newStreamClient(srv.URL, "tok")}
 	a.runtimeOnce.Do(func() {})
 	a.resolvedRuntime = rt
 
@@ -871,7 +871,7 @@ func TestExecuteRun_ParallelPostHooks_ConcurrentAppendIsSafe(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	a := &Agent{ID: agentID, Client: newStreamClient(srv.URL, "tok")}
 
 	// Several parallel members, each with its own post: hook writing a
 	// distinct marker file. All run concurrently via runParallel, so all of

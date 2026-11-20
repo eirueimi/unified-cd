@@ -130,17 +130,59 @@ one is load-bearing:
 6. The enrollment policy's namespace and ServiceAccount constraints apply.
 
 Items 1–5 live in `VerifyProjectedToken` and are shared with the
-store-credential broker; item 6 is enrollment policy and is not.
+job Pod sidecar authentication on the presign endpoint; item 6 is enrollment policy and is not.
 
 !!! danger "The audiences must stay different"
     Enrollment verifies audience `unified-cd-agent-enrollment`. The
-    store-credential broker verifies `unified-cd-store-credentials`. **If these
+    presign endpoint verifies `unified-cd-store-credentials` for job Pod sidecars. **If these
     were ever the same, any job Pod's token would enroll an agent.**
 
     This is asserted from two layers and in both directions, and the Pod-spec
     test pins the literal string rather than the constant so renaming cannot
     quietly make them equal. See
     [Invariants](invariants.md#the-two-token-audiences-must-stay-different).
+
+## Object URL requesters
+
+`POST /api/v1/runs/{runID}/objects/presign` (`api_objects.go`) hands out
+15-minute presigned URLs for one object and one operation each. It is
+registered outside every auth middleware (`unauthenticated` in `routeTable`)
+because it accepts two kinds of caller, and `authenticateObjectRequester`
+(`object_requester.go`) authenticates both itself:
+
+- **An agent bearer (`uca_`).** It goes through `authenticateAgentBearer`, the
+  same code `agentAuth` runs, is rate-limited by agent ID, and must then pass
+  `agentRunGuard(..., false)` for the run in the path: the agent must have
+  claimed the run. A finished run still gets URLs, as with
+  `handleArtifactUpload`, so late uploads land.
+- **Any other bearer: a job Pod sidecar's projected ServiceAccount token.** It
+  is rate-limited by client address first (the `TokenReview` is a call to the
+  cluster API), then verified by `verifyStoreCredentialToken` (audience
+  `unified-cd-store-credentials`, `VerifyProjectedToken` items 1–5 above), then
+  checked against the `StoreCredentialClusters` namespace and ServiceAccount
+  allow-list. **The run binding is mandatory**: the Pod must be the one the
+  run's `run_pod_bindings` row names. No row yet is `409 binding-pending` with
+  `Retry-After: 1` (the k8s agent reports the binding on its next heartbeat);
+  a different Pod is `403`. A run in a terminal state is refused with
+  `409 run-finished` before the binding lookup (cancel, the reaper and the
+  scheduler do not delete bindings), and the sidecar client does not retry it.
+  A Cancelled run is the exception for `cancelledRunObjectGrace` (1 hour after
+  `updated_at`) while Pods are still bound, because `finally:` and hook drains
+  run after a cancel; a Cancelled run with no bindings left is `run-finished`.
+  There is no permissive mode: the
+  deprecated `storeCredentialRequireRunBinding` setting is ignored, because a URL is for one
+  run's object.
+
+Both rate limits use the `StoreCredentialRate*` settings. After
+authentication the handler derives every key itself: artifacts as
+`artifact.ArtifactKey(run, name)`, caches as `cache.DataKey(job, key)` where
+the job is always the run record's (`store.RunJobName`), never a client value.
+It never signs a cache `.meta` key; the cache `commit` operation writes `.meta`
+server-side with the size from a `Stat` of the archive and an expiry bounded
+by the run spec's own `cache.ttlDays`. Reading another run's artifact
+(`sourceRunId`, `get`/`head` only) needs only that the run exists, which is the
+existing download route's rule for machine principals. The URLs are bearer
+credentials: never log or audit them.
 
 ## What an agent credential may not do
 

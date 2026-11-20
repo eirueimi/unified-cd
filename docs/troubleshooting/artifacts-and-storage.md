@@ -1,116 +1,155 @@
 # Artifacts and Storage
 
-## Step fails with `requires S3 configuration (UNIFIED_S3_*)`
+## Kubernetes: a transfer fails with `requires UNIFIED_CONTROLLER_URL and UNIFIED_POD_TOKEN_FILE`, `403 forbidden` or `409 binding-pending`
 
 **Symptom**
 
-A step fails with one of:
+An artifact step fails, or a cache step logs `cache not restored`, with one of:
 
 ```
-artifact requires S3 configuration (UNIFIED_S3_*): ...
-cache requires S3 configuration (UNIFIED_S3_*): ...
+artifact requires UNIFIED_CONTROLLER_URL and UNIFIED_POD_TOKEN_FILE (set by the k8s agent)
+cache requires UNIFIED_CONTROLLER_URL and UNIFIED_POD_TOKEN_FILE (set by the k8s agent)
+presign artifact/get: 403 forbidden: this namespace or service account may not request object URLs
+presign artifact/put: 409 binding-pending: no pod is bound to this run yet; retry
+presign artifact/get: 403 forbidden: the presented pod is not the one bound to this run
 ```
-
-or, on the k8s-agent, the run is failed at claim time — before any pod is
-created — with:
-
-```
-artifact steps require the unified-artifact sidecar's own S3 credentials, but the
-k8s-agent's sidecarS3SecretName config field is not set; affected steps: "publish". ...
-```
-
-That preflight only fails a run for a transfer step that would definitely have
-run and definitely have failed it. A step carrying `continueOnError: true` is
-ignored (its failure is contractually harmless), and a step guarded by an `if:`
-produces a warning instead of a failure, because the guard may reference a
-prior step's output and cannot be evaluated before the run starts.
-
-This is confusing precisely because **log archiving already works** — S3 is
-obviously configured somewhere.
 
 **Cause**
 
-The controller's S3 configuration does not reach the sidecar, and it is not
-supposed to. Two different paths carry bytes to the same bucket:
+The Kubernetes sidecar holds no store credentials. It asks the controller for presigned URLs with its projected ServiceAccount token (see [How the sidecar reaches the object store](../operator-manual/kubernetes-integration.md#how-the-sidecar-reaches-the-object-store)), so each message points at one link of that chain:
 
-- **Logs** go agent → controller → S3. The *controller's* credentials cover them.
-- **Kubernetes artifacts and cache** go from the auto-injected
-  `unified-artifact` sidecar **directly** to S3, with no controller in the
-  path. They need their *own* credentials, in the job Pod.
-
-So a deployment with S3 credentials only in the controller's Secret archives
-logs perfectly and cannot transfer a single artifact.
+- `requires UNIFIED_CONTROLLER_URL and UNIFIED_POD_TOKEN_FILE`: the sidecar container was started without the two variables the k8s-agent sets, usually because the sidecar image and the agent are different releases or the Pod was not built by this agent.
+- `403 forbidden: this namespace or service account may not request object URLs`: the job Pod's namespace and ServiceAccount are not in the controller's `agentAuth.kubernetesStoreCredentialPolicies` for this cluster. The Helm chart renders a policy for the job namespace and the `default` ServiceAccount; a job that runs under another ServiceAccount needs its own entry.
+- `409 binding-pending`: the controller has not yet been told which Pod runs this run. The sidecar retries for up to 30 seconds, so the error means the agent's heartbeat carrying the Pod binding did not arrive in that time; check that the agent can reach the controller.
+- `409 run-finished`: the run has already finished (succeeded or failed, or cancelled and its Pod is no longer bound or more than an hour has passed), so its Pod no longer gets object URLs. The sidecar does not retry. `finally:` and hook transfers of a cancelled run keep working for up to an hour from Pods that were bound before the cancel (a scope Pod started after the cancel is never bound and gets `403`); if one fails with this error, its cleanup ran longer than that. For any other run, check why the run ended.
+- `403 forbidden: the presented pod is not the one bound to this run`: the token belongs to a different Pod than the one the agent reported for the run.
 
 **Fix**
 
-Create a Secret carrying `UNIFIED_S3_ENDPOINT` / `UNIFIED_S3_BUCKET` /
-`UNIFIED_S3_KEY` / `UNIFIED_S3_SECRET` **in the namespace the k8s-agent's
-`namespace:` config field points at** — the namespace job Pods run in (`ci` in
-the shipped manifests), not the namespace the agent Deployment runs in
-(`unified-cd`) — and name it in the agent config:
+Upgrade the sidecar image together with the k8s-agent (the default `sidecarImage` follows the agent's version), add the job ServiceAccount to `kubernetesStoreCredentialPolicies`, and check the agent's connection to the controller. Nothing needs to be configured for the object store itself, and there is no Secret to create.
 
-```yaml
-# k8s-agent-config.yaml
-namespace: ci                              # job Pods are created here
-sidecarS3SecretName: unified-cd-s3-creds   # ...so the Secret must live here too
+## Kubernetes: the sidecar fails with `artifact requires S3 configuration (UNIFIED_S3_*)` after an upgrade
+
+**Symptom**
+
+After upgrading the controller, steps on the Kubernetes agent fail with:
+
+```
+artifact requires S3 configuration (UNIFIED_S3_*): store credentials broker <url>: store credentials request failed: 401 Unauthorized: unauthorized
 ```
 
-Getting the namespace wrong is a *different* failure with a much louder blast
-radius — see [Job pods never start with `CreateContainerConfigError`](#job-pods-never-start-with-createcontainerconfigerror)
-below. See [Kubernetes Integration: S3 credentials](../operator-manual/kubernetes-integration.md#s3-credentials-required)
-for the full contract.
+(`cache requires S3 configuration ...` for a cache step; `<url>` is the controller URL.)
 
-**Note on cache**
+**Cause**
 
-Cache steps never fail the run over this — that is deliberate — but they are no
-longer *silent* about it either. A run with cache steps and no
-`sidecarS3SecretName` logs one loud warning at claim time, and a restore the
-sidecar could not perform is logged as "cache not restored", never as
-`cache hit`. If you are chasing a cache that appears to work while build times
-never drop, check the agent log for those lines.
+The job Pod runs an old `unified-artifact` sidecar image. It still asks the controller for store credentials at the old broker endpoint, which the controller no longer serves. The old sidecar sends its token in the request body with no `Authorization` header, so the controller's API authentication answers `401` before routing can say the route is gone. The `UNIFIED_S3_*` in the message is the old sidecar's own wording; there is nothing to set. The sidecar image must match the k8s-agent release.
+
+**Fix**
+
+Upgrade the k8s-agent (its default `sidecarImage` is the matching tag) or set `sidecarImage` to the same release. Pooled Pods built from the old image are replaced as they age out; to replace them at once, restart the agent.
+
+## Kubernetes: the agent refuses to start with `sidecarS3SecretName and sidecarS3SecretMode are no longer supported`
+
+**Symptom**
+
+The k8s-agent exits at startup with:
+
+```
+k8s-agent config: sidecarS3SecretName and sidecarS3SecretMode are no longer supported; the artifact sidecar uses controller-issued URLs (see docs/operator-manual/migrations/2026-11-20-run-scoped-object-access.md)
+```
+
+**Cause**
+
+The config file sets `sidecarS3SecretName` or `sidecarS3SecretMode`, or the environment sets `UNIFIED_K8S_SIDECAR_S3_SECRET_NAME` or `UNIFIED_K8S_SIDECAR_S3_SECRET_MODE`. The sidecar no longer reads store credentials from a Secret.
+
+**Fix**
+
+Remove those keys (and the variables) and restart. If you set `agent.config.sidecarS3SecretMode` in the Helm values, remove it there; the chart no longer sets it. The Secret can be deleted once every agent is upgraded.
+
+## A host agent refuses to start: the cache store flags are no longer supported
+
+**Symptom**
+
+The host agent exits at startup with:
+
+```
+agent config: the cache store flags (--cache-endpoint, --cache-key, --cache-secret, --cache-bucket) are no longer supported; caches use controller-issued URLs (see docs/operator-manual/migrations/2026-11-20-run-scoped-object-access.md)
+```
+
+**Cause**
+
+One of the removed cache store settings is still set: a `--cache-*` flag, a `UNIFIED_CACHE_ENDPOINT` / `UNIFIED_CACHE_KEY` / `UNIFIED_CACHE_SECRET` / `UNIFIED_CACHE_BUCKET` variable (check the service unit or environment file too), or a `cacheEndpoint` / `cacheKey` / `cacheSecret` / `cacheBucket` key in the agent config file. The agent no longer holds a store key; the controller issues a URL per transfer.
+
+**Fix**
+
+Remove every one of them and restart. Caches need no agent configuration. If the agent cannot reach the object store endpoint the controller names, set `objectTransfer: controller` instead (see [Agents: Object transfer](../operator-manual/agents.md#object-transfer-objecttransfer)).
+
+## A transfer fails with `multipart-unavailable`
+
+**Symptom**
+
+A log line or step error contains:
+
+```
+presign artifact/multipart-start: 501 multipart-unavailable: the object store does not accept presigned multipart uploads; use a single put
+```
+
+**Cause**
+
+The controller's store cannot presign multipart upload parts (GCS's S3-compatible API is treated this way; see [Object store compatibility](../operator-manual/operations.md#object-store-compatibility)). The client normally handles this itself: it spools the stream to a temporary file and sends one presigned PUT. If you see the error as a failure, the single PUT that followed failed or the temporary directory had no room for the whole archive.
+
+**Fix**
+
+Make sure the client's temp directory can hold the largest archive it uploads on such a store, and look at the error that follows for the real cause (for example a store endpoint the client cannot reach).
+
+## A download fails with `object changed during download`
+
+**Symptom**
+
+An artifact or cache download fails with:
+
+```
+object changed during download (at byte 1073741824)
+```
+
+**Cause**
+
+The client resumes an interrupted download with a `Range` request and a conditional header that names the object version it started with. The object was replaced (for example the artifact was uploaded again, or the cache entry was overwritten) between the first part and the resume, so the store answered `412` and the client refuses to join bytes of two versions.
+
+**Fix**
+
+Retry the step. A run's artifact name is normally written once; if a job re-uploads the same artifact while another run is downloading it, order the two so the download starts after the upload finishes.
 
 ## Job pods never start with `CreateContainerConfigError`
 
 **Symptom**
 
-Every job on the k8s-agent fails — including jobs with no artifact or cache
-step at all. Runs sit for the full `podStartTimeout` (default 5m) and then
-fail. The run's failure message names the container and the kubelet's reason:
+A job on the k8s-agent never starts. The run sits for the full `podStartTimeout` (default 5m) and then
+fails. The run's failure message names the container and the kubelet's reason:
 
 ```
 k8s: run pod did not become ready: waiting for Pod ucd-run-abc123 to become
-Running: context deadline exceeded (container "unified-artifact" is waiting:
-CreateContainerConfigError: secret "unified-cd-s3-creds" not found)
+Running: context deadline exceeded (container "job" is waiting:
+CreateContainerConfigError: secret "db-password" not found)
 ```
 
 **Cause**
 
-`sidecarS3SecretName` names a Secret that does not exist **in the job Pod's
-namespace**. The agent attaches it to the sidecar with `envFrom.secretRef`,
-which is not marked `optional: true`, so the kubelet cannot configure the
-container and the Pod never reaches `Running` — and since no container in the
-Pod starts, no step of any kind runs.
-
-The usual cause is creating the Secret in the *agent's* namespace
-(`unified-cd` in the shipped manifests) while job Pods run in the namespace the
-agent's `namespace:` field names (`ci`). The reference is a
-`LocalObjectReference` and has no namespace field, so Kubernetes always
-resolves it in the Pod's own namespace; a Secret one namespace over is
-invisible.
-
-Note the asymmetry with the entry above: **unset** `sidecarS3SecretName`
-degrades (artifact steps fail, cache no-ops, everything else runs), while
-**set-but-missing** breaks every job outright.
+A container references a Secret that does not exist **in the job Pod's namespace**, for example a
+`secretKeyRef` or `envFrom.secretRef` in the job's `podTemplate` (permitted through
+`jobPodPolicy.allowSecrets`) or in an agent template. The reference is a `LocalObjectReference` and has no
+namespace field, so Kubernetes always resolves it in the Pod's own namespace (the agent's `namespace:`
+field, `ci` in the shipped manifests); a Secret one namespace over is invisible. The artifact sidecar
+itself uses no Secret.
 
 **Fix**
 
 ```bash
 # Which namespace do job pods run in? The agent config's `namespace:` field.
-kubectl -n ci get secret unified-cd-s3-creds
+kubectl -n ci get secret db-password
 ```
 
-If it is not there, create it there (copying it from the agent's namespace is
-fine), or clear `sidecarS3SecretName` if you do not need sidecar transfers yet.
+If it is not there, create it there (copying it from another namespace is fine).
 
 ## Kubernetes run fails: pod was evicted: Usage of EmptyDir volume "workspace" exceeds the limit
 
@@ -217,7 +256,7 @@ note](../operator-manual/migrations/2026-10-22-version-derived-default-images.md
   `kubectl exec <pod> -- /k8s-agent --version`. Both print `dev` unless the
   image was built from a release tag.
 - See [Kubernetes Integration Guide](../operator-manual/kubernetes-integration.md) for the full
-  sidecar contract and `sidecarS3SecretName` configuration.
+  sidecar contract.
 
 ## A sidecar failed to start
 

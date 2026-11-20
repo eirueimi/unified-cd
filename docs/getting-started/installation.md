@@ -67,9 +67,9 @@ namespace, and an in-cluster PostgreSQL and Garage (S3) with fixed development
 credentials. **This is for evaluation only; do not use it in production.** The
 chart refuses to render an Ingress while those credentials are in use. The
 controller may restart a few times while PostgreSQL and Garage start, which is
-expected. Artifacts work out of the box: the agent uses
-`sidecarS3SecretMode: broker`, so the artifact sidecar obtains S3 credentials
-from the controller's [store-credential broker](../operator-manual/kubernetes-integration.md#s3-credential-delivery-mode-sidecars3secretmode).
+expected. Artifacts and caches work out of the box: the artifact sidecar holds no
+store credentials and asks the controller for presigned URLs ([how the sidecar
+reaches the object store](../operator-manual/kubernetes-integration.md#how-the-sidecar-reaches-the-object-store)).
 
 The secret-encryption key (KEK) is generated once, in the cluster, by a Job
 (`unified-cd-kek-init`). It is never replaced by a re-install or
@@ -103,6 +103,7 @@ kubectl create secret generic unified-cd-controller-kek -n unified-cd \
 
 - `UNIFIED_DB_DSN` is the PostgreSQL connection string; `UNIFIED_TOKEN` is the
   administrator static token for human and CLI authentication.
+- For AWS S3 or GCS also set `UNIFIED_S3_USE_SSL=true` and `UNIFIED_S3_REGION`: presigned URLs travel to agents and job Pods, so those must be able to reach the endpoint you give here. See [Operations: networking and cost of object transfers](../operator-manual/operations.md#networking-and-cost-of-object-transfers).
 - Omitting the four `UNIFIED_S3_*` keys does not stop the controller. It starts
   and logs `no object store configured — log archival disabled`; log archival
   and artifacts are then off.

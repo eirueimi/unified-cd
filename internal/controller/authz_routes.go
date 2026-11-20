@@ -195,7 +195,15 @@ var routeTable = []routeRule{
 	unauthenticated(mPost, "/webhook/{name}"),
 	unauthenticated(mPost, "/api/v1/agents/enroll"),
 	unauthenticated(mPost, "/api/v1/agents/token/refresh"),
-	unauthenticated(mPost, "/api/v1/store-credentials"),
+	// The handler authenticates: an agent bearer (uca_) or a sidecar's
+	// projected ServiceAccount token, then the run binding (see
+	// authenticateObjectRequester).
+	unauthenticated(mPost, "/api/v1/runs/{runID}/objects/presign"),
+	// Controller-mode streaming routes: authenticated by the same handler logic.
+	unauthenticated(mPut, "/api/v1/runs/{runID}/objects/caches"),
+	unauthenticated(mGet, "/api/v1/runs/{runID}/objects/caches"),
+	unauthenticated(mPut, "/api/v1/runs/{runID}/objects/artifacts/{name}"),
+	unauthenticated(mGet, "/api/v1/runs/{runID}/objects/artifacts/{name}"),
 	unauthenticated(mAny, "/ui"),
 	unauthenticated(mAny, "/ui/*"),
 	unauthenticated(mGet, "/"),

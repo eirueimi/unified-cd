@@ -78,6 +78,16 @@ func BuildHeartbeat(activeRunIDs func() []string, podBindings func() map[string]
 // controller always sends [] for an empty set), which is warned about once too.
 // A nil onResponse discards answers.
 func StartHeartbeat(ctx context.Context, client *Client, agentID string, interval time.Duration, build func() *api.HeartbeatRequest, onResponse func(*api.HeartbeatResponse)) <-chan struct{} {
+	return StartHeartbeatKicked(ctx, client, agentID, interval, build, onResponse, nil)
+}
+
+// StartHeartbeatKicked is StartHeartbeat with an extra trigger: each receive
+// on kick sends a beat right away, outside the ticker's schedule. The
+// Kubernetes agent kicks after recording a Pod binding, so the controller
+// learns it well before the next tick and the sidecar's first presign request
+// does not wait for it. A nil kick never fires. The ticker keeps its cadence;
+// a kicked beat does not reset it.
+func StartHeartbeatKicked(ctx context.Context, client *Client, agentID string, interval time.Duration, build func() *api.HeartbeatRequest, onResponse func(*api.HeartbeatResponse), kick <-chan struct{}) <-chan struct{} {
 	if interval <= 0 {
 		interval = DefaultHeartbeatInterval
 	}
@@ -124,6 +134,8 @@ func StartHeartbeat(ctx context.Context, client *Client, agentID string, interva
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				beat()
+			case <-kick:
 				beat()
 			}
 		}

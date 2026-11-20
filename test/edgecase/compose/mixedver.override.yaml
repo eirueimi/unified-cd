@@ -121,11 +121,12 @@ services:
       - agent-credentials:/var/lib/unified-cd-agent
       - ../edgecase/sideeffect-data:/data
     environment:
-      # Same four cache vars as agent1/agent2. All four are required and none
-      # has a default; a missing one disables the cache SILENTLY
-      # (base file's own note, and README §"The object store").
+      # This v0.4.0 agent predates the removal of the cache store settings, so
+      # it still needs them (HEAD agents refuse to start with them). All four
+      # are required; a missing one disables its cache silently. The bucket is
+      # the controllers' one, which holds caches/ now.
       UNIFIED_CACHE_ENDPOINT: garage:3900
-      UNIFIED_CACHE_BUCKET: unified-cd-cache
+      UNIFIED_CACHE_BUCKET: unified-cd-logs
       UNIFIED_CACHE_KEY: garageadmin
       UNIFIED_CACHE_SECRET: garageadmin12345
     command:

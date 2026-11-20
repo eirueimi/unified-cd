@@ -10,6 +10,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,7 +33,7 @@ func TestExecuteCacheStep_ReportsStageIndex(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	a := &Agent{ID: "a1", Client: NewClient(srv.URL, "tok")} // CacheStore nil: restore/save skipped, reporting still happens
+	a := &Agent{ID: "a1", Client: NewClient(srv.URL, "tok"), cacheStoreOverride: objectstore.NewLocalObjectStore(t.TempDir())}
 
 	// index 1, stage 1 (like restore_cache after checkout)
 	step := api.ClaimStep{Index: 1, StageIndex: 1, Name: "restore_cache", Cache: &dsl.CacheStep{Path: "p", Key: "k"}}

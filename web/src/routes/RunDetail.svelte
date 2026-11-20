@@ -708,8 +708,11 @@
       artifacts = [];
     }
   }
-  // The artifact endpoint streams a binary tar.gz and needs the auth header, so a
-  // plain <a href> won't do for token auth — fetch it and save via a blob URL.
+  // The artifact endpoint needs the auth header, so a plain <a href> won't do for
+  // token auth: fetch it with ?as=url. When the controller is configured to
+  // redirect downloads (objectStore.artifactDownload: redirect) it answers JSON
+  // {"url": <presigned GET>} and the browser navigates to the store directly;
+  // otherwise it streams the tar.gz, which is saved via a blob URL.
   async function downloadArtifact(name) {
     try {
       const headers = {};
@@ -720,11 +723,24 @@
           "/api/v1/runs/" +
           runID +
           "/artifacts/" +
-          encodeURIComponent(name),
+          encodeURIComponent(name) +
+          "?as=url",
         { credentials: "include", headers },
       );
       if (!resp.ok) {
         error = "Artifact download failed (" + resp.status + ")";
+        return;
+      }
+      const contentType = (resp.headers && resp.headers.get("Content-Type")) || "";
+      if (contentType.includes("application/json")) {
+        // The presigned URL is a bearer credential: navigate to it, never log it.
+        const { url } = await resp.json();
+        const a = document.createElement("a");
+        a.href = url;
+        a.rel = "noreferrer";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
         return;
       }
       const blob = await resp.blob();

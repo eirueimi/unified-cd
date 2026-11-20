@@ -83,6 +83,5 @@ podStartTimeout: 60s
 # the subject.
 poolIdleTimeout: 5m
 
-# sidecarS3SecretName is INTENTIONALLY UNSET. Consequence, stated so no
-# scenario trips over it: cache steps become silent no-ops reported Succeeded,
-# and artifact steps FAIL. No W4 fixture may depend on artifacts.
+# The artifact sidecar needs no store Secret: it uses URLs issued by the
+# controller, so this config sets no sidecar credentials.

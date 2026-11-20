@@ -405,7 +405,7 @@ func (a *K8sAgent) claimRequest(ctx context.Context) api.ClaimRequest {
 // runs for tens of minutes) would hold its slot and stall the rollout. Nothing
 // proceeds unmounted.
 func (a *K8sAgent) createClaimPod(ctx context.Context, c api.ClaimResponse) (claimPodResult, error) {
-	sidecar := SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName, S3SecretMode: a.cfg.SidecarS3SecretMode, BrokerURL: a.cfg.Server}
+	sidecar := SidecarSpec{Image: a.cfg.SidecarImage, ControllerURL: a.cfg.Server}
 	if len(c.Volumes) == 0 {
 		return a.buildAndCreate(ctx, c, sidecar, nil, nil)
 	}

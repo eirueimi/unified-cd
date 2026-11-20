@@ -63,6 +63,7 @@ When the leader goes down, the lock is released and another replica picks it up 
 | Scheduler (`RunScheduler`) | advisory lock (`schedulerLockKey`) | Only the leader transitions Pending→Queued and fires schedules |
 | Log archiver (`RunLogArchiver`) | advisory lock (`logArchiverLockKey`) | Only the leader archives logs |
 | Cache cleanup (`RunCacheCleanup`) | advisory lock (`cacheCleanupLockKey`) | Only the leader deletes expired cache entries |
+| Multipart sweep (`RunMultipartSweep`) | advisory lock (`multipartSweepLockKey`) | Only the leader aborts multipart uploads abandoned for more than 24h (S3-compatible stores only) |
 | AppSource reconciler (`RunAppSourceReconciler`) | advisory lock (`appSourceReconcilerLockKey`) | Only the leader reconciles |
 | Approval-timeout reaper (`internal/controller/approval_reaper.go`) | advisory lock (`approvalReaperLockKey`) | Only the leader times out expired approval gates |
 | Audit-log retention (`internal/controller/audit_retention.go`) | advisory lock (`auditRetentionLockKey`) | Only the leader prunes audit logs past the retention window |

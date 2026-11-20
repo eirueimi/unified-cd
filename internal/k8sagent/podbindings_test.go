@@ -12,6 +12,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // TestPodBindingSet_AddRemoveSnapshot is a plain unit test of the small
@@ -48,8 +49,8 @@ func TestPodBindingSet_NilReceiverIsSafe(t *testing.T) {
 
 // TestExecuteRun_RecordsPodBinding verifies executeRun's non-pool path
 // records the created Pod's name and UID into a.podBindings for the claim's
-// RunID — the write side the store-credentials broker's run-binding
-// enforcement (internal/controller/api_store_credentials.go) depends on via
+// RunID — the write side the presign endpoint's run-binding check
+// (internal/controller/object_requester.go) depends on via
 // the heartbeat (see api.HeartbeatRequest.PodBindings). fakePM.CreatePod
 // simulates a real API server assigning both Name and UID at creation.
 func TestExecuteRun_RecordsPodBinding(t *testing.T) {
@@ -120,4 +121,62 @@ func TestExecuteRun_RecordsPodBinding(t *testing.T) {
 	require.Contains(t, got, runID)
 	assert.Equal(t, pm.createdNm, got[runID].PodName)
 	assert.NotEmpty(t, got[runID].PodUID, "the created Pod's UID must be recorded, not left empty")
+}
+
+// TestPodBindingSet_AddKicksWithoutBlocking: Add signals the heartbeat loop,
+// several Adds before it wakes coalesce into one pending kick, and a nil set
+// (bare-struct test agents) neither panics nor kicks.
+func TestPodBindingSet_AddKicksWithoutBlocking(t *testing.T) {
+	s := newPodBindingSet()
+	s.Add("r1", api.PodBinding{PodName: "p1", PodUID: "u1"})
+	s.Add("r2", api.PodBinding{PodName: "p2", PodUID: "u2"}) // must not block on a full kick channel
+	select {
+	case <-s.Kicks():
+	default:
+		t.Fatal("Add did not kick")
+	}
+	select {
+	case <-s.Kicks():
+		t.Fatal("two Adds must coalesce into one kick")
+	default:
+	}
+	assert.Len(t, s.Snapshot(), 2)
+
+	var nilSet *podBindingSet
+	nilSet.Add("r", api.PodBinding{})
+	assert.Nil(t, nilSet.Kicks())
+}
+
+// TestScopePod_BindingFollowsPodLifetime: a scope Pod is bound to its run
+// (alongside the claim Pod) when it is created, reported through the
+// heartbeat's PodBindingSets, and unbound again when it is deleted.
+func TestScopePod_BindingFollowsPodLifetime(t *testing.T) {
+	pm := &fakePM{}
+	a := &K8sAgent{cfg: Config{Namespace: "default"}, pm: pm, podBindings: newPodBindingSet()}
+	a.podBindings.Add("run-1", api.PodBinding{PodName: "claim-pod", PodUID: "claim-uid"})
+	b := newK8sBackend(a, "run-1", "test-job", "claim-pod", "/workspace", nil, metav1.Time{})
+
+	_, err := b.EnsureScope(context.Background(), api.ClaimStep{ScopeID: "scope:build", ScopeImage: "golang:1.22"}, nil)
+	require.NoError(t, err)
+
+	sets := a.podBindings.SnapshotSets()["run-1"]
+	require.Len(t, sets, 2)
+	assert.Equal(t, "claim-uid", sets[0].PodUID, "the claim Pod comes first")
+	assert.Equal(t, pm.createdNm, sets[1].PodName)
+	assert.NotEmpty(t, sets[1].PodUID)
+	assert.Equal(t, "claim-uid", a.podBindings.Snapshot()["run-1"].PodUID, "the old single report names the claim Pod")
+	select {
+	case <-a.podBindings.Kicks():
+	default:
+		t.Fatal("binding a scope Pod did not kick the heartbeat")
+	}
+
+	b.CloseScopes(context.Background())
+	sets = a.podBindings.SnapshotSets()["run-1"]
+	require.Len(t, sets, 1, "deleting the scope Pod removes its binding")
+	assert.Equal(t, "claim-uid", sets[0].PodUID)
+
+	// The run's end clears everything.
+	a.podBindings.Remove("run-1")
+	assert.Empty(t, a.podBindings.SnapshotSets())
 }

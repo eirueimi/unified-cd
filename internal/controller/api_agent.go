@@ -191,9 +191,47 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 			// would otherwise be marked stale over a store hiccup), and the
 			// NEXT heartbeat re-asserts the same binding, so a single dropped
 			// write self-heals within one more interval. See
-			// internal/controller/api_store_credentials.go's
-			// runBindingRejects for the reader side.
+			// internal/controller/object_requester.go's
+			// authenticateObjectSidecar for the reader side.
+			// PodBindingSets (every Pod of a run) wins over PodBindings (the old
+			// one-Pod report) for a run present in both.
+			// Sidecar presign authority is "the Pod UID is bound to the run", so
+			// only runs this agent currently owns may be bound: otherwise a
+			// compromised agent could bind its own Pod to another agent's run.
+			owned := map[string]bool{}
+			ownsRun := func(runID string) bool {
+				if v, ok := owned[runID]; ok {
+					return v
+				}
+				ok, err := s.agentHoldsActiveRun(r.Context(), agentID, runID)
+				if err != nil {
+					slog.Warn("heartbeat: failed to verify run ownership for pod binding", "runId", runID, "error", err)
+					ok = false
+				} else if !ok {
+					slog.Warn("heartbeat: dropping pod binding for a run this agent does not own", "runId", runID, "agentId", agentID)
+				}
+				owned[runID] = ok
+				return ok
+			}
+			for runID, pods := range req.PodBindingSets {
+				if !ownsRun(runID) {
+					continue
+				}
+				bindings := make([]store.RunPodBinding, 0, len(pods))
+				for _, pod := range pods {
+					bindings = append(bindings, store.RunPodBinding{PodName: pod.PodName, PodUID: pod.PodUID})
+				}
+				if err := s.store.ReplaceRunPodBindings(r.Context(), runID, bindings); err != nil {
+					slog.Warn("heartbeat: failed to record run/pod bindings", "runId", runID, "error", err)
+				}
+			}
 			for runID, binding := range req.PodBindings {
+				if _, ok := req.PodBindingSets[runID]; ok {
+					continue
+				}
+				if !ownsRun(runID) {
+					continue
+				}
 				if err := s.store.UpsertRunPodBinding(r.Context(), runID, binding.PodName, binding.PodUID); err != nil {
 					slog.Warn("heartbeat: failed to record run/pod binding", "runId", runID, "pod", binding.PodName, "error", err)
 				}
@@ -1054,8 +1092,14 @@ func (s *Server) handleAgentFinishRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !updated {
-		// Late/CAS-miss report: the run was already terminal. Report the
-		// no-op distinctly instead of a false-success 204.
+		// Late/CAS-miss report: the run was already terminal (cancelled, or
+		// reaped). Cancel and the reaper leave the bindings in place, so the
+		// claiming agent's finish report is what unbinds the Pods; the guard
+		// above already established that the caller is that agent.
+		if err := s.store.DeleteRunPodBindings(r.Context(), id); err != nil {
+			slog.Warn("finish run: failed to delete pod bindings", "runId", id, "error", err)
+		}
+		// Report the no-op distinctly instead of a false-success 204.
 		writeJSON(w, http.StatusOK, map[string]any{
 			"runId":            id,
 			"status":           string(st),
@@ -1067,6 +1111,19 @@ func (s *Server) handleAgentFinishRun(w http.ResponseWriter, r *http.Request) {
 	// (possibly still Queued) running or waiting.
 	if st == api.RunFailed || st == api.RunCancelled {
 		cancelDescendantRuns(r.Context(), s.store, id)
+	}
+	// Unbind the run's Pods so a pooled Pod's sidecar can no longer presign
+	// for it. Best-effort: the heartbeat ownership check stops a finished
+	// run from being re-bound.
+	if err := s.store.DeleteRunPodBindings(r.Context(), id); err != nil {
+		slog.Warn("finish run: failed to delete pod bindings", "runId", id, "error", err)
+	}
+	// Abort multipart uploads the run left in progress (in the background;
+	// the periodic sweep catches anything missed).
+	if s.presigner != nil {
+		if job, found, err := s.store.RunJobName(r.Context(), id); err == nil && found {
+			s.abortRunUploads(r.Context(), id, job)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

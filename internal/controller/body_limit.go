@@ -21,7 +21,7 @@ const (
 // requestBodyLimit rejects request bodies larger than the cap with 413.
 //
 // Exempt routes keep their own handling: webhook ingress enforces its own
-// configurable limit (WebhookMaxBodyBytes) and the artifact upload streams an
+// configurable limit (WebhookMaxBodyBytes) and the artifact and cache uploads stream an
 // arbitrarily large archive to the object store. Agent log routes get
 // maxAgentLogBodyBytes.
 //
@@ -57,6 +57,8 @@ func bodyLimitFor(r *http.Request, defaultMax int64) (int64, bool) {
 	case strings.HasPrefix(p, "/webhook/"):
 		return 0, false
 	case r.Method == http.MethodPut && strings.HasPrefix(p, "/api/v1/runs/") && strings.Contains(p, "/artifacts/"):
+		return 0, false
+	case r.Method == http.MethodPut && strings.HasPrefix(p, "/api/v1/runs/") && strings.HasSuffix(p, "/objects/caches"):
 		return 0, false
 	case strings.HasPrefix(p, "/api/v1/agents/") && (strings.HasSuffix(p, "/logs") || strings.HasSuffix(p, "/logs/bulk")):
 		return max(defaultMax, maxAgentLogBodyBytes), true

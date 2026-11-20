@@ -127,7 +127,6 @@ func runWithGolden(t *testing.T, g exclusionScenario, step *api.ClaimStep) (*vol
 		mounts = append(mounts, mount(mt.Name, mt.Name, mt.MountPath))
 	}
 	f := newVolFixture(t, cfgs)
-	f.a.cfg.SidecarS3SecretName = "s3creds"
 	rec := &argvExec{inner: f.ex}
 	f.a.exec = rec
 

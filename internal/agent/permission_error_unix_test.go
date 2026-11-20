@@ -40,7 +40,7 @@ func TestPermissionErrorSurvivesUploadAndCacheSave(t *testing.T) {
 		t.Errorf("UploadArtifactExcluding error does not wrap fs.ErrPermission: %v", err)
 	}
 
-	err = cache.SaveExcluding(context.Background(), objectstore.NewLocalObjectStore(t.TempDir()), "job", dir, "k", 1, nil)
+	err = cache.SaveExcluding(context.Background(), &cache.StoreRemote{Store: objectstore.NewLocalObjectStore(t.TempDir()), JobName: "job"}, dir, "k", 1, nil)
 	if !errors.Is(err, fs.ErrPermission) {
 		t.Errorf("cache.SaveExcluding error does not wrap fs.ErrPermission: %v", err)
 	}

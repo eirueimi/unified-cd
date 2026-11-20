@@ -36,25 +36,14 @@ func TestPoolKey_Deterministic(t *testing.T) {
 	assert.Len(t, k1, 32, "truncated sha256 hex digest (16 bytes)")
 }
 
-// A pod built to fetch its S3 credentials from the controller broker must
-// not be reused for a claim wanting the operator-managed Secret path (or
-// vice versa): the two carry credentials to the sidecar in incompatible
-// shapes (a projected token exchanged over HTTP vs. envFrom/a mounted
-// Secret volume), so serving a pooled "broker" pod to an "env"/"file" claim
-// (or the reverse) would silently leave the sidecar without the credential
-// shape the claim expected.
-func TestPoolKey_DistinguishesBrokerSidecarMode(t *testing.T) {
-	kBroker := poolKey("", nil, inlineTemplate("golang:1.24-alpine"), "fallback:img", SidecarSpec{Image: "sidecar:img", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "https://controller.example"}, testShimImage)
-	kEnv := poolKey("", nil, inlineTemplate("golang:1.24-alpine"), "fallback:img", SidecarSpec{Image: "sidecar:img", S3SecretName: "s3", S3SecretMode: SidecarS3SecretModeEnv}, testShimImage)
-	kFile := poolKey("", nil, inlineTemplate("golang:1.24-alpine"), "fallback:img", SidecarSpec{Image: "sidecar:img", S3SecretName: "s3", S3SecretMode: SidecarS3SecretModeFile}, testShimImage)
-	assert.NotEqual(t, kBroker, kEnv)
-	assert.NotEqual(t, kBroker, kFile)
-
-	// And two broker-mode builds with the same shape (BrokerURL varying is
-	// not a shape change — see poolKey's doc comment on why S3SecretMode
-	// alone carries the shape distinction) still produce the same key.
-	kBroker2 := poolKey("", nil, inlineTemplate("golang:1.24-alpine"), "fallback:img", SidecarSpec{Image: "sidecar:img", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "https://controller.example"}, testShimImage)
-	assert.Equal(t, kBroker, kBroker2)
+// A pooled pod carries the controller URL its sidecar talks to, so a pod built
+// for one controller must not be reused for another.
+func TestPoolKey_DistinguishesSidecarControllerURL(t *testing.T) {
+	k1 := poolKey("", nil, inlineTemplate("golang:1.24-alpine"), "fallback:img", SidecarSpec{Image: "sidecar:img", ControllerURL: "https://a.example"}, testShimImage)
+	k2 := poolKey("", nil, inlineTemplate("golang:1.24-alpine"), "fallback:img", SidecarSpec{Image: "sidecar:img", ControllerURL: "https://b.example"}, testShimImage)
+	k1b := poolKey("", nil, inlineTemplate("golang:1.24-alpine"), "fallback:img", SidecarSpec{Image: "sidecar:img", ControllerURL: "https://a.example"}, testShimImage)
+	assert.NotEqual(t, k1, k2)
+	assert.Equal(t, k1, k1b)
 }
 
 func TestPoolKey_DistinguishesInlineSpecs(t *testing.T) {

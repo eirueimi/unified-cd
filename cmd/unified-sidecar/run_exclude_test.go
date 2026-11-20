@@ -23,7 +23,7 @@ func TestRun_ExcludeLeavesPathsOutOfTheArchive(t *testing.T) {
 		}
 	}
 	excludes := []string{"--exclude", filepath.Join(src, "vol1"), "--exclude", filepath.Join(src, "vol2")}
-	prov := localProvider(t.TempDir())
+	prov := localProvider(t, t.TempDir())
 	ctx := context.Background()
 
 	if code := run(ctx, prov, append([]string{"artifact", "upload", "--run", "r1", "--name", "a", "--root", fsRoot(), "--path", src}, excludes...), io.Discard); code != 0 {
@@ -79,7 +79,7 @@ func TestRun_ArtifactDownloadExcludeLeavesPathsAlone(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	prov := localProvider(t.TempDir())
+	prov := localProvider(t, t.TempDir())
 	ctx := context.Background()
 	if code := run(ctx, prov, []string{"artifact", "upload", "--run", "r1", "--name", "a", "--root", fsRoot(), "--path", src}, io.Discard); code != 0 {
 		t.Fatalf("artifact upload exit=%d", code)

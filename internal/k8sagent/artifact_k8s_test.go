@@ -4,21 +4,23 @@ package k8sagent
 
 // TestK8sAgent_ArtifactRoundTrip_Integration verifies that uploadArtifact and
 // downloadArtifact steps work end-to-end via the unified-artifact sidecar in a
-// real Kubernetes cluster, using the direct-S3 model: the sidecar execs the
-// unified-sidecar binary against an S3-compatible bucket (no controller
-// involvement in the transfer itself).
+// real Kubernetes cluster, using controller-issued URLs: the sidecar execs the
+// unified-sidecar binary, which asks the (mock) controller where to transfer.
 //
 // Prerequisites:
-//   - A reachable Kubernetes cluster (via default kubeconfig).
-//   - The pod image (ubuntu:22.04) and the sidecar image
-//     (ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest) must be pullable
-//     from within the cluster. If the sidecar image is not yet available on the
-//     cluster, pre-load it (e.g. `kind load docker-image …`) before running.
-//   - A Kubernetes Secret providing UNIFIED_S3_ENDPOINT/UNIFIED_S3_BUCKET/
-//     UNIFIED_S3_KEY/UNIFIED_S3_SECRET/UNIFIED_S3_USE_SSL/UNIFIED_S3_REGION
-//     must already exist in the test namespace; its name is passed via the
-//     UNIFIED_TEST_S3_SECRET env var. Without it, this test skips (it cannot
-//     fabricate S3 credentials for a real cluster run).
+//   - A reachable Kubernetes cluster (via default kubeconfig), e.g. kind.
+//   - The pod image (ubuntu:22.04) must be pullable from within the cluster.
+//   - A sidecar image built from this tree (docker/artifact-sidecar.Dockerfile, or the
+//     repository's Makefile target) and loaded into the cluster (e.g.
+//     `kind load docker-image ...`); its name is passed via
+//     UNIFIED_TEST_SIDECAR_IMAGE. The published image may predate the
+//     controller-issued-URL protocol, so there is no default.
+//   - UNIFIED_TEST_HOST_ADDR: an address of this machine that the cluster's
+//     Pods can reach (for kind, the Docker network gateway). The test serves a
+//     mock controller there: it answers presign requests with mode
+//     "controller" and streams archives through its own routes, so no object
+//     store and no Secret are needed.
+//   Without these variables the test skips.
 //
 // For CI without a cluster, skip this file by not passing -tags k8s.
 // This test is intentionally skipped when -short is set.
@@ -26,9 +28,12 @@ package k8sagent
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
-	"net/http/httptest"
+	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -44,10 +49,7 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 		t.Skip("skipping artifact round-trip integration test in -short mode")
 	}
 
-	s3Secret := os.Getenv("UNIFIED_TEST_S3_SECRET")
-	if s3Secret == "" {
-		t.Skip("UNIFIED_TEST_S3_SECRET not set; skipping direct-S3 artifact round-trip (needs a pre-created Secret with UNIFIED_S3_* env in the test namespace)")
-	}
+	sidecarImage, hostAddr := sidecarTestEnvOrSkip(t)
 	shimImage := testShimImageOrSkip(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -63,10 +65,10 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 	stepStatuses := map[string]string{}
 	finishCh := make(chan api.RunStatus, 1)
 
-	// The mock controller in this test only needs to serve run/step/log
-	// bookkeeping endpoints — artifact bytes now flow directly between the
-	// sidecar and S3, never through the controller.
+	// The mock controller serves run/step/log bookkeeping plus the object
+	// routes the sidecar uses (mode "controller": archives stream through it).
 	mux := http.NewServeMux()
+	newMockObjects().register(mux)
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
 		var req api.StepReportRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.StepName != "" {
@@ -97,35 +99,33 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	srvURL := serveReachable(t, mux, hostAddr)
 
 	pm := NewPodManager(client, ns, testImage)
 	exec := NewExecutor(client, restCfg, ns)
 	pool := NewPodPool(client, ns, pm)
-	agentClient := agentlib.NewClient(srv.URL, "tok")
+	agentClient := agentlib.NewClient(srvURL, "tok")
 
 	cfg := Config{
-		AgentID:             agentID,
-		Namespace:           ns,
-		PodImage:            testImage,
-		ShimImage:           shimImage,
-		SidecarImage:        "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
-		Server:              srv.URL,
-		SidecarS3SecretName: s3Secret,
+		AgentID:      agentID,
+		Namespace:    ns,
+		PodImage:     testImage,
+		ShimImage:    shimImage,
+		SidecarImage: sidecarImage,
+		Server:       srvURL,
 	}
 	a := NewK8sAgent(cfg, agentClient, pm, exec, pool)
 
 	// The round-trip stages:
 	//  1. run:  write a file into the workspace.
-	//  2. uploadArtifact: exec `unified-sidecar artifact upload` (direct to S3).
+	//  2. uploadArtifact: exec `unified-sidecar artifact upload` (through the mock controller).
 	//  3. run:  delete the file to prove it is gone.
-	//  4. downloadArtifact: exec `unified-sidecar artifact download` (direct from S3).
+	//  4. downloadArtifact: exec `unified-sidecar artifact download` (through the mock controller).
 	//  5. run:  cat the restored file and assert the content is correct.
 	//
-	// Steps 2 and 4 call the real sidecar binary, which authenticates to S3
-	// using the UNIFIED_S3_* env injected via the SidecarS3SecretName Secret
-	// (EnvFrom) — the mock controller above is never touched for the transfer.
+	// Steps 2 and 4 call the real sidecar binary, which reads its projected
+	// token and the controller URL from the Pod and requests the transfer from
+	// the mock controller above.
 	claim := api.ClaimResponse{
 		RunID:   runID,
 		JobName: "artifact-round-trip",
@@ -159,4 +159,92 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 	assert.Equal(t, "Succeeded", stepStatuses["remove-file"])
 	assert.Equal(t, "Succeeded", stepStatuses["download"])
 	assert.Equal(t, "Succeeded", stepStatuses["verify"])
+}
+
+// sidecarTestEnvOrSkip returns the sidecar image and the host address the
+// round-trip tests need, or skips when they are not provided.
+func sidecarTestEnvOrSkip(t *testing.T) (sidecarImage, hostAddr string) {
+	t.Helper()
+	sidecarImage = os.Getenv("UNIFIED_TEST_SIDECAR_IMAGE")
+	hostAddr = os.Getenv("UNIFIED_TEST_HOST_ADDR")
+	if sidecarImage == "" || hostAddr == "" {
+		t.Skip("UNIFIED_TEST_SIDECAR_IMAGE and UNIFIED_TEST_HOST_ADDR not set; skipping the sidecar round-trip (needs a sidecar image built from this tree loaded into the cluster, and a host address the Pods can reach)")
+	}
+	return sidecarImage, hostAddr
+}
+
+// serveReachable serves h on all interfaces and returns its URL as seen from
+// the cluster's Pods (hostAddr is this machine's address there).
+func serveReachable(t *testing.T, h http.Handler, hostAddr string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	require.NoError(t, err)
+	srv := &http.Server{Handler: h}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	require.NoError(t, err)
+	return "http://" + net.JoinHostPort(hostAddr, port)
+}
+
+// mockObjects is the object side of a mock controller: every presign request
+// is answered with mode "controller", and archives are streamed through the
+// run-scoped routes into memory. It does not check the pod token.
+type mockObjects struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func newMockObjects() *mockObjects { return &mockObjects{data: map[string][]byte{}} }
+
+func (m *mockObjects) register(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/v1/runs/{run}/objects/presign", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(api.PresignResponse{Mode: api.ObjectModeController})
+	})
+	mux.HandleFunc("PUT /api/v1/runs/{run}/objects/artifacts/{name}", func(w http.ResponseWriter, r *http.Request) {
+		m.put(w, r, "artifact/"+r.PathValue("run")+"/"+r.PathValue("name"))
+	})
+	mux.HandleFunc("GET /api/v1/runs/{run}/objects/artifacts/{name}", func(w http.ResponseWriter, r *http.Request) {
+		src := r.PathValue("run")
+		if s := r.URL.Query().Get("sourceRunId"); s != "" {
+			src = s
+		}
+		m.get(w, "artifact/"+src+"/"+r.PathValue("name"), api.ObjectErrNotFound, "")
+	})
+	mux.HandleFunc("PUT /api/v1/runs/{run}/objects/caches", func(w http.ResponseWriter, r *http.Request) {
+		m.put(w, r, "cache/"+r.URL.Query().Get("key"))
+	})
+	mux.HandleFunc("GET /api/v1/runs/{run}/objects/caches", func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		m.get(w, "cache/"+key, api.ObjectErrCacheMiss, key)
+	})
+}
+
+func (m *mockObjects) put(w http.ResponseWriter, r *http.Request, key string) {
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	m.mu.Lock()
+	m.data[key] = b
+	m.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (m *mockObjects) get(w http.ResponseWriter, key, missCode, matchedKey string) {
+	m.mu.Lock()
+	b, ok := m.data[key]
+	m.mu.Unlock()
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(api.ObjectError{Error: "not found", Code: missCode})
+		return
+	}
+	if matchedKey != "" {
+		w.Header().Set("X-Unified-Cache-Key", url.PathEscape(matchedKey))
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+	_, _ = w.Write(b)
 }

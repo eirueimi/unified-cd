@@ -132,9 +132,9 @@ var inlinePolicyCases = []policyCase{
 	{name: "envFrom secretRef", container: map[string]any{"envFrom": []any{map[string]any{"secretRef": map[string]any{"name": "unified-cd-s3"}}}},
 		path: "podTemplate.spec.containers[0].envFrom[0].secretRef", allow: `allowSecrets: ["unified-cd-s3"]`,
 		fix: JobPodPolicy{AllowSecrets: []string{"unified-cd-s3"}}},
-	{name: "R7 broker token mount", container: map[string]any{"volumeMounts": []any{map[string]any{"name": sidecarBrokerTokenVolumeName, "mountPath": "/t"}}},
+	{name: "R7 token mount", container: map[string]any{"volumeMounts": []any{map[string]any{"name": sidecarTokenVolumeName, "mountPath": "/t"}}},
 		path: "podTemplate.spec.containers[0].volumeMounts[0]", allow: ""},
-	{name: "R7 s3 credentials volumeDevice", container: map[string]any{"volumeDevices": []any{map[string]any{"name": sidecarS3CredentialsVolumeName, "devicePath": "/dev/x"}}},
+	{name: "R7 token volumeDevice", container: map[string]any{"volumeDevices": []any{map[string]any{"name": sidecarTokenVolumeName, "devicePath": "/dev/x"}}},
 		path: "podTemplate.spec.containers[0].volumeDevices[0]", allow: ""},
 
 	// §5.3 volumes
@@ -188,7 +188,7 @@ func TestJobPodPolicy_InlineOptInRestores(t *testing.T) {
 func TestJobPodPolicy_R7NothingAllows(t *testing.T) {
 	all := JobPodPolicy{AllowHostAccess: true, AllowPrivileged: true, AllowUnconfinedProfiles: true, AllowNodeName: true,
 		AllowSecrets: []string{"x"}, AllowServiceAccounts: []string{"default"}}
-	for _, name := range []string{sidecarS3CredentialsVolumeName, sidecarBrokerTokenVolumeName} {
+	for _, name := range []string{sidecarTokenVolumeName} {
 		for _, field := range []string{"volumeMounts", "volumeDevices"} {
 			tmpl := inlineJob(map[string]any{field: []any{map[string]any{"name": name, "mountPath": "/x", "devicePath": "/dev/x"}}}, nil)
 			pe := policyErr(t, all, nil, tmpl)

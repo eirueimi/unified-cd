@@ -107,11 +107,20 @@ type AgentConfig struct {
 	ID                 string   `yaml:"id"`
 	Labels             []string `yaml:"labels"`
 	ExposeEnv          []string `yaml:"exposeEnv"`
-	CacheEndpoint      string   `yaml:"cacheEndpoint"`
-	CacheKey           string   `yaml:"cacheKey"`
-	CacheSecret        string   `yaml:"cacheSecret"`
-	CacheBucket        string   `yaml:"cacheBucket"`
-	MaxConcurrent      int      `yaml:"maxConcurrent"`
+	// CacheEndpoint, CacheKey, CacheSecret and CacheBucket are the removed
+	// host-agent cache store settings. They are still read so that startup
+	// can refuse them (see RefuseOldCacheStoreSettings); they have no effect.
+	CacheEndpoint string `yaml:"cacheEndpoint"`
+	CacheKey      string `yaml:"cacheKey"`
+	CacheSecret   string `yaml:"cacheSecret"`
+	CacheBucket   string `yaml:"cacheBucket"`
+	// ObjectTransfer selects how the agent moves artifact and cache archives:
+	// "direct" (default) uses presigned URLs the controller issues and talks to
+	// the object store itself; "controller" streams every transfer through the
+	// controller, for agents that cannot reach the store endpoint.
+	// Env: UNIFIED_OBJECT_TRANSFER.
+	ObjectTransfer string `yaml:"objectTransfer"`
+	MaxConcurrent  int    `yaml:"maxConcurrent"`
 	// MaxDetachedConcurrent caps how many detached (spec.detached) runs this
 	// agent claims concurrently, from a pool separate from MaxConcurrent.
 	// 0 / unset -> the agent applies the default (16), so detached jobs are
@@ -256,6 +265,7 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 		CacheSecret:         os.Getenv("UNIFIED_CACHE_SECRET"),
 		CacheBucket:         os.Getenv("UNIFIED_CACHE_BUCKET"),
 		WorkspaceDir:        os.Getenv("UNIFIED_AGENT_WORKSPACE_DIR"),
+		ObjectTransfer:      os.Getenv("UNIFIED_OBJECT_TRANSFER"),
 	}
 	if labelsEnv := os.Getenv("UNIFIED_AGENT_LABELS"); labelsEnv != "" {
 		for _, l := range strings.Split(labelsEnv, ",") {
@@ -382,6 +392,12 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	if file.CacheBucket != "" {
 		eff.CacheBucket = file.CacheBucket
 	}
+	if file.ObjectTransfer != "" {
+		eff.ObjectTransfer = file.ObjectTransfer
+	}
+	if eff.ObjectTransfer == "" {
+		eff.ObjectTransfer = ObjectTransferDirect
+	}
 	if file.MaxConcurrent != 0 {
 		eff.MaxConcurrent = file.MaxConcurrent
 	}
@@ -496,4 +512,34 @@ func IsLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// Values of the objectTransfer setting.
+const (
+	ObjectTransferDirect     = "direct"
+	ObjectTransferController = "controller"
+)
+
+// ValidateObjectTransfer checks the objectTransfer setting. An empty value is
+// the default, direct.
+func ValidateObjectTransfer(v string) error {
+	switch v {
+	case "", ObjectTransferDirect, ObjectTransferController:
+		return nil
+	}
+	return fmt.Errorf("objectTransfer: must be %q or %q, got %q", ObjectTransferDirect, ObjectTransferController, v)
+}
+
+// ErrOldCacheStoreSettings is returned at startup when any of the removed
+// cache store settings (flags, env vars or config keys) is set.
+var ErrOldCacheStoreSettings = errors.New("agent config: the cache store flags (--cache-endpoint, --cache-key, --cache-secret, --cache-bucket) are no longer supported; caches use controller-issued URLs (see docs/operator-manual/migrations/2026-11-20-run-scoped-object-access.md)")
+
+// RefuseOldCacheStoreSettings returns ErrOldCacheStoreSettings when any of the
+// four removed cache store settings is non-empty. The values are the effective
+// ones (env, then config file, then flag).
+func RefuseOldCacheStoreSettings(endpoint, key, secret, bucket string) error {
+	if endpoint != "" || key != "" || secret != "" || bucket != "" {
+		return ErrOldCacheStoreSettings
+	}
+	return nil
 }

@@ -96,7 +96,7 @@ func TestAgent_GracefulDrain(t *testing.T) {
 	// test` would write a working0/ directory into this package's source
 	// tree. Same fix as the k8s parity driver's t.TempDir()-rooted workDir
 	// (see internal/k8sagent/parity_k8s_test.go).
-	a := &Agent{ID: "a1", Client: NewClient(srv.URL, "tok"), MaxConcurrent: 1, WorkspaceDir: t.TempDir()}
+	a := &Agent{ID: "a1", Client: newStreamClient(srv.URL, "tok"), MaxConcurrent: 1, WorkspaceDir: t.TempDir()}
 
 	done := make(chan error, 1)
 	go func() { done <- a.Run(claimCtx) }()
@@ -164,7 +164,7 @@ func TestAgent_DrainTimeout(t *testing.T) {
 
 	a := &Agent{
 		ID:            "a2",
-		Client:        NewClient(srv.URL, "tok"),
+		Client:        newStreamClient(srv.URL, "tok"),
 		MaxConcurrent: 1,
 		DrainTimeout:  200 * time.Millisecond,
 		// See TestAgent_GracefulDrain: WorkspaceDir must be set explicitly
@@ -254,7 +254,7 @@ func TestAgent_MaxConcurrent(t *testing.T) {
 
 	a := &Agent{
 		ID:            "a3",
-		Client:        NewClient(srv.URL, "tok"),
+		Client:        newStreamClient(srv.URL, "tok"),
 		MaxConcurrent: 2,
 		WorkspaceDir:  wsDir,
 	}
@@ -341,7 +341,7 @@ func TestAgent_CleanWorkspace(t *testing.T) {
 
 	a := &Agent{
 		ID:             "a4",
-		Client:         NewClient(srv.URL, "tok"),
+		Client:         newStreamClient(srv.URL, "tok"),
 		MaxConcurrent:  1,
 		WorkspaceDir:   wsDir,
 		CleanWorkspace: true,
@@ -416,7 +416,7 @@ func TestAgent_StepTimeout(t *testing.T) {
 
 	a := &Agent{
 		ID:     agentID,
-		Client: NewClient(srv.URL, "tok"),
+		Client: newStreamClient(srv.URL, "tok"),
 	}
 
 	resp := api.ClaimResponse{
@@ -462,7 +462,7 @@ func TestAgent_JobTimeout(t *testing.T) {
 
 	a := &Agent{
 		ID:     agentID,
-		Client: NewClient(srv.URL, "tok"),
+		Client: newStreamClient(srv.URL, "tok"),
 	}
 
 	resp := api.ClaimResponse{
@@ -515,7 +515,7 @@ func TestAgent_ExposesAgentOSEnvVar(t *testing.T) {
 
 	a := &Agent{
 		ID:     agentID,
-		Client: NewClient(srv.URL, "tok"),
+		Client: newStreamClient(srv.URL, "tok"),
 	}
 
 	workDir := t.TempDir()
@@ -577,7 +577,7 @@ func TestAgent_CallStep_NonexistentJob_FailsRun(t *testing.T) {
 
 	a := &Agent{
 		ID:     agentID,
-		Client: NewClient(srv.URL, "tok"),
+		Client: newStreamClient(srv.URL, "tok"),
 	}
 
 	resp := api.ClaimResponse{
@@ -657,7 +657,7 @@ func TestAgent_UploadArtifact_RelativePath(t *testing.T) {
 
 	a := &Agent{
 		ID:     agentID,
-		Client: NewClient(srv.URL, "tok"),
+		Client: newStreamClient(srv.URL, "tok"),
 	}
 
 	resp := api.ClaimResponse{
@@ -801,7 +801,7 @@ func TestAgent_RunLoop_PreparePanicIsRecoveredAndFailsRun(t *testing.T) {
 
 	a := &Agent{
 		ID:                    "a5",
-		Client:                NewClient(srv.URL, "tok"),
+		Client:                newStreamClient(srv.URL, "tok"),
 		MaxConcurrent:         1,
 		MaxDetachedConcurrent: -1,
 		WorkspaceDir:          wsDir,
@@ -855,7 +855,7 @@ func TestAgent_ExecuteRun_PanicIsRecoveredAndFailsRun(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	a := &Agent{ID: agentID, Client: newStreamClient(srv.URL, "tok")}
 
 	orig := runClaimFn
 	defer func() { runClaimFn = orig }()
@@ -909,7 +909,7 @@ func TestExecuteDownloadArtifact_ReportsConfiguredStepMetadata(t *testing.T) {
 		},
 	}
 
-	err := executeDownloadArtifact(context.Background(), NewClient(srv.URL, "tok"), agentID, step, runID, probeBackend{}, ScopeHandle{}, dsl.TemplateData{})
+	err := executeDownloadArtifact(context.Background(), newStreamClient(srv.URL, "tok"), agentID, step, runID, probeBackend{}, ScopeHandle{}, dsl.TemplateData{})
 	require.NoError(t, err)
 
 	mu.Lock()

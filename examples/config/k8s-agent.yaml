@@ -71,7 +71,7 @@ poolIdleTimeout: ""
 #   allowServiceAccounts: []        # serviceAccountName values a job may set; also gates
 #                                   # automountServiceAccountToken: true and projected tokens
 #   allowSecrets: []                # Secrets a job may read (secretKeyRef, secretRef, secret
-#                                   # volumes); may not name sidecarS3SecretName
+#                                   # volumes)
 #   allowImagePullSecrets: []       # imagePullSecrets a job may name
 #   allowPersistentVolumeClaims: [] # claimName values; may not name <agentName>.<volume>
 #   allowHostAccess: false          # hostPath, hostNetwork/hostPID/hostIPC, hostPort, probe hosts

@@ -82,7 +82,10 @@ labels:
 # refuse to start.
 
 # Garage cache (all fields required to enable cache; omit section to disable)
-cacheEndpoint: garage:3900
-cacheKey: garageadmin
-cacheSecret: garageadmin12345
-cacheBucket: unified-cd-cache
+# How artifacts and caches reach the object store. direct (default): the agent uses
+# presigned URLs the controller issues, so it needs network access to the store endpoint
+# but holds no store credentials. controller: every transfer is streamed through the
+# controller, for agents that cannot reach the store. Caches need no other setting; the
+# old cacheEndpoint/cacheKey/cacheSecret/cacheBucket keys were removed and make the agent
+# refuse to start.
+objectTransfer: direct

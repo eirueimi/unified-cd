@@ -712,6 +712,33 @@ steps:
 
 ---
 
+## Object transfer (`objectTransfer`)
+
+The host agent holds no object store credentials. For `uploadArtifact`,
+`downloadArtifact` and `cache` steps it asks the controller for a presigned URL
+for exactly one object and one operation (authenticating with its own agent
+credential, for runs it has claimed), then moves the archive to or from the
+store itself. The controller decides the cache namespace and the object key.
+Caches therefore need no agent configuration.
+
+`objectTransfer` chooses the path:
+
+| Value | Behaviour |
+|---|---|
+| `direct` (default) | The agent uses presigned URLs and talks to the object store itself. **The agent must be able to reach the store endpoint** the controller is configured with (`UNIFIED_S3_ENDPOINT`), including DNS and TLS trust for it. A store that cannot presign (for example the controller's local-disk store) makes the controller answer in `controller` mode automatically, so this value still works there. |
+| `controller` | The agent streams every artifact and cache archive through the controller (`/api/v1/runs/{id}/objects/...` for caches, `/api/v1/runs/{id}/artifacts/{name}` for artifacts) and never contacts the store. Use it for agents that cannot reach the store endpoint. The controller carries all the archive bytes. |
+
+Set it with `objectTransfer:` in the agent config file, `UNIFIED_OBJECT_TRANSFER`,
+or `--object-transfer`; any other value is a startup error
+(`objectTransfer: must be "direct" or "controller", got "<value>"`).
+
+The cache store flags `--cache-endpoint`, `--cache-key`, `--cache-secret` and
+`--cache-bucket` (and their `UNIFIED_CACHE_*` env vars and YAML keys) were
+removed. An agent with any of them set refuses to start; see the
+[migration guide](migrations/2026-11-20-run-scoped-object-access.md).
+
+---
+
 ## Kubernetes Agent
 
 The sections above are host-agent-centric; the k8s-agent participates in the same

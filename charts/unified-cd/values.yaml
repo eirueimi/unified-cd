@@ -40,7 +40,8 @@ controller:
       image: alpine/k8s:1.31.2
   # Deep-merged over the chart-computed controller config (agentAuth defaults:
   # an in-cluster Kubernetes enrollment policy for the release namespace, plus
-  # store credential policies for the job namespace when bundledStores.enabled).
+  # kubernetesStoreCredentialPolicies for the job namespace: the policy that
+  # lets job Pods ask the controller for presigned object URLs).
   # Maps are merged key by key, but a list you supply (for example
   # agentAuth.kubernetesEnrollmentPolicies) replaces the computed list entirely.
   config: {}
@@ -49,7 +50,7 @@ controller:
   # for the client address. Empty ignores those headers, so every request is
   # attributed to its TCP peer: behind an Ingress that means all clients share
   # the Ingress controller's address, and the per-client enrollment and
-  # store-credentials rate limits then count them together. Set this to the
+  # object-access (presign) rate limits then count them together. Set this to the
   # addresses of the Ingress controller Pods (or the load balancer / node range
   # that reaches the controller) and nothing broader, e.g. ["10.244.3.17/32"].
   # Do NOT use the cluster pod CIDR: that trusts every Pod, including job Pods
@@ -93,8 +94,8 @@ agent:
   # start with https://.
   server: ""
   # Deep-merged over the chart-computed agent config (enrollment policy,
-  # labels, job namespace, maxConcurrent, podImage; sidecarS3SecretMode:
-  # broker when bundledStores.enabled).
+  # labels, job namespace, maxConcurrent, podImage). The artifact sidecar needs
+  # no store credentials or Secret: it uses URLs issued by the controller.
   # Maps are merged key by key, but a list you supply (for example labels)
   # replaces the computed list entirely.
   config: {}
