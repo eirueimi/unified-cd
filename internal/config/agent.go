@@ -139,6 +139,14 @@ type AgentConfig struct {
 	PauseImage  string `yaml:"pauseImage"`
 	RunnerImage string `yaml:"runnerImage"`
 
+	// PodPullTimeout bounds the image-pull step of an isolated claim pod;
+	// PodStartTimeout bounds creating and starting the pod's containers after
+	// the pull. Unset or non-positive means the agent defaults (30m / 5m).
+	// Host-only. Env: UNIFIED_AGENT_POD_PULL_TIMEOUT,
+	// UNIFIED_AGENT_POD_START_TIMEOUT.
+	PodPullTimeout  time.Duration `yaml:"podPullTimeout"`
+	PodStartTimeout time.Duration `yaml:"podStartTimeout"`
+
 	// MinFreeDisk is the minimum free space required on the workspace
 	// filesystem for the host agent to keep claiming runs: a percentage
 	// ("1%"), a size ("10GiB"), a byte count, or 0/"off" to disable. Unset
@@ -284,6 +292,19 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 		}
 	}
 
+	// Unparseable values are ignored (the agent falls back to its defaults),
+	// like the other duration env overrides above.
+	if v := os.Getenv("UNIFIED_AGENT_POD_PULL_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			eff.PodPullTimeout = d
+		}
+	}
+	if v := os.Getenv("UNIFIED_AGENT_POD_START_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			eff.PodStartTimeout = d
+		}
+	}
+
 	if filePath == "" {
 		return eff, nil
 	}
@@ -360,6 +381,12 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.RunnerImage != "" {
 		eff.RunnerImage = file.RunnerImage
+	}
+	if file.PodPullTimeout != 0 {
+		eff.PodPullTimeout = file.PodPullTimeout
+	}
+	if file.PodStartTimeout != 0 {
+		eff.PodStartTimeout = file.PodStartTimeout
 	}
 	if file.MinFreeDisk.Set {
 		eff.MinFreeDisk = file.MinFreeDisk

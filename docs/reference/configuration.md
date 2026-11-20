@@ -229,6 +229,8 @@ unified-cd-agent [FLAGS]
   --finally-timeout       duration  Ceiling on each of a run's post-DAG cleanup phases (the spec.finally pipeline, and each post:/cache: hook drain); 0/unset = default 10m (env: UNIFIED_AGENT_FINALLY_TIMEOUT)
   --pause-image           string    Image for the claim pod's pause (netns-holder) container (default: busybox:1.36, pinned by digest)
   --runner-image          string    Default primary container image for isolated jobs without a podTemplate job container (default: ghcr.io/eirueimi/unified-cd-runner:<this agent's version>, or :latest for a build that carries no release version)
+  --pod-pull-timeout      duration  Max time for the claim pod's image-pull step; 0/unset = default 30m (host agent only) (env: UNIFIED_AGENT_POD_PULL_TIMEOUT)
+  --pod-start-timeout     duration  Max time to create and start the claim pod's containers after the pull; 0/unset = default 5m (host agent only) (env: UNIFIED_AGENT_POD_START_TIMEOUT)
   --min-free-disk         string    Minimum free space on the workspace filesystem required to keep claiming runs: a percentage of the filesystem (1%), a size (10GiB) or a byte count; 0 disables the check; default 1% (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)
   --workspace-retention-days int    Age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; workspaces are already emptied around every run, so this only reclaims what an agent crash left behind) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)
   --log-level             string    Log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)
@@ -243,6 +245,17 @@ default is a fixed `busybox` digest. See [Default images and the pause image
 digest](../operator-manual/operations.md#default-images-and-the-pause-image-digest),
 and [the migration note](../operator-manual/migrations/2026-10-22-version-derived-default-images.md)
 for how to pin the runner by digest.
+
+Before any container of a claim pod is created, the host agent pulls the pod's
+images as a separate step bounded by `--pod-pull-timeout` (`podPullTimeout`,
+default 30m); creating and starting the containers is then bounded by
+`--pod-start-timeout` (`podStartTimeout`, default 5m). A run that exceeds either
+fails with `claim pod image pull exceeded podPullTimeout (<d>)` or
+`claim pod start exceeded podStartTimeout (<d>)`. This differs from Kubernetes,
+where the image pull happens inside the single [`podStartTimeout`](#k8s-agent)
+wait. Images tagged `:latest` and images with no tag are always pulled, and a
+failed pull fails the run: the agent never falls back to a stale local copy. Any
+other image is pulled only when it is not present locally.
 
 ### Agent Environment Variables
 
@@ -317,6 +330,8 @@ drainTimeout: 60s
 finallyTimeout: 10m            # ceiling on each post-DAG cleanup phase (spec.finally, and each post:/cache: drain); default shown
 # pauseImage: busybox:1.36@sha256:<digest>            # claim pod pause container; left unset it keeps the shipped digest pin. Do not paste this without the digest: that would drop the pin on the one default image this project still pins
 # runnerImage: ghcr.io/eirueimi/unified-cd-runner:<agent version> # default primary container; left unset it follows the agent's own version. Do not paste a literal tag: it would stop following the agent
+podPullTimeout: 30m            # max time for the claim pod's image-pull step; default shown
+podStartTimeout: 5m            # max time to create and start the claim pod's containers after the pull; default shown
 minFreeDisk: "1%"              # stop claiming when free space on workspaceDir's filesystem (or a named volume's) drops below this. Forms: "1%" (default), "10GiB", 5368709120 (bytes); 0 or "off" disables
 workspaceRetentionDays: 0      # >0 opts in to the periodic GC of workspace directories an agent crash left behind (0 = disabled, default)
 logLevel: info
@@ -654,7 +669,7 @@ podTemplates:
 | `kubeconfig` | string | No | in-cluster / `~/.kube/config` | Path to a kubeconfig; omit to use `InClusterConfig` (in cluster) or `~/.kube/config` (out of cluster) |
 | `maxConcurrent` | int | No | `100` | Max simultaneous job Pods, enforced by a semaphore around the claim loop. `0`/unset → `100`. A **negative** value (e.g. `-1`) → unlimited: no agent-side cap, bounded only by cluster scheduling/quota. A positive value is that exact concurrency bound. |
 | `maxDetachedConcurrent` | int | No | `16` | Max simultaneous detached (`spec.detached`) runs, from a pool separate from `maxConcurrent`. `0`/unset → **16** (detached jobs are claimable out of the box); a **negative** value disables detached hosting on this agent; a positive value is the cap (env: `UNIFIED_K8S_MAX_DETACHED`). See [Detached runs](../user-guide/writing-jobs/templates-and-reuse.md#detached-runs-detached). |
-| `podStartTimeout` | string | No | `5m` | Go duration bounding how long the agent waits for a run Pod to reach `Running` before failing the run. Env override: `UNIFIED_K8S_POD_START_TIMEOUT`. Prevents an unschedulable or `ImagePullBackOff` Pod (which under `RestartPolicy: Never` never transitions to `Failed` on its own) from wedging a run forever. Unset, unparseable, or non-positive values fall back to the default. The wait is also aborted early, without overriding the controller's status, if the run is already terminal at the controller (cancel/reap raced the Pod becoming ready). |
+| `podStartTimeout` | string | No | `5m` | Go duration bounding how long the agent waits for a run Pod to reach `Running` before failing the run. Env override: `UNIFIED_K8S_POD_START_TIMEOUT`. Prevents an unschedulable or `ImagePullBackOff` Pod (which under `RestartPolicy: Never` never transitions to `Failed` on its own) from wedging a run forever. Unset, unparseable, or non-positive values fall back to the default. The wait is also aborted early, without overriding the controller's status, if the run is already terminal at the controller (cancel/reap raced the Pod becoming ready). Unlike the host agent, which bounds the image pull separately with `podPullTimeout`, Kubernetes counts the image pull inside this single timeout. |
 | `drainTimeout` | string | No | `0` (wait indefinitely) | Go duration bounding the graceful-shutdown drain window. Env override: `UNIFIED_K8S_DRAIN_TIMEOUT`. On SIGTERM/rollout the agent immediately stops claiming new runs but lets in-flight runs keep going — heartbeats keep beating during drain so a draining run isn't reaped as stuck — until either they finish or `drainTimeout` elapses, whichever comes first. `0`/unset waits forever for in-flight runs to finish (no forced cutoff). Parity with the standard agent's `--drain-timeout`. |
 | `finallyTimeout` | string | No | `10m` | Go duration bounding **each** of a run's post-DAG cleanup phases: the [`spec.finally`](../user-guide/writing-jobs/approval-and-finally.md#finally-block-finally) pipeline, and each `post:`/`cache:` hook drain. Env override: `UNIFIED_K8S_FINALLY_TIMEOUT`. Those phases deliberately keep running after a cancellation — that is what `finally:` is for — which also discards the job-level `spec.timeoutMinutes` deadline, so without this ceiling a cleanup step that never returns (most easily a `call:` waiting on a child run that will never be claimed) pinned the run and the agent's concurrency slot indefinitely. Unset or non-positive falls back to the default; "unbounded" is deliberately not expressible. An **unparseable** value is rejected at startup (`invalid config: finallyTimeout "10 minutes": …`) and the agent exits 1 — it does not fall back. It is a per-phase budget, not a shared total: four phases carry it inside the shared cleanup loop (each hook drain, the `finally` pipeline, and scope/Pod teardown), and this agent adds a fifth after that loop returns — the claim Pod's own deletion or return to the idle pool. So the worst-case post-DAG time here is **5 × this value**, 50m at the default; size a rollout's `terminationGracePeriodSeconds` against that, not against the standard agent's 4 × / 40m. Per-step `timeoutMinutes:` works inside `finally:` and remains the precise tool. Parity with the standard agent's `--finally-timeout`. |
 | `poolIdleTimeout` | string | No | unset (never evicted) | Go duration an idle pooled Pod is kept before it is evicted (e.g. `10m`). Unset or `0` disables idle eviction only; Pods are still pooled for jobs with `podTemplate.reuse: true` |

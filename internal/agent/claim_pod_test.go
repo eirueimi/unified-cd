@@ -63,7 +63,16 @@ func (f *podFakeRT) LogsSince(context.Context, crt.ContainerHandle, time.Time, i
 
 func (f *podFakeRT) Name() string                                  { return "fake" }
 func (f *podFakeRT) Available() bool                                { return true }
-func (f *podFakeRT) Pull(context.Context, string) error             { return nil }
+func (f *podFakeRT) Pull(_ context.Context, image string) error {
+	// A successful pull makes the image present, as on a real runtime.
+	if f.imageIDs == nil {
+		f.imageIDs = map[string]string{}
+	}
+	if _, ok := f.imageIDs[image]; !ok {
+		f.imageIDs[image] = "pulled-" + image
+	}
+	return nil
+}
 func (f *podFakeRT) Run(context.Context, crt.RunSpec, io.Writer, io.Writer) (int, error) {
 	return 0, nil
 }

@@ -4,6 +4,7 @@ package imageref
 
 import (
 	"fmt"
+	"strings"
 	"unicode"
 )
 
@@ -27,4 +28,23 @@ func Validate(ref string) error {
 		}
 	}
 	return nil
+}
+
+// AlwaysPull reports whether ref names a mutable image that must be re-pulled
+// before use: it has no digest and its tag is empty or "latest". The tag is
+// the part after the last ':' that follows the last '/'.
+func AlwaysPull(ref string) bool {
+	if strings.Contains(ref, "@") {
+		return false
+	}
+	name := ref
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	i := strings.LastIndex(name, ":")
+	if i < 0 {
+		return true
+	}
+	tag := name[i+1:]
+	return tag == "" || tag == "latest"
 }

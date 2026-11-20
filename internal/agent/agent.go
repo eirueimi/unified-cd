@@ -178,6 +178,12 @@ type Agent struct {
 	PauseImage  string
 	RunnerImage string
 
+	// PodPullTimeout bounds the claim pod's image-pull step and
+	// PodStartTimeout bounds creating/starting its containers after the pull.
+	// Values <= 0 use defaultPodPullTimeout / defaultPodStartTimeout.
+	PodPullTimeout  time.Duration
+	PodStartTimeout time.Duration
+
 	// ToolsDir is the host directory holding the embedded ucd-sh shim
 	// (written by InstallShim, INSIDE the workspace base — see that func's
 	// doc comment for why it must not be a sibling of the workspace dir),
@@ -1100,9 +1106,36 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			_ = a.Client.AppendLogBulk(ctx, a.ID, c.RunID, -1, reqs)
 		}
 		pod.maxMappedID = a.securityContextProbe().MaxMappedID // 0 = no limit (rootful, or the probe did not run)
-		if err := pod.Start(ctx, c.PodTemplate); err != nil {
+		defs, err := claimContainerDefs(c.PodTemplate, a.RunnerImage)
+		if err != nil {
+			failClaim("claim pod construction failed", fmt.Errorf("claim pod: %w", err))
+			return
+		}
+		pullD := a.podPullTimeout()
+		pullCtx, cancelPull := context.WithTimeoutCause(ctx, pullD, errPullTimeout)
+		_, perr := pullClaimImages(pullCtx, rt, claimImages(defs, a.PauseImage))
+		timedOut := context.Cause(pullCtx) == errPullTimeout
+		cancelPull()
+		if perr != nil {
+			if timedOut {
+				a.failRun(ctx, c.RunID, pullTimeoutMsg(pullD))
+			} else {
+				failClaim("claim pod image pull failed", perr)
+			}
+			return
+		}
+		startD := a.podStartTimeout()
+		startCtx, cancelStart := context.WithTimeoutCause(ctx, startD, errStartTimeout)
+		serr := pod.Start(startCtx, c.PodTemplate)
+		timedOut = context.Cause(startCtx) == errStartTimeout
+		cancelStart()
+		if serr != nil {
 			pod.CloseAll(context.WithoutCancel(ctx))
-			failClaim("claim pod construction failed", err)
+			if timedOut {
+				a.failRun(ctx, c.RunID, startTimeoutMsg(startD))
+			} else {
+				failClaim("claim pod construction failed", serr)
+			}
 			return
 		}
 	}
