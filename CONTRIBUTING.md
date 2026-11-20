@@ -61,6 +61,24 @@ See the "Development" section in the [README](https://github.com/eirueimi/unifie
 commands (`make build`, `make test`, `make dev-go`, `make dev-ui`, …). Please run
 the tests before opening a pull request.
 
+### Changing GitHub Actions workflows
+
+Every action the workflows use is pinned to a commit in
+`.github/workflows/actions.lock`, and the runner refuses an action that is not in
+it. After adding a workflow, or adding or changing a `uses:` line, regenerate the
+lockfile with the [`gh actions-lock`](https://github.com/github/gh-actions-lock)
+extension and commit it together with the workflow change:
+
+```sh
+gh extension install github/gh-actions-lock   # once
+gh actions-lock                               # pin new workflows and actions
+gh actions-lock --relock                      # move existing pins to the current commit of their ref
+```
+
+The `actions-lock` workflow runs `gh actions-lock --verify` on pull requests that
+touch `.github/workflows/`. When a Dependabot pull request bumps an action and
+this check fails, run `gh actions-lock` on its branch and push the result.
+
 ### Integration tests
 
 `go test ./...` (and `make test`) runs the unit tests. Several groups of tests need a

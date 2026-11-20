@@ -1,0 +1,31 @@
+name: actions-lock
+
+# Checks that .github/workflows/actions.lock pins every action the workflows
+# use, at a commit the runner will accept. A workflow change, or a Dependabot
+# pull request that bumps an action without updating the lockfile, fails here.
+# Fix it locally with `gh actions-lock` (or `gh actions-lock --relock`) and
+# commit the result.
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/**]
+  pull_request:
+    paths: [.github/workflows/**]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: actions-lock
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.4.0
+      - name: Verify the lockfile
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh extension install github/gh-actions-lock --pin v0.5.1
+          gh actions-lock --verify --no-interactive
