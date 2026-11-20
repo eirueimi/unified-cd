@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/artifact"
@@ -52,6 +53,9 @@ type hostBackend struct {
 	jobName string
 	workDir string
 	pod     *claimPodManager
+	// claimSince, when non-zero, bounds sidecar log streaming to output after
+	// the claim started (a reused pod's containers predate the run).
+	claimSince time.Time
 
 	// mountPath is the in-container path the host workspace is bind-mounted
 	// at for an isolated claim's pod containers (pod.mountPath, itself
@@ -578,7 +582,7 @@ func (b *hostBackend) RunPostHook(ctx context.Context, scope ScopeHandle, contai
 func (b *hostBackend) SetMasker(m *secrets.Masker) {
 	b.masker = m
 	if b.pod != nil {
-		b.sidecarPump = newSidecarLogPump(b.pod.rt, b.a.Client, b.a.ID, b.runID, b.masker, b.pod.SidecarHandles())
+		b.sidecarPump = newSidecarLogPump(b.pod.rt, b.a.Client, b.a.ID, b.runID, b.masker, b.pod.SidecarHandles(), b.claimSince)
 		b.sidecarPump.Start(context.Background())
 	}
 }

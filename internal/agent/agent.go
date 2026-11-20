@@ -894,8 +894,13 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			// Registered before prepareWorkspace so a half-prepared workspace is
 			// swept too; runs after executeRun and its unmounts, and before the
 			// active-set entries and the volume reservation are released.
-			defer finishWorkspace(runCtx, workDir, vol, a.containerRuntime, a.ToolsDir)
-			if err := prepareWorkspaceFn(runCtx, prepDir, mode, vol, clean, a.containerRuntime, a.ToolsDir); err != nil {
+			// A poolable claim's pod (and its bind mount of workDir) outlives the
+			// run, so its workspace directory must keep its inode: it is emptied
+			// in place, never removed.
+			opts := claimOpts{Poolable: !detached}
+			keepDir := claimPoolable(resp, opts)
+			defer finishWorkspace(runCtx, workDir, vol, keepDir, a.containerRuntime, a.ToolsDir)
+			if err := prepareWorkspaceFn(runCtx, prepDir, mode, vol, clean, keepDir, a.containerRuntime, a.ToolsDir); err != nil {
 				// The claim is ours but its workspace could not be prepared, so the
 				// run can never start. Fail it on the controller (retried until it
 				// lands) rather than leaving it Running until the stuck-run reaper
@@ -932,7 +937,7 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 						"toolsDir", a.ToolsDir, "runId", resp.RunID)
 				}
 			}
-			a.executeRun(runCtx, resp, prepDir)
+			a.executeRunWith(runCtx, resp, prepDir, opts)
 		}()
 	}
 }
@@ -997,6 +1002,27 @@ func (a *Agent) workspaceGCLoop(ctx context.Context, wsBase string, retention ti
 // unrecoverable-claim errors, so the run is marked Failed instead of hanging
 // as Running until the stuck-run reaper trips.
 func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir string) {
+	a.executeRunWith(ctx, c, workDir, claimOpts{})
+}
+
+// claimOpts carries what runLoop knows about a claim beyond the claim itself.
+type claimOpts struct {
+	// Poolable is false for claims that must never share a pod: detached
+	// runs, whose workspace and pod are per run.
+	Poolable bool
+}
+
+// claimPoolable reports whether the claim's pod may outlive the run and serve
+// a later one: an isolated claim whose podTemplate asks for reuse, with no
+// volumes (a volume is the job's own persistence and is mounted per run), that
+// runLoop marked poolable.
+func claimPoolable(c api.ClaimResponse, o claimOpts) bool {
+	return o.Poolable && !c.Native && c.PodTemplate != nil && c.PodTemplate.Reuse && len(c.Volumes) == 0
+}
+
+// executeRunWith is executeRun with the claim's options; see executeRun for
+// the full contract.
+func (a *Agent) executeRunWith(ctx context.Context, c api.ClaimResponse, workDir string, o claimOpts) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("agent panic in executeRun", "runId", c.RunID, "panic", r, "stack", string(debug.Stack()))
@@ -1052,6 +1078,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	}
 
 	var pod *claimPodManager
+	var claimSince time.Time
 	if !c.Native {
 		rt, err := a.containerRuntime()
 		if err != nil {
@@ -1167,6 +1194,9 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	backend := newHostBackend(a, c.RunID, c.JobName, workDir, pod)
 	backend.volumePaths = volumePaths
 	backend.volumeRefs = refs
+	// Zero for a fresh pod: its sidecars' whole log belongs to this run. A
+	// reused pod sets the claim start so earlier runs' output is not replayed.
+	backend.claimSince = claimSince
 	runClaimFn(ctx, a.Client, a.ID, c, backend)
 }
 

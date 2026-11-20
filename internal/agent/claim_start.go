@@ -128,6 +128,10 @@ func startClaimCancelWatch(ctx context.Context, client *Client, runID string, in
 		defer wg.Done()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		// failing suppresses repeated warnings while the controller stays
+		// unreachable: the first failure is logged, later ones only once a
+		// poll succeeds again.
+		failing := false
 		for {
 			select {
 			case <-wctx.Done():
@@ -135,10 +139,15 @@ func startClaimCancelWatch(ctx context.Context, client *Client, runID string, in
 			case <-ticker.C:
 				run, err := client.GetRun(wctx, runID)
 				if err != nil {
-					if wctx.Err() == nil {
-						slog.Warn("claim cancel watch: get run failed", "runID", runID, "error", err)
+					if wctx.Err() == nil && !failing {
+						slog.Warn("claim cancel watch: get run failed; further failures are not logged until a poll succeeds", "runID", runID, "error", err)
 					}
+					failing = true
 					continue
+				}
+				if failing {
+					slog.Info("claim cancel watch: polling recovered", "runID", runID)
+					failing = false
 				}
 				if isTerminalRunStatus(run.Status) {
 					slog.Info("claim cancel watch: run is terminal", "runID", runID, "status", run.Status)

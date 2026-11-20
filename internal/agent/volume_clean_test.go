@@ -80,7 +80,7 @@ func TestPrepareWorkspace_CleanWorkspaceLeavesNestedVolumesAlone(t *testing.T) {
 	for name, native := range map[string]bool{"native": true, "isolated": false} {
 		t.Run(name, func(t *testing.T) {
 			root, _, volFiles := cleanFixture(t, native)
-			require.NoError(t, prepareWorkspace(context.Background(), root, name, testVolume(t), true, noRuntime, ""))
+			require.NoError(t, prepareWorkspace(context.Background(), root, name, testVolume(t), true, false, noRuntime, ""))
 
 			for _, f := range g.RootFiles {
 				assert.NoFileExists(t, filepath.Join(root, filepath.FromSlash(f)))
@@ -103,7 +103,7 @@ func TestPrepareWorkspace_CleanWorkspaceFallbackMountsOnlyTheRootVolume(t *testi
 	cleaned := false
 	rt := &cleanupRT{dir: root, onExec: func() { cleaned = true }}
 	failRemoval(t, func(string) bool { return !cleaned })
-	require.NoError(t, prepareWorkspace(context.Background(), root, "isolated", testVolume(t), true,
+	require.NoError(t, prepareWorkspace(context.Background(), root, "isolated", testVolume(t), true, false,
 		func() (crt.ContainerRuntime, error) { return rt, nil }, ""))
 
 	require.Len(t, rt.created, 1, "the cleanup container must have run")

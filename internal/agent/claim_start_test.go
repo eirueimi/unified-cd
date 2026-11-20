@@ -1,10 +1,15 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -244,4 +249,29 @@ func TestStartClaimCancelWatch_StopJoins(t *testing.T) {
 	h.mu.Lock()
 	assert.Equal(t, n, h.getRunCalls, "no GetRun after stop")
 	h.mu.Unlock()
+}
+
+func TestStartClaimCancelWatch_LogsFirstFailureOnly(t *testing.T) {
+	var calls atomic.Int32
+	const failures = 5
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if int(calls.Add(1)) <= failures {
+			http.Error(w, "down", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(api.Run{ID: "run-w", Status: api.RunRunning})
+	}))
+	defer srv.Close()
+	var logs bytes.Buffer
+	defer captureSlog(&logs)()
+
+	const iv = 10 * time.Millisecond
+	_, _, stop := startClaimCancelWatch(context.Background(), NewClient(srv.URL, "tok"), "run-w", iv)
+	require.Eventually(t, func() bool { return calls.Load() >= failures+2 }, 5*time.Second, iv)
+	stop()
+
+	out := logs.String()
+	assert.Equal(t, 1, strings.Count(out, "get run failed"), "only the first failure of an outage is logged")
+	assert.Equal(t, 1, strings.Count(out, "polling recovered"))
 }

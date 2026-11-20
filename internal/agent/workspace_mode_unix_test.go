@@ -28,7 +28,7 @@ func TestPrepareWorkspace_IsolatedEphemeralIsWorldWritableDespiteUmask(t *testin
 	t.Cleanup(func() { syscall.Umask(old) })
 
 	dir := filepath.Join(t.TempDir(), "working0", "job")
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", nil, false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", nil, false, false, noRuntime, ""))
 	assert.Equal(t, os.FileMode(0o777), modeOf(t, dir))
 }
 
@@ -38,7 +38,7 @@ func TestPrepareWorkspace_NativeEphemeralStays0755(t *testing.T) {
 	t.Cleanup(func() { syscall.Umask(old) })
 
 	dir := filepath.Join(t.TempDir(), "working0", "job")
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", nil, false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", nil, false, false, noRuntime, ""))
 	assert.Equal(t, os.FileMode(0o755), modeOf(t, dir))
 }
 
@@ -47,7 +47,7 @@ func TestPrepareWorkspace_NativeEphemeralStays0755(t *testing.T) {
 func TestPrepareWorkspace_VolumeWorkspaceModeIsUntouched(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.Chmod(dir, 0o750))
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", testVolume(t), false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", testVolume(t), false, false, noRuntime, ""))
 	assert.Equal(t, os.FileMode(0o750), modeOf(t, dir))
 }
 
@@ -62,11 +62,11 @@ func TestPrepareWorkspace_SlotDirIsPrivate(t *testing.T) {
 		base := t.TempDir()
 		slot := filepath.Join(base, "working0")
 		dir := filepath.Join(slot, "job")
-		require.NoError(t, prepareWorkspace(context.Background(), dir, mode, nil, false, noRuntime, ""))
+		require.NoError(t, prepareWorkspace(context.Background(), dir, mode, nil, false, false, noRuntime, ""))
 		assert.Equal(t, os.FileMode(0o700), modeOf(t, slot), mode+": created slot dir")
 
 		require.NoError(t, os.Chmod(slot, 0o755))
-		require.NoError(t, prepareWorkspace(context.Background(), dir, mode, nil, false, noRuntime, ""))
+		require.NoError(t, prepareWorkspace(context.Background(), dir, mode, nil, false, false, noRuntime, ""))
 		assert.Equal(t, os.FileMode(0o700), modeOf(t, slot), mode+": pre-existing 0755 slot dir is tightened")
 	}
 }

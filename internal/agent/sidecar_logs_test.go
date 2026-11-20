@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
@@ -128,7 +129,7 @@ func TestSidecarLogPump_ShipsAtSidecarIndex(t *testing.T) {
 	rec := newRecordingClient()
 	defer rec.srv.Close()
 	pump := newSidecarLogPump(logFakeRT{}, rec.client, "agent-1", "run-1", nil,
-		[]SidecarHandle{{Name: "mysql", Ordinal: 0, Handle: crt.ContainerHandle{ID: "c1"}}})
+		[]SidecarHandle{{Name: "mysql", Ordinal: 0, Handle: crt.ContainerHandle{ID: "c1"}}}, time.Time{})
 	pump.Start(context.Background())
 	pump.Stop(context.Background())
 
@@ -153,7 +154,7 @@ func TestSidecarLogPump_ReportsRunningThenExited(t *testing.T) {
 	rec := newRecordingClient()
 	defer rec.srv.Close()
 	pump := newSidecarLogPump(exitCodeFakeRT{code: 7}, rec.client, "agent-1", "run-1", nil,
-		[]SidecarHandle{{Name: "mysql", Ordinal: 0, Handle: crt.ContainerHandle{ID: "c1"}}})
+		[]SidecarHandle{{Name: "mysql", Ordinal: 0, Handle: crt.ContainerHandle{ID: "c1"}}}, time.Time{})
 	pump.Start(context.Background())
 	pump.Stop(context.Background())
 

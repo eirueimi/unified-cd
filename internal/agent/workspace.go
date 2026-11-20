@@ -122,12 +122,17 @@ func volumeModeMarker(wsBase, name string) string {
 // volume's contents (not the directory, which may be a mount point) with the
 // same cleanup-container fallback.
 //
+// With keepDir (a claim whose pod is reused) the ordinary workspace is emptied
+// in place, never removed: the reused pod's containers bind-mount workDir, and
+// a recreated directory would be a new inode that their mount no longer
+// reaches.
+//
 // toolsDir is threaded through to containerCleanup so the cleanup container
 // carries the same /.ucd mount as every other container this agent creates
 // (see claim_pod.go's ucdToolsMount); empty means no shim mount.
-func prepareWorkspace(ctx context.Context, workDir, mode string, vol *volumeWorkspace, clean bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
+func prepareWorkspace(ctx context.Context, workDir, mode string, vol *volumeWorkspace, clean, keepDir bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
 	if vol == nil {
-		if err := wipeDir(ctx, workDir, false, rtFn, toolsDir); err != nil {
+		if err := wipeDir(ctx, workDir, keepDir, rtFn, toolsDir); err != nil {
 			return fmt.Errorf("clean workspace %s: %w", workDir, err)
 		}
 		// The slot directory above the workspace is the agent user's alone: an
@@ -211,12 +216,13 @@ func withArticle(mode string) string {
 // run's output does not hold disk until that job's next run. It is best-effort:
 // the guarantee of an empty start is prepareWorkspace's, so a failure here is a
 // warning and changes nothing about the run. A volume-backed workspace is never
-// swept, whatever clean was.
-func finishWorkspace(ctx context.Context, workDir string, vol *volumeWorkspace, rtFn func() (crt.ContainerRuntime, error), toolsDir string) {
+// swept, whatever clean was. With keepDir only the contents are swept, as in
+// prepareWorkspace.
+func finishWorkspace(ctx context.Context, workDir string, vol *volumeWorkspace, keepDir bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) {
 	if vol != nil {
 		return
 	}
-	if err := wipeDir(ctx, workDir, false, rtFn, toolsDir); err != nil {
+	if err := wipeDir(ctx, workDir, keepDir, rtFn, toolsDir); err != nil {
 		slog.Warn("workspace sweep after the run failed; the next run cleans it before starting", "dir", workDir, "error", err)
 	}
 }

@@ -360,6 +360,17 @@ func (m *claimPodManager) containerMounts() []crt.Mount {
 // Start builds the claim pod eagerly: pause first (netns owner), then every
 // container def. Sidecars must be listening before any step runs, which is
 // why this is claim-start eager, not step-time lazy.
+//
+// Create-time audit (what a reused pod may carry from its first run). Every
+// crt.CreateSpec input below is job-stable and goes into the pool fingerprint:
+// Image, Env (the podTemplate's literal values), CPU/memory limits, WorkDir
+// (the mountPath) and Mounts (workDir, toolsDir; volumeMounts are empty for a
+// poolable claim), User (image user plus security context), GroupAdd, Cap*,
+// NoNewPrivileges, ReadOnlyRootfs, Entrypoint/Args, and the pause image.
+// Run-specific values never reach Create: step env, secrets and credentials
+// travel in crt.ExecSpec.Env at Exec time. runLog and the fsGroup chown are
+// per start and are re-applied on a pool hit. Nothing else needs moving;
+// TestClaimPod_CreateSpecsCarryNoRunSpecificValues locks this in.
 func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
