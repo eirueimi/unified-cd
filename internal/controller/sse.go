@@ -154,6 +154,12 @@ outer:
 		select {
 		case <-r.Context().Done():
 			return
+		case <-s.shutdownCh:
+			// http.Server.Shutdown does not cancel request contexts, so an
+			// open stream would hold Shutdown until its timeout. End it
+			// cleanly; clients reconnect (to another replica) and the
+			// backfill replays any lines they missed.
+			return
 		case <-wake:
 		}
 

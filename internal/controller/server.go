@@ -120,7 +120,7 @@ type Server struct {
 	store                         store.Store
 	r                             chi.Router
 	shuttingDown                  atomic.Bool
-	claimDrainCh                  chan struct{}           // Closed on shutdown to immediately drain all claim long-polls.
+	shutdownCh                    chan struct{}           // Closed on shutdown to immediately end claim long-polls and SSE log streams.
 	objStore                      objectstore.ObjectStore // Archive endpoints return 501 when nil.
 	presigner                     objectstore.Presigner   // objStore when it can presign; nil means the presign endpoint answers mode "controller".
 	archLogs                      *archivedLogs           // Serves log reads for trimmed runs; nil when objStore is nil.
@@ -173,7 +173,7 @@ type Server struct {
 
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
-	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), objectLimiter: newStoreCredentialLimiter(cfg), cliRelay: newCLIRelayLimiters(), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters}
+	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), shutdownCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), objectLimiter: newStoreCredentialLimiter(cfg), cliRelay: newCLIRelayLimiters(), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters}
 	s.cloudEnrollmentVerifiers = defaultCloudEnrollmentVerifiers()
 	for provider, verifier := range cfg.CloudEnrollmentVerifiers {
 		s.cloudEnrollmentVerifiers[provider] = verifier
@@ -205,11 +205,11 @@ func NewServer(cfg Config, st store.Store) *Server {
 
 // SetShuttingDown marks the server as shutting down.
 // After this call, /healthz returns 503.
-// Closes claimDrainCh to broadcast to all waiting claim handlers.
+// Closes shutdownCh to broadcast to all waiting claim and SSE handlers.
 // CompareAndSwap prevents a panic from a double close.
 func (s *Server) SetShuttingDown() {
 	if s.shuttingDown.CompareAndSwap(false, true) {
-		close(s.claimDrainCh)
+		close(s.shutdownCh)
 	}
 }
 
