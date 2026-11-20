@@ -18,8 +18,10 @@ Kubernetes agent is not affected.
 ## Images are pulled on every claim when they are mutable
 
 `:latest` and untagged references are treated as mutable, so the agent pulls them at the start of
-every claim. This applies to the job container, to sidecars, to the runner image and to the pause
-image alike. It is intended: a mutable tag should resolve to what the registry has now.
+every claim. This applies to the job container, to sidecars, and to a `runnerImage` or `pauseImage`
+you set to such a reference. The default pause image is pinned by digest and is never re-pulled;
+the case that most often bites is the runner `:latest` of a locally built agent with a local runner
+image. It is intended: a mutable tag should resolve to what the registry has now.
 
 You see the effect in three places:
 
