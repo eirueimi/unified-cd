@@ -298,6 +298,51 @@ dropping it would turn a persistent workspace into an ephemeral one.
 **Fix:** remove the block and move the persistence to a named volume, following the [migration
 guide](../operator-manual/migrations/2026-10-20-named-volumes.md#workspacepvc-is-removed).
 
+## A host agent run fails with `claim pod image pull exceeded podPullTimeout`
+
+**Symptom.** A run on a host agent fails before any step starts, and the run log (step -1) shows:
+
+```
+claim pod image pull exceeded podPullTimeout (30m0s)
+```
+
+**What it means.** Before creating any container, the agent pulls every image of the claim pod
+(the pause image, the runner image and each `podTemplate` image). That pull did not finish within
+`podPullTimeout`. Images tagged `:latest` or with no tag are pulled on every run, so a slow registry
+affects every such run, not just the first.
+
+**What to check.** Registry reachability and speed from the agent host, the size of the images (a
+multi-gigabyte image on a slow link can exceed the default), and registry rate limits or auth
+prompts that stall the pull. Run `docker pull <image>` (or `podman`/`nerdctl`) on the agent host to
+time it.
+
+**Fix.** Pin large images to a tag or digest so they are pulled only when missing, pre-pull them on
+the host, use a closer mirror, or raise the limit with `--pod-pull-timeout` /
+`UNIFIED_AGENT_POD_PULL_TIMEOUT` / `podPullTimeout` (a Go duration such as `1h`; a non-positive or
+unset value means the 30m default). A cancelled run does not produce this message; see the
+[agents guide](../operator-manual/agents.md#job-isolation-on-the-standard-agent-claim-pod).
+
+## A host agent run fails with `claim pod start exceeded podStartTimeout`
+
+**Symptom.** A run on a host agent fails before any step starts, and the run log (step -1) shows:
+
+```
+claim pod start exceeded podStartTimeout (5m0s)
+```
+
+**What it means.** The images were already local, but creating and starting the claim pod's
+containers did not finish within `podStartTimeout`. The agent removes the containers it had created.
+
+**What to check.** The container runtime's storage driver: `vfs` (or an unaccelerated
+`fuse-overlayfs`) copies every layer on container creation and can take minutes for large images;
+`overlay2` or native overlayfs is much faster. Also check disk I/O pressure and an overloaded or hung
+container daemon (`docker info`, daemon logs).
+
+**Fix.** Switch the runtime to a faster storage driver, or raise `--pod-start-timeout` /
+`UNIFIED_AGENT_POD_START_TIMEOUT` / `podStartTimeout` (a Go duration such as `10m`; a non-positive or
+unset value means the 5m default). On the Kubernetes agent the equivalent setting is
+[`podStartTimeout`](../operator-manual/kubernetes-integration.md), which also covers the image pull.
+
 ## A host agent is not claiming: `free disk space below minimum, skipping claim`
 
 **Symptom**

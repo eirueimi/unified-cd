@@ -1111,12 +1111,33 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			failClaim("claim pod construction failed", fmt.Errorf("claim pod: %w", err))
 			return
 		}
+		// The watcher covers the pull and start phases, where RunClaim's own
+		// cancel poller does not exist yet. stop() is idempotent: the defer
+		// covers every early return, and the explicit call below hands over
+		// to RunClaim's poller before the steps start.
+		wctx, terminal, stop := startClaimCancelWatch(ctx, a.Client, c.RunID, CancelPollInterval)
+		defer stop()
+		// abandon handles an error that coincides with the run going terminal:
+		// the controller already owns the final status, so no FinishRun is
+		// sent. Partial containers are removed with a context that survives
+		// the cancellation.
+		abandon := func() bool {
+			if !terminal() {
+				return false
+			}
+			pod.CloseAll(context.WithoutCancel(ctx))
+			slog.Info("run became terminal during claim pod start; abandoning", "runId", c.RunID)
+			return true
+		}
 		pullD := a.podPullTimeout()
-		pullCtx, cancelPull := context.WithTimeoutCause(ctx, pullD, errPullTimeout)
+		pullCtx, cancelPull := context.WithTimeoutCause(wctx, pullD, errPullTimeout)
 		_, perr := pullClaimImages(pullCtx, rt, claimImages(defs, a.PauseImage))
 		timedOut := context.Cause(pullCtx) == errPullTimeout
 		cancelPull()
 		if perr != nil {
+			if abandon() {
+				return
+			}
 			if timedOut {
 				a.failRun(ctx, c.RunID, pullTimeoutMsg(pullD))
 			} else {
@@ -1125,11 +1146,14 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			return
 		}
 		startD := a.podStartTimeout()
-		startCtx, cancelStart := context.WithTimeoutCause(ctx, startD, errStartTimeout)
+		startCtx, cancelStart := context.WithTimeoutCause(wctx, startD, errStartTimeout)
 		serr := pod.Start(startCtx, c.PodTemplate)
 		timedOut = context.Cause(startCtx) == errStartTimeout
 		cancelStart()
 		if serr != nil {
+			if abandon() {
+				return
+			}
 			pod.CloseAll(context.WithoutCancel(ctx))
 			if timedOut {
 				a.failRun(ctx, c.RunID, startTimeoutMsg(startD))
@@ -1138,6 +1162,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			}
 			return
 		}
+		stop()
 	}
 	backend := newHostBackend(a, c.RunID, c.JobName, workDir, pod)
 	backend.volumePaths = volumePaths

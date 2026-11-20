@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/imageref"
@@ -109,4 +112,49 @@ func pullClaimImages(ctx context.Context, rt crt.ContainerRuntime, images []stri
 		}
 	}
 	return ids, nil
+}
+
+// startClaimCancelWatch polls the run's status every interval while a claim
+// pod is pulled and started, the phases before RunClaim's own cancel poller
+// exists. On any terminal status it records that fact (terminal reports it)
+// and cancels wctx, which the caller derives its pull and start contexts
+// from. stop cancels the watcher and joins its goroutine; it is idempotent.
+func startClaimCancelWatch(ctx context.Context, client *Client, runID string, interval time.Duration) (wctx context.Context, terminal func() bool, stop func()) {
+	wctx, cancel := context.WithCancel(ctx)
+	var seen atomic.Bool
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-wctx.Done():
+				return
+			case <-ticker.C:
+				run, err := client.GetRun(wctx, runID)
+				if err != nil {
+					if wctx.Err() == nil {
+						slog.Warn("claim cancel watch: get run failed", "runID", runID, "error", err)
+					}
+					continue
+				}
+				if isTerminalRunStatus(run.Status) {
+					slog.Info("claim cancel watch: run is terminal", "runID", runID, "status", run.Status)
+					seen.Store(true)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			wg.Wait()
+		})
+	}
+	return wctx, seen.Load, stop
 }

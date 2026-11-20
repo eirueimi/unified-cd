@@ -30,6 +30,7 @@ type pullRT struct {
 	blockPul bool
 	blockAt  int // block the Nth Create (1-indexed) until ctx is done; 0 = never
 	creates  int
+	onBlock  func() // called when a blocking Pull/Create is entered
 }
 
 func (f *pullRT) Pull(ctx context.Context, image string) error {
@@ -40,6 +41,9 @@ func (f *pullRT) Pull(ctx context.Context, image string) error {
 	block := f.blockPul
 	f.mu.Unlock()
 	if block {
+		if f.onBlock != nil {
+			f.onBlock()
+		}
 		<-ctx.Done()
 		return ctx.Err()
 	}
@@ -61,6 +65,9 @@ func (f *pullRT) Create(ctx context.Context, s crt.CreateSpec) (crt.ContainerHan
 	block := f.blockAt == n
 	f.mu.Unlock()
 	if block {
+		if f.onBlock != nil {
+			f.onBlock()
+		}
 		<-ctx.Done()
 		return crt.ContainerHandle{}, ctx.Err()
 	}
@@ -102,7 +109,11 @@ func TestClaimImages_PauseFirstDedup(t *testing.T) {
 
 func runIsolatedWith(t *testing.T, f crt.ContainerRuntime, a *Agent) (*isolatedHarness, string) {
 	t.Helper()
-	h := newIsolatedHarness()
+	return runIsolatedWithHarness(t, newIsolatedHarness(), f, a)
+}
+
+func runIsolatedWithHarness(t *testing.T, h *isolatedHarness, f crt.ContainerRuntime, a *Agent) (*isolatedHarness, string) {
+	t.Helper()
 	srv := newIsolatedServer(t, "pull-agent", h)
 	a.ID = "pull-agent"
 	a.Client = NewClient(srv.URL, "tok")
@@ -169,4 +180,68 @@ func TestExecuteRun_PullPrecedesCreate(t *testing.T) {
 	require.GreaterOrEqual(t, firstCreate, 0)
 	require.GreaterOrEqual(t, lastPull, 0)
 	assert.Less(t, lastPull, firstCreate)
+}
+
+// cancelOnBlock makes the harness report Cancelled once the fake's blocking
+// Pull or Create is entered, and speeds up the cancel poll.
+func cancelOnBlock(t *testing.T, h *isolatedHarness) func() {
+	t.Helper()
+	prev := CancelPollInterval
+	CancelPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { CancelPollInterval = prev })
+	return func() {
+		h.mu.Lock()
+		h.runStatus = api.RunCancelled
+		h.mu.Unlock()
+	}
+}
+
+func TestExecuteRun_CancelDuringPull_AbandonsWithoutFinishRun(t *testing.T) {
+	h := newIsolatedHarness()
+	f := &pullRT{blockPul: true, onBlock: cancelOnBlock(t, h)}
+	a := &Agent{} // default (30m) pull timeout: only the cancel can end the pull
+	_, logs := runIsolatedWithHarness(t, h, f, a)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	assert.Zero(t, h.finishCalls, "an abandoned claim sends no FinishRun")
+	assert.Zero(t, f.creates, "no container is created")
+	assert.Empty(t, h.logsByStep[-1], "no step -1 failure line")
+	assert.NotContains(t, logs, "podPullTimeout", "a cancel is not reported as a pull timeout")
+}
+
+func TestExecuteRun_CancelDuringStart_RemovesPartialsWithoutFinishRun(t *testing.T) {
+	h := newIsolatedHarness()
+	f := &pullRT{blockAt: 2, onBlock: cancelOnBlock(t, h), podFakeRT: podFakeRT{imageIDs: map[string]string{
+		"pause:img": "p", "mysql:8": "m", "runner:img": "r",
+	}}}
+	a := &Agent{}
+	runIsolatedWithHarness(t, h, f, a)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	assert.Zero(t, h.finishCalls)
+	assert.Empty(t, h.logsByStep[-1])
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	require.NotEmpty(t, f.created, "the pause container was created before the cancel")
+	assert.Len(t, f.removed, len(f.created), "every created container (pause included) is removed")
+}
+
+func TestStartClaimCancelWatch_StopJoins(t *testing.T) {
+	h := newIsolatedHarness()
+	srv := newIsolatedServer(t, "w-agent", h)
+	client := NewClient(srv.URL, "tok")
+	const iv = 10 * time.Millisecond
+	wctx, terminal, stop := startClaimCancelWatch(context.Background(), client, "run-w", iv)
+	time.Sleep(5 * iv)
+	assert.False(t, terminal())
+	assert.NoError(t, wctx.Err())
+	stop()
+	h.mu.Lock()
+	n := h.getRunCalls
+	h.mu.Unlock()
+	require.Positive(t, n, "the watcher polled while running")
+	time.Sleep(3 * iv)
+	h.mu.Lock()
+	assert.Equal(t, n, h.getRunCalls, "no GetRun after stop")
+	h.mu.Unlock()
 }

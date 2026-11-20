@@ -772,6 +772,14 @@ dind container.
 | `--pause-image` | `pauseImage` | `busybox:1.36`, pinned by digest | Image for the pause (netns-holder) container, one per claim. Unlike the runner, it is not derived from the agent's version. |
 | `--runner-image` | `runnerImage` | `ghcr.io/eirueimi/unified-cd-runner:<agent version>` (`:latest` for a build with no release version) | Primary container image injected when the job's `podTemplate` defines none. The default is the runner published with this agent's release; set a digest to pin it (see [Default images and the pause image digest](operations.md#default-images-and-the-pause-image-digest)). |
 
+The host agent pulls the claim pod's images as a separate step bounded by `--pod-pull-timeout`
+(`podPullTimeout`, default 30m), then creates and starts the containers within `--pod-start-timeout`
+(`podStartTimeout`, default 5m). If the run is cancelled (or reaped) while the images are still being
+pulled or the pod is starting, the agent abandons the claim: it removes any containers already created
+and sends no `FinishRun`, because the controller already holds the run's final status. See
+[Agents and Enrollment troubleshooting](../troubleshooting/agents-and-enrollment.md#a-host-agent-run-fails-with-claim-pod-image-pull-exceeded-podpulltimeout)
+for the timeout failures.
+
 See [Configuration Reference: Agent Flags](../reference/configuration.md#agent-flags) for
 the full flag list.
 
