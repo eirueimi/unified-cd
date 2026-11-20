@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"time"
 )
 
 // RunSpec describes a one-shot containerized step execution.
@@ -70,6 +71,11 @@ type CreateSpec struct {
 	// ReadOnlyRootfs emits `--read-only` (podman also gets
 	// `--read-only-tmpfs=false` so /tmp stays read-only like on k8s).
 	ReadOnlyRootfs bool
+	// Labels are container labels (`--label k=v`, emitted in sorted key
+	// order). The host agent uses them to find and remove its own orphaned
+	// containers after a crash. Runtimes without label support (Apple
+	// container) ignore them.
+	Labels map[string]string
 }
 
 // ImageInspector is an optional interface a ContainerRuntime may implement to
@@ -78,6 +84,36 @@ type ImageInspector interface {
 	// ImageUser returns the image's Config.User ("" when unset). The image is
 	// pulled first if it is not present locally.
 	ImageUser(ctx context.Context, image string) (string, error)
+}
+
+// ContainerInfo is one container returned by PodRuntime.ListContainers.
+type ContainerInfo struct {
+	Handle ContainerHandle
+	Labels map[string]string
+}
+
+// PodRuntime is an optional interface a ContainerRuntime may implement (the
+// docker/podman/nerdctl CLI runtime does; Apple container does not) for the
+// host agent's claim-pod lifecycle: image presence, liveness checks, label
+// based listing and time-bounded log replay. Callers type-assert for it.
+type PodRuntime interface {
+	// ImageID returns the local image ID. A missing image is present=false
+	// with a nil error.
+	ImageID(ctx context.Context, image string) (id string, present bool, err error)
+	// ContainerRunning reports whether the container's State.Running is true.
+	ContainerRunning(ctx context.Context, h ContainerHandle) (bool, error)
+	// ListContainers lists all containers (running or not) carrying every
+	// given label (k=v).
+	ListContainers(ctx context.Context, labels map[string]string) ([]ContainerInfo, error)
+	// LogsSince follows the container's logs starting at since.
+	LogsSince(ctx context.Context, h ContainerHandle, since time.Time, stdout, stderr io.Writer) error
+	// LastLogTime returns the timestamp of the container's most recent log
+	// line, as stamped by the container runtime's own clock (logs
+	// --timestamps), or the zero time when the container has logged nothing.
+	// It is the boundary a reused pod's sidecar log stream resumes after: both
+	// it and LogsSince's since are compared by the runtime, so the agent's own
+	// clock (which a VM-backed or remote runtime may not share) never enters.
+	LastLogTime(ctx context.Context, h ContainerHandle) (time.Time, error)
 }
 
 // Mount is a host-path bind mount for a long-lived container: the host

@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"io"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
@@ -24,17 +26,70 @@ type podFakeRT struct {
 	// for tests asserting on shell-argv threading (claim_pod_shim_test.go).
 	execSpecs []crt.ExecSpec
 	removed   []string
+
+	// PodRuntime state (reused by later pod-lifecycle tests): containers
+	// created or seeded, their running flags, and image IDs by reference.
+	containers map[string]crt.ContainerInfo
+	running    map[string]bool
+	imageIDs   map[string]string
+	logTimes   map[string]time.Time
+}
+
+func (f *podFakeRT) ImageID(_ context.Context, image string) (string, bool, error) {
+	id, ok := f.imageIDs[image]
+	return id, ok, nil
+}
+func (f *podFakeRT) ContainerRunning(_ context.Context, h crt.ContainerHandle) (bool, error) {
+	return f.running[h.ID], nil
+}
+func (f *podFakeRT) ListContainers(_ context.Context, labels map[string]string) ([]crt.ContainerInfo, error) {
+	var out []crt.ContainerInfo
+	for _, c := range f.containers {
+		match := true
+		for k, v := range labels {
+			if c.Labels[k] != v {
+				match = false
+			}
+		}
+		if match {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Handle.ID < out[j].Handle.ID })
+	return out, nil
+}
+func (f *podFakeRT) LogsSince(context.Context, crt.ContainerHandle, time.Time, io.Writer, io.Writer) error {
+	return nil
+}
+
+// logTimes are the runtime-clock timestamps LastLogTime reports per container.
+func (f *podFakeRT) LastLogTime(_ context.Context, h crt.ContainerHandle) (time.Time, error) {
+	return f.logTimes[h.ID], nil
 }
 
 func (f *podFakeRT) Name() string                                  { return "fake" }
 func (f *podFakeRT) Available() bool                                { return true }
-func (f *podFakeRT) Pull(context.Context, string) error             { return nil }
+func (f *podFakeRT) Pull(_ context.Context, image string) error {
+	// A successful pull makes the image present, as on a real runtime.
+	if f.imageIDs == nil {
+		f.imageIDs = map[string]string{}
+	}
+	if _, ok := f.imageIDs[image]; !ok {
+		f.imageIDs[image] = "pulled-" + image
+	}
+	return nil
+}
 func (f *podFakeRT) Run(context.Context, crt.RunSpec, io.Writer, io.Writer) (int, error) {
 	return 0, nil
 }
 func (f *podFakeRT) Create(_ context.Context, s crt.CreateSpec) (crt.ContainerHandle, error) {
 	f.created = append(f.created, s)
-	return crt.ContainerHandle{ID: fmtID(len(f.created) - 1)}, nil
+	h := crt.ContainerHandle{ID: fmtID(len(f.created) - 1)}
+	if f.containers == nil {
+		f.containers = map[string]crt.ContainerInfo{}
+	}
+	f.containers[h.ID] = crt.ContainerInfo{Handle: h, Labels: s.Labels}
+	return h, nil
 }
 func (f *podFakeRT) Exec(_ context.Context, h crt.ContainerHandle, s crt.ExecSpec, _, _ io.Writer) (int, error) {
 	f.execs = append(f.execs, struct{ id, script string }{h.ID, s.Script})
@@ -45,6 +100,7 @@ func (f *podFakeRT) CopyIn(context.Context, crt.ContainerHandle, string, string)
 func (f *podFakeRT) CopyOut(context.Context, crt.ContainerHandle, string, string) error { return nil }
 func (f *podFakeRT) Remove(_ context.Context, h crt.ContainerHandle) error {
 	f.removed = append(f.removed, h.ID)
+	delete(f.containers, h.ID)
 	return nil
 }
 func (f *podFakeRT) Logs(context.Context, crt.ContainerHandle, io.Writer, io.Writer) error {
@@ -453,4 +509,24 @@ func TestClaimContainerDefs_UnnamedContainerErrors(t *testing.T) {
 	_, err := claimContainerDefs(pt, "runner:latest")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no name")
+}
+
+func TestClaimPod_LabelsOnEveryContainer(t *testing.T) {
+	f := &podFakeRT{}
+	m := newClaimPodManager(f, "/host/w", "/workspace", "pause:img", "runner:img", "")
+	m.agentID = "a1"
+	require.NoError(t, m.Start(context.Background(), mysqlTemplate()))
+	require.Len(t, f.created, 3) // pause, mysql, job
+	for _, spec := range f.created {
+		assert.Equal(t, map[string]string{"unified-cd/agent-id": "a1", "unified-cd/claim-pod": "true"}, spec.Labels)
+	}
+}
+
+func TestClaimPod_NoLabelsWithoutAgentID(t *testing.T) {
+	f := &podFakeRT{}
+	m := newClaimPodManager(f, "/host/w", "/workspace", "pause:img", "runner:img", "")
+	require.NoError(t, m.Start(context.Background(), mysqlTemplate()))
+	for _, spec := range f.created {
+		assert.Nil(t, spec.Labels)
+	}
 }

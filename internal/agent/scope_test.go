@@ -285,3 +285,12 @@ func TestScopeManagerEnsure_ConcurrentDistinctKeys(t *testing.T) {
 		t.Fatalf("expected %d Remove calls after concurrent closeAll, got %d", n, got)
 	}
 }
+
+func TestScope_LabelsOnScopeContainer(t *testing.T) {
+	f := &fakeRT{}
+	m := newScopeManager(f, "")
+	m.agentID = "a1"
+	_, err := m.ensure(context.Background(), api.ClaimStep{ScopeID: "scope:build", ScopeImage: "img"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"unified-cd/agent-id": "a1", "unified-cd/scope": "true"}, f.lastCreate.Labels)
+}

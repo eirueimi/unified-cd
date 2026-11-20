@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
@@ -293,6 +294,15 @@ type claimPodManager struct {
 	maxMappedID int64
 	runLog      func(lines []string)
 
+	// agentID labels every container of the pod (claimPodLabels) so the
+	// startup sweep can find them after a crash. Empty = no labels.
+	agentID string
+
+	// interrupted records that an exec run through the pause container was cut
+	// off by context cancellation (see execHelper); hostBackend.CloseScopes
+	// then discards the pod instead of pooling it.
+	interrupted atomic.Bool
+
 	mu    sync.Mutex
 	pause crt.ContainerHandle
 	open  map[string]crt.ContainerHandle // container name → handle
@@ -356,6 +366,20 @@ func (m *claimPodManager) containerMounts() []crt.Mount {
 // Start builds the claim pod eagerly: pause first (netns owner), then every
 // container def. Sidecars must be listening before any step runs, which is
 // why this is claim-start eager, not step-time lazy.
+//
+// Create-time audit (what a reused pod may carry from its first run). Every
+// crt.CreateSpec input below is part of the pool fingerprint
+// (hostPodFingerprint): Image (resolved per run, because the controller expands
+// the podTemplate's images with the run's params and vars, so the fingerprint
+// holds the expanded reference and its image ID), Env (the podTemplate's
+// literal values), CPU/memory limits, WorkDir (the mountPath) and Mounts
+// (workDir, toolsDir; volumeMounts are empty for a poolable claim), User (image
+// user plus security context), GroupAdd, Cap*, NoNewPrivileges, ReadOnlyRootfs,
+// Entrypoint/Args, and the pause image.
+// Run-specific values never reach Create: step env, secrets and credentials
+// travel in crt.ExecSpec.Env at Exec time. runLog and the fsGroup chown are
+// per start and are re-applied on a pool hit. Nothing else needs moving;
+// TestClaimPod_CreateSpecsCarryNoRunSpecificValues locks this in.
 func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -391,6 +415,7 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 		Entrypoint: ucdShPause,
 		User:       "0:0",
 		Mounts:     m.containerMounts(),
+		Labels:     claimPodLabels(m.agentID),
 	})
 	if err != nil {
 		return fmt.Errorf("claim pod: start pause container (image %q): %w", m.pauseImage, err)
@@ -440,6 +465,7 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 			NetworkContainer: pause.ID,
 			Entrypoint:       entrypoint,
 			Args:             cargs,
+			Labels:           claimPodLabels(m.agentID),
 		})
 		if err != nil {
 			m.closeAllLocked(ctx)

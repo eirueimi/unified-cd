@@ -3,12 +3,15 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/imageref"
 )
@@ -116,6 +119,9 @@ func (r *ociCLI) createArgs(spec CreateSpec) ([]string, error) {
 		return nil, err
 	}
 	args := []string{"run", "-d"}
+	for _, k := range sortedKeys(spec.Labels) {
+		args = append(args, "--label", k+"="+spec.Labels[k])
+	}
 	if spec.CPULimit != "" {
 		args = append(args, "--cpus", spec.CPULimit)
 	}
@@ -271,6 +277,154 @@ func (r *ociCLI) ExitCode(ctx context.Context, h ContainerHandle) (int, error) {
 		return 0, fmt.Errorf("%s inspect exitcode: %w", r.bin, err)
 	}
 	return strconv.Atoi(strings.TrimSpace(string(out)))
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// ImageID returns the local image ID; a missing image (non-zero exit) is
+// present=false with a nil error.
+func (r *ociCLI) ImageID(ctx context.Context, image string) (string, bool, error) {
+	if err := imageref.Validate(image); err != nil {
+		return "", false, err
+	}
+	out, err := execCommand(ctx, r.bin, "image", "inspect", "--format", "{{.Id}}", image).Output()
+	if err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("%s image inspect %s: %w", r.bin, image, err)
+	}
+	id := strings.TrimSpace(string(out))
+	return id, id != "", nil
+}
+
+// ContainerRunning reports the container's State.Running.
+func (r *ociCLI) ContainerRunning(ctx context.Context, h ContainerHandle) (bool, error) {
+	out, err := execCommand(ctx, r.bin, "inspect", "-f", "{{.State.Running}}", h.ID).Output()
+	if err != nil {
+		return false, fmt.Errorf("%s inspect running: %w", r.bin, err)
+	}
+	return strings.TrimSpace(string(out)) == "true", nil
+}
+
+// ListContainers lists every container (any state) carrying all the given
+// labels. It uses `ps -a -q --no-trunc --filter label=k=v` plus a per-ID
+// `inspect -f {{json .Config.Labels}}` rather than `ps --format {{json .Labels}}`:
+// the ps Labels column is rendered differently by docker (a "k=v,k=v" string),
+// podman and nerdctl, whereas `inspect .Config.Labels` is a JSON map on all
+// three. A container removed between the list and the inspect is skipped.
+func (r *ociCLI) ListContainers(ctx context.Context, labels map[string]string) ([]ContainerInfo, error) {
+	args := []string{"ps", "-a", "-q", "--no-trunc"}
+	for _, k := range sortedKeys(labels) {
+		args = append(args, "--filter", "label="+k+"="+labels[k])
+	}
+	out, err := execCommand(ctx, r.bin, args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("%s ps: %w", r.bin, err)
+	}
+	var infos []ContainerInfo
+	for _, id := range strings.Fields(string(out)) {
+		lo, err := execCommand(ctx, r.bin, "inspect", "-f", "{{json .Config.Labels}}", id).Output()
+		if err != nil {
+			continue
+		}
+		var lm map[string]string
+		if err := json.Unmarshal(bytes.TrimSpace(lo), &lm); err != nil {
+			continue
+		}
+		infos = append(infos, ContainerInfo{Handle: ContainerHandle{ID: id}, Labels: lm})
+	}
+	return infos, nil
+}
+
+// LogsSince follows the container's logs from since (RFC3339Nano). Like Logs,
+// a stream that ends or a ctx cancellation is not an error.
+func (r *ociCLI) LogsSince(ctx context.Context, h ContainerHandle, since time.Time, stdout, stderr io.Writer) error {
+	cmd := execCommand(ctx, r.bin, "logs", "-f", "--since", since.UTC().Format(time.RFC3339Nano), h.ID)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	if err == nil || ctx.Err() != nil {
+		return nil
+	}
+	if _, ok := err.(*exec.ExitError); ok {
+		return nil
+	}
+	return fmt.Errorf("%s logs -f --since: %w", r.bin, err)
+}
+
+// LastLogTime returns the runtime-stamped time of the container's last log
+// line (`logs --timestamps --tail 1`), or the zero time for a container with
+// no output.
+//
+// The container's stdout lines arrive on the CLI's stdout and its stderr lines
+// on the CLI's stderr, so the CLI's own diagnostics share a stream with
+// container output. It fails closed: every container line starts with an
+// RFC3339 timestamp (Go's parse accepts docker's "Z", podman's "+00:00" and any
+// fractional precision), so the only lines skipped are those with a recognised
+// CLI diagnostic prefix (cliDiagnosticPrefixes). Any other line without a
+// leading timestamp is an error, because guessing "no output" would make the
+// caller replay a sidecar's whole log into the next run. No lines, or only
+// diagnostics, is a silent container: zero time, nil error.
+func (r *ociCLI) LastLogTime(ctx context.Context, h ContainerHandle) (time.Time, error) {
+	out, err := execCommand(ctx, r.bin, "logs", "--timestamps", "--tail", "1", h.ID).CombinedOutput()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%s logs --tail 1: %w: %s", r.bin, err, truncateOutput(out))
+	}
+	var last time.Time
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || isCLIDiagnostic(line) {
+			continue
+		}
+		ts, _, _ := strings.Cut(line, " ")
+		t, perr := time.Parse(time.RFC3339Nano, ts)
+		if perr != nil {
+			return time.Time{}, fmt.Errorf("%s logs --timestamps: unrecognised output line (no timestamp): %s", r.bin, truncateOutput([]byte(line)))
+		}
+		if t.After(last) {
+			last = t
+		}
+	}
+	return last, nil
+}
+
+// cliDiagnosticPrefixes are the line prefixes of diagnostics the container CLIs
+// print themselves: logrus-style "WARN[0000] ..." and "level=warning ..."
+// (podman), "time=\"...\" level=..." (logrus text format), and docker's
+// "WARNING: ...". Keep the list small: an unlisted diagnostic makes
+// LastLogTime fail, which only costs a fresh pod.
+//
+// This assumes every container log line from `logs --timestamps` starts with a
+// runtime timestamp, so a skipped prefix is only ever a CLI diagnostic. A
+// runtime that ignored --timestamps, combined with a sidecar whose last line
+// starts with one of these prefixes, would skip that line and yield a zero
+// boundary.
+var cliDiagnosticPrefixes = []string{"WARN[", "WARNING:", "time=\"", "level="}
+
+func isCLIDiagnostic(line string) bool {
+	for _, p := range cliDiagnosticPrefixes {
+		if strings.HasPrefix(line, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// truncateOutput trims CLI output for inclusion in an error message.
+func truncateOutput(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) > 300 {
+		s = s[:300] + "..."
+	}
+	return s
 }
 
 // ImageUser returns the image's Config.User. If the image is not present

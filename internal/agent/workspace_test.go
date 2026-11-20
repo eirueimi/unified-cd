@@ -95,7 +95,7 @@ func writeFile(t *testing.T, path, content string) {
 
 func TestPrepareWorkspace_CreatesTheDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "w")
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", nil, false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", nil, false, false, noRuntime, ""))
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Empty(t, entries, "an ordinary workspace starts empty; the agent leaves nothing in it")
@@ -105,7 +105,7 @@ func TestPrepareWorkspace_CleansByDefault(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "stale.txt"), "x")
 	writeFile(t, filepath.Join(dir, "sub", "deep.txt"), "x")
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", nil, false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", nil, false, false, noRuntime, ""))
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Empty(t, entries, "a file left by a previous run must be gone although clean=false")
@@ -115,9 +115,9 @@ func TestPrepareWorkspace_CleansByDefault(t *testing.T) {
 // cleaned every run now, so the flip needs no special case and must not fail.
 func TestPrepareWorkspace_ModeFlipOnAnOrdinaryWorkspaceJustCleans(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", nil, false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", nil, false, false, noRuntime, ""))
 	writeFile(t, filepath.Join(dir, "left.txt"), "x")
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", nil, false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", nil, false, false, noRuntime, ""))
 	assert.NoFileExists(t, filepath.Join(dir, "left.txt"))
 }
 
@@ -125,7 +125,7 @@ func TestPrepareWorkspace_CleanupFailureOnAnOrdinaryWorkspaceFailsTheRun(t *test
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "stale.txt"), "x")
 	failRemoval(t, func(string) bool { return true })
-	err := prepareWorkspace(context.Background(), dir, "native", nil, false, noRuntime, "")
+	err := prepareWorkspace(context.Background(), dir, "native", nil, false, false, noRuntime, "")
 	require.Error(t, err, "a run must not start on a previous run's files")
 	assert.Contains(t, err.Error(), dir)
 }
@@ -133,7 +133,7 @@ func TestPrepareWorkspace_CleanupFailureOnAnOrdinaryWorkspaceFailsTheRun(t *test
 func TestFinishWorkspace_SweepsAfterTheRun(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "out", "build.bin"), "x")
-	finishWorkspace(context.Background(), dir, nil, noRuntime, "")
+	finishWorkspace(context.Background(), dir, nil, false, noRuntime, "")
 	_, err := os.Stat(dir)
 	assert.True(t, os.IsNotExist(err), "the run's output must not hold disk until the job's next run")
 }
@@ -146,7 +146,7 @@ func TestFinishWorkspace_SweepFailureIsNotFatal(t *testing.T) {
 	defer captureSlog(&logs)()
 	// finishWorkspace returns nothing: there is no error for the caller to turn
 	// into a failed run. It must warn, and not panic.
-	finishWorkspace(context.Background(), dir, nil, noRuntime, "")
+	finishWorkspace(context.Background(), dir, nil, false, noRuntime, "")
 	assert.Contains(t, logs.String(), "sweep after the run failed")
 	assert.FileExists(t, filepath.Join(dir, "out.txt"), "the failing remover left the tree in place")
 }
@@ -155,7 +155,7 @@ func TestFinishWorkspace_LeavesAVolumeBackedWorkspaceAlone(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "Library", "cache.bin"), "x")
 	vol := &volumeWorkspace{Name: "unity", ModeMarker: filepath.Join(t.TempDir(), "unity")}
-	finishWorkspace(context.Background(), dir, vol, noRuntime, "")
+	finishWorkspace(context.Background(), dir, vol, false, noRuntime, "")
 	assert.FileExists(t, filepath.Join(dir, "Library", "cache.bin"))
 }
 
@@ -169,7 +169,7 @@ func testVolume(t *testing.T) *volumeWorkspace {
 func TestPrepareWorkspace_VolumeBackedIsNotCleaned(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "Library", "cache.bin"), "x")
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", testVolume(t), false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", testVolume(t), false, false, noRuntime, ""))
 	assert.FileExists(t, filepath.Join(dir, "Library", "cache.bin"))
 }
 
@@ -178,11 +178,11 @@ func TestPrepareWorkspace_VolumeBackedIsNotCleaned(t *testing.T) {
 func TestPrepareWorkspace_VolumeBackedModeFlipFailsAndKeepsData(t *testing.T) {
 	dir := t.TempDir()
 	vol := testVolume(t)
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", vol, false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", vol, false, false, noRuntime, ""))
 	writeFile(t, filepath.Join(dir, "Library", "cache.bin"), "x")
 	writeFile(t, filepath.Join(dir, "top.txt"), "x")
 
-	err := prepareWorkspace(context.Background(), dir, "native", vol, false, noRuntime, "")
+	err := prepareWorkspace(context.Background(), dir, "native", vol, false, false, noRuntime, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"unity"`)
 	assert.Contains(t, err.Error(), "isolated")
@@ -194,13 +194,13 @@ func TestPrepareWorkspace_VolumeBackedModeFlipFailsAndKeepsData(t *testing.T) {
 	assert.FileExists(t, filepath.Join(dir, "top.txt"))
 
 	// The failed run did not move the marker, so the job's original mode still works.
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", vol, false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", vol, false, false, noRuntime, ""))
 }
 
 func TestPrepareWorkspace_VolumeBackedMarkerIsNotWrittenIntoTheVolume(t *testing.T) {
 	dir := t.TempDir()
 	vol := testVolume(t)
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", vol, false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", vol, false, false, noRuntime, ""))
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Empty(t, entries, "nothing the agent writes may appear in a volume")
@@ -214,7 +214,7 @@ func TestPrepareWorkspace_CleanWorkspaceWipesAVolume(t *testing.T) {
 	vol := testVolume(t)
 	writeFile(t, filepath.Join(dir, "Library", "cache.bin"), "x")
 	writeFile(t, filepath.Join(dir, ".hidden"), "x")
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", vol, true, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", vol, true, false, noRuntime, ""))
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Empty(t, entries, "the documented escape hatch empties the volume")
@@ -226,9 +226,9 @@ func TestPrepareWorkspace_CleanWorkspaceWipesAVolume(t *testing.T) {
 func TestPrepareWorkspace_CleanWorkspaceMovesPastAModeFlip(t *testing.T) {
 	dir := t.TempDir()
 	vol := testVolume(t)
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", vol, false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "isolated", vol, false, false, noRuntime, ""))
 	writeFile(t, filepath.Join(dir, "left.txt"), "x")
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", vol, true, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", vol, true, false, noRuntime, ""))
 	assert.NoFileExists(t, filepath.Join(dir, "left.txt"))
 	b, _ := os.ReadFile(vol.ModeMarker)
 	assert.Equal(t, "native", string(b))
@@ -278,7 +278,7 @@ func TestPrepareWorkspace_CleanWorkspaceFallsBackToTheCleanupContainer(t *testin
 	// The plain removal fails until the cleanup container has run.
 	failRemoval(t, func(string) bool { return !cleaned })
 
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", vol, true,
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", vol, true, false,
 		func() (crt.ContainerRuntime, error) { return rt, nil }, "/host/tools"))
 
 	require.Len(t, rt.created, 1, "the root cleanup container must have run")
@@ -292,7 +292,7 @@ func TestPrepareWorkspace_CleanWorkspaceFailureFailsTheRunAndNamesTheVolume(t *t
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "rootfile"), "x")
 	failRemoval(t, func(string) bool { return true })
-	err := prepareWorkspace(context.Background(), dir, "native", testVolume(t), true, noRuntime, "")
+	err := prepareWorkspace(context.Background(), dir, "native", testVolume(t), true, false, noRuntime, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"unity"`)
 }
@@ -306,10 +306,10 @@ func TestWipe_DoesNotFollowALinkIntoAVolume(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(dir, "cache")); err != nil {
 		t.Skipf("cannot create symlinks here: %v", err)
 	}
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", nil, false, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", nil, false, false, noRuntime, ""))
 	assert.FileExists(t, filepath.Join(target, "precious.bin"))
 
 	require.NoError(t, os.Symlink(target, filepath.Join(dir, "cache")))
-	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", testVolume(t), true, noRuntime, ""))
+	require.NoError(t, prepareWorkspace(context.Background(), dir, "native", testVolume(t), true, false, noRuntime, ""))
 	assert.FileExists(t, filepath.Join(target, "precious.bin"))
 }

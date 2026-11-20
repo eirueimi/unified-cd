@@ -298,6 +298,109 @@ dropping it would turn a persistent workspace into an ephemeral one.
 **Fix:** remove the block and move the persistence to a named volume, following the [migration
 guide](../operator-manual/migrations/2026-10-20-named-volumes.md#workspacepvc-is-removed).
 
+## A host agent run fails with `claim pod image pull failed`
+
+**Symptom.** A run on a host agent fails before any step starts, and the run log (step -1) shows one of:
+
+```
+claim pod image pull failed: pull image "myapp:latest": <runtime error>
+claim pod image pull failed: image "myapp:latest" is not present after pull
+```
+
+**What it means.** Before creating any container, the agent pulls the claim pod's images. An image
+whose reference has no digest and either no tag or the tag `latest` is pulled on **every claim**, even
+when it is already on the host, and that pull failed. The first form carries the container runtime's
+own error (`pull access denied`, `manifest unknown`, `toomanyrequests`, a network error); the second
+means the pull reported success but the runtime has no such image afterwards.
+
+**Likely causes.**
+
+- The image exists only on the host (built or loaded locally, never pushed) and is referenced as
+  `:latest` or with no tag.
+- The host is offline or cannot reach the registry (air-gapped host, proxy, DNS).
+- The registry needs authentication the container runtime does not have (`docker login`).
+- A rate limit, typically Docker Hub for an untagged sidecar such as `redis` or `postgres`
+  (`toomanyrequests`).
+
+**Fix.** Use a tag other than `latest`, or pin the image by digest: such an image is pulled only when
+it is missing from the host. For an image that is only local, push it to a registry the agent can
+reach (or a mirror) and reference it there. For auth or rate limits, log the runtime in to the
+registry, use a mirror, or switch to a tag. Run `docker pull <image>` (or `podman`/`nerdctl`) as the
+agent's user on the agent host to reproduce. See
+[Migrating: host agent claim-pod behaviour](../operator-manual/migrations/2026-11-20-host-claim-pod-parity.md).
+
+## A host agent run fails with `claim pod image pull exceeded podPullTimeout`
+
+**Symptom.** A run on a host agent fails before any step starts, and the run log (step -1) shows:
+
+```
+claim pod image pull exceeded podPullTimeout (30m0s)
+```
+
+**What it means.** Before creating any container, the agent pulls every image of the claim pod
+(the pause image, the runner image and each `podTemplate` image). That pull did not finish within
+`podPullTimeout`. Images tagged `:latest` or with no tag are pulled on every run, so a slow registry
+affects every such run, not just the first.
+
+**What to check.** Registry reachability and speed from the agent host, the size of the images (a
+multi-gigabyte image on a slow link can exceed the default), and registry rate limits or auth
+prompts that stall the pull. Run `docker pull <image>` (or `podman`/`nerdctl`) on the agent host to
+time it.
+
+**Fix.** Pin large images to a tag or digest so they are pulled only when missing, pre-pull them on
+the host, use a closer mirror, or raise the limit with `--pod-pull-timeout` /
+`UNIFIED_AGENT_POD_PULL_TIMEOUT` / `podPullTimeout` (a Go duration such as `1h`; a non-positive or
+unset value means the 30m default). A cancelled run does not produce this message; see the
+[agents guide](../operator-manual/agents.md#job-isolation-on-the-standard-agent-claim-pod).
+
+## A host agent run fails with `claim pod start exceeded podStartTimeout`
+
+**Symptom.** A run on a host agent fails before any step starts, and the run log (step -1) shows:
+
+```
+claim pod start exceeded podStartTimeout (5m0s)
+```
+
+**What it means.** The images were already local, but creating and starting the claim pod's
+containers did not finish within `podStartTimeout`. The agent removes the containers it had created.
+
+**What to check.** The container runtime's storage driver: `vfs` (or an unaccelerated
+`fuse-overlayfs`) copies every layer on container creation and can take minutes for large images;
+`overlay2` or native overlayfs is much faster. Also check disk I/O pressure and an overloaded or hung
+container daemon (`docker info`, daemon logs).
+
+**Fix.** Switch the runtime to a faster storage driver, or raise `--pod-start-timeout` /
+`UNIFIED_AGENT_POD_START_TIMEOUT` / `podStartTimeout` (a Go duration such as `10m`; a non-positive or
+unset value means the 5m default). On the Kubernetes agent the equivalent setting is
+[`podStartTimeout`](../operator-manual/kubernetes-integration.md), which also covers the image pull.
+
+## A host agent run fails with `spec.volumes cannot be combined with podTemplate.reuse`
+
+**Symptom.** A run on a host agent fails before any step starts, and the run log (step -1) shows:
+
+```
+spec.volumes cannot be combined with podTemplate.reuse: a reused pod keeps the volumes it was created with, which contradicts a volume's lifecycle
+```
+
+**What it means.** The job sets both `podTemplate.reuse: true` and `spec.volumes`. A pooled claim pod
+keeps the mounts it was created with, so it cannot serve runs that mount different volumes. The
+Kubernetes agent rejects the same combination.
+
+**Fix.** Remove `reuse: true`, or move the data off `spec.volumes`.
+
+## A host agent logs `reused claim pod could not be prepared; creating a fresh one`
+
+**Symptom.** The agent log (Info) shows `reused claim pod could not be prepared; creating a fresh one`
+with an `error` attribute, and the run starts slower than a pooled run normally does.
+
+**What it means.** The run was about to reuse a pooled claim pod, but emptying its workspace or
+re-applying its `fsGroup` failed, or the container runtime could not report the sidecars' log times.
+The agent removed that pod and started a fresh one, so the run itself is not affected.
+
+**What to check.** The `error` attribute. A pause image without `rm`, or a runtime whose log driver does
+not support `docker logs` (for example `none`), makes every reuse attempt fall back. See [Claim-pod
+pool](../operator-manual/agents.md#claim-pod-pool-podtemplatereuse).
+
 ## A host agent is not claiming: `free disk space below minimum, skipping claim`
 
 **Symptom**

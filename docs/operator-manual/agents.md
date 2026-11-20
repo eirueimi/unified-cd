@@ -529,8 +529,8 @@ match — both must pass. In practice this means:
   `override` patch, `resources.requests`, an unqualified `resources.limits`
   key, a non-literal `env` entry, etc.) is only claimed by a Kubernetes
   agent. `podTemplate.workspace.mountPath` and `reuse` are **not** among
-  them — the standard agent honors the mount path and ignores `reuse` (it always starts a fresh claim pod per run), so
-  neither forces Kubernetes; see [Kubernetes Pod
+  them — the standard agent honors the mount path and pools claim pods for `reuse` (see [Claim-pod
+  pool](#claim-pod-pool-podtemplatereuse)), so neither forces Kubernetes; see [Kubernetes Pod
   Template](../user-guide/writing-jobs/isolation-and-containers.md#kubernetes-pod-template-podtemplate).
   (The `pvc` block under `workspace` that an earlier release also accepted has been removed;
   persistence is now a [named volume](#named-volumes).)
@@ -799,8 +799,25 @@ dind container.
 | `--pause-image` | `pauseImage` | `busybox:1.36`, pinned by digest | Image for the pause (netns-holder) container, one per claim. Unlike the runner, it is not derived from the agent's version. |
 | `--runner-image` | `runnerImage` | `ghcr.io/eirueimi/unified-cd-runner:<agent version>` (`:latest` for a build with no release version) | Primary container image injected when the job's `podTemplate` defines none. The default is the runner published with this agent's release; set a digest to pin it (see [Default images and the pause image digest](operations.md#default-images-and-the-pause-image-digest)). |
 
+The host agent pulls the claim pod's images as a separate step bounded by `--pod-pull-timeout`
+(`podPullTimeout`, default 30m), then creates and starts the containers within `--pod-start-timeout`
+(`podStartTimeout`, default 5m). If the run is cancelled (or reaped) while the images are still being
+pulled or the pod is starting, the agent abandons the claim: it removes any containers already created
+and sends no `FinishRun`, because the controller already holds the run's final status. See
+[Agents and Enrollment troubleshooting](../troubleshooting/agents-and-enrollment.md#a-host-agent-run-fails-with-claim-pod-image-pull-exceeded-podpulltimeout)
+for the timeout failures. Images whose reference has no digest and either no tag or the tag `latest` are
+pulled on every claim, even when already on the host; see
+[Migrating: host agent claim-pod behaviour](migrations/2026-11-20-host-claim-pod-parity.md) for what that
+means for local-only images and rate-limited registries.
+
+Creating a claim pod's containers can be slow, notably on the `vfs` storage driver and on fuse-overlayfs
+(rootless docker/podman), where every container layer is copied or emulated in userspace. Setting
+`podTemplate.reuse: true` amortises that cost across runs (see
+[Claim-pod pool](#claim-pod-pool-podtemplatereuse)); changing the storage driver is outside what the agent
+manages.
+
 See [Configuration Reference: Agent Flags](../reference/configuration.md#agent-flags) for
-the full flag list.
+the full flag list. For `podTemplate.reuse`, see [Claim-pod pool](#claim-pod-pool-podtemplatereuse).
 
 ### Shim installation (`ucd-sh`)
 
@@ -872,22 +889,157 @@ log.
 
 ### Crash-orphaned claim containers
 
-The claim pod's pause and sidecar containers are started as long-lived
-processes (`/.ucd/ucd-sh pause`, not `--rm`) and are torn down by the agent
-itself when the claim finishes. If the agent process exits ungracefully
-mid-claim — killed, OOM, host reboot — that teardown never runs, and the
-pause container plus every podTemplate sidecar for that claim are left
-running on the host. Unlike the Kubernetes agent, where an orphaned pod is
-reaped by the agent's own pod garbage collector (`runPodGC`, see [High availability](high-availability.md)), **the host
-agent has no automatic container GC**: nothing on the host notices or
-cleans up an orphaned claim pod on its own. Operators running the host
-agent should treat this as routine hygiene — periodically prune
-claim-pod-shaped containers (e.g. a `docker container prune`-style sweep,
-or one scoped to containers made from `pauseImage`/`runnerImage`/podTemplate
-images) rather than assuming the agent will clean up after a crash. A
-labelled restart-time sweep — the agent tagging its own claim-pod
-containers and removing any stale ones with its own label on startup — is
-possible future work, not implemented today.
+The claim pod's pause and sidecar containers (and the containers of
+`runsIn.image` scopes) are long-lived processes, not `--rm`, and the agent
+tears them down itself when the claim finishes. If the agent process exits
+ungracefully mid-claim (killed, OOM, host reboot) that teardown never runs and
+the containers are left on the host.
+
+The host agent cleans these up on its next start. Every claim-pod container
+(pause, sidecars, job) and every scope container is created with these labels:
+
+| Label | Value |
+|-------|-------|
+| `unified-cd/agent-id` | the agent's ID |
+| `unified-cd/claim-pod` | `true` on claim-pod containers |
+| `unified-cd/scope` | `true` on scope containers |
+
+At startup, before any slot takes a claim, the agent lists the containers
+labelled with its own ID and removes each one that is a claim-pod or scope
+container, then logs `removed orphaned containers from a previous agent
+process` with a `count`. Nothing else is touched: containers of other agents,
+and containers without these labels, are left alone.
+
+The sweep is bounded to two minutes; if the runtime hangs, the agent logs a
+warning and continues starting. It is skipped, with an Info log line, when the
+agent has no ID, when no container runtime is available, or when the runtime is
+Apple `container`.
+
+Because the sweep trusts the label, **each agent process must have its own
+agent ID, and only one process may run per ID.** Two live processes sharing an
+ID would delete each other's running claim containers at startup. The same
+applies to the agent's registration: a restarted agent re-registers under the
+same ID, so give every host agent a distinct, stable ID.
+
+To inspect what the sweep would remove:
+
+```bash
+docker ps -a --filter label=unified-cd/agent-id=<id>
+```
+
+The same filter works with `podman` and `nerdctl`.
+
+Limits:
+
+- Containers created by an agent from before this change carry no labels and
+  are never swept. Remove them once by hand after upgrading, for example:
+
+  ```bash
+  docker ps -a --filter ancestor=<pauseImage>      # list, then docker rm -f <id> ...
+  podman ps -a --filter ancestor=<pauseImage>
+  ```
+
+  Sidecar and scope containers of those old claims use their own images; list
+  them with `docker ps -a` and remove the stale ones.
+- The sweep needs a docker, podman or nerdctl runtime. Apple `container` scope
+  containers are not labelled and are not swept.
+- The Kubernetes agent is unaffected: it reaps orphaned pods with its own pod
+  garbage collector (`runPodGC`, see [High availability](high-availability.md)).
+
+
+### Claim-pod pool (`podTemplate.reuse`)
+
+A job that sets `podTemplate.reuse: true` lets the host agent keep its claim pod after the run and hand
+it to a later run, so the sidecars (a database, a cache) and the job container do not have to be pulled
+and started again. The Kubernetes agent has the same switch; see [Pod reuse](kubernetes-integration.md#pattern-4-pod-reuse-faster-start).
+
+**What is kept, and what is not.** A reused pod keeps the container filesystems outside the workspace,
+background processes started by an earlier step, and the state inside its sidecars (rows in the
+database, a warm cache). It does not keep the workspace: before the next run, the agent empties it from
+inside the pod as root (dot-files included), then re-applies the pod's `fsGroup`. If that fails, the
+agent removes the old pod, logs `reused claim pod could not be prepared; creating a fresh one`, and
+starts a new one. The fresh start gets its own `podStartTimeout`, so a run whose reuse attempt itself ran
+into the timeout can spend up to twice `podStartTimeout` before its steps begin. Step environment variables, secrets and credentials are passed to each step at exec
+time and are never part of the pod, so a later run does not inherit them. Treat everything else in the
+pod as shared between runs of the job: do not rely on a reused pod being clean.
+
+**Pool scope.** An idle pod is held per workspace directory, that is per job and per `maxConcurrent`
+slot. The workspace directory is per job, so another job never meets this job's idle pod. A run reuses
+a pod only when it is the same job on the same slot, the pod's fingerprint matches and the workspace
+directory is still the one the pod was released with (a run that is not pooled, for example after
+`reuse` was switched to `false` and back, replaces the directory, and the pod is then removed instead
+of reused). With many slots, the same job lands on different slots and finds no idle pod there, so the
+hit rate is best with few slots. A different fingerprint on the slot removes the idle pod it finds
+there.
+
+**Trust.** Anything a step writes outside the workspace persists to the next run of the same job on that
+slot, whatever triggered it (another branch, another user, a webhook): credentials a step leaves in `$HOME`
+(`docker login`, a git credential store, a cloud CLI profile), files in `/tmp`, and installed tools. Only
+set `reuse: true` on jobs whose runs you would let see each other's container state, and have steps clean
+up credentials they create.
+
+**Fingerprint.** The fingerprint is a hash of everything the pod's containers were created from: the job
+name, the workspace paths, every container's definition (image reference, environment, resource
+limits, command and args, security context, pod-level security context), the **resolved image ID** of
+every image, the pause and runner images, the tools directory, and the rootless user-namespace limit.
+The images are the per-run expanded references (the controller expands the `podTemplate` with the run's
+parameters and variables), never the template text. Changing any of them, or a mutable tag such as
+`:latest` pointing at a new image after its re-pull, makes the next run start a fresh pod and removes the
+old one.
+
+**Health.** A pod is returned to the pool only if all its containers are still running and no step exec
+was interrupted by a cancellation or a timeout. A `docker exec` that is killed from the client side
+leaves its process running inside the container, so a run **cancelled or timed out while a step is
+executing** (an exec cut off by its context) discards its pod. A cancelled run whose steps had already
+finished executing, and a run whose step simply exited non-zero, are still pooled. When the next run asks for the pod, the agent
+checks again that every container is running; a pod whose sidecar has exited is removed and replaced.
+
+**Sidecar logs.** The sidecar log shown in a run starts after the newest line a sidecar had already
+written when the run took the pod. The boundary is the container runtime's own timestamp of that line
+(`logs --timestamps`), not the agent's clock, because a VM-backed runtime (Docker Desktop, podman
+machine) or a remote daemon can disagree with the agent's clock by seconds or more: a boundary taken from
+the agent's clock would either replay the previous run's output into this run's log or drop this run's
+first lines. Output a sidecar printed while the pod sat idle belongs to neither run and is not shown.
+
+**Limits and lifecycle.**
+
+| Flag | Config key | Env | Default |
+|---|---|---|---|
+| `--pool-idle-timeout` | `poolIdleTimeout` | `UNIFIED_AGENT_POOL_IDLE_TIMEOUT` | `30m`; `0` never evicts by age |
+| `--pool-max-idle` | `poolMaxIdle` | `UNIFIED_AGENT_POOL_MAX_IDLE` | `4`; `0` disables pooling |
+
+- The agent keeps at most `poolMaxIdle` idle pods; when a release would exceed it, the pod that has been
+  idle the longest is removed. An idle pod is removed after `poolIdleTimeout`.
+- Idle pods are checked for expiry every quarter of `poolIdleTimeout`, but no more often than every 30
+  seconds and no less often than every minute, so a pod is removed up to about 25% (or up to 30
+  seconds, for a short timeout) after `poolIdleTimeout`.
+- `poolIdleTimeout` defaults to `30m` here, while the Kubernetes agent's `poolIdleTimeout` is unset by
+  default (idle Pods are never evicted). Set it explicitly if you want the same behaviour on both.
+- Pooled pods exist only in the agent's memory and are not restored after a restart: the
+  [startup sweep](#crash-orphaned-claim-containers) removes them, and a graceful shutdown removes the
+  idle pooled pods itself once its runs have finished (within 30 seconds; the agent logs a warning if it
+  runs out of time, and the next start's sweep removes the rest).
+- The workspace garbage collector (`workspaceRetentionDays`) skips a workspace directory whose pod is in
+  the pool.
+- A pooled pod holds its sidecars' memory and ports-in-use (inside its own network namespace) for as long
+  as it is idle; size `poolMaxIdle` for that.
+
+**When a claim is not pooled.** `reuse: true` is honoured only for isolated jobs on a docker, podman or
+nerdctl runtime. `wslc` runs through the same docker-compatible CLI code path, so it is pooled the same
+way, but it is not among the runtimes this was verified on; if its CLI lacks `logs --timestamps --tail`
+or prints diagnostics on the log stream that the agent does not recognise (it fails closed rather than guess),
+every reuse attempt falls back to a fresh pod (see the next paragraph's log line). Otherwise the run behaves as if `reuse` were unset, the pod is removed when the run ends,
+and the agent logs one Info line, `podTemplate.reuse: claim pod not pooled`, with a `reason`:
+
+- a `detached` run (its workspace is per run, so there is nothing to share);
+- a container runtime without container inspection (Apple `container`);
+- `poolMaxIdle` is `0`.
+
+A negative `poolIdleTimeout` or `poolMaxIdle` (flag, env or config file) is refused at startup; use `0`.
+
+`reuse` together with `spec.volumes` fails the run, as on Kubernetes: `spec.volumes cannot be combined
+with podTemplate.reuse: a reused pod keeps the volumes it was created with, which contradicts a volume's
+lifecycle`.
 
 ---
 

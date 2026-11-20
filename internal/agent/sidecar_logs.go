@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
@@ -30,13 +31,19 @@ type sidecarLogPump struct {
 	runID    string
 	masker   *secrets.Masker
 	sidecars []SidecarHandle
+	// since, when non-zero, bounds each sidecar's log stream to output after
+	// the claim started: a reused pod's sidecars carry earlier runs' output.
+	since time.Time
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
-func newSidecarLogPump(rt crt.ContainerRuntime, client *Client, agentID, runID string, masker *secrets.Masker, sidecars []SidecarHandle) *sidecarLogPump {
-	return &sidecarLogPump{rt: rt, client: client, agentID: agentID, runID: runID, masker: masker, sidecars: sidecars}
+// newSidecarLogPump builds the pump. With a non-zero since and a runtime that
+// implements crt.PodRuntime, streams start at since (LogsSince); otherwise
+// they replay the container's whole log (Logs).
+func newSidecarLogPump(rt crt.ContainerRuntime, client *Client, agentID, runID string, masker *secrets.Masker, sidecars []SidecarHandle, since time.Time) *sidecarLogPump {
+	return &sidecarLogPump{rt: rt, client: client, agentID: agentID, runID: runID, masker: masker, sidecars: sidecars, since: since}
 }
 
 // Start spawns one streaming goroutine per sidecar. Idempotent-safe to call once.
@@ -75,7 +82,13 @@ func (p *sidecarLogPump) stream(ctx context.Context, sc SidecarHandle) {
 	// to the controller, not part of the stream itself.
 	flushCtx := context.WithoutCancel(ctx)
 	p.reportStatus(flushCtx, sc, idx, "running", nil)
-	if err := p.rt.Logs(ctx, sc.Handle, stdout, stderr); err != nil {
+	var err error
+	if pr, ok := p.rt.(crt.PodRuntime); ok && !p.since.IsZero() {
+		err = pr.LogsSince(ctx, sc.Handle, p.since, stdout, stderr)
+	} else {
+		err = p.rt.Logs(ctx, sc.Handle, stdout, stderr)
+	}
+	if err != nil {
 		slog.Warn("sidecar log stream ended with error", "container", sc.Name, "error", err)
 	}
 	// Flush remainder with a live (non-cancelled) context so final lines ship.

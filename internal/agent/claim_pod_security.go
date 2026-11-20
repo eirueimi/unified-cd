@@ -183,7 +183,13 @@ func (m *claimPodManager) execHelper(ctx context.Context, pause crt.ContainerHan
 		return -1, fmt.Errorf("claim pod helper exec: the pause container is not running")
 	}
 	n := len(argv)
-	return m.rt.Exec(ctx, pause, crt.ExecSpec{Shell: argv[:n-1], Script: argv[n-1]}, stdout, stderr)
+	code, err := m.rt.Exec(ctx, pause, crt.ExecSpec{Shell: argv[:n-1], Script: argv[n-1]}, stdout, stderr)
+	if ctx.Err() != nil {
+		// A pause exec cut off by its context may leave its process running in
+		// the pause container (chown, copy-out); such a pod is never pooled.
+		m.interrupted.Store(true)
+	}
+	return code, err
 }
 
 // applyFSGroup runs `ucd-sh fsgroup` in pause over the workspace and every

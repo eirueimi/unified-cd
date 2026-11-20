@@ -29,6 +29,12 @@ type isolatedHarness struct {
 
 	finishStatus string
 	finishCalled bool
+	finishCalls  int
+
+	// runStatus, when non-empty, is what GET /runs/{id} reports instead of
+	// Running; getRunCalls counts those requests.
+	runStatus   api.RunStatus
+	getRunCalls int
 
 	// logsByStep captures every AppendLogBulk line, keyed by stepIndex.
 	logsByStep map[int][]api.LogAppendRequest
@@ -72,7 +78,14 @@ func newIsolatedServer(t *testing.T, agentID string, h *isolatedHarness) *httpte
 	})
 	mux.HandleFunc("GET /api/v1/runs/{runId}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(api.Run{ID: r.PathValue("runId"), Status: api.RunRunning})
+		h.mu.Lock()
+		h.getRunCalls++
+		st := api.RunRunning
+		if h.runStatus != "" {
+			st = h.runStatus
+		}
+		h.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(api.Run{ID: r.PathValue("runId"), Status: st})
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/finish", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -82,6 +95,7 @@ func newIsolatedServer(t *testing.T, agentID string, h *isolatedHarness) *httpte
 		h.mu.Lock()
 		h.finishStatus = body.Status
 		h.finishCalled = true
+		h.finishCalls++
 		h.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	})

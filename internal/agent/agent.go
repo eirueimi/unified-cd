@@ -180,6 +180,23 @@ type Agent struct {
 	PauseImage  string
 	RunnerImage string
 
+	// PodPullTimeout bounds the claim pod's image-pull step and
+	// PodStartTimeout bounds creating/starting its containers after the pull.
+	// Values <= 0 use defaultPodPullTimeout / defaultPodStartTimeout.
+	PodPullTimeout  time.Duration
+	PodStartTimeout time.Duration
+
+	// PoolIdleTimeout is how long an idle pooled claim pod (podTemplate.reuse:
+	// true) is kept before it is removed; 0 never evicts by age. PoolMaxIdle
+	// caps the idle pods the agent holds (the oldest is removed first); 0
+	// disables pooling, so every claim pod is removed when its run ends.
+	// cmd/unified-cd-agent defaults them to 30m and 4.
+	PoolIdleTimeout time.Duration
+	PoolMaxIdle     int
+	// hostPool holds the idle pooled pods; created by Run (nil outside it, in
+	// which case nothing is pooled).
+	hostPool *hostPodPool
+
 	// ToolsDir is the host directory holding the embedded ucd-sh shim
 	// (written by InstallShim, INSIDE the workspace base — see that func's
 	// doc comment for why it must not be a sibling of the workspace dir),
@@ -545,6 +562,24 @@ func (a *Agent) Run(ctx context.Context) error {
 		slog.Info("removed a stale scratch directory", "dir", d)
 	}
 
+	// Claim-pod and scope containers a previous process of this agent ID left
+	// behind (crash, OOM, reboot): no claim of this process exists yet, so
+	// everything carrying this agent's label is an orphan.
+	if rt, rtErr := a.containerRuntime(); rtErr != nil {
+		slog.Info("runtime unavailable; startup container sweep skipped", "error", rtErr)
+	} else if removed := sweepOrphanContainers(ctx, rt, a.ID); len(removed) > 0 {
+		slog.Info("removed orphaned containers from a previous agent process", "count", len(removed))
+	}
+
+	// The pool of idle claim pods (podTemplate.reuse). It starts empty: pods of
+	// a previous process were removed by the sweep above. A runtime that is not
+	// available leaves it nil, and nothing is pooled.
+	if a.PoolMaxIdle > 0 {
+		if rt, rtErr := a.containerRuntime(); rtErr == nil {
+			a.hostPool = newHostPodPool(rt, a.PoolIdleTimeout, a.PoolMaxIdle)
+		}
+	}
+
 	// Every volume is free at this point: the agent has lost all the runs it
 	// was executing, and the controller's lost-claim reconcile (above) has
 	// failed them. Remove the links they left, before any claim can mount one.
@@ -557,6 +592,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	// it will be cancelled DrainTimeout after ctx is cancelled.
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()
+	if a.hostPool != nil {
+		a.hostPool.StartEviction(runCtx)
+	}
 	if a.DrainTimeout > 0 {
 		go func() {
 			<-ctx.Done()
@@ -615,7 +653,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		// in use by ANOTHER live agent process sharing this wsBase would have
 		// to be younger than retention (days-scale) to survive anyway, since a
 		// truly stuck/abandoned dir is exactly what this GC exists to reclaim.
-		if removed, err := gcWorkspaces(runCtx, wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now(), a.containerRuntime, a.ToolsDir); err != nil {
+		if removed, err := gcWorkspaces(runCtx, wsBase, retention, gcActiveSet(activeWorkDirs.Snapshot, a.hostPool), time.Now(), a.containerRuntime, a.ToolsDir); err != nil {
 			slog.Warn("workspace gc: startup sweep failed", "error", err)
 		} else if len(removed) > 0 {
 			slog.Info("workspace gc: startup sweep removed aged workspace dirs", "count", len(removed), "dirs", removed)
@@ -658,6 +696,18 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	wg.Wait()
+
+	// All slots are done: remove the idle pooled claim pods (and stop their
+	// eviction). Context-detached, because ctx is already cancelled on a drain
+	// and the containers must not outlive the agent process.
+	if a.hostPool != nil {
+		poolCtx, poolCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		a.hostPool.Close(poolCtx)
+		if poolCtx.Err() != nil {
+			slog.Warn("shutdown: removing idle pooled claim pods exceeded its 30s budget; some containers may be left behind (the next start's sweep removes them)")
+		}
+		poolCancel()
+	}
 
 	// All slots are done: stop the heartbeat and GC loop and JOIN them before
 	// returning, so neither a beat nor a sweep can outlive Run. runCancel is
@@ -842,6 +892,10 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 				a.failRun(runCtx, resp.RunID, a.nativeRefusal())
 				return
 			}
+			if reuseWithVolumes(resp) {
+				a.failRun(runCtx, resp.RunID, hostReuseWithVolumesMsg)
+				return
+			}
 			mode := "isolated"
 			if resp.Native {
 				mode = "native"
@@ -881,8 +935,13 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			// Registered before prepareWorkspace so a half-prepared workspace is
 			// swept too; runs after executeRun and its unmounts, and before the
 			// active-set entries and the volume reservation are released.
-			defer finishWorkspace(runCtx, workDir, vol, a.containerRuntime, a.ToolsDir)
-			if err := prepareWorkspaceFn(runCtx, prepDir, mode, vol, clean, a.containerRuntime, a.ToolsDir); err != nil {
+			// A poolable claim's pod (and its bind mount of workDir) outlives the
+			// run, so its workspace directory must keep its inode: it is emptied
+			// in place, never removed.
+			opts := claimOpts{Poolable: !detached}
+			keepDir := claimPoolable(resp, opts)
+			defer finishWorkspace(runCtx, workDir, vol, keepDir, a.containerRuntime, a.ToolsDir)
+			if err := prepareWorkspaceFn(runCtx, prepDir, mode, vol, clean, keepDir, a.containerRuntime, a.ToolsDir); err != nil {
 				// The claim is ours but its workspace could not be prepared, so the
 				// run can never start. Fail it on the controller (retried until it
 				// lands) rather than leaving it Running until the stuck-run reaper
@@ -919,7 +978,7 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 						"toolsDir", a.ToolsDir, "runId", resp.RunID)
 				}
 			}
-			a.executeRun(runCtx, resp, prepDir)
+			a.executeRunWith(runCtx, resp, prepDir, opts)
 		}()
 	}
 }
@@ -949,7 +1008,7 @@ func (a *Agent) workspaceGCLoop(ctx context.Context, wsBase string, retention ti
 			return
 		case <-ticker.C:
 		}
-		removed, err := gcWorkspaces(ctx, wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now(), a.containerRuntime, a.ToolsDir)
+		removed, err := gcWorkspaces(ctx, wsBase, retention, gcActiveSet(activeWorkDirs.Snapshot, a.hostPool), time.Now(), a.containerRuntime, a.ToolsDir)
 		if err != nil {
 			slog.Warn("workspace gc: sweep failed", "error", err)
 			continue
@@ -984,6 +1043,54 @@ func (a *Agent) workspaceGCLoop(ctx context.Context, wsBase string, retention ti
 // unrecoverable-claim errors, so the run is marked Failed instead of hanging
 // as Running until the stuck-run reaper trips.
 func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir string) {
+	a.executeRunWith(ctx, c, workDir, claimOpts{})
+}
+
+// claimOpts carries what runLoop knows about a claim beyond the claim itself.
+type claimOpts struct {
+	// Poolable is false for claims that must never share a pod: detached
+	// runs, whose workspace and pod are per run.
+	Poolable bool
+}
+
+// claimPoolable reports whether the claim's pod may outlive the run and serve
+// a later one: an isolated claim whose podTemplate asks for reuse, with no
+// volumes (a volume is the job's own persistence and is mounted per run), that
+// runLoop marked poolable.
+func claimPoolable(c api.ClaimResponse, o claimOpts) bool {
+	return o.Poolable && !c.Native && c.PodTemplate != nil && c.PodTemplate.Reuse && len(c.Volumes) == 0
+}
+
+// claimWillPool reports whether the claim's pod is released into the pool when
+// its run ends. A claim that asked for podTemplate.reuse but is not pooled logs
+// one Info line naming why: a detached run (its workspace is per run), a
+// runtime that cannot inspect containers (no crt.PodRuntime), or pooling being
+// disabled (poolMaxIdle 0).
+func (a *Agent) claimWillPool(c api.ClaimResponse, o claimOpts, rt crt.ContainerRuntime) bool {
+	if c.Native || c.PodTemplate == nil || !c.PodTemplate.Reuse {
+		return false
+	}
+	reason := ""
+	switch _, hasPod := rt.(crt.PodRuntime); {
+	case !o.Poolable:
+		reason = "detached runs never share a pod"
+	case !hasPod:
+		reason = "the container runtime does not support pod reuse (no container inspection)"
+	case a.PoolMaxIdle <= 0:
+		reason = "pooling is disabled (poolMaxIdle is 0)"
+	case a.hostPool == nil:
+		reason = "the container runtime was unavailable when the agent started, so no pod pool was created"
+	}
+	if reason != "" {
+		slog.Info("podTemplate.reuse: claim pod not pooled", "runId", c.RunID, "reason", reason)
+		return false
+	}
+	return true
+}
+
+// executeRunWith is executeRun with the claim's options; see executeRun for
+// the full contract.
+func (a *Agent) executeRunWith(ctx context.Context, c api.ClaimResponse, workDir string, o claimOpts) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("agent panic in executeRun", "runId", c.RunID, "panic", r, "stack", string(debug.Stack()))
@@ -1002,6 +1109,10 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	// but a claim can still arrive (stale routing, an older controller).
 	if c.Native && a.nativeOff() {
 		a.failRun(ctx, c.RunID, a.nativeRefusal())
+		return
+	}
+	if reuseWithVolumes(c) {
+		a.failRun(ctx, c.RunID, hostReuseWithVolumesMsg)
 		return
 	}
 
@@ -1039,6 +1150,8 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	}
 
 	var pod *claimPodManager
+	var claimSince time.Time
+	var poolKey *hostPoolKey
 	if !c.Native {
 		rt, err := a.containerRuntime()
 		if err != nil {
@@ -1062,6 +1175,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			return
 		}
 		pod = newClaimPodManager(rt, workDir, hostNamedMountPath(c.PodTemplate), a.PauseImage, a.RunnerImage, a.ToolsDir)
+		pod.agentID = a.ID
 		if len(c.Volumes) > 0 {
 			// workDir is already the root volume's directory if there is one,
 			// so only the other volumes are added as mounts.
@@ -1092,15 +1206,122 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			_ = a.Client.AppendLogBulk(ctx, a.ID, c.RunID, -1, reqs)
 		}
 		pod.maxMappedID = a.securityContextProbe().MaxMappedID // 0 = no limit (rootful, or the probe did not run)
-		if err := pod.Start(ctx, c.PodTemplate); err != nil {
-			pod.CloseAll(context.WithoutCancel(ctx))
-			failClaim("claim pod construction failed", err)
+		defs, err := claimContainerDefs(c.PodTemplate, a.RunnerImage)
+		if err != nil {
+			failClaim("claim pod construction failed", fmt.Errorf("claim pod: %w", err))
 			return
 		}
+		// The watcher covers the pull and start phases, where RunClaim's own
+		// cancel poller does not exist yet. stop() is idempotent: the defer
+		// covers every early return, and the explicit call below hands over
+		// to RunClaim's poller before the steps start.
+		wctx, terminal, stop := startClaimCancelWatch(ctx, a.Client, c.RunID, CancelPollInterval)
+		defer stop()
+		// abandon handles an error that coincides with the run going terminal:
+		// the controller already owns the final status, so no FinishRun is
+		// sent. Partial containers are removed with a context that survives
+		// the cancellation.
+		abandon := func() bool {
+			if !terminal() {
+				return false
+			}
+			pod.CloseAll(context.WithoutCancel(ctx))
+			slog.Info("run became terminal during claim pod start; abandoning", "runId", c.RunID)
+			return true
+		}
+		poolable := a.claimWillPool(c, o, rt)
+		pullD := a.podPullTimeout()
+		pullCtx, cancelPull := context.WithTimeoutCause(wctx, pullD, errPullTimeout)
+		imageIDs, perr := pullClaimImages(pullCtx, rt, claimImages(defs, a.PauseImage))
+		timedOut := context.Cause(pullCtx) == errPullTimeout
+		cancelPull()
+		if perr != nil {
+			if abandon() {
+				return
+			}
+			if timedOut {
+				a.failRun(ctx, c.RunID, pullTimeoutMsg(pullD))
+			} else {
+				failClaim("claim pod image pull failed", perr)
+			}
+			return
+		}
+		startD := a.podStartTimeout()
+		reused := false
+		if poolable {
+			podEff, err := dsl.ResolveSecurity(podSecurityContext(c.PodTemplate), nil)
+			if err != nil {
+				failClaim("claim pod construction failed", fmt.Errorf("claim pod: %w", err))
+				return
+			}
+			// Defs hold the per-run expanded images (the controller expands the
+			// podTemplate with the run's params and vars), and imageIDs what
+			// those references resolve to now.
+			fp, err := hostPodFingerprint(hostPodFingerprintInput{
+				JobName: c.JobName, WorkDir: workDir, MountPath: pod.mountPath,
+				Defs: defs, PodSecurity: podEff, ImageIDs: imageIDs,
+				PauseImage: a.PauseImage, RunnerImage: a.RunnerImage, ToolsDir: a.ToolsDir,
+				MaxMappedID: pod.maxMappedID,
+			})
+			if err != nil {
+				failClaim("claim pod construction failed", err)
+				return
+			}
+			poolKey = &hostPoolKey{workDir: workDir, jobName: c.JobName, fingerprint: fp}
+			// Acquire inspects the pooled pod's containers and may remove it, so
+			// it runs under the start phase's context: a wedged daemon is
+			// bounded by podStartTimeout and a cancelled run interrupts it.
+			hitCtx, cancelHit := context.WithTimeoutCause(wctx, startD, errStartTimeout)
+			if m, ok := a.hostPool.Acquire(hitCtx, workDir, c.JobName, fp); ok {
+				m.runLog, m.maxMappedID = pod.runLog, pod.maxMappedID
+				// The sidecar log boundary is read before the workspace is
+				// emptied and before any step runs.
+				since, herr := m.sidecarLogBoundary(hitCtx)
+				if herr == nil {
+					herr = m.prepareReuse(hitCtx, c.PodTemplate)
+				}
+				cancelHit()
+				if herr == nil {
+					pod, claimSince, reused = m, since, true
+				} else {
+					m.CloseAll(context.WithoutCancel(ctx))
+					if terminal() {
+						slog.Info("run became terminal during claim pod start; abandoning", "runId", c.RunID)
+						return
+					}
+					slog.Info("reused claim pod could not be prepared; creating a fresh one", "runId", c.RunID, "error", herr)
+				}
+			} else {
+				cancelHit()
+			}
+		}
+		if !reused {
+			startCtx, cancelStart := context.WithTimeoutCause(wctx, startD, errStartTimeout)
+			serr := pod.Start(startCtx, c.PodTemplate)
+			timedOut = context.Cause(startCtx) == errStartTimeout
+			cancelStart()
+			if serr != nil {
+				if abandon() {
+					return
+				}
+				pod.CloseAll(context.WithoutCancel(ctx))
+				if timedOut {
+					a.failRun(ctx, c.RunID, startTimeoutMsg(startD))
+				} else {
+					failClaim("claim pod construction failed", serr)
+				}
+				return
+			}
+		}
+		stop()
 	}
 	backend := newHostBackend(a, c.RunID, c.JobName, workDir, pod)
+	backend.poolKey = poolKey
 	backend.volumePaths = volumePaths
 	backend.volumeRefs = refs
+	// Zero for a fresh pod: its sidecars' whole log belongs to this run. A
+	// reused pod sets the claim start so earlier runs' output is not replayed.
+	backend.claimSince = claimSince
 	runClaimFn(ctx, a.Client, a.ID, c, backend)
 }
 

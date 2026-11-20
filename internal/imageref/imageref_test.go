@@ -20,3 +20,16 @@ func TestValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestAlwaysPull(t *testing.T) {
+	for _, ref := range []string{"alpine", "alpine:latest", "reg:5000/ns/alpine", "reg:5000/ns/alpine:latest"} {
+		if !AlwaysPull(ref) {
+			t.Errorf("AlwaysPull(%q) = false, want true", ref)
+		}
+	}
+	for _, ref := range []string{"alpine:3.20", "reg:5000/alpine:3.20", "alpine@sha256:abc", "busybox:1.36@sha256:abc", "alpine:latest@sha256:abc"} {
+		if AlwaysPull(ref) {
+			t.Errorf("AlwaysPull(%q) = true, want false", ref)
+		}
+	}
+}

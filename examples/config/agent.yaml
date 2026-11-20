@@ -34,6 +34,19 @@ labels:
 # built agent). Set it to a digest to pin the image:
 # runnerImage: ghcr.io/eirueimi/unified-cd-runner@sha256:<digest>
 
+# podPullTimeout / podStartTimeout: an isolated job's claim pod is created in two bounded steps. The
+# agent first pulls its images (:latest and untagged ones on every claim), within podPullTimeout
+# (default 30m), then creates and starts the containers within podStartTimeout (default 5m). A
+# non-positive or unset value means the default.
+# podPullTimeout: 30m
+# podStartTimeout: 5m
+
+# poolIdleTimeout / poolMaxIdle: claim pods of jobs with podTemplate.reuse: true are kept after the
+# run for the next one. poolIdleTimeout is how long an idle pod is kept (default 30m, 0 never evicts
+# by age); poolMaxIdle caps the idle pods (default 4, 0 disables pooling).
+# poolIdleTimeout: 30m
+# poolMaxIdle: 4
+
 # finallyTimeout: ceiling on each of a run's post-DAG cleanup phases — each
 # post:/cache: hook drain, the spec.finally pipeline, and scope/claim-pod
 # teardown. Those phases keep running after a cancellation (that is what

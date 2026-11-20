@@ -93,9 +93,9 @@ func TestRunLoop_DisabledNativeClaimFailsBeforeWorkspacePrep(t *testing.T) {
 	orig := prepareWorkspaceFn
 	defer func() { prepareWorkspaceFn = orig }()
 	var prepared atomic.Int32
-	prepareWorkspaceFn = func(ctx context.Context, workDir, mode string, vol *volumeWorkspace, clean bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
+	prepareWorkspaceFn = func(ctx context.Context, workDir, mode string, vol *volumeWorkspace, clean, keepDir bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
 		prepared.Add(1)
-		return orig(ctx, workDir, mode, vol, clean, rtFn, toolsDir)
+		return orig(ctx, workDir, mode, vol, clean, keepDir, rtFn, toolsDir)
 	}
 
 	finishCh := make(chan string, 2)
