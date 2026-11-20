@@ -241,11 +241,15 @@ func TestStartClaimCancelWatch_StopJoins(t *testing.T) {
 	assert.False(t, terminal())
 	assert.NoError(t, wctx.Err())
 	stop()
+	// A GetRun already on the wire when stop cancelled it can still reach the
+	// server handler after stop returns (seen on Windows runners), so let the
+	// server settle before taking the count.
+	time.Sleep(5 * iv)
 	h.mu.Lock()
 	n := h.getRunCalls
 	h.mu.Unlock()
 	require.Positive(t, n, "the watcher polled while running")
-	time.Sleep(3 * iv)
+	time.Sleep(5 * iv)
 	h.mu.Lock()
 	assert.Equal(t, n, h.getRunCalls, "no GetRun after stop")
 	h.mu.Unlock()
