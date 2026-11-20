@@ -10,7 +10,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/cache"
 )
 
 // The job controls symlinks in the workspace and the sidecar resolves them in
@@ -45,7 +45,7 @@ func storedBytes(t *testing.T, dir string) []byte {
 }
 
 func TestRun_RootRequired(t *testing.T) {
-	prov := localProvider(t.TempDir())
+	prov := localProvider(t, t.TempDir())
 	for _, args := range [][]string{
 		{"artifact", "upload", "--run", "r1", "--name", "a", "--path", t.TempDir()},
 		{"artifact", "download", "--run", "r1", "--name", "a", "--dest", t.TempDir()},
@@ -67,7 +67,7 @@ func TestRun_UploadThroughSymlinkOutOfRootIsRefused(t *testing.T) {
 	ws := t.TempDir()
 	mustSymlink(t, creds, filepath.Join(ws, "l"))
 	storeDir := t.TempDir()
-	prov := localProvider(storeDir)
+	prov := localProvider(t, storeDir)
 	ctx := context.Background()
 
 	var stderr bytes.Buffer
@@ -100,7 +100,7 @@ func TestRun_DownloadAndRestoreThroughSymlinkOutOfRootAreRefused(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "ca.pem"), []byte("PWNED"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	prov := localProvider(t.TempDir())
+	prov := localProvider(t, t.TempDir())
 	ctx := context.Background()
 	if code := run(ctx, prov, []string{"artifact", "upload", "--run", "r1", "--name", "a", "--root", ws, "--path", src}, io.Discard); code != 0 {
 		t.Fatalf("upload exit=%d", code)
@@ -119,7 +119,7 @@ func TestRun_DownloadAndRestoreThroughSymlinkOutOfRootAreRefused(t *testing.T) {
 		t.Error("artifact download below a link out of the workspace succeeded")
 	}
 	var stdout bytes.Buffer
-	_ = runCache(ctx, mustStore(t, prov), "restore",
+	_ = runCache(ctx, mustRemote(t, prov), "restore",
 		[]string{"--key", "k", "--job", "j", "--root", ws, "--path", filepath.Join(ws, "l")}, &stdout, io.Discard)
 	if bytes.Contains(stdout.Bytes(), []byte("UCD_CACHE_RESULT=hit")) {
 		t.Error("cache restore through a link out of the workspace reported a hit")
@@ -140,7 +140,7 @@ func TestRun_InRootSymlinkStillWorks(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustSymlink(t, "real", filepath.Join(ws, "alias"))
-	prov := localProvider(t.TempDir())
+	prov := localProvider(t, t.TempDir())
 	ctx := context.Background()
 	if code := run(ctx, prov, []string{"artifact", "upload", "--run", "r1", "--name", "a", "--root", ws,
 		"--path", filepath.Join(ws, "alias", "a.txt")}, io.Discard); code != 0 {
@@ -155,11 +155,11 @@ func TestRun_InRootSymlinkStillWorks(t *testing.T) {
 	}
 }
 
-func mustStore(t *testing.T, prov storeProvider) objectstore.ObjectStore {
+func mustRemote(t *testing.T, prov clientProvider) cache.Remote {
 	t.Helper()
-	st, err := prov(context.Background(), "")
+	c, err := prov("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return st
+	return c.Caches()
 }

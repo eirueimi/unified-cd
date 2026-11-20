@@ -71,19 +71,16 @@ agentAuth:
       requiredLabels: ["kind:kubernetes"]
       accessTokenTTL: 1h
       enabled: true
-{{- if .Values.bundledStores.enabled }}
   {{- /*
-  Lets the agent's job Pods obtain object-store credentials for the artifact
-  sidecar (the agent runs with sidecarS3SecretMode: broker when the bundled
-  stores are enabled). Job Pods run under the job namespace's default
-  ServiceAccount; name a dedicated one through controller.config when you use
-  a custom ServiceAccount.
+  Lets the agent's job Pods ask the controller for presigned object URLs for
+  the artifact sidecar (the field keeps its pre-presign name). Job Pods run
+  under the job namespace's default ServiceAccount; name a dedicated one
+  through controller.config when you use a custom ServiceAccount.
   */}}
   kubernetesStoreCredentialPolicies:
     - cluster: in-cluster
       namespaces: [{{ .Values.jobNamespace.name | quote }}]
       serviceAccounts: [default]
-{{- end }}
 {{- end -}}
 
 {{/*
@@ -154,9 +151,6 @@ labels:
 namespace: {{ .Values.jobNamespace.name | quote }}
 maxConcurrent: 5
 podImage: golang:1.24-alpine
-{{- if .Values.bundledStores.enabled }}
-sidecarS3SecretMode: broker
-{{- end }}
 {{- end -}}
 
 {{/*

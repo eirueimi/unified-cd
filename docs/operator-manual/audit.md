@@ -45,8 +45,10 @@ recorded, allowed or denied, for the following actions. A **denied read** is rec
 | `agent.identity.enable` / `agent.identity.disable` / `agent.credentials.revoke` | agent identity lifecycle routes |
 
 The agent secrets fetch also writes one row per GitHub App job token it hands out or refuses, and
-one per refused request for an App's private key (`gitcredential.token_issue`, see [GitHub App job tokens](#github-app-job-tokens)); it is the only
-agent route besides credential exchange and refresh that is audited.
+one per refused request for an App's private key (`gitcredential.token_issue`, see [GitHub App job tokens](#github-app-job-tokens)). The
+object URL endpoint writes a row for each write operation, each `403` refusal and each `409 run-finished` refusal (`objects.presign`, see
+[Object URL requests](#object-url-requests)). These are the only agent routes besides credential
+exchange and refresh that are audited.
 
 Each recorded entry contains:
 
@@ -64,7 +66,7 @@ Each recorded entry contains:
 | `permission` | The permission the request was checked against (for example `run.trigger`); empty when no decision applied |
 | `scope` | The job name for a folder-scopable decision; empty for a global decision and for a refusal before any job was looked at |
 | `grantedBy` | A short description of the first grant that allowed the request; empty on a denial |
-| `details` | Optional structured context (a JSON object). `gitcredential.token_issue` rows carry it (see [GitHub App job tokens](#github-app-job-tokens)) and successful `token.create` rows carry `{"patId", "name"}` (see [Actor identity](#actor-identity)); absent on every other row |
+| `details` | Optional structured context (a JSON object). `gitcredential.token_issue` rows carry it (see [GitHub App job tokens](#github-app-job-tokens)) and successful `token.create` rows carry `{"patId", "name"}` (see [Actor identity](#actor-identity)), and `objects.presign` rows carry it (see [Object URL requests](#object-url-requests)); absent on every other row |
 
 ### Actor identity
 
@@ -165,6 +167,37 @@ the credential as it was at fetch time, which is also what was checked. A reques
 private key (the credential's `secretRef`) is refused with `403` before any token is issued and
 writes one row with reason `private_key`; the key is never read for it.
 
+### Object URL requests
+
+Agents and Kubernetes artifact sidecars ask `POST /api/v1/runs/{runID}/objects/presign` for
+short-lived presigned URLs to their run's artifacts and their job's caches. The endpoint writes an
+audit row directly (it is outside the audit middleware):
+
+| Field | Value |
+|---|---|
+| `action` | `objects.presign` |
+| `actor` / `actorId` | `agent` / `agent:<agent id>` for an agent; `agent` with an empty `actorId` for a sidecar (its Pod UID is in `details.podUid`) |
+| `method` / `path` | `POST` / `/api/v1/runs/<run id>/objects/presign` |
+| `resource` | `artifact:<run id>/<artifact name>` or `cache:<job name>/<cache key>` for an operation (cut to 256 bytes); the run ID for a `403` or `409 run-finished` refusal |
+| `status` | The status the requester saw |
+| `details` | `runId`, `kind` and `op` for an operation; `podUid` for a sidecar |
+
+Rows are written for:
+
+- the write operations `put`, `multipart-start`, `multipart-complete`, `multipart-abort` and
+  `commit` (the cache metadata write), whatever their outcome;
+- every `403` refusal of an authenticated requester: another agent's run, a Pod that is not the one
+  bound to the run, or a namespace/ServiceAccount outside the allow-list;
+- every `409 run-finished` refusal of a Pod's sidecar: the run has finished (or, for a cancelled run, its
+  one-hour cleanup window has passed or its Pods are no longer bound).
+
+Reads (`get`, `head`) and part-URL batches (`multipart-parts`) are not recorded. Neither are `401`
+(no or invalid credential; an invalid agent credential is logged as described in
+[Failed authentication](#failed-authentication)), `429` (rate limit) or `409 binding-pending` (a
+sidecar that starts before its Pod's run binding reaches the controller retries until it does):
+recording them would let a client grow the audit log at request rate. The presigned URLs
+themselves are bearer credentials and are never recorded or logged.
+
 ### Failed authentication
 
 A request that is rejected with `401` (no credentials, unknown or expired token, failed session
@@ -191,8 +224,9 @@ The following are deliberately **not** recorded:
   `/logs`, `/finish`, `/outputs`, `/secrets/fetch`, agent-created approvals, etc.) — these use
   a per-agent principal, not a human `Principal`, and would otherwise flood
   the audit log with routine bookkeeping. The exceptions are agent credential exchange and
-  refresh, and GitHub App job token hand-outs from `/secrets/fetch`
-  ([GitHub App job tokens](#github-app-job-tokens)); an ordinary stored-secret fetch is not recorded.
+  refresh, GitHub App job token hand-outs from `/secrets/fetch`
+  ([GitHub App job tokens](#github-app-job-tokens)), and object URL write operations and `403`
+  refusals ([Object URL requests](#object-url-requests)); an ordinary stored-secret fetch is not recorded.
 - **Credential plaintext and hashes** — enrollment creation is audited by its
   metadata/action only. Access, refresh, and enrollment credentials are never
   audit fields, response-captured values, or metric labels.

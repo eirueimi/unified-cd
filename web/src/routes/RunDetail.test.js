@@ -1464,6 +1464,56 @@ describe('RunDetail — artifacts', () => {
     URL.createObjectURL = origCreate;
     URL.revokeObjectURL = origRevoke;
   });
+
+  it('navigates to the presigned URL when the controller answers JSON, with no blob', async () => {
+    const origCreate = URL.createObjectURL;
+    URL.createObjectURL = vi.fn(() => 'blob:x');
+    let requested = null;
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return emptyEventsResponse();
+      if (u.includes('/artifacts/')) {
+        requested = u;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'Content-Type': 'application/json' }),
+          json: async () => ({ url: 'https://store.example.test/artifacts/run-1/build.tar.gz?X-Amz-Signature=s' }),
+          blob: async () => {
+            throw new Error('blob must not be read for a JSON answer');
+          },
+        });
+      }
+      if (u.endsWith('/artifacts')) return jsonResponse([{ name: 'build' }]);
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-1', status: 'Succeeded', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const clicked = [];
+    const origClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      clicked.push(this.href);
+    };
+
+    try {
+      const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.artifact-item').length).toBe(1);
+      });
+      await fireEvent.click(container.querySelector('.artifact-item'));
+      await vi.waitFor(() => {
+        expect(clicked.length).toBe(1);
+      });
+      expect(requested).toContain('/runs/run-1/artifacts/build?as=url');
+      expect(clicked[0]).toContain('https://store.example.test/artifacts/run-1/build.tar.gz');
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+    } finally {
+      HTMLAnchorElement.prototype.click = origClick;
+      URL.createObjectURL = origCreate;
+    }
+  });
 });
 
 // The SSE backfill for a large log keeps the TAIL (server: sseBackfillLimit +

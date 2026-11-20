@@ -47,18 +47,48 @@ podImage: alpine:3.20
 	}
 }
 
-func TestLoadConfig_SidecarS3SecretName(t *testing.T) {
-	cfg := writeTempYAML(t, `
-server: http://localhost:8080
-namespace: ci
-sidecarS3SecretName: my-s3-secret
-`)
-	got, err := LoadConfig(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// TestConfig_RefusesSidecarS3Secret: the artifact sidecar holds no store
+// credentials any more, so a config that still sets the Secret name or mode,
+// in yaml or through the environment, stops the agent from starting with the
+// migration pointer instead of being silently ignored.
+func TestConfig_RefusesSidecarS3Secret(t *testing.T) {
+	const want = "k8s-agent config: sidecarS3SecretName and sidecarS3SecretMode are no longer supported; the artifact sidecar uses controller-issued URLs (see docs/operator-manual/migrations/2026-11-20-run-scoped-object-access.md)"
+	base := func() Config {
+		c := DefaultConfig()
+		c.Server = "http://localhost:8080"
+		c.EnrollmentPolicy = "p"
+		return c
 	}
-	if got.SidecarS3SecretName != "my-s3-secret" {
-		t.Errorf("SidecarS3SecretName = %q, want %q", got.SidecarS3SecretName, "my-s3-secret")
+	t.Run("clean config validates", func(t *testing.T) {
+		c := base()
+		require.NoError(t, c.Validate())
+	})
+	for _, tc := range []struct {
+		name   string
+		yaml   string
+		env    map[string]string
+		mutate func(*Config)
+	}{
+		{name: "yaml name", yaml: "sidecarS3SecretName: my-s3-secret\n"},
+		{name: "yaml mode", yaml: "sidecarS3SecretMode: broker\n"},
+		{name: "env name", env: map[string]string{"UNIFIED_K8S_SIDECAR_S3_SECRET_NAME": "my-s3-secret"}},
+		{name: "env mode", env: map[string]string{"UNIFIED_K8S_SIDECAR_S3_SECRET_MODE": "file"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			c := base()
+			if tc.yaml != "" {
+				path := writeTempYAML(t, "server: http://localhost:8080\nnamespace: ci\nenrollmentPolicy: p\n"+tc.yaml)
+				loaded, err := LoadConfig(path)
+				require.NoError(t, err, "LoadConfig stays lenient; Validate refuses")
+				c = loaded
+			}
+			err := c.Validate()
+			require.Error(t, err)
+			assert.EqualError(t, err, want)
+		})
 	}
 }
 

@@ -11,7 +11,7 @@ import (
 
 func TestBuildScopePodHasScratchAndSidecarNoWorkspacePVC(t *testing.T) {
 	pod := buildScopePod("run123", "ci", "scope:build", "golang:1.22",
-		map[string]string{"K": "V"}, SidecarSpec{Image: "sidecar:1", S3SecretName: "s3"}, testShimImage, corev1.ResourceRequirements{})
+		map[string]string{"K": "V"}, SidecarSpec{Image: "sidecar:1"}, testShimImage, corev1.ResourceRequirements{})
 
 	// scratch volume is emptyDir, mounted by both the step and the sidecar
 	var scratch *string

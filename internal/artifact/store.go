@@ -101,6 +101,28 @@ func ArtifactKey(runID, name string) (string, error) {
 	return fmt.Sprintf("artifacts/%s/%s.tar.gz", runID, name), nil
 }
 
+// ParseKey is the inverse of ArtifactKey: it splits
+// artifacts/{runID}/{name}.tar.gz into its run ID and name, applying the same
+// single-path-segment rules.
+func ParseKey(key string) (runID, name string, err error) {
+	rest, ok := strings.CutPrefix(key, "artifacts/")
+	if !ok {
+		return "", "", fmt.Errorf("not an artifact key: %q", key)
+	}
+	runID, file, ok := strings.Cut(rest, "/")
+	if !ok {
+		return "", "", fmt.Errorf("not an artifact key: %q", key)
+	}
+	name, ok = strings.CutSuffix(file, ".tar.gz")
+	if !ok {
+		return "", "", fmt.Errorf("not an artifact key: %q", key)
+	}
+	if _, err := ArtifactKey(runID, name); err != nil {
+		return "", "", fmt.Errorf("not an artifact key: %q: %w", key, err)
+	}
+	return runID, name, nil
+}
+
 // Upload tars+zstds dir and stores it at artifacts/{runID}/{name}.tar.gz,
 // streaming the archive so it is never fully buffered in memory.
 func Upload(ctx context.Context, store objectstore.ObjectStore, runID, name, dir string) error {

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // chunkedBody hides the length from net/http so the declared-Content-Length
@@ -19,32 +18,14 @@ func bigJSON(n int) string { return `{"token":"` + strings.Repeat("a", n) + `"}`
 
 func TestRequestBodyLimit_RejectsOversizeOnUnauthenticatedEndpoints(t *testing.T) {
 	s := NewServer(Config{MaxRequestBodyBytes: 1024}, nil)
-	for _, path := range []string{"/api/v1/agents/enroll", "/api/v1/agents/token/refresh", "/api/v1/store-credentials"} {
+	for _, path := range []string{"/api/v1/agents/enroll", "/api/v1/agents/token/refresh"} {
 		t.Run(path+" declared length", func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(bigJSON(4096)))
 			rec := httptest.NewRecorder()
 			s.Router().ServeHTTP(rec, req)
 			assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
 		})
-		t.Run(path+" chunked", func(t *testing.T) {
-			if path != "/api/v1/store-credentials" {
-				t.Skip("the enroll and refresh handlers authenticate before reading the body, so a chunked body is never read without credentials")
-			}
-			req := httptest.NewRequest(http.MethodPost, path, chunkedBody{strings.NewReader(bigJSON(4096))})
-			req.ContentLength = -1
-			rec := httptest.NewRecorder()
-			s.Router().ServeHTTP(rec, req)
-			assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
-		})
 	}
-}
-
-func TestRequestBodyLimit_SmallBodyPasses(t *testing.T) {
-	s := NewServer(Config{MaxRequestBodyBytes: 1024}, nil)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/store-credentials", strings.NewReader(`{"token":""}`))
-	rec := httptest.NewRecorder()
-	s.Router().ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusBadRequest, rec.Code, "an in-limit but invalid body is still a 400")
 }
 
 func TestRequestBodyLimit_DefaultIsOneMiB(t *testing.T) {
@@ -83,33 +64,4 @@ func TestRequestBodyLimit_ExemptAndSpecialRoutes(t *testing.T) {
 	assert.Equal(t, http.StatusRequestEntityTooLarge, read(http.MethodPost, "/api/v1/agents/a1/runs/r1/steps/0/logs/bulk", int(maxAgentLogBodyBytes)+1))
 	assert.Equal(t, http.StatusRequestEntityTooLarge, read(http.MethodPost, "/api/v1/agents/a1/runs/r1/outputs", 2048), "other agent routes use the default cap")
 	assert.Equal(t, http.StatusRequestEntityTooLarge, read(http.MethodGet, "/api/v1/runs/r1/artifacts/out", 2048), "only PUT is exempt on the artifact path")
-}
-
-func TestStoreCredentials_RateLimitedPerClientAddress(t *testing.T) {
-	s := NewServer(Config{StoreCredentialRateBurst: 20, StoreCredentialRatePerSecond: 1}, nil)
-	post := func(remote string) int {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/store-credentials", strings.NewReader(`{}`))
-		req.RemoteAddr = remote
-		rec := httptest.NewRecorder()
-		s.Router().ServeHTTP(rec, req)
-		return rec.Code
-	}
-	for i := 0; i < 20; i++ {
-		require.Equal(t, http.StatusBadRequest, post("192.0.2.1:1000"), "request %d is within the burst", i)
-	}
-	assert.Equal(t, http.StatusTooManyRequests, post("192.0.2.1:1001"))
-	assert.Equal(t, http.StatusBadRequest, post("192.0.2.2:1000"), "another client address has its own budget")
-}
-
-// Many job sidecars can reach the controller through one Ingress/LB/SNAT
-// address; the default budget must absorb a large parallel job's burst.
-func TestStoreCredentials_DefaultBudgetAbsorbsManySidecarsBehindOneAddress(t *testing.T) {
-	s := NewServer(Config{}, nil)
-	for i := 0; i < 190; i++ {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/store-credentials", strings.NewReader(`{}`))
-		req.RemoteAddr = "198.51.100.10:4000"
-		rec := httptest.NewRecorder()
-		s.Router().ServeHTTP(rec, req)
-		require.Equal(t, http.StatusBadRequest, rec.Code, "request %d must not be throttled", i)
-	}
 }

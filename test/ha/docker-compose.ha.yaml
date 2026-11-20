@@ -167,35 +167,16 @@ services:
         done
     restart: "no"
 
-  # The agent cache uses the agent's OWN S3 client, not the controller's
-  # (internal/config/agent.go:152-155 -> cmd/unified-cd-agent/main.go:204-217),
-  # so cache faults are injected on this path and archival/artifact faults on
-  # the controller's. ALL FOUR vars are required: main.go:204 gates the store on
-  # `endpoint != "" && key != "" && secret != "" && bucket != ""`, there is no
-  # default for any of them (the flags default to the env values, main.go:67-70),
-  # and a missing one leaves Agent.CacheStore nil, which is "cache disabled"
-  # (internal/agent/agent.go:68) — SILENTLY: the only trace is the ABSENCE of
-  # the `cache enabled` info line at main.go:215.
+  # The agents hold no object store credentials: caches and artifacts use
+  # presigned URLs the controller issues (objectTransfer: direct, the default)
+  # for the controllers' UNIFIED_S3_ENDPOINT, so the agents must reach that
+  # endpoint themselves.
   agent1:
     build:
       context: ../..
       dockerfile: docker/agent.Dockerfile
     volumes:
       - agent-credentials:/var/lib/unified-cd-agent
-    environment: &agentcache
-      UNIFIED_CACHE_ENDPOINT: garage:3900
-      # A SECOND bucket, matching the dev compose (docker-compose.yaml:266):
-      # the controller owns unified-cd-logs (runs/, artifacts/) and the agent
-      # owns unified-cd-cache (caches/). Garage's --default-bucket only creates
-      # unified-cd-logs; this one is auto-created by NewS3ObjectStore's
-      # MakeBucket (internal/objectstore/s3.go:45-49) as a key-local alias, and
-      # the dev stack has been running that way since 2026-07-25. Splitting the
-      # buckets makes the S3 interposer's selectivity trivial — the bucket name
-      # is the first path segment, so `^/unified-cd-cache/` is exactly the agent
-      # cache path and `^/unified-cd-logs/` is exactly the controller's.
-      UNIFIED_CACHE_BUCKET: unified-cd-cache
-      UNIFIED_CACHE_KEY: garageadmin
-      UNIFIED_CACHE_SECRET: garageadmin12345
     command:
       - "--server"
       - "http://nginx:8080"
@@ -220,7 +201,6 @@ services:
       dockerfile: docker/agent.Dockerfile
     volumes:
       - agent-credentials:/var/lib/unified-cd-agent
-    environment: *agentcache
     command:
       - "--server"
       - "http://nginx:8080"

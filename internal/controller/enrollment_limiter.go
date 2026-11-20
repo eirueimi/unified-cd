@@ -41,7 +41,12 @@ func newRateLimiter(now func() time.Time, every time.Duration, burst int) *enrol
 }
 
 func (l *enrollmentLimiter) allow(r *http.Request, provider, policy string) bool {
-	key := provider + "\x00" + normalizedRemoteIP(r.RemoteAddr) + "\x00" + strings.TrimSpace(policy)
+	return l.allowKey(provider + "\x00" + normalizedRemoteIP(r.RemoteAddr) + "\x00" + strings.TrimSpace(policy))
+}
+
+// allowKey is allow for a caller-chosen bucket key (for example an
+// authenticated agent ID rather than a client address).
+func (l *enrollmentLimiter) allowKey(key string) bool {
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()

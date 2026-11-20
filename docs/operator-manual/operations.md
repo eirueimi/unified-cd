@@ -68,6 +68,47 @@ Artifacts, cache entries, and log archives live in the configured bucket. Use yo
 
 **Sweep failure backoff.** The log archiver, run-retention sweeper, and git resolver retry a persistently failing candidate with exponential backoff (1 min doubling to 1 h) instead of letting it occupy the head of every oldest-first batch — a handful of broken runs can no longer starve archival, deletion, or resolution for everything newer. The backoff state is held by the current leader only and resets on failover (each problem candidate is retried once, then re-excluded).
 
+### Object store compatibility
+
+Presigned object URLs and multipart uploads depend on the backend. The controller reads `s3UseSSL` and `s3Region` ([configuration](../reference/configuration.md)); set both for AWS S3 and GCS, because presigned URLs travel to clients.
+
+| Backend | Presigned GET/PUT/HEAD | Presigned multipart upload parts | Status |
+|---|---|---|---|
+| AWS S3 | yes | yes | Standard S3 behavior. |
+| Garage | yes | yes | Verified by the `garage` job in `.github/workflows/ci.yml` (Garage v2.3.0). |
+| GCS (S3-compatible XML API, `storage.googleapis.com`, region `auto`) | yes | not yet verified | Treated as unsupported: clients fall back to a single presigned PUT, up to GCS's 5 TiB object limit. |
+| Local filesystem (development) | no | no | Cannot presign: the controller streams all transfers (see below). |
+
+**GCS finding (2026-11-19): not yet verified.** No GCS HMAC credentials were available when the primitives were written, so the check has not been run and `MultipartPresignSupported` keeps returning `false` for `storage.googleapis.com`. To check a bucket, create an HMAC key for a service account with write access and run:
+
+```bash
+UNIFIED_TEST_GCS_BUCKET=<bucket> UNIFIED_TEST_GCS_KEY=<hmac access id> UNIFIED_TEST_GCS_SECRET=<hmac secret> \
+  go test -tags gcs ./internal/objectstore/ -run GCS -v
+```
+
+The test starts a multipart upload, PUTs two parts through presigned URLs and completes it. If it passes, record the date here and set the GCS branch of `MultipartPresignSupported` (`internal/objectstore/presign.go`) to `true`.
+
+**Local filesystem store streams through the controller.** The local filesystem store cannot presign URLs, so when the controller runs with it (no S3 endpoint configured) it logs once at startup:
+
+```
+object store has no presigning (local filesystem): all agent and sidecar transfers stream through the controller
+```
+
+From then on every agent and sidecar transfer of an artifact or cache archive goes through the controller: the presign endpoint answers `{"mode":"controller"}` and the client uses `PUT`/`GET /api/v1/runs/{runID}/objects/caches` and `/objects/artifacts/{name}` instead, with the same authentication, run scoping and audit as the presign endpoint (uploads are audited as `objects.stream`). Cache prefix lookup (`restoreKeys`) and the `.meta` write happen on the controller exactly as in direct mode. Uploads are streamed with chunked transfer encoding (no `Content-Length`) and have no size cap, like the artifact upload route, so a proxy in front of the controller must allow chunked request bodies. The `X-Unified-Cache-Key` response header of a cache restore carries the matched entry's key percent-encoded (Go `url.PathEscape`), so any key is a valid header value; the client decodes it, and ordinary keys appear unchanged. A download declares its `Content-Length` when the store reports the size, and a store read failure part way resets the connection, so a client never mistakes a truncated archive for a complete one. Controller-mode downloads are not resumed after a dropped connection; the step's retry semantics apply. An upload whose body can be replayed (a small archive buffered by the client) is retried on 429 and 503; a larger one-shot stream is not.
+
+### Networking and cost of object transfers
+
+Agents and job Pods move artifact and cache bytes straight to the object store with presigned URLs; the controller only signs them and keeps the metadata. For operators this means:
+
+- **Reachability.** The store endpoint the controller puts in a URL (its own `UNIFIED_S3_ENDPOINT`, over the scheme set by `UNIFIED_S3_USE_SSL`) must be reachable, under that exact name, from every host agent in `direct` mode and from every job Pod on Kubernetes. Before presigned URLs only the controller had to reach the store. An agent that cannot (a host behind NAT, another network) should use `objectTransfer: controller` or a private endpoint; see [Agents: Object transfer](agents.md#object-transfer-objecttransfer).
+- **Cost.** Presigning is a local computation and is free. A multipart upload adds a few requests per large archive. The bytes moved, and so the egress charge, are unchanged. Controller bandwidth and CPU drop, because the controller no longer carries the archives (except in `controller` mode and for the local filesystem store).
+- **Keep the traffic off the NAT gateway.** Agents and job Pods in private subnets reach S3 through a NAT gateway unless you add an S3 gateway VPC endpoint (no hourly or per-GB charge for the endpoint itself); on GCP, enable Private Google Access on their subnets. Without them every archive is billed as NAT data processing.
+- **Client temp space.** A large upload is sent in multipart parts and the client holds one part in its temp directory at a time: 64 MiB at first, doubling every 1,000 parts, so about 4 GiB when an object reaches roughly 5 TB. A store without multipart presign (GCS) makes the client spool the whole archive to a temp file before one PUT, so the temp directory needs room for the largest archive.
+
+- **Human downloads (`objectStore.artifactDownload`).** By default the controller streams artifact downloads for the UI and CLI (`proxy`). With `redirect` (`UNIFIED_ARTIFACT_DOWNLOAD`) it answers, after the usual authorization and audit, with a presigned GET valid for 15 minutes, so the bytes bypass the controller. The store endpoint must then be reachable from users' browsers and workstations under the name in `UNIFIED_S3_ENDPOINT`; keep `proxy` when the store has an internal-only hostname (for example a private Garage address). Agents are always proxied. A download interrupted after the URL has expired cannot resume: start it again from the UI (or rerun `artifact download`), which fetches a fresh URL. The controller refuses to start with `redirect` on the local filesystem store.
+
+See the [migration guide](migrations/2026-11-20-run-scoped-object-access.md) for the upgrade steps.
+
 ### The controller's master key (critical)
 
 This is the master key (KEK) used to encrypt secrets (AES-256-GCM, see [Secrets Management Guide](../user-guide/secrets.md#security-model)). The controller refuses to start unless it is given one, via exactly one of:
@@ -383,7 +424,7 @@ every replica's pre-opened connections.
 > claim about *your* database, and it is not a safe assumption for anyone
 > upgrading an installation that has been in use.
 
-Upgrade order: **controller first, then agents.**
+Upgrade order: **controller first, then agents.** The exception is the Kubernetes agent, which moves with the controller (step 3): the [run-scoped object access migration](migrations/2026-11-20-run-scoped-object-access.md) makes an old sidecar and a new controller (or the reverse) incompatible, and a host agent must also drop its removed `--cache-*` settings.
 
 1. **Controller** — database migrations run automatically at startup (`internal/store`, via `golang-migrate` against the embedded migration set). Roll controller replicas one at a time in an HA deployment; the new version's migrations apply once.
 
@@ -393,7 +434,7 @@ Upgrade order: **controller first, then agents.**
 
    **Exception:** a database provisioned before the migrations-001-017 squash (commit `79c1074`) is **not** upgraded correctly by this automatic `migrate up` — the new migration chain's version numbering starts below where such a database already is, so the migration runner treats it as already up to date and silently applies nothing. This leaves newer columns/tables (e.g. `role`, `managed_resources`, `audit_logs`, `sync_status`) missing. See [Troubleshooting: `column "..." does not exist` after upgrading](../troubleshooting/controller-and-database.md#schema-drift-migration-renumbering) for the supported fresh-init/manual-bridge paths.
 2. **Agents** — upgrade standard agents after the controller is on the new version.
-3. **k8s-agent + sidecar image** — the k8s-agent and its auto-injected `unified-artifact` sidecar communicate over a binary exec protocol and **must be upgraded in lockstep**. The skew is easy to miss when it is partial: the agent passes the repeatable `--exclude` flag to the sidecar (to keep a volume's contents out of an archive of its ancestor, and an artifact or cache entry from being extracted into it) **only** for a job that archives or extracts into an ancestor of a volume, and an older sidecar exits 2 on the unknown flag, so only such a job fails (`flag provided but not defined: -exclude`; see [troubleshooting](../troubleshooting/artifacts-and-storage.md#artifact-upload-fails-or-a-cache-is-never-restored-flag-provided-but-not-defined-exclude)). The agent also passes `--root <workspace mount>` on every artifact and cache invocation, which confines the sidecar to the workspace (see [Kubernetes Integration: the sidecar only reads and writes inside the workspace](kubernetes-integration.md#sidecar-filesystem-confinement)); an older sidecar exits 2 on that flag for every artifact and cache step, and a newer sidecar paired with an older agent exits 2 with `--root is required`. More generally: an old sidecar image paired with a new agent (or vice versa) is incompatible even if the image pulls successfully. The default `sidecarImage` is derived from the agent's own version, so it moves with the agent and needs no action; if you override `sidecarImage`, bump the override to the same release as the agent binary on every upgrade (see [Kubernetes Integration Guide: Sidecar image](kubernetes-integration.md#sidecar-image)).
+3. **k8s-agent + sidecar image** — upgrade it in the same window as the controller (an old sidecar cannot request presigned URLs from the new controller; see the [migration guide](migrations/2026-11-20-run-scoped-object-access.md#errors-you-will-see)). The k8s-agent and its auto-injected `unified-artifact` sidecar communicate over a binary exec protocol and **must be upgraded in lockstep**. The skew is easy to miss when it is partial: the agent passes the repeatable `--exclude` flag to the sidecar (to keep a volume's contents out of an archive of its ancestor, and an artifact or cache entry from being extracted into it) **only** for a job that archives or extracts into an ancestor of a volume, and an older sidecar exits 2 on the unknown flag, so only such a job fails (`flag provided but not defined: -exclude`; see [troubleshooting](../troubleshooting/artifacts-and-storage.md#artifact-upload-fails-or-a-cache-is-never-restored-flag-provided-but-not-defined-exclude)). The agent also passes `--root <workspace mount>` on every artifact and cache invocation, which confines the sidecar to the workspace (see [Kubernetes Integration: the sidecar only reads and writes inside the workspace](kubernetes-integration.md#sidecar-filesystem-confinement)); an older sidecar exits 2 on that flag for every artifact and cache step, and a newer sidecar paired with an older agent exits 2 with `--root is required`. More generally: an old sidecar image paired with a new agent (or vice versa) is incompatible even if the image pulls successfully. The default `sidecarImage` is derived from the agent's own version, so it moves with the agent and needs no action; if you override `sidecarImage`, bump the override to the same release as the agent binary on every upgrade (see [Kubernetes Integration Guide: Sidecar image](kubernetes-integration.md#sidecar-image)).
 4. **Mirrored or air-gapped registries** — the default runner, sidecar and shim images are named after the agent's version (`:vX.Y.Z`), so the new release's tags must be in your mirror **before** its agents start, or their pods land in `ImagePullBackOff`. Nothing in this repository needs rotating for these images; see [Default images and the pause image digest](#default-images-and-the-pause-image-digest) below and the [migration note](migrations/2026-10-22-version-derived-default-images.md).
 
 ### Upgrading and uninstalling a Helm install
@@ -622,7 +663,7 @@ sum by (credential) (increase(unifiedcd_git_credential_tokens_total{purpose="job
 
 ### Watching the background workers
 
-Nine background workers run on tickers with no caller waiting on them, so a
+Background workers run on tickers with no caller waiting on them, so a
 worker that fails every pass has nothing else to surface it. `outcome="error"`
 catches a pass that failed outright.
 
@@ -634,8 +675,8 @@ worker whose every single item failed, and without the per-item counter a
 dashboard cannot tell "nothing to archive" from "nothing archivable".
 
 Instrumented tasks: `log_archiver`, `log_trim`, `run_retention`,
-`audit_retention`, `cache_cleanup`, `approval_reaper`, `stuck_run_reaper`,
-`queued_run_reaper`, `appsource_sync_reaper`.
+`audit_retention`, `cache_cleanup`, `multipart_sweep`, `approval_reaper`,
+`stuck_run_reaper`, `queued_run_reaper`, `appsource_sync_reaper`.
 
 Not instrumented: the scheduler, the git resolver, and the AppSource
 reconciler. Their loop bodies carry leader state inline rather than through a

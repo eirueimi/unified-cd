@@ -13,7 +13,6 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/config"
-	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
 
 // defaultRunnerImage is the default primary container image for isolated jobs
@@ -99,10 +98,7 @@ func main() {
 	enrollmentAudience := flag.String("enrollment-audience", eff.EnrollmentAudience, "audience the cloud identity proof is issued for; must match the policy (env: UNIFIED_AGENT_ENROLLMENT_AUDIENCE)")
 	labelsStr := flag.String("labels", eff.LabelsString(), "comma-separated agent labels (env: UNIFIED_AGENT_LABELS)")
 	exposeEnvStr := flag.String("expose-env", strings.Join(eff.ExposeEnv, ","), "comma-separated environment variable names to expose (env: UNIFIED_AGENT_EXPOSE_ENV)")
-	cacheEndpoint := flag.String("cache-endpoint", eff.CacheEndpoint, "MinIO endpoint for cache (e.g. localhost:9000)")
-	cacheKey := flag.String("cache-key", eff.CacheKey, "MinIO access key ID")
-	cacheSecret := flag.String("cache-secret", eff.CacheSecret, "MinIO secret access key")
-	cacheBucket := flag.String("cache-bucket", eff.CacheBucket, "MinIO bucket name")
+	objects := registerObjectSettingsFlags(flag.CommandLine, eff)
 	maxConcurrentDefault := eff.MaxConcurrent
 	if maxConcurrentDefault == 0 {
 		maxConcurrentDefault = 1
@@ -122,6 +118,11 @@ func main() {
 	workspaceRetentionDays := flag.Int("workspace-retention-days", eff.WorkspaceRetentionDays, "age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; workspaces are already emptied around every run, so this only reclaims what an agent crash left behind) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)")
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
+
+	if err := objects.validate(); err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
 
 	minFreeDiskThreshold, err := parseMinFreeDiskFlag(*minFreeDisk)
 	if err != nil {
@@ -314,25 +315,45 @@ func main() {
 		agent.FinallyBudget = *finallyTimeout
 	}
 
-	if *cacheEndpoint != "" && *cacheKey != "" && *cacheSecret != "" && *cacheBucket != "" {
-		cs, err := objectstore.NewS3ObjectStore(ctx, objectstore.S3Config{
-			Endpoint:        *cacheEndpoint,
-			Bucket:          *cacheBucket,
-			AccessKeyID:     *cacheKey,
-			SecretAccessKey: *cacheSecret,
-		})
-		if err != nil {
-			slog.Warn("cache store init failed, cache disabled", "error", err)
-		} else {
-			a.CacheStore = cs
-			slog.Info("cache enabled", "endpoint", *cacheEndpoint, "bucket", *cacheBucket)
-		}
-	}
+	cli.SetObjectTransferController(*objects.objectTransfer == config.ObjectTransferController)
 
 	if err := a.Run(ctx); err != nil && ctx.Err() == nil {
 		slog.Error("agent run", "error", err)
 		os.Exit(1)
 	}
+}
+
+// removedCacheFlagUsage is the usage of the cache store flags that no longer
+// do anything; they stay registered so that an old command line gets the
+// explanatory startup error instead of "flag provided but not defined".
+const removedCacheFlagUsage = "removed; see docs/operator-manual/migrations/2026-11-20-run-scoped-object-access.md"
+
+// objectSettings are the flags that choose how the agent reaches the object
+// store: the objectTransfer mode, and the removed cache store flags.
+type objectSettings struct {
+	cacheEndpoint, cacheKey, cacheSecret, cacheBucket *string
+	objectTransfer                                    *string
+}
+
+// registerObjectSettingsFlags registers the object-store flags on fs, with the
+// merged env and config-file values as defaults so that an explicit flag
+// overrides them and a removed setting is seen wherever it was given.
+func registerObjectSettingsFlags(fs *flag.FlagSet, eff *config.AgentConfig) objectSettings {
+	return objectSettings{
+		cacheEndpoint:  fs.String("cache-endpoint", eff.CacheEndpoint, removedCacheFlagUsage),
+		cacheKey:       fs.String("cache-key", eff.CacheKey, removedCacheFlagUsage),
+		cacheSecret:    fs.String("cache-secret", eff.CacheSecret, removedCacheFlagUsage),
+		cacheBucket:    fs.String("cache-bucket", eff.CacheBucket, removedCacheFlagUsage),
+		objectTransfer: fs.String("object-transfer", orDefault(eff.ObjectTransfer, config.ObjectTransferDirect), "how artifacts and caches reach the object store: direct (presigned URLs; the agent must reach the store endpoint) or controller (streamed through the controller) (env: UNIFIED_OBJECT_TRANSFER, config: objectTransfer)"),
+	}
+}
+
+// validate refuses the removed cache store settings and a bad objectTransfer.
+func (o objectSettings) validate() error {
+	if err := config.RefuseOldCacheStoreSettings(*o.cacheEndpoint, *o.cacheKey, *o.cacheSecret, *o.cacheBucket); err != nil {
+		return err
+	}
+	return config.ValidateObjectTransfer(*o.objectTransfer)
 }
 
 // parseMinFreeDiskFlag parses the effective --min-free-disk value (the flag's

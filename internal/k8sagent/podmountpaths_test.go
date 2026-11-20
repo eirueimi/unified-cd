@@ -69,7 +69,7 @@ func TestCheckJobMountPaths_VolumeMountPaths(t *testing.T) {
 	vol := func(mp string) []dsl.VolumeMount {
 		return []dsl.VolumeMount{{Name: dsl.StringOrSlice{"v"}, MountPath: mp}}
 	}
-	for _, mp := range []string{"/usr/local/bin", "/usr/local/bin/x", "/usr", "/etc/unified-cd/s3-credentials", "/.ucd", "/"} {
+	for _, mp := range []string{"/usr/local/bin", "/usr/local/bin/x", "/usr", "/var/run/secrets/unified-cd-store-credentials", "/.ucd", "/"} {
 		err := CheckJobMountPaths(nil, "/workspace", vol(mp))
 		require.Error(t, err, mp)
 		assert.Contains(t, err.Error(), "spec.volumes[0].mountPath")

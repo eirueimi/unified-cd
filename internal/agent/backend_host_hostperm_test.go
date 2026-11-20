@@ -81,7 +81,7 @@ func downloadAgent(t *testing.T) *Agent {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &Agent{ID: "a1", Client: NewClient(srv.URL, "tok"), CacheStore: objectstore.NewLocalObjectStore(t.TempDir())}
+	return &Agent{ID: "a1", Client: newStreamClient(srv.URL, "tok"), cacheStoreOverride: objectstore.NewLocalObjectStore(t.TempDir())}
 }
 
 func TestHostBackend_Download_ChownsAsThePodLevelIdentity(t *testing.T) {

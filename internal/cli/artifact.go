@@ -3,9 +3,11 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/artifact"
@@ -63,6 +65,42 @@ func newArtifactListCmd(resolve func() (Config, error), httpClient *http.Client)
 	}
 }
 
+// withoutRedirectCredentials returns a copy of c that drops the Authorization
+// header on EVERY redirect. The controller may redirect a download to a
+// presigned object-store URL, which carries its own credentials in the query
+// string; the redirect target never needs the controller bearer token, and
+// Go's default policy would still forward it to a same-host or subdomain
+// target. This client is download-only, so no redirect legitimately needs it.
+func withoutRedirectCredentials(c *http.Client) *http.Client {
+	clone := *c
+	prev := c.CheckRedirect
+	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		req.Header.Del("Authorization")
+		if prev != nil {
+			return prev(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &clone
+}
+
+// redactURLError removes the query string from the URL in a *url.Error: after
+// a redirect it is a presigned URL, which is a bearer credential.
+func redactURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		if u, perr := url.Parse(ue.URL); perr == nil {
+			u.RawQuery = ""
+			u.User = nil
+			return &url.Error{Op: ue.Op, URL: u.String(), Err: ue.Err}
+		}
+	}
+	return err
+}
+
 func newArtifactDownloadCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	var dest string
 	cmd := &cobra.Command{
@@ -80,9 +118,9 @@ func newArtifactDownloadCmd(resolve func() (Config, error), httpClient *http.Cli
 				return err
 			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
-			resp, err := httpClient.Do(req)
+			resp, err := withoutRedirectCredentials(httpClient).Do(req)
 			if err != nil {
-				return err
+				return redactURLError(err)
 			}
 			defer resp.Body.Close()
 			if resp.StatusCode >= 400 {

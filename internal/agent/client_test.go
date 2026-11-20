@@ -79,7 +79,7 @@ func TestClient_Register(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	require.NoError(t, c.Register(t.Context(), api.AgentRegisterRequest{AgentID: "a", Hostname: "h", OS: "linux"}))
 	assert.Equal(t, "a", got.AgentID)
 }
@@ -93,7 +93,7 @@ func TestClient_Heartbeat_NonEmptyActiveRuns(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	require.NoError(t, heartbeatErr(c, "a1", &api.HeartbeatRequest{ActiveRunIDs: []string{"r1"}}))
 
 	var got api.HeartbeatRequest
@@ -112,7 +112,7 @@ func TestClient_Heartbeat_EmptyActiveRuns_SendsBody(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	require.NoError(t, heartbeatErr(c, "a1", &api.HeartbeatRequest{ActiveRunIDs: []string{}}))
 
 	// A live agent always sends a JSON body, even for zero active runs, so the
@@ -140,7 +140,7 @@ func TestClient_Heartbeat_NilActiveRuns_SendsNoBody(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	require.NoError(t, heartbeatErr(c, "a1", nil))
 
 	assert.Equal(t, int64(0), contentLength)
@@ -152,7 +152,7 @@ func TestClient_Claim_Empty(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(api.ClaimResponse{})
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	resp, err := c.Claim(t.Context(), "a", "1s", nil, api.ClaimRequest{})
 	require.NoError(t, err)
 	assert.Empty(t, resp.RunID)
@@ -167,7 +167,7 @@ func TestClient_Claim_AlwaysSendsABody(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(api.ClaimResponse{})
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 
 	_, err := c.Claim(t.Context(), "a", "1s", nil, api.ClaimRequest{BusyVolumes: []string{"unity", "/go/cache"}, Volumes: []string{"unity", "go-cache"}})
 	require.NoError(t, err)
@@ -192,7 +192,7 @@ func TestClient_ClaimDetached_SendsKind(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(api.ClaimResponse{})
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 
 	_, err := c.ClaimDetached(t.Context(), "a", "1s", nil)
 	require.NoError(t, err)
@@ -210,7 +210,7 @@ func TestClient_AppendLog(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	require.NoError(t, c.AppendLog(t.Context(), "a", api.LogAppendRequest{RunID: "r", StepIndex: 0, Stream: "stdout", Line: "x"}))
 	assert.Equal(t, 1, count)
 }
@@ -224,7 +224,7 @@ func TestClient_ReportSidecarStatus(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	exitCode := 3
 	req := api.SidecarStatusRequest{RunID: "r1", Name: "mysql", Index: 100, Phase: "exited", ExitCode: &exitCode}
 	require.NoError(t, c.ReportSidecarStatus(t.Context(), "a1", req))
@@ -245,7 +245,7 @@ func TestClient_CreateChildRun(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(api.Run{ID: "run-123", Status: api.RunPending})
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	run, err := c.CreateChildRun(t.Context(), "agent-1", "parent-run-1", "hello", map[string]string{"k": "v"})
 	require.NoError(t, err)
 	assert.Equal(t, "run-123", run.ID)
@@ -266,7 +266,7 @@ func TestClient_CreateChildRun_ParentTerminal(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"runId": "parent-run-1", "alreadyFinalized": true})
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 
 	run, err := c.CreateChildRun(t.Context(), "agent-1", "parent-run-1", "hello", nil)
 	require.Error(t, err)
@@ -279,7 +279,7 @@ func TestClient_GetRun(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(api.Run{ID: "run-123", Status: api.RunSucceeded})
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	run, err := c.GetRun(t.Context(), "run-123")
 	require.NoError(t, err)
 	assert.Equal(t, api.RunSucceeded, run.Status)
@@ -290,7 +290,7 @@ func TestClient_GetRunOutputs(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(api.RunOutputs{RunID: "run-123", Outputs: map[string]string{"k": "v"}})
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	outputs, err := c.GetRunOutputs(t.Context(), "run-123")
 	require.NoError(t, err)
 	assert.Equal(t, "v", outputs["k"])
@@ -303,7 +303,7 @@ func TestClient_SetStepOutputs(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	require.NoError(t, c.SetStepOutputs(t.Context(), "a", "run-1", 0, "", map[string]string{"k": "v"}))
 	assert.Equal(t, "v", got.Outputs["k"])
 }
@@ -315,7 +315,7 @@ func TestClient_SetRunOutputs(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	require.NoError(t, c.SetRunOutputs(t.Context(), "a", "run-1", map[string]string{"result": "ok"}))
 	assert.Equal(t, "ok", got.Outputs["result"])
 }
@@ -327,7 +327,7 @@ func TestClient_AppendLogBulk(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	lines := []api.LogAppendRequest{
 		{RunID: "r", StepIndex: 0, Stream: "stdout", Line: "a"},
 		{RunID: "r", StepIndex: 0, Stream: "stdout", Line: "b"},
@@ -348,7 +348,7 @@ func TestClient_FetchSecrets(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	result, err := c.FetchSecrets(t.Context(), "a1", "run-1", []string{"AWS_KEY"})
 	require.NoError(t, err)
 	assert.Equal(t, "AKID1234", result["AWS_KEY"])
@@ -380,7 +380,7 @@ func TestClient_UploadArtifact_StreamsChunked(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	require.NoError(t, c.UploadArtifact(t.Context(), "run1", "art1", src))
 	assert.Equal(t, int64(-1), gotLen, "body must be chunked (no Content-Length)")
 	assert.Equal(t, "payload", extracted)
@@ -395,7 +395,7 @@ func TestClient_UploadArtifact_HTTPErrorSurfaces(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	err := c.UploadArtifact(t.Context(), "run1", "art1", src)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "502")
@@ -423,7 +423,7 @@ func TestClient_Heartbeat_ReturnsDesiredVolumes(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	got, err := c.Heartbeat(t.Context(), "a1", &api.HeartbeatRequest{ActiveRunIDs: []string{}})
 	require.NoError(t, err)
 	require.NotNil(t, got)
@@ -439,7 +439,7 @@ func TestClient_Heartbeat_204ReturnsNilResponse(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "t")
+	c := newStreamClient(srv.URL, "t")
 	got, err := c.Heartbeat(t.Context(), "a1", &api.HeartbeatRequest{ActiveRunIDs: []string{}})
 	require.NoError(t, err)
 	assert.Nil(t, got)

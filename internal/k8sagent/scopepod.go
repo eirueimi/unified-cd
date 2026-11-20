@@ -74,10 +74,10 @@ func buildScopePod(runID, namespace, scopeID, image string, env map[string]strin
 		Resources:    resources,
 	}}
 
-	var sidecarVol *corev1.Volume
+	var sidecarVols []corev1.Volume
 	if sidecar.Image != "" {
 		var sc corev1.Container
-		sc, sidecarVol = buildArtifactSidecarContainer(sidecar)
+		sc, sidecarVols = buildArtifactSidecarContainer(sidecar)
 		sc.VolumeMounts = append(sc.VolumeMounts, scratchMount)
 		containers = append(containers, sc)
 	}
@@ -88,9 +88,7 @@ func buildScopePod(runID, namespace, scopeID, image string, env map[string]strin
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		},
 	}
-	if sidecarVol != nil {
-		volumes = append(volumes, *sidecarVol)
-	}
+	volumes = append(volumes, sidecarVols...)
 
 	automountOff := false
 	pod := &corev1.Pod{

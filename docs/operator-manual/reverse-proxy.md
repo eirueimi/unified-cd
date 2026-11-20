@@ -67,14 +67,15 @@ note after install when an Ingress is enabled.
 | Endpoint | Key | Limit |
 |---|---|---|
 | `POST /api/v1/agents/enroll`, `POST /api/v1/agents/token/refresh` | provider, client address, policy | burst 5, then one request per 6 seconds |
-| `POST /api/v1/store-credentials` | client address | burst 200, then 20 requests per second (configurable) |
+| `POST /api/v1/runs/{runID}/objects/presign` | agent ID for an agent bearer; client address for a job Pod sidecar (checked before its TokenReview) | burst 200, then 20 requests per second (configurable; the `storeCredentialRateLimit` setting keeps the name it had before presigned URLs) |
 
 A rejected request gets `429 Too Many Requests`. The counters are per controller replica and are
 kept in memory (4096 keys, least recently used evicted first).
 
-`/api/v1/store-credentials` is unauthenticated (the projected ServiceAccount token in the body is
-the credential and is checked with a Kubernetes TokenReview), so the limit protects the cluster API
-from being hammered through it. A job's sidecar asks once per artifact or cache step.
+The presign endpoint authenticates in the handler (an agent bearer, or a job Pod's projected
+ServiceAccount token that is checked with a Kubernetes TokenReview), so the sidecar limit protects the
+cluster API from being hammered through it. A job's sidecar asks once per artifact or cache transfer,
+plus one request per multipart batch of a large upload.
 
 **Shared client address.** Job sidecars that reach the controller through an Ingress, a load
 balancer or SNAT all arrive from the same address (with `trustedProxies` unset, the proxy's) and
@@ -87,6 +88,8 @@ retries a `429` up to 6 times with a bounded wait that honours `Retry-After`, so
 delays the step instead of failing it. Sidecars that use the in-cluster Service URL arrive from
 their own Pod IPs and do not share a bucket.
 
+The limit is keyed by client IP. Behind an Ingress without `trustedProxies`, every sidecar in the cluster shares the Ingress's address and therefore one bucket, so set `trustedProxies` (above) or size `UNIFIED_STORE_CREDENTIAL_RATE_BURST` and `UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND` for the combined presign volume of all concurrent jobs. Count every presign call: `get`, `head`, `put`, `commit` and each multipart batch, plus retries after a `429`.
+
 ## Request body limits
 
 Every request body is capped, so an unauthenticated caller cannot make the controller buffer an
@@ -95,7 +98,7 @@ Large`.
 
 | Routes | Limit | Setting |
 |---|---|---|
-| All API routes, including the unauthenticated `/api/v1/agents/enroll`, `/api/v1/agents/token/refresh` and `/api/v1/store-credentials` | 1 MiB | `maxRequestBodyBytes` / `UNIFIED_MAX_REQUEST_BODY_BYTES` / `--max-request-body-bytes` |
+| All API routes, including the unauthenticated `/api/v1/agents/enroll`, `/api/v1/agents/token/refresh` and `/api/v1/runs/{runID}/objects/presign` | 1 MiB | `maxRequestBodyBytes` / `UNIFIED_MAX_REQUEST_BODY_BYTES` / `--max-request-body-bytes` |
 | Webhook ingress `POST /webhook/{name}` | 1 MiB | `UNIFIED_WEBHOOK_MAX_BODY_BYTES` / `--webhook-max-body-bytes` |
 | Agent log routes (`/api/v1/agents/{id}/logs`, `.../logs/bulk`) | 16 MiB (or `maxRequestBodyBytes` if larger) | not configurable |
 | Artifact upload `PUT /api/v1/runs/{id}/artifacts/{name}` | none (streamed to the object store) | none |

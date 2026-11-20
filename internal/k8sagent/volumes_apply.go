@@ -139,6 +139,7 @@ func (a *K8sAgent) buildHeartbeat(activeRunIDs func() []string) func() *api.Hear
 		if req == nil {
 			return nil
 		}
+		req.PodBindingSets = a.podBindings.SnapshotSets()
 		a.volState.mu.Lock()
 		req.VolumeStatus = append([]api.AgentVolumeStatus(nil), a.volState.status...)
 		a.volState.mu.Unlock()

@@ -19,18 +19,16 @@ type ControllerAgentAuthConfig struct {
 	KubernetesEnrollmentPolicies []ControllerKubernetesEnrollmentPolicyConfig `yaml:"kubernetesEnrollmentPolicies"`
 
 	// KubernetesStoreCredentialPolicies declares which namespaces and
-	// ServiceAccounts, per cluster, may exchange a projected ServiceAccount
-	// token for object-store credentials (the §5.6 broker,
-	// docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md).
+	// ServiceAccounts, per cluster, may authenticate a job Pod's sidecar to
+	// the object endpoints with a projected ServiceAccount token (presigned
+	// object URLs; see docs/operator-manual/migrations/2026-11-20-run-scoped-object-access.md).
 	// Deliberately its own list rather than a reuse of
 	// KubernetesEnrollmentPolicies: that list authorizes the AGENT's own
 	// identity (e.g. namespace "unified-cd", ServiceAccount "k8s-agent" in
 	// the shipped manifests), while this one authorizes JOB POD identities
 	// (e.g. namespace "ci") — a different namespace by design, and
-	// deliberately so (see kubernetes-integration.md's "S3 credentials"
-	// section on operators tripping over exactly that distinction for the
-	// Secret path this broker replaces). See
-	// internal/controller/api_store_credentials.go's StoreCredentialCluster
+	// deliberately so (see kubernetes-integration.md). See
+	// internal/controller/object_requester.go's StoreCredentialCluster
 	// doc comment for the full reasoning.
 	KubernetesStoreCredentialPolicies []ControllerKubernetesStoreCredentialPolicyConfig `yaml:"kubernetesStoreCredentialPolicies"`
 }
@@ -141,13 +139,18 @@ type ControllerOIDCConfig struct {
 // ControllerConfig holds all configuration for the controller binary.
 // Populated from a YAML file via LoadController; zero-value fields mean "not set".
 type ControllerConfig struct {
-	DSN           string    `yaml:"dsn"`
-	Addr          string    `yaml:"addr"`
-	Token         string    `yaml:"token"`
-	S3Endpoint    string    `yaml:"s3Endpoint"`
-	S3Bucket      string    `yaml:"s3Bucket"`
-	S3Key         string    `yaml:"s3Key"`
-	S3Secret      string    `yaml:"s3Secret"`
+	DSN        string `yaml:"dsn"`
+	Addr       string `yaml:"addr"`
+	Token      string `yaml:"token"`
+	S3Endpoint string `yaml:"s3Endpoint"`
+	S3Bucket   string `yaml:"s3Bucket"`
+	S3Key      string `yaml:"s3Key"`
+	S3Secret   string `yaml:"s3Secret"`
+	// S3UseSSL makes the controller reach the store over https (env: UNIFIED_S3_USE_SSL).
+	// Presigned URLs travel to clients, so S3 and GCS need it.
+	S3UseSSL bool `yaml:"s3UseSSL"`
+	// S3Region is the bucket region (env: UNIFIED_S3_REGION); "auto" for GCS.
+	S3Region      string    `yaml:"s3Region"`
 	DataDir       string    `yaml:"dataDir"`
 	KeySource     KeySource `yaml:"-"`
 	WebDir        string    `yaml:"webDir"`
@@ -159,11 +162,14 @@ type ControllerConfig struct {
 	AgentAuth   *ControllerAgentAuthConfig `yaml:"agentAuth"`
 	// InsecureCookies disables the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES).
 	InsecureCookies bool `yaml:"insecureCookies"`
-	// StoreCredentialRequireRunBinding controls the §5.6 broker's behavior
-	// when it cannot check a request's RunID against a known run/Pod
-	// binding (see controller.Config.RequireRunBinding's doc comment for
-	// the full reasoning). Default false (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING).
+	// StoreCredentialRequireRunBinding is DEPRECATED and ignored: run binding
+	// is always required for presigned object access. Still parsed so an
+	// existing config keeps loading; setting it true adds a startup warning
+	// (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING).
 	StoreCredentialRequireRunBinding bool `yaml:"storeCredentialRequireRunBinding"`
+	// Warnings are startup notices produced while resolving the effective
+	// config (deprecated settings); not read from YAML.
+	Warnings []string `yaml:"-"`
 	// AllowDefaultToken lets the controller start with the publicly documented
 	// default admin token (env: UNIFIED_ALLOW_DEFAULT_TOKEN). See CheckAdminToken.
 	AllowDefaultToken bool `yaml:"allowDefaultToken"`
@@ -172,8 +178,9 @@ type ControllerConfig struct {
 	// default) ignores those headers and uses the TCP peer address as the
 	// client IP (env: UNIFIED_TRUSTED_PROXIES, comma-separated).
 	TrustedProxies []string `yaml:"trustedProxies"`
-	// StoreCredentialRateLimit bounds POST /api/v1/store-credentials per client
-	// address. Zero fields mean the defaults (burst 200, 20 requests/second).
+	// StoreCredentialRateLimit bounds the object endpoints
+	// (POST /api/v1/runs/{runID}/objects/presign): per agent, or per client
+	// address for job Pod sidecars. Zero fields mean the defaults (burst 200, 20 requests/second).
 	// Env: UNIFIED_STORE_CREDENTIAL_RATE_BURST, UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND.
 	StoreCredentialRateLimit StoreCredentialRateLimitConfig `yaml:"storeCredentialRateLimit"`
 	// MaxRequestBodyBytes caps the body of an API request (agent log routes,
@@ -181,10 +188,63 @@ type ControllerConfig struct {
 	// body gets 413. 0 means the built-in default, 1 MiB
 	// (env: UNIFIED_MAX_REQUEST_BODY_BYTES).
 	MaxRequestBodyBytes int64 `yaml:"maxRequestBodyBytes"`
+	// ObjectStore holds settings about how the controller uses its object store
+	// beyond the connection (S3*) settings.
+	ObjectStore *ControllerObjectStoreConfig `yaml:"objectStore"`
 }
 
+// Artifact download modes for objectStore.artifactDownload.
+const (
+	ArtifactDownloadProxy    = "proxy"
+	ArtifactDownloadRedirect = "redirect"
+)
+
+// ControllerObjectStoreConfig holds the objectStore block of the controller config.
+type ControllerObjectStoreConfig struct {
+	// ArtifactDownload chooses how human artifact downloads are served after
+	// the usual authentication, permission check and audit: "proxy" (default)
+	// streams the bytes through the controller, "redirect" answers with a
+	// 15-minute presigned GET URL. Agents are always proxied.
+	// Env: UNIFIED_ARTIFACT_DOWNLOAD.
+	ArtifactDownload string `yaml:"artifactDownload"`
+}
+
+// ArtifactDownloadMode returns the effective artifact download mode ("proxy"
+// when unset).
+func (c *ControllerConfig) ArtifactDownloadMode() string {
+	if c.ObjectStore == nil || c.ObjectStore.ArtifactDownload == "" {
+		return ArtifactDownloadProxy
+	}
+	return c.ObjectStore.ArtifactDownload
+}
+
+func validateArtifactDownload(mode string) error {
+	switch mode {
+	case "", ArtifactDownloadProxy, ArtifactDownloadRedirect:
+		return nil
+	}
+	return fmt.Errorf("objectStore.artifactDownload: must be %q or %q, got %q", ArtifactDownloadProxy, ArtifactDownloadRedirect, mode)
+}
+
+// CheckArtifactDownload validates an artifact download mode against the object
+// store in use. canPresign is true when the store issues presigned URLs (an
+// S3-compatible store); "redirect" is refused without one.
+func CheckArtifactDownload(mode string, canPresign bool) error {
+	if err := validateArtifactDownload(mode); err != nil {
+		return err
+	}
+	if mode == ArtifactDownloadRedirect && !canPresign {
+		return fmt.Errorf("objectStore.artifactDownload: redirect requires an S3-compatible object store")
+	}
+	return nil
+}
+
+// RequireRunBindingDeprecatedWarning is the startup warning for the
+// deprecated storeCredentialRequireRunBinding setting.
+const RequireRunBindingDeprecatedWarning = "storeCredentialRequireRunBinding is deprecated and ignored: run binding is always required for presigned object access"
+
 // StoreCredentialRateLimitConfig is the per-client-address token bucket for the
-// store-credentials broker endpoint.
+// object endpoints (the presign endpoint).
 type StoreCredentialRateLimitConfig struct {
 	Burst     int     `yaml:"burst"`
 	PerSecond float64 `yaml:"perSecond"`
@@ -272,6 +332,8 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		S3Bucket:   os.Getenv("UNIFIED_S3_BUCKET"),
 		S3Key:      os.Getenv("UNIFIED_S3_KEY"),
 		S3Secret:   os.Getenv("UNIFIED_S3_SECRET"),
+		S3UseSSL:   envBool("UNIFIED_S3_USE_SSL"),
+		S3Region:   os.Getenv("UNIFIED_S3_REGION"),
 		DataDir:    os.Getenv("UNIFIED_DATA_DIR"),
 		KeySource: KeySource{
 			KeyFile:        os.Getenv("UNIFIED_CONTROLLER_KEY_FILE"),
@@ -291,6 +353,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		StoreCredentialRequireRunBinding: envBool("UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING"),
 		TrustedProxies:                   SplitCSV(os.Getenv("UNIFIED_TRUSTED_PROXIES")),
 		AgentAuth:                        &ControllerAgentAuthConfig{},
+	}
+	if v := strings.TrimSpace(os.Getenv("UNIFIED_ARTIFACT_DOWNLOAD")); v != "" {
+		eff.ObjectStore = &ControllerObjectStoreConfig{ArtifactDownload: v}
 	}
 	if v := strings.TrimSpace(os.Getenv("UNIFIED_STORE_CREDENTIAL_RATE_BURST")); v != "" {
 		n, err := strconv.Atoi(v)
@@ -337,10 +402,14 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	if err := eff.KeySource.Validate(); err != nil {
 		return nil, err
 	}
+	if err := validateArtifactDownload(eff.ArtifactDownloadMode()); err != nil {
+		return nil, fmt.Errorf("UNIFIED_ARTIFACT_DOWNLOAD: %w", err)
+	}
 	if filePath == "" {
 		if err := validateOIDCDevice(eff.OIDC); err != nil {
 			return nil, err
 		}
+		eff.addDeprecationWarnings()
 		return eff, nil
 	}
 
@@ -368,6 +437,12 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.S3Secret != "" {
 		eff.S3Secret = file.S3Secret
+	}
+	if file.S3UseSSL {
+		eff.S3UseSSL = true
+	}
+	if file.S3Region != "" {
+		eff.S3Region = file.S3Region
 	}
 	if file.DataDir != "" {
 		eff.DataDir = file.DataDir
@@ -398,6 +473,12 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.StoreCredentialRateLimit.PerSecond > 0 {
 		eff.StoreCredentialRateLimit.PerSecond = file.StoreCredentialRateLimit.PerSecond
+	}
+	if file.ObjectStore != nil && file.ObjectStore.ArtifactDownload != "" {
+		if err := validateArtifactDownload(file.ObjectStore.ArtifactDownload); err != nil {
+			return nil, err
+		}
+		eff.ObjectStore = &ControllerObjectStoreConfig{ArtifactDownload: file.ObjectStore.ArtifactDownload}
 	}
 	if file.MaxRequestBodyBytes < 0 {
 		return nil, fmt.Errorf("maxRequestBodyBytes must not be negative")
@@ -486,7 +567,16 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	if err := validateControllerAgentAuth(eff.AgentAuth); err != nil {
 		return nil, err
 	}
+	eff.addDeprecationWarnings()
 	return eff, nil
+}
+
+// addDeprecationWarnings records one warning per deprecated setting that is
+// still set (from the environment or the config file).
+func (c *ControllerConfig) addDeprecationWarnings() {
+	if c.StoreCredentialRequireRunBinding {
+		c.Warnings = append(c.Warnings, RequireRunBindingDeprecatedWarning)
+	}
 }
 
 func validateControllerAgentAuth(cfg *ControllerAgentAuthConfig) error {

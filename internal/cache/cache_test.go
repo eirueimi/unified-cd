@@ -78,7 +78,7 @@ func TestCache_Save_RejectsEmptyJobName(t *testing.T) {
 	store := newStore(t)
 	src := makeDir(t, map[string]string{"a.txt": "hello"})
 
-	err := cache.Save(ctx, store, "", src, "mykey", 7)
+	err := cache.Save(ctx, &cache.StoreRemote{Store: store, JobName: ""}, src, "mykey", 7)
 	require.Error(t, err, "an empty jobName must be rejected, not silently namespaced under sha256(\"\")")
 
 	// Confirm nothing was actually written under the global-namespace key a
@@ -96,9 +96,9 @@ func TestCache_Restore_RejectsEmptyJobName(t *testing.T) {
 	// Even if some other pre-fix caller had written under the empty-jobName
 	// namespace, Restore must refuse to read it rather than silently serving
 	// from what would be a shared global namespace.
-	require.NoError(t, cache.Save(ctx, store, "some-real-job", makeDir(t, map[string]string{"a.txt": "x"}), "mykey", 7))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: store, JobName: "some-real-job"}, makeDir(t, map[string]string{"a.txt": "x"}), "mykey", 7))
 
-	hit, err := cache.Restore(ctx, store, "", dest, "mykey", nil)
+	hit, err := cache.Restore(ctx, &cache.StoreRemote{Store: store, JobName: ""}, dest, "mykey", nil)
 	require.Error(t, err, "an empty jobName must be rejected outright")
 	assert.False(t, hit)
 }
@@ -109,9 +109,9 @@ func TestCache_SaveAndRestore_RoundTrip(t *testing.T) {
 	src := makeDir(t, map[string]string{"a.txt": "hello", "b.txt": "world"})
 	dest := t.TempDir()
 
-	require.NoError(t, cache.Save(ctx, store, "test-job", src, "mykey", 7))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, src, "mykey", 7))
 
-	hit, err := cache.Restore(ctx, store, "test-job", dest, "mykey", nil)
+	hit, err := cache.Restore(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, dest, "mykey", nil)
 	require.NoError(t, err)
 	assert.True(t, hit)
 
@@ -126,11 +126,11 @@ func TestCache_RestoreKeys_FallbackOnMiss(t *testing.T) {
 	src := makeDir(t, map[string]string{"pkg.json": "v1"})
 
 	// Save with key "npm-abc123"
-	require.NoError(t, cache.Save(ctx, store, "test-job", src, "npm-abc123", 7))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, src, "npm-abc123", 7))
 
 	// Restore with exact miss but prefix match
 	dest := t.TempDir()
-	hit, err := cache.Restore(ctx, store, "test-job", dest, "npm-xyz999", []string{"npm-"})
+	hit, err := cache.Restore(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, dest, "npm-xyz999", []string{"npm-"})
 	require.NoError(t, err)
 	assert.True(t, hit)
 
@@ -150,13 +150,13 @@ func TestCache_Restore_ExactKeyErrNotFound_FallsBackToRestoreKeys(t *testing.T) 
 	base := newStore(t)
 	src := makeDir(t, map[string]string{"pkg.json": "v1"})
 
-	require.NoError(t, cache.Save(ctx, base, "test-job", src, "npm-abc123", 7))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: base, JobName: "test-job"}, src, "npm-abc123", 7))
 
-	exactKey := testObjectKey("test-job", "npm-xyz999") + ".tar.zst"
+	exactKey := testObjectKey("test-job", "npm-xyz999") + ".meta"
 	store := &errKeyStore{ObjectStore: base, errKey: exactKey, err: fmt.Errorf("get object %q: %w", exactKey, objectstore.ErrNotFound)}
 
 	dest := t.TempDir()
-	hit, err := cache.Restore(ctx, store, "test-job", dest, "npm-xyz999", []string{"npm-"})
+	hit, err := cache.Restore(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, dest, "npm-xyz999", []string{"npm-"})
 	require.NoError(t, err)
 	assert.True(t, hit)
 
@@ -175,16 +175,16 @@ func TestCache_Restore_ExactKeyNonNotFoundError_Propagates(t *testing.T) {
 	src := makeDir(t, map[string]string{"pkg.json": "v1"})
 
 	// A valid fallback candidate exists...
-	require.NoError(t, cache.Save(ctx, base, "test-job", src, "npm-abc123", 7))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: base, JobName: "test-job"}, src, "npm-abc123", 7))
 
-	exactKey := testObjectKey("test-job", "npm-xyz999") + ".tar.zst"
+	exactKey := testObjectKey("test-job", "npm-xyz999") + ".meta"
 	transientErr := errors.New("transient network error")
 	store := &errKeyStore{ObjectStore: base, errKey: exactKey, err: transientErr}
 
 	dest := t.TempDir()
 	// ...but the exact-key Get fails with a non-NotFound error, so the
 	// fallback must never be attempted: Restore propagates the error.
-	hit, err := cache.Restore(ctx, store, "test-job", dest, "npm-xyz999", []string{"npm-"})
+	hit, err := cache.Restore(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, dest, "npm-xyz999", []string{"npm-"})
 	assert.False(t, hit)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, transientErr)
@@ -200,14 +200,14 @@ func TestCache_Restore_FallbackKeyNonNotFoundError_Propagates(t *testing.T) {
 	base := newStore(t)
 	src := makeDir(t, map[string]string{"pkg.json": "v1"})
 
-	require.NoError(t, cache.Save(ctx, base, "test-job", src, "npm-abc123", 7))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: base, JobName: "test-job"}, src, "npm-abc123", 7))
 
 	fallbackKey := testObjectKey("test-job", "npm-abc123") + ".tar.zst"
 	transientErr := errors.New("transient network error")
 	store := &errKeyStore{ObjectStore: base, errKey: fallbackKey, err: transientErr}
 
 	dest := t.TempDir()
-	hit, err := cache.Restore(ctx, store, "test-job", dest, "npm-xyz999", []string{"npm-"})
+	hit, err := cache.Restore(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, dest, "npm-xyz999", []string{"npm-"})
 	assert.False(t, hit)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, transientErr)
@@ -219,7 +219,7 @@ func TestCache_Restore_MissNoFallback(t *testing.T) {
 	store := newStore(t)
 	dest := t.TempDir()
 
-	hit, err := cache.Restore(ctx, store, "test-job", dest, "missing-key", nil)
+	hit, err := cache.Restore(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, dest, "missing-key", nil)
 	assert.False(t, hit)
 	assert.ErrorIs(t, err, cache.ErrCacheMiss)
 }
@@ -247,7 +247,7 @@ func TestSave_MetaFailureDeletesArchive(t *testing.T) {
 	inner := objectstore.NewLocalObjectStore(t.TempDir())
 	st := &putFailingStore{ObjectStore: inner, failPut: 2} // archive Put ok, meta Put fails
 
-	err := cache.Save(context.Background(), st, "test-job", dir, "key1", 7)
+	err := cache.Save(context.Background(), &cache.StoreRemote{Store: st, JobName: "test-job"}, dir, "key1", 7)
 	require.Error(t, err)
 
 	keys, err := inner.List(context.Background(), "")
@@ -275,7 +275,7 @@ func TestSave_StreamsArchiveAndCountsMetaSize(t *testing.T) {
 	src := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), bytes.Repeat([]byte("z"), 4096), 0o600))
 
-	require.NoError(t, cache.Save(ctx, spy, "test-job", src, "mykey", 7))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: spy, JobName: "test-job"}, src, "mykey", 7))
 
 	// The archive Put must be streamed (unknown size), NOT the buffered length.
 	assert.Equal(t, int64(-1), spy.archiveSize, "archive must be streamed with size -1")
@@ -300,8 +300,8 @@ func TestCache_DeleteExpired_RemovesOldKeepsNew(t *testing.T) {
 	store := newStore(t)
 	src := makeDir(t, map[string]string{"f.txt": "data"})
 
-	require.NoError(t, cache.Save(ctx, store, "test-job", src, "old-key", 1))
-	require.NoError(t, cache.Save(ctx, store, "test-job", src, "new-key", 30))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, src, "old-key", 1))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, src, "new-key", 30))
 
 	// Delete entries expiring before "now + 2 days" (removes old-key, keeps new-key)
 	n, err := cache.DeleteExpired(ctx, store, time.Now().Add(2*24*time.Hour))
@@ -310,11 +310,11 @@ func TestCache_DeleteExpired_RemovesOldKeepsNew(t *testing.T) {
 
 	// old-key should be gone
 	dest := t.TempDir()
-	hit, _ := cache.Restore(ctx, store, "test-job", dest, "old-key", nil)
+	hit, _ := cache.Restore(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, dest, "old-key", nil)
 	assert.False(t, hit)
 
 	// new-key should still be there
-	hit, err = cache.Restore(ctx, store, "test-job", dest, "new-key", nil)
+	hit, err = cache.Restore(ctx, &cache.StoreRemote{Store: store, JobName: "test-job"}, dest, "new-key", nil)
 	require.NoError(t, err)
 	assert.True(t, hit)
 }
@@ -333,7 +333,7 @@ func TestRestore_CannotHijackAnotherJobsEntry(t *testing.T) {
 	// Job A plants an entry with a long TTL under a key job B's restoreKeys prefix-match.
 	srcA := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(srcA, "pwned.txt"), []byte("evil"), 0o600))
-	require.NoError(t, cache.Save(ctx, store, "attacker/job", srcA, "deps-pwned", 3650))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: store, JobName: "attacker/job"}, srcA, "deps-pwned", 3650))
 
 	// Job B restores with a prefix that would have matched job A's key. With
 	// no entries of its own, this is a genuine miss: Restore reports it via
@@ -342,7 +342,7 @@ func TestRestore_CannotHijackAnotherJobsEntry(t *testing.T) {
 	// test is that job A's entry is never surfaced as a hit, not that the
 	// error value differs from an ordinary miss.
 	dest := t.TempDir()
-	hit, err := cache.Restore(ctx, store, "victim/job", dest, "deps-victim", []string{"deps-"})
+	hit, err := cache.Restore(ctx, &cache.StoreRemote{Store: store, JobName: "victim/job"}, dest, "deps-victim", []string{"deps-"})
 	assert.ErrorIs(t, err, cache.ErrCacheMiss)
 	assert.False(t, hit, "a job must never restore another job's cache entry")
 	_, statErr := os.Stat(filepath.Join(dest, "pwned.txt"))
@@ -357,10 +357,10 @@ func TestSaveRestore_SameJobRoundTrips(t *testing.T) {
 	store := objectstore.NewLocalObjectStore(t.TempDir())
 	src := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), []byte("data"), 0o600))
-	require.NoError(t, cache.Save(ctx, store, "team-a/build", src, "deps-v1", 7))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: store, JobName: "team-a/build"}, src, "deps-v1", 7))
 
 	dest := t.TempDir()
-	hit, err := cache.Restore(ctx, store, "team-a/build", dest, "deps-v1", nil)
+	hit, err := cache.Restore(ctx, &cache.StoreRemote{Store: store, JobName: "team-a/build"}, dest, "deps-v1", nil)
 	require.NoError(t, err)
 	assert.True(t, hit)
 	got, err := os.ReadFile(filepath.Join(dest, "f.txt"))
@@ -376,10 +376,10 @@ func TestRestoreKeys_FallbackWorksWithinSameJob(t *testing.T) {
 	store := objectstore.NewLocalObjectStore(t.TempDir())
 	src := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), []byte("data"), 0o600))
-	require.NoError(t, cache.Save(ctx, store, "team-a/build", src, "deps-abc123", 7))
+	require.NoError(t, cache.Save(ctx, &cache.StoreRemote{Store: store, JobName: "team-a/build"}, src, "deps-abc123", 7))
 
 	dest := t.TempDir()
-	hit, err := cache.Restore(ctx, store, "team-a/build", dest, "deps-nomatch", []string{"deps-"})
+	hit, err := cache.Restore(ctx, &cache.StoreRemote{Store: store, JobName: "team-a/build"}, dest, "deps-nomatch", []string{"deps-"})
 	require.NoError(t, err)
 	assert.True(t, hit, "prefix fallback must still work within the same job")
 }
@@ -392,9 +392,134 @@ func TestCache_Save_FailedArchiveLeavesNoObjects(t *testing.T) {
 	ctx := context.Background()
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 
-	require.Error(t, cache.SaveExcluding(ctx, store, "job", missing, "k", 1, nil))
+	require.Error(t, cache.SaveExcluding(ctx, &cache.StoreRemote{Store: store, JobName: "job"}, missing, "k", 1, nil))
 
 	keys, err := store.List(ctx, "")
 	require.NoError(t, err)
 	assert.Empty(t, keys)
+}
+
+// putData writes a data archive (arbitrary bytes) for (job, key) without .meta.
+func putData(t *testing.T, st objectstore.ObjectStore, job, key string) {
+	t.Helper()
+	require.NoError(t, st.Put(context.Background(), cache.DataKey(job, key), strings.NewReader("data"), 4))
+}
+
+func TestLookup_ExactHitRequiresMeta(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	putData(t, st, "job", "k")
+
+	_, _, err := cache.Lookup(ctx, st, "job", "k", nil)
+	assert.ErrorIs(t, err, cache.ErrCacheMiss)
+
+	require.NoError(t, cache.Commit(ctx, st, "job", "k", 4, time.Now().Add(time.Hour)))
+	dataKey, matched, err := cache.Lookup(ctx, st, "job", "k", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "k", matched)
+	assert.Equal(t, cache.DataKey("job", "k"), dataKey)
+}
+
+func TestLookup_ExactHitRejectsForeignOwner(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	putData(t, st, "job", "k")
+	// A .meta at job's key that claims another owner.
+	data, err := json.Marshal(cache.Meta{OriginalKey: "k", ExpiresAt: time.Now().Add(time.Hour), OwnerJob: "other"})
+	require.NoError(t, err)
+	require.NoError(t, st.Put(ctx, testObjectKey("job", "k")+".meta", bytes.NewReader(data), int64(len(data))))
+
+	_, _, err = cache.Lookup(ctx, st, "job", "k", nil)
+	assert.ErrorIs(t, err, cache.ErrCacheMiss)
+}
+
+func TestLookup_RestoreKeysPicksLongestTTL(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	now := time.Now()
+	for k, ttl := range map[string]time.Duration{"npm-a": time.Hour, "npm-b": 5 * time.Hour, "npm-c": 2 * time.Hour, "pip-z": 99 * time.Hour, "npm-old": -time.Hour} {
+		putData(t, st, "job", k)
+		require.NoError(t, cache.Commit(ctx, st, "job", k, 4, now.Add(ttl)))
+	}
+	dataKey, matched, err := cache.Lookup(ctx, st, "job", "npm-miss", []string{"npm-"})
+	require.NoError(t, err)
+	assert.Equal(t, "npm-b", matched)
+	assert.Equal(t, cache.DataKey("job", "npm-b"), dataKey)
+
+	_, _, err = cache.Lookup(ctx, st, "job", "go-miss", []string{"go-"})
+	assert.ErrorIs(t, err, cache.ErrCacheMiss)
+}
+
+func TestCommit_WritesMetaFromArgs(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	exp := time.Now().Add(3 * time.Hour).UTC().Truncate(time.Second)
+	require.NoError(t, cache.Commit(ctx, st, "job", "k", 42, exp))
+
+	rc, err := st.Get(ctx, testObjectKey("job", "k")+".meta")
+	require.NoError(t, err)
+	defer rc.Close()
+	var m cache.Meta
+	require.NoError(t, json.NewDecoder(rc).Decode(&m))
+	assert.Equal(t, "k", m.OriginalKey)
+	assert.Equal(t, "job", m.OwnerJob)
+	assert.Equal(t, int64(42), m.Size)
+	assert.True(t, exp.Equal(m.ExpiresAt))
+
+	assert.Error(t, cache.Commit(ctx, st, "", "k", 1, exp))
+}
+
+// noStatStore hides the Stat method of the wrapped store.
+type noStatStore struct{ objectstore.ObjectStore }
+
+func TestDeleteExpired_RemovesOrphansOlderThanGrace(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st := objectstore.NewLocalObjectStore(dir)
+	putData(t, st, "job", "old")
+	putData(t, st, "job", "fresh")
+	putData(t, st, "job", "withmeta")
+	require.NoError(t, cache.Commit(ctx, st, "job", "withmeta", 4, time.Now().Add(time.Hour)))
+
+	age := func(key string, d time.Duration) {
+		old := time.Now().Add(-d)
+		require.NoError(t, os.Chtimes(filepath.Join(dir, filepath.FromSlash(cache.DataKey("job", key))), old, old))
+	}
+	age("old", 25*time.Hour)
+	age("fresh", time.Hour)
+	age("withmeta", 48*time.Hour)
+
+	// A store without Statter keeps every orphan.
+	n, err := cache.DeleteExpired(ctx, noStatStore{st}, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+
+	n, err = cache.DeleteExpired(ctx, st, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	_, err = st.Get(ctx, cache.DataKey("job", "old"))
+	assert.ErrorIs(t, err, objectstore.ErrNotFound)
+	for _, k := range []string{"fresh", "withmeta"} {
+		rc, err := st.Get(ctx, cache.DataKey("job", k))
+		require.NoError(t, err, k)
+		rc.Close()
+	}
+}
+
+func TestStoreRemote_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	r := &cache.StoreRemote{Store: newStore(t), JobName: "job"}
+	src := makeDir(t, map[string]string{"a.txt": "hello"})
+	require.NoError(t, cache.SaveIn(ctx, r, src, src, "k", 7, nil))
+
+	dest := t.TempDir()
+	hit, matched, skipped, err := cache.RestoreIn(ctx, r, dest, dest, "k-miss", []string{"k"}, nil)
+	require.NoError(t, err)
+	assert.True(t, hit)
+	assert.Equal(t, "k", matched)
+	assert.Zero(t, skipped)
+	got, err := os.ReadFile(filepath.Join(dest, "a.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(got))
 }

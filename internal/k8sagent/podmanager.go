@@ -98,10 +98,7 @@ func (pm *PodManager) UpdatePodAnnotations(ctx context.Context, podName string, 
 //
 // Every error it returns carries the kubelet's own explanation of why the Pod
 // is not Running — the container waiting reason/message, or the scheduler's
-// rejection — so an operator reads `secret "unified-cd-s3-creds" not found`
-// (the classic sidecarS3SecretName-points-at-a-Secret-in-the-wrong-namespace
-// case, where envFrom.secretRef has no optional: true and the kubelet fails
-// the container with CreateContainerConfigError) or `ImagePullBackOff` from
+// rejection — so an operator reads `ImagePullBackOff` or a missing-Secret error from
 // the run's own failure message, instead of a bare "context deadline exceeded"
 // that sends them to `kubectl describe pod`. The same detail is logged as soon
 // as it appears, so it is visible immediately rather than only once

@@ -1223,23 +1223,68 @@ func (p *Postgres) GetSidecarStatuses(ctx context.Context, runID string) ([]api.
 	return out, rows.Err()
 }
 
-// UpsertRunPodBinding records which Pod (name + UID) is executing runID,
-// keyed by runID alone. ON CONFLICT overwrites pod_name/pod_uid/updated_at
-// so the row always reflects the most recently reported Pod — see the
-// migration's (020_run_pod_bindings) comment for why no history is kept.
+// UpsertRunPodBinding makes (podName, podUID) the only Pod bound to runID: it
+// is ReplaceRunPodBindings with one Pod, the old single-binding report.
 func (p *Postgres) UpsertRunPodBinding(ctx context.Context, runID, podName, podUID string) error {
-	const q = `INSERT INTO run_pod_bindings (run_id, pod_name, pod_uid, updated_at)
-	           VALUES ($1,$2,$3, now())
-	           ON CONFLICT (run_id) DO UPDATE SET pod_name=$2, pod_uid=$3, updated_at=now()`
-	_, err := p.pool.Exec(ctx, q, runID, podName, podUID)
+	return p.ReplaceRunPodBindings(ctx, runID, []RunPodBinding{{PodName: podName, PodUID: podUID}})
+}
+
+// ReplaceRunPodBindings makes pods the complete set of Pods bound to runID:
+// rows for other Pods are deleted, the listed ones are upserted. An empty set
+// changes nothing (an agent never reports an empty set for a run).
+func (p *Postgres) ReplaceRunPodBindings(ctx context.Context, runID string, pods []RunPodBinding) error {
+	if len(pods) == 0 {
+		return nil
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	uids := make([]string, 0, len(pods))
+	for _, pod := range pods {
+		uids = append(uids, pod.PodUID)
+		if _, err := tx.Exec(ctx, `INSERT INTO run_pod_bindings (run_id, pod_name, pod_uid, updated_at)
+			VALUES ($1,$2,$3, now())
+			ON CONFLICT (run_id, pod_uid) DO UPDATE SET pod_name=$2, updated_at=now()`, runID, pod.PodName, pod.PodUID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM run_pod_bindings WHERE run_id=$1 AND NOT (pod_uid = ANY($2))`, runID, uids); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// DeleteRunPodBindings removes every Pod binding of runID (no-op when none).
+func (p *Postgres) DeleteRunPodBindings(ctx context.Context, runID string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM run_pod_bindings WHERE run_id=$1`, runID)
 	return err
 }
 
-// GetRunPodBinding returns the Pod bound to runID, or ok=false if no row
-// exists yet (see the interface doc comment on Store.GetRunPodBinding for
-// what that means to callers).
+// ListRunPodBindings returns every Pod bound to runID (empty when none).
+func (p *Postgres) ListRunPodBindings(ctx context.Context, runID string) ([]RunPodBinding, error) {
+	rows, err := p.pool.Query(ctx, `SELECT pod_name, pod_uid FROM run_pod_bindings WHERE run_id=$1 ORDER BY updated_at, pod_uid`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RunPodBinding
+	for rows.Next() {
+		var b RunPodBinding
+		if err := rows.Scan(&b.PodName, &b.PodUID); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// GetRunPodBinding returns the most recently reported Pod bound to runID, or
+// ok=false if none exists yet. Callers that authorize a Pod use
+// ListRunPodBindings: a run may hold several.
 func (p *Postgres) GetRunPodBinding(ctx context.Context, runID string) (RunPodBinding, bool, error) {
-	const q = `SELECT pod_name, pod_uid FROM run_pod_bindings WHERE run_id=$1`
+	const q = `SELECT pod_name, pod_uid FROM run_pod_bindings WHERE run_id=$1 ORDER BY updated_at DESC, pod_uid LIMIT 1`
 	var b RunPodBinding
 	err := p.pool.QueryRow(ctx, q, runID).Scan(&b.PodName, &b.PodUID)
 	if err != nil {

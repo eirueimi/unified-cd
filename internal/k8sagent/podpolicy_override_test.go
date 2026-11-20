@@ -133,7 +133,7 @@ func TestJobPodPolicy_OverrideUsesTemplateServiceAccount(t *testing.T) {
 func TestJobPodPolicy_OverrideR7NothingAllows(t *testing.T) {
 	all := JobPodPolicy{AllowHostAccess: true, AllowPrivileged: true, AllowUnconfinedProfiles: true, AllowNodeName: true,
 		AllowSecrets: []string{"x"}, AllowServiceAccounts: []string{"default", "builder"}}
-	for _, name := range []string{sidecarS3CredentialsVolumeName, sidecarBrokerTokenVolumeName} {
+	for _, name := range []string{sidecarTokenVolumeName} {
 		for _, field := range []string{"volumeMounts", "volumeDevices"} {
 			tmpl := &dsl.PodTemplate{Name: "dind", Override: &dsl.PodSpecPatch{Containers: []map[string]any{
 				{"name": "thief", "image": "alpine:3.20", field: []any{map[string]any{"name": name, "mountPath": "/x", "devicePath": "/dev/x"}}},

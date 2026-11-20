@@ -67,7 +67,7 @@ func TestExecuteRun_ScopedStep_RealRuntimeRoundTrip(t *testing.T) {
 
 	a := &Agent{
 		ID:       agentID,
-		Client:   NewClient(srv.URL, "tok"),
+		Client:   newStreamClient(srv.URL, "tok"),
 		ToolsDir: installShimOrSkip(t),
 	}
 

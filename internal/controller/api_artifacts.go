@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/artifact"
+	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
@@ -84,7 +86,11 @@ func (s *Server) handleArtifactUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleArtifactDownload handles GET /api/v1/runs/{runID}/artifacts/{name}.
-// Streams the object from the object store directly into the response.
+// After the route's authentication, permission check and audit, it either
+// streams the object from the object store into the response (the default,
+// "proxy") or, when Config.ArtifactDownload is "redirect", answers a human
+// caller with a presigned GET URL. Agents are always proxied: they may not be
+// able to reach the store's public endpoint.
 func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) {
 	if s.objStore == nil {
 		http.Error(w, "object store not configured", http.StatusServiceUnavailable)
@@ -93,6 +99,12 @@ func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) 
 	runID := chi.URLParam(r, "runID")
 	name := chi.URLParam(r, "name")
 	key := fmt.Sprintf("artifacts/%s/%s.tar.gz", runID, name)
+
+	if _, isAgent := agentPrincipalFromContext(r.Context()); !isAgent &&
+		s.cfg.ArtifactDownload == config.ArtifactDownloadRedirect && s.presigner != nil {
+		s.redirectArtifactDownload(w, r, runID, name)
+		return
+	}
 
 	rc, err := s.objStore.Get(r.Context(), key)
 	if err != nil {
@@ -113,6 +125,46 @@ func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, rc)
+}
+
+// redirectArtifactDownload answers a human download with a presigned GET: a
+// 302 for the CLI, or {"url": ...} when the Web UI asks with ?as=url (a fetch
+// cannot follow a cross-origin redirect without store CORS). The URL is a
+// bearer credential and is never logged.
+func (s *Server) redirectArtifactDownload(w http.ResponseWriter, r *http.Request, runID, name string) {
+	key, err := artifact.ArtifactKey(runID, name)
+	if err != nil {
+		http.Error(w, msgArtifactNotFound, http.StatusNotFound)
+		return
+	}
+	if _, err := s.presigner.Stat(r.Context(), key); err != nil {
+		if errors.Is(err, objectstore.ErrNotFound) {
+			http.Error(w, msgArtifactNotFound, http.StatusNotFound)
+			return
+		}
+		slog.Warn("artifact download redirect: stat failed", "runId", runID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	u, err := s.presigner.PresignGet(r.Context(), key, name+".tar.gz")
+	if err != nil {
+		if errors.Is(err, objectstore.ErrInvalidKey) {
+			http.Error(w, msgArtifactNotFound, http.StatusNotFound)
+			return
+		}
+		slog.Warn("artifact download redirect: presign failed", "runId", runID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	if r.URL.Query().Get("as") == "url" {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": u.String()})
+		return
+	}
+	w.Header().Set("Location", u.String())
+	w.WriteHeader(http.StatusFound)
 }
 
 // handleArtifactList handles GET /api/v1/runs/{runID}/artifacts.

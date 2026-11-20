@@ -13,8 +13,7 @@ import (
 // already covers them; they are listed again so the guarantee does not depend
 // on where the constants happen to point.
 var sidecarProtectedDirs = []string{
-	sidecarBrokerTokenMountPath,
-	sidecarS3CredentialsMountPath,
+	sidecarTokenMountPath,
 }
 
 // CheckJobMountPaths refuses a claim whose job-chosen mount paths could put

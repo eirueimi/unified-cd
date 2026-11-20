@@ -79,7 +79,6 @@ func TestAgentDefaultServerIsInCluster(t *testing.T) {
 	cfg := agentConfig(t, Render(t, "unified-cd"))
 	assert.Equal(t, "http://unified-cd-controller.unified-cd.svc.cluster.local", cfg["server"])
 	assert.Equal(t, true, cfg["allowInsecureHTTP"])
-	assert.Equal(t, "broker", cfg["sidecarS3SecretMode"])
 	assert.Equal(t, "unified-cd-k8s-agents", cfg["enrollmentPolicy"])
 	assert.Equal(t, "/var/run/secrets/unified-cd-agent/token", cfg["serviceAccountTokenFile"])
 	assert.Equal(t, "golang:1.24-alpine", cfg["podImage"])
@@ -87,9 +86,20 @@ func TestAgentDefaultServerIsInCluster(t *testing.T) {
 	cfg = agentConfig(t, Render(t, "cd-system"))
 	assert.Equal(t, "http://unified-cd-controller.cd-system.svc.cluster.local", cfg["server"])
 
-	// The broker mode follows bundledStores.enabled.
-	cfg = agentConfig(t, Render(t, "unified-cd", "bundledStores.enabled=false", "controller.existingSecret=my-secret"))
-	assert.NotContains(t, cfg, "sidecarS3SecretMode")
+}
+
+// The artifact sidecar needs no Secret, so the chart sets no sidecarS3Secret*
+// key under any combination of values (the agent refuses to start with one).
+func TestAgentConfig_NoSidecarS3SecretMode(t *testing.T) {
+	for name, args := range map[string][]string{
+		"trial":      nil,
+		"production": {"bundledStores.enabled=false", "controller.existingSecret=my-secret"},
+		"agent only": {"controller.enabled=false", "bundledStores.enabled=false", "agent.server=https://cd.example.com"},
+	} {
+		cfg := agentConfig(t, Render(t, "unified-cd", args...))
+		assert.NotContains(t, cfg, "sidecarS3SecretMode", name)
+		assert.NotContains(t, cfg, "sidecarS3SecretName", name)
+	}
 }
 
 func TestAgentOnlyRequiresHTTPS(t *testing.T) {
@@ -98,7 +108,6 @@ func TestAgentOnlyRequiresHTTPS(t *testing.T) {
 	cfg := agentConfig(t, objs)
 	assert.Equal(t, "https://cd.example.com", cfg["server"])
 	assert.NotContains(t, cfg, "allowInsecureHTTP")
-	assert.NotContains(t, cfg, "sidecarS3SecretMode")
 	for _, o := range objs {
 		assert.NotContains(t, o.Name(), "unified-cd-controller", "%s/%s", o.Kind(), o.Name())
 	}

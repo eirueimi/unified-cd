@@ -89,7 +89,9 @@ type Agent struct {
 	Labels        []string // agent labels used for ClaimNextRun filtering
 	ExposeEnv     []string
 	Client        *Client
-	CacheStore    objectstore.ObjectStore // nil = cache disabled
+	// cacheStoreOverride is a test seam: when set, caches go straight to this
+	// store instead of through the controller's presign endpoint.
+	cacheStoreOverride objectstore.ObjectStore
 	MaxConcurrent int
 	// MaxDetachedConcurrent caps detached-run claims in a pool separate from
 	// MaxConcurrent. 0/unset defaults to 16; a negative value disables the pool.

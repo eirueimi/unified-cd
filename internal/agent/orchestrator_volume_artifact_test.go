@@ -64,7 +64,7 @@ func runUploadStep(t *testing.T, native bool, vols []string, mounts []dsl.Volume
 	workDir := t.TempDir()
 	seed(workDir, m)
 
-	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok"), PauseImage: "pause:img", RunnerImage: "runner:img", Volumes: m}
+	a := &Agent{ID: agentID, Client: newStreamClient(srv.URL, "tok"), PauseImage: "pause:img", RunnerImage: "runner:img", Volumes: m}
 	a.runtimeOnce.Do(func() {})
 	a.resolvedRuntime = &podFakeRT{}
 
@@ -249,7 +249,9 @@ func newCacheHarness(t *testing.T, g exclusionScenario, routes ...func(*http.Ser
 	h.m, _ = newTestVolumes(t, cfgs...)
 	h.b, h.workDir = isolatedBackendWithVolumes(t, h.m, mounts...)
 	h.store = objectstore.NewLocalObjectStore(t.TempDir())
-	h.b.a = &Agent{ID: "a1", Client: NewClient(srv.URL, "tok"), CacheStore: h.store}
+	cli := newStreamClient(srv.URL, "tok")
+	cli.SetObjectTransferController(true) // the stub serves the controller-mode artifact routes
+	h.b.a = &Agent{ID: "a1", Client: cli, cacheStoreOverride: h.store}
 	h.b.runID = "r1"
 	return h
 }
@@ -282,7 +284,7 @@ func TestHostBackend_CacheSaveOfAnAncestorExcludesTheVolumeAndSaysSo(t *testing.
 			require.NoError(t, h.b.CacheSave(context.Background(), ScopeHandle{}, "k", resolved, 7))
 
 			restored := t.TempDir()
-			hit, err := cache.Restore(context.Background(), h.store, "job", restored, "k", nil)
+			hit, err := cache.Restore(context.Background(), &cache.StoreRemote{Store: h.store, JobName: "job"}, restored, "k", nil)
 			require.NoError(t, err)
 			require.True(t, hit)
 			require.Equal(t, g.Entries, listEntries(t, restored))
@@ -332,7 +334,7 @@ func TestHostBackend_CacheRestoreOfAnAncestorLeavesTheVolumesAlone(t *testing.T)
 			for _, mt := range g.Mounts {
 				writeFiles(t, filepath.Join(old, filepath.FromSlash(strings.TrimPrefix(mt.MountPath, "/workspace/"))), "old.bin")
 			}
-			require.NoError(t, cache.Save(context.Background(), h.store, "job", old, "k", 7))
+			require.NoError(t, cache.Save(context.Background(), &cache.StoreRemote{Store: h.store, JobName: "job"}, old, "k", 7))
 
 			for _, mt := range g.Mounts {
 				writeFiles(t, h.m.PathOf(mt.Name), g.VolumeFiles...)

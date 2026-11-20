@@ -1,8 +1,7 @@
 # Demonstrates: cache: — restore a directory before the step runs (on key or
 # restoreKeys prefix match) and save it after the run completes on a miss.
-# Requires the agent to have a cache store configured (UNIFIED_CACHE_ENDPOINT /
-# _KEY / _SECRET / _BUCKET); with no store the step is a no-op. The dev
-# docker-compose agent is wired to the bundled garage S3, so this works there.
+# Needs no agent configuration: the agent moves the archive with presigned URLs
+# the controller issues, so it only needs a controller with an object store.
 #
 # Run twice: the first run misses and "builds" the deps; the second run
 # restores them and skips the work.

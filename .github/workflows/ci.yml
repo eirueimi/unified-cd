@@ -452,3 +452,44 @@ jobs:
           echo "== last /api/v1/agents response"; cat agents.json || true
           kubectl get events -A --sort-by=.lastTimestamp | tail -50 || true
           helm status unified-cd -n "$NS" || true
+
+  # The S3 presign and multipart primitives (internal/objectstore) are only
+  # meaningful against a real S3-compatible server, so this job runs them
+  # against Garage, the store the default install ships. With the
+  # UNIFIED_TEST_S3_* variables set, a skipped test is a failure.
+  garage:
+    name: Garage object store integration
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Start Garage
+        run: |
+          docker run -d --rm --name ucd-garage-test -p 3900:3900 -e GARAGE_RPC_SECRET=$(printf '0%.0s' {1..64}) \
+            -e GARAGE_DEFAULT_ACCESS_KEY=garageadmin -e GARAGE_DEFAULT_SECRET_KEY=garageadmin12345 -e GARAGE_DEFAULT_BUCKET=ucd-test \
+            -v "$PWD/deployments/garage/garage.toml:/etc/garage.toml:ro" dxflrs/garage:v2.3.0 /garage server --single-node --default-bucket
+          for i in $(seq 1 30); do
+            docker exec ucd-garage-test /garage status && exit 0
+            sleep 2
+          done
+          docker logs ucd-garage-test
+          exit 1
+      - name: Run Garage tests
+        env:
+          UNIFIED_TEST_S3_ENDPOINT: localhost:3900
+          UNIFIED_TEST_S3_BUCKET: ucd-test
+          UNIFIED_TEST_S3_KEY: garageadmin
+          UNIFIED_TEST_S3_SECRET: garageadmin12345
+        run: |
+          set -o pipefail
+          go test -tags garage ./internal/objectstore/... ./internal/objtransfer/... -run Garage -count=1 -v 2>&1 | tee garage-test.log
+          if grep -q -e '--- SKIP' garage-test.log; then
+            echo "a Garage test was skipped although the store is configured"
+            exit 1
+          fi

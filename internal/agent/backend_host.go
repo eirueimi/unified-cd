@@ -18,6 +18,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/objtransfer"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 )
@@ -78,6 +79,10 @@ type hostBackend struct {
 	// (resolveInVolumeMount), and an archive of an ancestor leaves it out
 	// (excludeVolumes).
 	volumeRefs []volumeMountRef
+
+	// objects is the claim's presign client for caches (see cacheRemote).
+	objectsOnce sync.Once
+	objects     *objtransfer.Client
 }
 
 // newHostBackend constructs the ExecBackend for one claim's executeRun call.
@@ -213,12 +218,22 @@ func (b *hostBackend) CloseScopes(ctx context.Context) {
 	}
 }
 
+// cacheRemote returns this claim's cache: presigned URLs (or the controller's
+// streaming routes with objectTransfer: controller). The controller derives the
+// cache namespace from the run's job, so no job name is sent.
+func (b *hostBackend) cacheRemote() cache.Remote {
+	if b.a.cacheStoreOverride != nil {
+		return &cache.StoreRemote{Store: b.a.cacheStoreOverride, JobName: b.jobName}
+	}
+	// One client per claim, so a controller-mode fallback learned from one
+	// presign answer applies to every later cache operation of the claim.
+	b.objectsOnce.Do(func() { b.objects = b.a.Client.ObjectsFor(b.runID) })
+	return b.objects.Caches()
+}
+
 // CacheRestore restores a cache entry into path (host workspace path, or
 // scope-container path when scope is non-zero), reporting a cache hit.
 func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key string, restoreKeys []string, path string) (bool, error) {
-	if b.a.CacheStore == nil {
-		return false, nil
-	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
 		var written artifact.Written
@@ -227,9 +242,9 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 		var skipped int
 		var err error
 		if root, ok := b.confineRootOf(path); ok {
-			hit, skipped, err = cache.RestoreInWritten(ctx, b.a.CacheStore, b.jobName, absOrSelf(root), absOrSelf(path), key, restoreKeys, exclude, &written)
+			hit, skipped, err = cache.RestoreInWritten(ctx, b.cacheRemote(), absOrSelf(root), absOrSelf(path), key, restoreKeys, exclude, &written)
 		} else {
-			hit, skipped, err = cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, exclude, &written)
+			hit, skipped, err = cache.RestoreWritten(ctx, b.cacheRemote(), path, key, restoreKeys, exclude, &written)
 		}
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			return false, err
@@ -247,7 +262,7 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 		return false, err
 	}
 	defer os.RemoveAll(hostDir)
-	hit, skipped, err := cache.RestoreWritten(ctx, b.a.CacheStore, b.jobName, hostDir, key, restoreKeys, nil, nil)
+	hit, skipped, err := cache.RestoreWritten(ctx, b.cacheRemote(), hostDir, key, restoreKeys, nil, nil)
 	if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 		return false, err
 	}
@@ -274,23 +289,15 @@ func (b *hostBackend) warnSkippedLinks(ctx context.Context, n int) {
 }
 
 // CacheSave archives path (host workspace path, or scope-container path when
-// scope is non-zero) under key. A nil CacheStore (cache disabled) is a
-// silent no-op from this backend's point of view — see the doc comment on
-// the orchestrator's deferred-save log line (orchestrator.go) for why the
-// caller still logs "cache saved" in this case (imprecise but harmless: no
-// interface change was justified for a Minor-severity log message).
+// scope is non-zero) under key.
 func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, path string, ttlDays int) error {
-	if b.a.CacheStore == nil {
-		slog.Debug("cache disabled; save skipped", "key", key)
-		return nil
-	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
 		return b.readWithFallback(ctx, "cache save", path, func(root, p string, exclude []string) error {
 			if root != "" {
-				return cache.SaveIn(ctx, b.a.CacheStore, b.jobName, root, p, key, ttlDays, exclude)
+				return cache.SaveIn(ctx, b.cacheRemote(), root, p, key, ttlDays, exclude)
 			}
-			return cache.SaveExcluding(ctx, b.a.CacheStore, b.jobName, p, key, ttlDays, exclude)
+			return cache.SaveExcluding(ctx, b.cacheRemote(), p, key, ttlDays, exclude)
 		})
 	}
 	hostPath, cleanup, err := sm.copyOutToTemp(ctx, h, path)
@@ -298,7 +305,7 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 		return err
 	}
 	defer cleanup()
-	return cache.Save(ctx, b.a.CacheStore, b.jobName, hostPath, key, ttlDays)
+	return cache.Save(ctx, b.cacheRemote(), hostPath, key, ttlDays)
 }
 
 // UploadArtifact uploads the file/dir at path (host or scope-container path)
@@ -330,9 +337,9 @@ func (b *hostBackend) DownloadArtifact(ctx context.Context, scope ScopeHandle, r
 		exclude := b.excludeVolumes(ctx, "artifact download", destDir)
 		var derr error
 		if root, ok := b.confineRootOf(destDir); ok {
-			derr = b.a.Client.DownloadArtifactIn(ctx, runID, name, absOrSelf(root), absOrSelf(destDir), exclude, &written)
+			derr = b.a.Client.DownloadArtifactIn(ctx, b.runID, runID, name, absOrSelf(root), absOrSelf(destDir), exclude, &written)
 		} else {
-			derr = b.a.Client.DownloadArtifactWritten(ctx, runID, name, destDir, exclude, &written)
+			derr = b.a.Client.DownloadArtifactWritten(ctx, b.runID, runID, name, destDir, exclude, &written)
 		}
 		if err := derr; err != nil {
 			return err
@@ -344,7 +351,7 @@ func (b *hostBackend) DownloadArtifact(ctx context.Context, scope ScopeHandle, r
 		return fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmp)
-	if err := b.a.Client.DownloadArtifact(ctx, runID, name, tmp); err != nil {
+	if err := b.a.Client.DownloadArtifact(ctx, b.runID, runID, name, tmp); err != nil {
 		return err
 	}
 	if err := sm.copyIn(ctx, h, tmp, destDir); err != nil {

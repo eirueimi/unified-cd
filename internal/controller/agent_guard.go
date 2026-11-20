@@ -132,6 +132,22 @@ func (s *Server) agentRunGuard(ctx context.Context, agentID, runID string, rejec
 	return runWriteOK, nil
 }
 
+// agentHoldsActiveRun reports whether agentID currently owns runID and the run
+// is not terminal. It always reads the run (never the ownership cache, which a
+// requeue and re-claim can make stale) and records no auth metric: heartbeat
+// pod-binding reports call it for every reported run, and a stale entry from a
+// previous owner is routine, not a policy-denial signal.
+func (s *Server) agentHoldsActiveRun(ctx context.Context, agentID, runID string) (bool, error) {
+	run, err := s.store.GetRun(ctx, runID)
+	if errors.Is(err, store.ErrRunNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return run.ClaimedBy != "" && run.ClaimedBy == agentID && !isTerminalStatus(string(run.Status)), nil
+}
+
 // respondRunWriteVerdict writes the response for a non-OK verdict and
 // reports whether it handled the request.
 func respondRunWriteVerdict(w http.ResponseWriter, v runWriteVerdict, runID string) bool {
