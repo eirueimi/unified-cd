@@ -362,23 +362,37 @@ func (r *ociCLI) LogsSince(ctx context.Context, h ContainerHandle, since time.Ti
 
 // LastLogTime returns the runtime-stamped time of the container's last log
 // line (`logs --timestamps --tail 1`), or the zero time for a container with
-// no output. Both streams are read: stdout lines arrive on stdout and stderr
-// lines on stderr, but --tail 1 yields exactly one line in total.
+// no output.
+//
+// The container's stdout lines arrive on the CLI's stdout and its stderr lines
+// on the CLI's stderr, so the CLI's own warnings (rootless podman's
+// "WARN[0000] ...", docker's "WARNING: Error loading config file") share a
+// stream with container output. Every container line starts with a timestamp
+// and no warning does, so lines whose first token is not an RFC3339 time are
+// ignored, and the newest timestamp wins. Go's RFC3339Nano parse accepts docker's
+// "Z" suffix, podman's "+00:00" offset and any fractional precision.
 func (r *ociCLI) LastLogTime(ctx context.Context, h ContainerHandle) (time.Time, error) {
 	out, err := execCommand(ctx, r.bin, "logs", "--timestamps", "--tail", "1", h.ID).CombinedOutput()
 	if err != nil {
-		return time.Time{}, fmt.Errorf("%s logs --tail 1: %w", r.bin, err)
+		return time.Time{}, fmt.Errorf("%s logs --tail 1: %w: %s", r.bin, err, truncateOutput(out))
 	}
-	line := strings.TrimSpace(string(out))
-	if line == "" {
-		return time.Time{}, nil
+	var last time.Time
+	for _, line := range strings.Split(string(out), "\n") {
+		ts, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if t, perr := time.Parse(time.RFC3339Nano, ts); perr == nil && t.After(last) {
+			last = t
+		}
 	}
-	ts, _, _ := strings.Cut(line, " ")
-	t, err := time.Parse(time.RFC3339Nano, ts)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("%s logs --timestamps: unparseable timestamp %q: %w", r.bin, ts, err)
+	return last, nil
+}
+
+// truncateOutput trims CLI output for inclusion in an error message.
+func truncateOutput(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) > 300 {
+		s = s[:300] + "..."
 	}
-	return t, nil
+	return s
 }
 
 // ImageUser returns the image's Config.User. If the image is not present

@@ -127,6 +127,12 @@ func main() {
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
 
+	if *poolIdleTimeout < 0 || *poolMaxIdle < 0 {
+		slog.Error("invalid pool setting: --pool-idle-timeout and --pool-max-idle must not be negative (0 never evicts by age / disables pooling)",
+			"poolIdleTimeout", poolIdleTimeout.String(), "poolMaxIdle", *poolMaxIdle)
+		os.Exit(1)
+	}
+
 	minFreeDiskThreshold, err := parseMinFreeDiskFlag(*minFreeDisk)
 	if err != nil {
 		slog.Error("invalid minimum free disk setting", "error", err)

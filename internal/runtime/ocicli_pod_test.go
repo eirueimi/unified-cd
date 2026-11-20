@@ -137,11 +137,30 @@ func TestOCI_PodRuntimeArgs(t *testing.T) {
 		assert.True(t, got.IsZero())
 	})
 
-	t.Run("LastLogTime unparseable", func(t *testing.T) {
+	t.Run("LastLogTime ignores CLI warnings and accepts podman offsets and microseconds", func(t *testing.T) {
 		var rec [][]string
-		withHelperExec(t, &rec, func([]string) string { return "0|garbage line\n" })
+		withHelperExec(t, &rec, func([]string) string {
+			return "0|WARN[0000] The cgroupv2 manager is set to systemd\n2026-01-02T03:04:05.123456+00:00 last line\nWARNING: Error loading config file: x\n"
+		})
+		got, err := r.LastLogTime(ctx, ContainerHandle{ID: "c1"})
+		require.NoError(t, err)
+		assert.True(t, got.Equal(time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)), got.String())
+	})
+
+	t.Run("LastLogTime warnings only means no output", func(t *testing.T) {
+		var rec [][]string
+		withHelperExec(t, &rec, func([]string) string { return "0|WARN[0000] something\n" })
+		got, err := r.LastLogTime(ctx, ContainerHandle{ID: "c1"})
+		require.NoError(t, err)
+		assert.True(t, got.IsZero())
+	})
+
+	t.Run("LastLogTime failure carries the CLI output", func(t *testing.T) {
+		var rec [][]string
+		withHelperExec(t, &rec, func([]string) string { return "1|Error: no such container\n" })
 		_, err := r.LastLogTime(ctx, ContainerHandle{ID: "c1"})
 		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no such container")
 	})
 }
 

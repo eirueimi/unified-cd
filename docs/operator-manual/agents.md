@@ -922,7 +922,8 @@ background processes started by an earlier step, and the state inside its sideca
 database, a warm cache). It does not keep the workspace: before the next run, the agent empties it from
 inside the pod as root (dot-files included), then re-applies the pod's `fsGroup`. If that fails, the
 agent removes the old pod, logs `reused claim pod could not be prepared; creating a fresh one`, and
-starts a new one. Step environment variables, secrets and credentials are passed to each step at exec
+starts a new one. The fresh start gets its own `podStartTimeout`, so a run whose reuse attempt itself ran
+into the timeout can spend up to twice `podStartTimeout` before its steps begin. Step environment variables, secrets and credentials are passed to each step at exec
 time and are never part of the pod, so a later run does not inherit them. Treat everything else in the
 pod as shared between runs of the job: do not rely on a reused pod being clean.
 
@@ -931,6 +932,12 @@ slot. A run reuses a pod only when it is the same job on the same slot and the p
 matches. With many slots, the same job lands on different slots and finds no idle pod there, so the hit
 rate is best with few slots. A different job (or a different fingerprint) on the slot removes the idle
 pod it finds there.
+
+**Trust.** Anything a step writes outside the workspace persists to the next run of the same job on that
+slot, whatever triggered it (another branch, another user, a webhook): credentials a step leaves in `$HOME`
+(`docker login`, a git credential store, a cloud CLI profile), files in `/tmp`, and installed tools. Only
+set `reuse: true` on jobs whose runs you would let see each other's container state, and have steps clean
+up credentials they create.
 
 **Fingerprint.** The fingerprint is a hash of everything the pod's containers were created from: the job
 name, the workspace paths, every container's definition (image reference, environment, resource
@@ -943,8 +950,9 @@ old one.
 
 **Health.** A pod is returned to the pool only if all its containers are still running and no step exec
 was interrupted by a cancellation or a timeout. A `docker exec` that is killed from the client side
-leaves its process running inside the container, so a **cancelled or timed-out run discards its pod**.
-A run whose step simply exited non-zero is still pooled. When the next run asks for the pod, the agent
+leaves its process running inside the container, so a run **cancelled or timed out while a step is
+executing** (an exec cut off by its context) discards its pod. A cancelled run whose steps had already
+finished executing, and a run whose step simply exited non-zero, are still pooled. When the next run asks for the pod, the agent
 checks again that every container is running; a pod whose sidecar has exited is removed and replaced.
 
 **Sidecar logs.** The sidecar log shown in a run starts after the newest line a sidecar had already
@@ -967,19 +975,24 @@ first lines. Output a sidecar printed while the pod sat idle belongs to neither 
   default (idle Pods are never evicted). Set it explicitly if you want the same behaviour on both.
 - Pooled pods exist only in the agent's memory and are not restored after a restart: the
   [startup sweep](#crash-orphaned-claim-containers) removes them, and a graceful shutdown removes the
-  idle pooled pods itself once its runs have finished.
+  idle pooled pods itself once its runs have finished (within 30 seconds; the agent logs a warning if it
+  runs out of time, and the next start's sweep removes the rest).
 - The workspace garbage collector (`workspaceRetentionDays`) skips a workspace directory whose pod is in
   the pool.
 - A pooled pod holds its sidecars' memory and ports-in-use (inside its own network namespace) for as long
   as it is idle; size `poolMaxIdle` for that.
 
 **When a claim is not pooled.** `reuse: true` is honoured only for isolated jobs on a docker, podman or
-nerdctl runtime. Otherwise the run behaves as if `reuse` were unset, the pod is removed when the run ends,
+nerdctl runtime. `wslc` runs through the same docker-compatible CLI code path, so it is pooled the same
+way, but it is not among the runtimes this was verified on; if its CLI lacks `logs --timestamps --tail`,
+every reuse attempt falls back to a fresh pod (see the next paragraph's log line). Otherwise the run behaves as if `reuse` were unset, the pod is removed when the run ends,
 and the agent logs one Info line, `podTemplate.reuse: claim pod not pooled`, with a `reason`:
 
 - a `detached` run (its workspace is per run, so there is nothing to share);
 - a container runtime without container inspection (Apple `container`);
 - `poolMaxIdle` is `0`.
+
+A negative `poolIdleTimeout` or `poolMaxIdle` (flag, env or config file) is refused at startup; use `0`.
 
 `reuse` together with `spec.volumes` fails the run, as on Kubernetes: `spec.volumes cannot be combined
 with podTemplate.reuse: a reused pod keeps the volumes it was created with, which contradicts a volume's

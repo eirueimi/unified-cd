@@ -240,7 +240,7 @@ func (b *hostBackend) CloseScopes(ctx context.Context) {
 	}
 	// Pooled: the pod outlives the run only if nothing in it can still be
 	// running this run's work and every container is up.
-	healthy := !b.execInterrupted.Load()
+	healthy := !b.execInterrupted.Load() && !b.pod.interrupted.Load()
 	if healthy {
 		pr, ok := b.pod.rt.(crt.PodRuntime)
 		healthy = ok && podRunning(ctx, pr, b.pod)

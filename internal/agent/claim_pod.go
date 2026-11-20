@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
@@ -296,6 +297,11 @@ type claimPodManager struct {
 	// agentID labels every container of the pod (claimPodLabels) so the
 	// startup sweep can find them after a crash. Empty = no labels.
 	agentID string
+
+	// interrupted records that an exec run through the pause container was cut
+	// off by context cancellation (see execHelper); hostBackend.CloseScopes
+	// then discards the pod instead of pooling it.
+	interrupted atomic.Bool
 
 	mu    sync.Mutex
 	pause crt.ContainerHandle

@@ -701,6 +701,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.hostPool != nil {
 		poolCtx, poolCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		a.hostPool.Close(poolCtx)
+		if poolCtx.Err() != nil {
+			slog.Warn("shutdown: removing idle pooled claim pods exceeded its 30s budget; some containers may be left behind (the next start's sweep removes them)")
+		}
 		poolCancel()
 	}
 

@@ -3,9 +3,11 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +29,23 @@ type poolRT struct {
 	mu     sync.Mutex
 	execFn func(ctx context.Context, h crt.ContainerHandle, s crt.ExecSpec) (code int, err error, handled bool)
 	sinces []time.Time
+	// repull makes every Pull assign a new image ID, as re-pulling a moved tag.
+	repull bool
+	pulls  int
+}
+
+func (f *poolRT) Pull(ctx context.Context, image string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.repull {
+		return f.podFakeRT.Pull(ctx, image)
+	}
+	f.pulls++
+	if f.imageIDs == nil {
+		f.imageIDs = map[string]string{}
+	}
+	f.imageIDs[image] = "id-" + strconv.Itoa(f.pulls)
+	return nil
 }
 
 func (f *poolRT) Create(ctx context.Context, s crt.CreateSpec) (crt.ContainerHandle, error) {
@@ -246,17 +265,82 @@ func TestPool_UnhealthyPooledPodDiscarded(t *testing.T) {
 	assert.ElementsMatch(t, []string{"c0", "c1", "c2"}, f.removedIDs())
 }
 
+// A :latest image is re-pulled on every claim; when the tag moved, the new image
+// ID changes the fingerprint and the pooled pod is discarded.
 func TestPool_DigestChangeDiscards(t *testing.T) {
-	f := &poolRT{}
+	f := &poolRT{repull: true}
 	e := newPoolEnv(t, f)
+	e.a.RunnerImage = "runner:latest"
 	wd := t.TempDir()
 	require.Equal(t, "Succeeded", e.run(e.claim("r1", "job-a", reuseTemplate("1")), wd, poolable))
 	f.mu.Lock()
-	f.imageIDs["runner:img"] = "sha256:new" // the tag now points at another image
+	pullsAfterFirst := f.pulls
 	f.mu.Unlock()
 	require.Equal(t, "Succeeded", e.run(e.claim("r2", "job-a", reuseTemplate("1")), wd, poolable))
+	f.mu.Lock()
+	assert.Greater(t, f.pulls, pullsAfterFirst, "the mutable tag is pulled again")
+	f.mu.Unlock()
 	assert.Len(t, f.created, 6)
 	assert.ElementsMatch(t, []string{"c0", "c1", "c2"}, f.removedIDs())
+}
+
+func TestPool_ReuseReappliesFSGroup(t *testing.T) {
+	f := &poolRT{}
+	e := newPoolEnv(t, f)
+	wd := t.TempDir()
+	pt := func() *dsl.PodTemplate {
+		p := reuseTemplate("1")
+		p.Spec["securityContext"] = map[string]any{"fsGroup": 2000}
+		return p
+	}
+	fsgroupExecs := func() int {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		n := 0
+		for _, s := range f.execSpecs {
+			if len(s.Shell) > 1 && s.Shell[1] == "fsgroup" {
+				n++
+			}
+		}
+		return n
+	}
+	require.Equal(t, "Succeeded", e.run(e.claim("r1", "job-a", pt()), wd, poolable))
+	require.Equal(t, 1, fsgroupExecs(), "Start applies fsGroup once")
+	require.Equal(t, "Succeeded", e.run(e.claim("r2", "job-a", pt()), wd, poolable))
+	assert.Len(t, f.created, 3, "the pod was reused")
+	assert.Equal(t, 2, fsgroupExecs(), "the hit re-applies fsGroup to the emptied workspace")
+}
+
+func TestPool_LastLogTimeErrorFallsBackToFresh(t *testing.T) {
+	f := &skewedRT{}
+	e := newPoolEnv(t, &f.poolRT)
+	e.a.resolvedRuntime = f
+	e.a.hostPool = newHostPodPool(f, e.a.PoolIdleTimeout, e.a.PoolMaxIdle)
+	wd := t.TempDir()
+	require.Equal(t, "Succeeded", e.run(e.claim("r1", "job-a", reuseTemplate("1")), wd, poolable))
+	f.err = errors.New("logs unavailable")
+	require.Equal(t, "Succeeded", e.run(e.claim("r2", "job-a", reuseTemplate("1")), wd, poolable))
+	assert.ElementsMatch(t, []string{"c0", "c1", "c2"}, f.removedIDs(), "a pod whose log boundary is unknown is never reused")
+	assert.Len(t, f.created, 6)
+}
+
+func TestSidecarLogBoundary_NewestOfSeveralSidecars(t *testing.T) {
+	f := &poolRT{}
+	pt := &dsl.PodTemplate{Reuse: true, Spec: map[string]any{"containers": []any{
+		map[string]any{"name": "a", "image": "a:1"},
+		map[string]any{"name": "b", "image": "b:1"},
+	}}}
+	m := newClaimPodManager(f, "/w", "/workspace", "pause", "runner", "")
+	require.NoError(t, m.Start(context.Background(), pt)) // pause c0, a c1, b c2, job c3
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	f.logTimes = map[string]time.Time{"c1": t0.Add(5 * time.Second), "c2": t0}
+	got, err := m.sidecarLogBoundary(context.Background())
+	require.NoError(t, err)
+	assert.True(t, got.Equal(t0.Add(5*time.Second+time.Nanosecond)), "the newest line of any sidecar, %s", got)
+	f.logTimes = nil
+	got, err = m.sidecarLogBoundary(context.Background())
+	require.NoError(t, err)
+	assert.True(t, got.IsZero(), "no output anywhere: no boundary")
 }
 
 func TestHostPodFingerprint_UsesExpandedImageAndItsID(t *testing.T) {
@@ -481,10 +565,11 @@ type skewedRT struct {
 	poolRT
 	skew time.Duration
 	last time.Time // runtime-clock stamp of the newest sidecar log line
+	err  error     // when set, LastLogTime fails
 }
 
 func (f *skewedRT) LastLogTime(context.Context, crt.ContainerHandle) (time.Time, error) {
-	return f.last, nil
+	return f.last, f.err
 }
 
 // TestPool_ReuseLogBoundaryComesFromRuntimeClock: the boundary a reused pod's

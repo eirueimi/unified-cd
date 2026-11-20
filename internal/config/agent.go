@@ -317,11 +317,17 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 
 	if v := os.Getenv("UNIFIED_AGENT_POOL_IDLE_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
+			if d < 0 {
+				return nil, fmt.Errorf("UNIFIED_AGENT_POOL_IDLE_TIMEOUT %q: must not be negative (0 never evicts by age)", v)
+			}
 			eff.PoolIdleTimeout = &d
 		}
 	}
 	if v := os.Getenv("UNIFIED_AGENT_POOL_MAX_IDLE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n < 0 {
+				return nil, fmt.Errorf("UNIFIED_AGENT_POOL_MAX_IDLE %q: must not be negative (0 disables pooling)", v)
+			}
 			eff.PoolMaxIdle = &n
 		}
 	}
@@ -410,9 +416,15 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 		eff.PodStartTimeout = file.PodStartTimeout
 	}
 	if file.PoolIdleTimeout != nil {
+		if *file.PoolIdleTimeout < 0 {
+			return nil, fmt.Errorf("agent config: poolIdleTimeout %s must not be negative (0 never evicts by age)", *file.PoolIdleTimeout)
+		}
 		eff.PoolIdleTimeout = file.PoolIdleTimeout
 	}
 	if file.PoolMaxIdle != nil {
+		if *file.PoolMaxIdle < 0 {
+			return nil, fmt.Errorf("agent config: poolMaxIdle %d must not be negative (0 disables pooling)", *file.PoolMaxIdle)
+		}
 		eff.PoolMaxIdle = file.PoolMaxIdle
 	}
 	if file.MinFreeDisk.Set {

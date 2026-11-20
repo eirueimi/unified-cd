@@ -45,3 +45,22 @@ func TestAgentEffective_PoolSettings(t *testing.T) {
 	assert.Equal(t, time.Duration(0), eff.PoolIdleTimeoutOrDefault(), "an explicit 0 in the file beats the env value")
 	assert.Equal(t, 0, eff.PoolMaxIdleOrDefault())
 }
+
+func TestAgentEffective_PoolSettingsRejectNegative(t *testing.T) {
+	t.Setenv("UNIFIED_AGENT_POOL_MAX_IDLE", "-1")
+	_, err := AgentEffective("")
+	require.ErrorContains(t, err, "UNIFIED_AGENT_POOL_MAX_IDLE")
+	t.Setenv("UNIFIED_AGENT_POOL_MAX_IDLE", "")
+	t.Setenv("UNIFIED_AGENT_POOL_IDLE_TIMEOUT", "-5m")
+	_, err = AgentEffective("")
+	require.ErrorContains(t, err, "UNIFIED_AGENT_POOL_IDLE_TIMEOUT")
+	t.Setenv("UNIFIED_AGENT_POOL_IDLE_TIMEOUT", "")
+
+	p := filepath.Join(t.TempDir(), "agent.yaml")
+	require.NoError(t, os.WriteFile(p, []byte("poolMaxIdle: -2\n"), 0o600))
+	_, err = AgentEffective(p)
+	require.ErrorContains(t, err, "poolMaxIdle")
+	require.NoError(t, os.WriteFile(p, []byte("poolIdleTimeout: -1m\n"), 0o600))
+	_, err = AgentEffective(p)
+	require.ErrorContains(t, err, "poolIdleTimeout")
+}

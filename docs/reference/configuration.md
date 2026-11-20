@@ -263,7 +263,7 @@ For a job that sets `podTemplate.reuse: true`, the host agent keeps the claim po
 containers after the run, up to `--pool-max-idle` (`poolMaxIdle`, default 4) idle
 pods, each for at most `--pool-idle-timeout` (`poolIdleTimeout`, default 30m; `0`
 never evicts by age). `poolMaxIdle: 0` disables pooling. An explicit `0` is kept as
-`0`; only an unset value takes the default. The Kubernetes agent's
+`0`; only an unset value takes the default. A negative value is refused at startup. The Kubernetes agent's
 `poolIdleTimeout` is unset by default (never evicted), so the two agents' defaults
 differ. See [Claim-pod pool](../operator-manual/agents.md#claim-pod-pool-podtemplatereuse).
 
