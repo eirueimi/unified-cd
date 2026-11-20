@@ -353,6 +353,22 @@ func TestClient_RetriesBindingPendingUpTo30s(t *testing.T) {
 	}
 }
 
+func TestClient_RunFinishedIsFinalNotRetried(t *testing.T) {
+	sleeps := noSleep(t)
+	e := newFakeEnv(t)
+	e.ctrlHook = func(_ int, _ api.PresignRequest, w http.ResponseWriter) bool {
+		writeErr(w, http.StatusConflict, api.ObjectErrRunFinished)
+		return true
+	}
+	_, err := e.client.Artifacts().Get(t.Context(), "artifacts/run-1/a.tar.gz")
+	if err == nil || !strings.Contains(err.Error(), api.ObjectErrRunFinished) {
+		t.Fatalf("err = %v, want one naming run-finished", err)
+	}
+	if len(*sleeps) != 0 {
+		t.Fatalf("sleeps = %v, want no retries", *sleeps)
+	}
+}
+
 func TestClient_Retries429WithRetryAfter(t *testing.T) {
 	sleeps := noSleep(t)
 	e := newFakeEnv(t)

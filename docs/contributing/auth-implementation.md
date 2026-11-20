@@ -163,7 +163,10 @@ because it accepts two kinds of caller, and `authenticateObjectRequester`
   allow-list. **The run binding is mandatory**: the Pod must be the one the
   run's `run_pod_bindings` row names. No row yet is `409 binding-pending` with
   `Retry-After: 1` (the k8s agent reports the binding on its next heartbeat);
-  a different Pod is `403`. There is no permissive mode: the
+  a different Pod is `403`. A run in a terminal state is refused with
+  `409 run-finished` before the binding lookup (cancel, the reaper and the
+  scheduler do not delete bindings), and the sidecar client does not retry it.
+  There is no permissive mode: the
   deprecated `storeCredentialRequireRunBinding` setting is ignored, because a URL is for one
   run's object.
 

@@ -129,6 +129,28 @@ func TestPresign_SidecarBoundSucceeds(t *testing.T) {
 	assert.Equal(t, "artifacts/"+runID+"/a.tar.gz", urlKey(t, out.Request.URL))
 }
 
+// Cancel, the reaper and the scheduler finish a run without deleting its
+// bindings, so the run's still-alive Pod must be refused by run status.
+func TestPresign_SidecarRefusedOnceRunIsTerminal(t *testing.T) {
+	for _, status := range []api.RunStatus{api.RunCancelled, api.RunFailed, api.RunSucceeded} {
+		t.Run(string(status), func(t *testing.T) {
+			s, st, _ := presignTestServer(t, sidecarPresignConfig([]string{"ci"}))
+			runID := seedRun(t, st, "job-a", "")
+			require.NoError(t, st.UpsertRunPodBinding(t.Context(), runID, "ucd-run-abc", "job-pod-uid"))
+			// Valid and running first.
+			out := decodePresign(t, doPresign(t, s, sidecarToken(), runID, api.PresignRequest{Kind: "artifact", Op: "put", Name: "a"}))
+			require.NotNil(t, out.Request)
+
+			updated, err := st.FinishRun(t.Context(), runID, status)
+			require.NoError(t, err)
+			require.True(t, updated)
+			rec := doPresign(t, s, sidecarToken(), runID, api.PresignRequest{Kind: "artifact", Op: "put", Name: "a"})
+			requireObjectError(t, rec, http.StatusConflict, "run-finished")
+			assert.Empty(t, rec.Header().Get("Retry-After"))
+		})
+	}
+}
+
 func TestPresign_SidecarWithoutBindingGets409(t *testing.T) {
 	s, st, _ := presignTestServer(t, sidecarPresignConfig([]string{"ci"}))
 	runID := seedRun(t, st, "job-a", "")

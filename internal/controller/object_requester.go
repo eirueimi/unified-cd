@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -194,6 +195,25 @@ func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Reques
 		return objectRequester{}, false
 	}
 	if !s.resolveRequesterRun(w, r, runID, &req) {
+		return objectRequester{}, false
+	}
+	// Cancel, the reaper and the scheduler finish a run without deleting its
+	// bindings (only the agent's FinishRun does), so a still-alive Pod of a
+	// finished run is refused by status. The agent path deliberately accepts
+	// late uploads; a Pod's access ends with the run.
+	run, err := s.store.GetRun(r.Context(), runID)
+	if errors.Is(err, store.ErrRunNotFound) {
+		writeObjectError(w, http.StatusNotFound, api.ObjectErrNotFound, "run not found")
+		return objectRequester{}, false
+	}
+	if err != nil {
+		slog.Warn("presign: run status lookup failed", "runId", runID, "error", err)
+		writeObjectError(w, http.StatusInternalServerError, api.ObjectErrInternal, "run status lookup failed")
+		return objectRequester{}, false
+	}
+	if isTerminalStatus(string(run.Status)) {
+		s.auditPresignAction(r, req, action, runID, nil, http.StatusConflict)
+		writeObjectError(w, http.StatusConflict, api.ObjectErrRunFinished, "run "+runID+" has finished")
 		return objectRequester{}, false
 	}
 	bindings, err := s.store.ListRunPodBindings(r.Context(), runID)

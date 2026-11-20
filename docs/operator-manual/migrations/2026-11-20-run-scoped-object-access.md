@@ -75,7 +75,7 @@ before (`proxy`).
   heartbeat itself still succeeds, but the run's sidecar gets `409 binding-pending` until a new replica
   serves the heartbeat. Upgrade all replicas promptly.
 - **Pod bindings are tied to the claiming agent and removed at run end.** The controller records a Pod
-  binding only from the agent that currently owns the run, and deletes a run's bindings when it finishes.
+  binding only from the agent that currently owns the run, and deletes a run's bindings when the agent finishes it. A run that ends by cancel, the stuck-run reaper or the scheduler keeps its bindings, but the presign endpoint refuses its sidecars with `409 run-finished` (not retried), so access ends with the run however it ends.
 
 ## Rollback
 

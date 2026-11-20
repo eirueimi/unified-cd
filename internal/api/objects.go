@@ -34,6 +34,7 @@ const (
 	ObjectErrNotFound             = "not-found"
 	ObjectErrCacheMiss            = "cache-miss"
 	ObjectErrBindingPending       = "binding-pending"
+	ObjectErrRunFinished          = "run-finished"
 	ObjectErrRateLimited          = "rate-limited"
 	ObjectErrMultipartUnavailable = "multipart-unavailable"
 	ObjectErrNoObjectStore        = "no-object-store"

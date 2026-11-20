@@ -187,7 +187,8 @@ Rows are written for:
 - the write operations `put`, `multipart-start`, `multipart-complete`, `multipart-abort` and
   `commit` (the cache metadata write), whatever their outcome;
 - every `403` refusal of an authenticated requester: another agent's run, a Pod that is not the one
-  bound to the run, or a namespace/ServiceAccount outside the allow-list.
+  bound to the run, or a namespace/ServiceAccount outside the allow-list;
+- every `409 run-finished` refusal of a Pod's sidecar for a run that has already finished.
 
 Reads (`get`, `head`) and part-URL batches (`multipart-parts`) are not recorded. Neither are `401`
 (no or invalid credential; an invalid agent credential is logged as described in
