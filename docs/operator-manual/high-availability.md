@@ -276,7 +276,7 @@ fast and re-dispatch in-flight requests to a healthy replica.
 On SIGINT/SIGTERM, the controller shuts down in stages:
 
 1. `/healthz` and `/readyz` start returning **503**, so the load balancer stops sending new traffic (drain begins).
-2. Agent claim long-polls and live log streams (`/api/v1/runs/{id}/events`) end immediately. Agents simply claim again and the web UI reopens its log stream; both land on another replica. `unified-cd logs -f` polls rather than holding a stream, so it is unaffected.
+2. Agent claim long-polls and live log streams (`/api/v1/runs/{id}/events`) end immediately. Agents simply claim again and the web UI reopens its log stream after 2 seconds; both land on another replica. The web UI also reopens the stream after a network error or a 5xx/408/429 response (for example a proxy answering 502 during the rollout), waiting 2 seconds at first and doubling the wait up to 30 seconds while the failures continue; 401, 403 and 404 responses are not retried. `unified-cd logs -f` polls rather than holding a stream, so it is unaffected.
 3. The controller keeps serving for ~2 seconds so load balancers can observe the 503s.
 4. The HTTP server then shuts down gracefully: it stops accepting connections and waits up to **10 seconds** for in-flight requests to finish. The process does not exit (and the database connection is not closed) until that wait ends. Requests still running after 10 seconds are cut off.
 5. The process exits.

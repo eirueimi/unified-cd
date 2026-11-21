@@ -256,6 +256,241 @@ describe('RunDetail — log stream reconnects when the server closes it mid-run'
   });
 });
 
+// Reconnect after network errors and non-OK responses. The reconnect timer is
+// driven by hand: setTimeout calls with a backoff-sized delay are captured
+// (never really scheduled) so a test fires them one at a time and sees exactly
+// which delay each attempt asked for.
+describe('RunDetail — log stream reconnect after errors, with backoff', () => {
+  const BACKOFF_DELAYS = [2000, 4000, 8000, 16000, 30000];
+  let timers;
+  let realSetTimeout;
+  let realClearTimeout;
+
+  beforeEach(() => {
+    realSetTimeout = globalThis.setTimeout;
+    realClearTimeout = globalThis.clearTimeout;
+    timers = { delays: [], entries: [] };
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation((fn, ms, ...args) => {
+      if (!BACKOFF_DELAYS.includes(ms)) return realSetTimeout(fn, ms, ...args);
+      const entry = { id: Symbol('reconnect-timer'), fn, ms, cleared: false, fired: false };
+      timers.delays.push(ms);
+      timers.entries.push(entry);
+      return entry.id;
+    });
+    vi.spyOn(globalThis, 'clearTimeout').mockImplementation((id) => {
+      const entry = timers.entries.find((e) => e.id === id);
+      if (entry) entry.cleared = true;
+      else realClearTimeout(id);
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const livePending = () => timers.entries.filter((e) => !e.cleared && !e.fired);
+  async function fireNext() {
+    await vi.waitFor(() => expect(livePending().length).toBe(1));
+    const entry = livePending()[0];
+    entry.fired = true;
+    entry.fn();
+  }
+
+  // A stream that stays open until the request is aborted.
+  function hangingEventsResponse(init) {
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      body: {
+        getReader() {
+          return {
+            read: () =>
+              new Promise((_, reject) => {
+                init?.signal?.addEventListener('abort', () => {
+                  const err = new Error('aborted');
+                  err.name = 'AbortError';
+                  reject(err);
+                });
+              }),
+          };
+        },
+      },
+    });
+  }
+  // A stream that opens fine, then dies mid-read like a dropped connection.
+  function droppedEventsResponse() {
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      body: {
+        getReader() {
+          return { read: () => Promise.reject(new TypeError('network error')) };
+        },
+      },
+    });
+  }
+  const networkError = () => Promise.reject(new TypeError('Failed to fetch'));
+  const status = (code) => Promise.resolve({ ok: false, status: code, body: null });
+
+  // `attempts` are consumed one per /events request; afterwards the stream hangs open.
+  function mockRun(runID, runStatus, attempts) {
+    let n = 0;
+    const fetchMock = vi.fn((url, init) => {
+      const u = String(url);
+      if (u.includes('/events')) {
+        const next = attempts[n++];
+        return next ? next(init) : hangingEventsResponse(init);
+      }
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      if (u.includes('/artifacts')) return jsonResponse([]);
+      return jsonResponse({ id: runID, status: runStatus, jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+    return fetchMock;
+  }
+  const settle = () => new Promise((r) => realSetTimeout(r, 60));
+
+  it('reconnects after a network error and does not replace the page with an error', async () => {
+    const fetchMock = mockRun('run-ne', 'Running', [networkError]);
+    const { container, unmount } = render(RunDetail, { props: { params: { id: 'run-ne' } } });
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(1));
+    await fireNext();
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(2));
+    expect(timers.delays).toEqual([2000]);
+    expect(container.querySelector('.error')).toBeFalsy();
+    expect(container.textContent).not.toContain('Failed to fetch');
+    unmount();
+  });
+
+  it('reconnects after the connection drops mid-stream (read rejects)', async () => {
+    const fetchMock = mockRun('run-drop', 'Running', [droppedEventsResponse]);
+    const { container, unmount } = render(RunDetail, { props: { params: { id: 'run-drop' } } });
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(1));
+    await fireNext();
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(2));
+    expect(container.querySelector('.error')).toBeFalsy();
+    unmount();
+  });
+
+  it.each([500, 502, 503, 504, 408, 429])('reconnects after a %i response', async (code) => {
+    const fetchMock = mockRun('run-5xx', 'Running', [() => status(code)]);
+    const { unmount } = render(RunDetail, { props: { params: { id: 'run-5xx' } } });
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(1));
+    await fireNext();
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(2));
+    unmount();
+  });
+
+  it.each([401, 403, 404])('does not reconnect after a %i response', async (code) => {
+    const fetchMock = mockRun('run-4xx', 'Running', [() => status(code)]);
+    const { unmount } = render(RunDetail, { props: { params: { id: 'run-4xx' } } });
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(1));
+    await settle();
+    expect(timers.delays).toEqual([]);
+    expect(countEventsCalls(fetchMock)).toBe(1);
+    unmount();
+  });
+
+  it('doubles the delay on consecutive failures and caps it at 30 s', async () => {
+    const failures = Array.from({ length: 7 }, () => networkError);
+    const fetchMock = mockRun('run-bo', 'Running', failures);
+    const { unmount } = render(RunDetail, { props: { params: { id: 'run-bo' } } });
+    for (let i = 1; i <= 7; i++) {
+      await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(i));
+      await fireNext();
+    }
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(8));
+    expect(timers.delays).toEqual([2000, 4000, 8000, 16000, 30000, 30000, 30000]);
+    unmount();
+  });
+
+  it('resets the delay to 2 s once a stream opens, and a clean close reconnects after 2 s', async () => {
+    const fetchMock = mockRun('run-reset', 'Running', [
+      () => status(503),
+      () => status(503),
+      () => emptyEventsResponse(), // opens fine, then the server closes it cleanly
+    ]);
+    const { unmount } = render(RunDetail, { props: { params: { id: 'run-reset' } } });
+    for (let i = 1; i <= 3; i++) {
+      await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(i));
+      await fireNext();
+    }
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(4));
+    expect(timers.delays).toEqual([2000, 4000, 2000]);
+    unmount();
+  });
+
+  it('does not reconnect when the run is already terminal', async () => {
+    const fetchMock = mockRun('run-term', 'Succeeded', [networkError]);
+    const { unmount } = render(RunDetail, { props: { params: { id: 'run-term' } } });
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(1));
+    await settle();
+    expect(timers.delays).toEqual([]);
+    expect(countEventsCalls(fetchMock)).toBe(1);
+    unmount();
+  });
+
+  it('does not reconnect on a terminal run after a 503 either', async () => {
+    const fetchMock = mockRun('run-term2', 'Failed', [() => status(503)]);
+    const { unmount } = render(RunDetail, { props: { params: { id: 'run-term2' } } });
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(1));
+    await settle();
+    expect(timers.delays).toEqual([]);
+    unmount();
+  });
+
+  it('clears a pending reconnect when the component is destroyed', async () => {
+    const fetchMock = mockRun('run-un', 'Running', [networkError]);
+    const { unmount } = render(RunDetail, { props: { params: { id: 'run-un' } } });
+    await vi.waitFor(() => expect(livePending().length).toBe(1));
+    unmount();
+    expect(livePending().length).toBe(0);
+    await settle();
+    expect(countEventsCalls(fetchMock)).toBe(1);
+  });
+
+  it('clears a pending reconnect when navigating to another run', async () => {
+    const fetchMock = mockRun('run-nav', 'Running', [networkError]);
+    const { rerender, unmount } = render(RunDetail, { props: { params: { id: 'run-nav' } } });
+    await vi.waitFor(() => expect(livePending().length).toBe(1));
+    await rerender({ params: { id: 'run-nav-2' } });
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(2));
+    expect(livePending().length).toBe(0);
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/runs/run-nav/events')).length).toBe(1);
+    unmount();
+  });
+
+  it('a superseded connection that fails late never schedules a reconnect', async () => {
+    let rejectFirst;
+    let n = 0;
+    const fetchMock = vi.fn((url, init) => {
+      const u = String(url);
+      if (u.includes('/events')) {
+        if (n++ === 0) {
+          return new Promise((_, reject) => {
+            rejectFirst = () => reject(new TypeError('Failed to fetch'));
+          });
+        }
+        return hangingEventsResponse(init);
+      }
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      if (u.includes('/artifacts')) return jsonResponse([]);
+      return jsonResponse({ id: 'x', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+    const { container, rerender, unmount } = render(RunDetail, { props: { params: { id: 'run-sup' } } });
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(1));
+    await rerender({ params: { id: 'run-sup-2' } });
+    await vi.waitFor(() => expect(countEventsCalls(fetchMock)).toBe(2));
+    rejectFirst();
+    await settle();
+    expect(timers.delays).toEqual([]);
+    expect(container.querySelector('.error')).toBeFalsy();
+    unmount();
+  });
+});
+
 describe('RunDetail — cancelled run keeps its historical logs', () => {
   it('keeps backfilled lines rendered after the terminal status event and stream close, with one connection', async () => {
     const enc = new TextEncoder();
@@ -3669,6 +3904,23 @@ describe('RunDetail — a persistently failing range fetch does not storm-refire
 
       const box = container.querySelector('.log-box');
 
+      // The run's status does not matter here: the tail follow is driven by the
+      // log batch, not the status, so a Succeeded run follows the tail too.
+      // Let it finish BEFORE scrolling: the backfill batch's
+      // scheduleLogTailScroll writes box.scrollTop = scrollHeight (the fixed
+      // 4000 stub) from requestAnimationFrame callbacks. The stub's huge
+      // scrollTop keeps logStick true after a scroll event, so a late frame
+      // under CPU load could move the viewport back to the tail between this
+      // test's scrolls and make the range fetches (or their counts) race.
+      // Wait for the tail position and the /events fetch, then drain 4 frames.
+      await vi.waitFor(() => {
+        expect(box.scrollTop).toBe(4000);
+        expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/events'))).toBe(true);
+      });
+      for (let i = 0; i < 4; i++) {
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+
       // Scroll into the middle (row ~25000): uncovered by the tail window, so
       // ensureRowsLoaded fires a range fetch — which rejects.
       box.scrollTop = 25000 * 20;
@@ -3963,6 +4215,72 @@ describe('RunDetail — follow-tail control (jump to latest)', () => {
         expect(box.scrollTop).toBe(4000);
         expect(container.querySelector('.log-follow-btn')).toBeFalsy();
       });
+    } finally {
+      restore();
+    }
+  });
+
+  // scrollLogToBottom (run after a view switch / jump-to-latest) scrolls in two
+  // stages. If the user scrolls up after the first scroll write, onLogScroll
+  // drops logStick and the remaining stage(s) must NOT yank the view back down.
+  it('does not scroll to the bottom again once the user scrolls up after the first tail write', async () => {
+    try {
+      const N = 200;
+      const statsRange = statsAndRange(N, (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'row ' + row }));
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResponseWithLogs(N, true);
+        const sr = statsRange(url);
+        if (sr) return sr;
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-follow-userscroll', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+      const { container } = render(RunDetail, { props: { params: { id: 'run-follow-userscroll' } } });
+      const box = await vi.waitFor(() => {
+        const b = container.querySelector('.log-box');
+        expect(b).toBeTruthy();
+        return b;
+      });
+      await vi.waitFor(() => expect(box.scrollTop).toBe(4000));
+      // Let the initial open's own tail-follow frames drain.
+      for (let i = 0; i < 4; i++) {
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+
+      box.scrollTop = 0;
+      await fireEvent.scroll(box);
+      const btn = await vi.waitFor(() => {
+        const b = container.querySelector('.log-follow-btn');
+        expect(b).toBeTruthy();
+        return b;
+      });
+
+      // From now on, the FIRST write of the tail position simulates the user
+      // scrolling back up right after it: the stored scrollTop is reset and a
+      // scroll event is dispatched synchronously, exactly like a wheel scroll.
+      let tailWrites = 0;
+      Object.defineProperty(box, 'scrollTop', {
+        configurable: true,
+        get() { return this.__stubScrollTop || 0; },
+        set(v) {
+          this.__stubScrollTop = v;
+          if (v === 4000 && ++tailWrites === 1) {
+            this.__stubScrollTop = 0;
+            this.dispatchEvent(new Event('scroll'));
+          }
+        },
+      });
+
+      await fireEvent.click(btn);
+      await vi.waitFor(() => expect(tailWrites).toBeGreaterThanOrEqual(1));
+      for (let i = 0; i < 6; i++) {
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      expect(tailWrites).toBe(1);
+      expect(box.scrollTop).toBe(0);
     } finally {
       restore();
     }
