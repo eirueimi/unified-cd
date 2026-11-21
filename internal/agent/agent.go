@@ -349,12 +349,17 @@ func (a *Agent) storageReading(sampler *storageSampler, wsBase, agentName string
 	return out
 }
 
+// detectRuntime is the container-runtime auto-detection used by
+// containerRuntime. It is a package-level variable only as a test seam: unit
+// tests replace it so they never probe or invoke a real host runtime binary.
+var detectRuntime = crt.Detect
+
 // containerRuntime resolves (once) the container runtime for runsIn.image
 // steps, honoring RuntimePref. A missing runtime is a hard error surfaced to
 // the step (no silent host fallback).
 func (a *Agent) containerRuntime() (crt.ContainerRuntime, error) {
 	a.runtimeOnce.Do(func() {
-		a.resolvedRuntime, a.runtimeErr = crt.Detect(a.RuntimePref)
+		a.resolvedRuntime, a.runtimeErr = detectRuntime(a.RuntimePref)
 	})
 	return a.resolvedRuntime, a.runtimeErr
 }
