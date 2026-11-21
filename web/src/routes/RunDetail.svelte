@@ -320,11 +320,14 @@
   }
   async function scrollLogToBottom() {
     const generation = tailScrollGeneration;
+    // Re-check logStick before each write: a user scroll between (or during)
+    // the stages makes onLogScroll drop it, and the view must stay where the
+    // user put it. Every caller sets logStick = true before calling.
     await waitForLogLayout();
-    if (generation !== tailScrollGeneration) return;
+    if (generation !== tailScrollGeneration || !logStick) return;
     applyLogTailScroll();
     await waitForLogLayout();
-    if (generation !== tailScrollGeneration) return;
+    if (generation !== tailScrollGeneration || !logStick) return;
     applyLogTailScroll();
   }
   async function scheduleLogTailScroll() {
@@ -786,17 +789,37 @@
         stopStepPolling();
     }, 3000);
   }
-  // How long to wait before reopening a log stream the server closed while
-  // the run was still active (controller restart / rolling deploy). The
-  // controller ends open streams on shutdown; the fresh connection reaches
-  // another replica and its backfill replays whatever was missed.
+  // Reopening a log stream that ended while the run is still active: the
+  // server closed it (controller restart / rolling deploy: the fresh
+  // connection reaches another replica and its backfill replays whatever was
+  // missed), a proxy answered 5xx/408/429, or the network dropped. The delay
+  // starts at SSE_RECONNECT_DELAY_MS, doubles on every consecutive failed
+  // attempt up to SSE_RECONNECT_MAX_DELAY_MS, and resets once a stream opens.
   const SSE_RECONNECT_DELAY_MS = 2000;
+  const SSE_RECONNECT_MAX_DELAY_MS = 30000;
+  let sseReconnectDelay = SSE_RECONNECT_DELAY_MS;
   function scheduleSSEReconnect() {
     if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+    const delay = sseReconnectDelay;
+    sseReconnectDelay = Math.min(sseReconnectDelay * 2, SSE_RECONNECT_MAX_DELAY_MS);
     sseReconnectTimer = setTimeout(() => {
       sseReconnectTimer = null;
       startSSE();
-    }, SSE_RECONNECT_DELAY_MS);
+    }, delay);
+  }
+  // Auth, permission and not-found responses are not transient: retrying them
+  // would only hammer the server, so they keep the give-up behavior.
+  function isRetryableStreamStatus(status) {
+    return status >= 500 || status === 408 || status === 429;
+  }
+  // A connection may reconnect only while it is still the current one, was not
+  // aborted, and the run has not finished.
+  function mayReconnectStream(streamController) {
+    return (
+      streamController === abortController &&
+      !streamController.signal.aborted &&
+      !(run && ["Succeeded", "Failed", "Cancelled"].includes(run.status))
+    );
   }
   async function startSSE() {
     if (sseReconnectTimer) {
@@ -911,7 +934,13 @@
           signal: abortController.signal,
         },
       );
-      if (!resp.ok || !resp.body) return;
+      if (!resp.ok || !resp.body) {
+        if (isRetryableStreamStatus(resp.status) && mayReconnectStream(streamController)) {
+          scheduleSSEReconnect();
+        }
+        return;
+      }
+      sseReconnectDelay = SSE_RECONNECT_DELAY_MS; // the stream opened: reset the backoff
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -921,13 +950,7 @@
           // The server closed the stream without a terminal status event
           // (e.g. the controller is shutting down). Unless this connection
           // was superseded/aborted or the run already finished, reconnect.
-          if (
-            streamController === abortController &&
-            !streamController.signal.aborted &&
-            !(run && ["Succeeded", "Failed", "Cancelled"].includes(run.status))
-          ) {
-            scheduleSSEReconnect();
-          }
+          if (mayReconnectStream(streamController)) scheduleSSEReconnect();
           break;
         }
         buf += decoder.decode(value, { stream: true });
@@ -1117,7 +1140,15 @@
         }
       }
     } catch (e) {
-      if (e.name !== "AbortError") error = e.message;
+      // A superseded or aborted connection fails quietly: its replacement (or
+      // the teardown) owns the page state now.
+      if (streamController !== abortController || streamController.signal.aborted) return;
+      if (e.name === "AbortError") return;
+      // A network error while the run is active is retried, not shown:
+      // `error` replaces the whole page, which would blank the log while
+      // reconnect attempts are still running.
+      if (mayReconnectStream(streamController)) scheduleSSEReconnect();
+      else error = e.message;
     }
   }
   async function cancelRun() {
@@ -1161,6 +1192,7 @@
     // fetch, never a cross-view mix.
     selectedStep = null;
     selectedParallelGroup = null;
+    sseReconnectDelay = SSE_RECONNECT_DELAY_MS; // a new run starts with a fresh backoff
     loading = true;
     await Promise.all([loadRun(), loadSteps(), loadApprovals(), loadArtifacts()]);
     loading = false;
