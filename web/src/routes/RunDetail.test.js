@@ -3245,6 +3245,25 @@ describe('RunDetail — ensureRowsLoaded re-checks the viewport after an in-flig
 
       const box = container.querySelector('.log-box');
 
+      // Let the initial open finish BEFORE scrolling. A newly opened run
+      // follows the tail: the SSE backfill lands and a rAF-driven
+      // scrollLogToBottom/scheduleLogTailScroll then writes
+      // box.scrollTop = box.scrollHeight (the fixed 4000 stub). The first
+      // .log-row above comes from the mount-time range fetch and appears
+      // BEFORE that, so on a loaded machine the pending tail scroll could
+      // fire after this test's own scrollTop writes, silently moving the
+      // viewport back to the tail and the row-10000 range was never requested.
+      // (The stubbed scrollHeight is a fixed 4000, so the tail scroll is
+      // observable as scrollTop === 4000.) Wait for it to apply, then drain the animation frames of
+      // its remaining stages so nothing is left pending.
+      await vi.waitFor(() => {
+        expect(box.scrollTop).toBe(4000);
+        expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/events'))).toBe(true);
+      });
+      for (let i = 0; i < 4; i++) {
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+
       // Scroll DEEP into the log (row ~40000): fires ensureRowsLoaded for a
       // high offset, which is gated and stays in flight (windowLoading = true).
       box.scrollTop = 40000 * 20;
