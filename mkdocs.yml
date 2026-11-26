@@ -156,6 +156,7 @@ nav:
           - "Kubernetes Volume PVC Names": operator-manual/migrations/2026-11-20-k8s-volume-pvc-names.md
           - "Run-Scoped Object Access": operator-manual/migrations/2026-11-20-run-scoped-object-access.md
           - "Host Agent Claim-Pod Behaviour": operator-manual/migrations/2026-11-20-host-claim-pod-parity.md
+          - "Run Metadata Reserved Prefixes": operator-manual/migrations/2026-11-26-run-metadata-reserved-prefixes.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md
