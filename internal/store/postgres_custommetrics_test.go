@@ -181,3 +181,41 @@ func TestGetStepVariantOutputs(t *testing.T) {
 	got, _ = pg.GetStepVariantOutputs(ctx, run.ID, 0, "none")
 	assert.Empty(t, got)
 }
+
+func TestUpsertStepReport_RunningTakesHotPath(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	run := newMetricsRun(t, pg)
+
+	first, err := pg.UpsertStepReport(ctx, run.ID, 0, 0, "s", "", "Running", nil, nil, nil, "", "")
+	require.NoError(t, err)
+	assert.False(t, first)
+
+	var status string
+	require.NoError(t, pg.pool.QueryRow(ctx,
+		`SELECT status FROM step_reports WHERE run_id = $1 AND step_index = 0`, run.ID).Scan(&status))
+	assert.Equal(t, "Running", status)
+
+	// A missing run still surfaces ErrRunNotFound on the hot path.
+	_, err = pg.UpsertStepReport(ctx, "00000000-0000-0000-0000-000000000000", 0, 0, "s", "", "Running", nil, nil, nil, "", "")
+	require.ErrorIs(t, err, ErrRunNotFound)
+}
+
+func TestListMetricRealtime_HidesTerminalRuns(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	done := newMetricsRun(t, pg)
+	live := newMetricsRun(t, pg)
+	at := time.Now().UTC()
+	for _, id := range []string{done.ID, live.ID} {
+		require.NoError(t, pg.PutMetricRealtime(ctx, MetricRealtime{RunID: id, Name: "t", StartedAt: at}))
+	}
+	ok, err := pg.FinishRun(ctx, done.ID, api.RunSucceeded)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	got, err := pg.ListMetricRealtime(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, live.ID, got[0].RunID)
+}
