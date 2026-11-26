@@ -14,7 +14,7 @@ An open-source CI/CD tool (Jenkins alternative) written in Go.
 
 **GitHub:** https://github.com/eirueimi/unified-cd
 
-**Key features:** YAML-defined jobs · DAG step execution · Multi-platform agents (Linux, macOS, Windows, Kubernetes) · Ephemeral workspaces with controller-declared named volumes (`AgentVolume`) for data that must survive between runs · Secrets management · Webhook and cron triggers · High availability · Web UI · OIDC SSO with fine-grained, per-folder permissions · Run metadata (run link, status, failures, attempt) exposed to steps as `UNIFIED_RUN_*` env vars and `.Run` templates
+**Key features:** YAML-defined jobs · DAG step execution · Multi-platform agents (Linux, macOS, Windows, Kubernetes) · Ephemeral workspaces with controller-declared named volumes (`AgentVolume`) for data that must survive between runs · Secrets management · Webhook and cron triggers · High availability · Web UI · OIDC SSO with fine-grained, per-folder permissions · Run metadata (run link, status, failures, attempt) exposed to steps as `UNIFIED_RUN_*` env vars and `.Run` templates · Job-defined Prometheus metrics (`metrics:` counters, gauges and histograms served as `unifiedcd_job_*`)
 
 ---
 
