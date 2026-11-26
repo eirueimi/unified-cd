@@ -166,12 +166,15 @@ func (p *Postgres) DeleteMetricRealtimeForRun(ctx context.Context, runID string)
 	return err
 }
 
-// ListMetricRealtime returns every realtime row.
+// ListMetricRealtime returns the realtime rows of non-terminal runs. Rows a
+// terminal run left behind are hidden here and removed by the backstop sweep.
 func (p *Postgres) ListMetricRealtime(ctx context.Context) ([]MetricRealtime, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT run_id::text, step_key, name, help, labels, started_at
-		  FROM custom_metric_realtime
-		 ORDER BY run_id, step_key, name`)
+		SELECT m.run_id::text, m.step_key, m.name, m.help, m.labels, m.started_at
+		  FROM custom_metric_realtime m
+		  JOIN runs r ON r.id = m.run_id
+		 WHERE r.status NOT IN ('Succeeded', 'Failed', 'Cancelled')
+		 ORDER BY m.run_id, m.step_key, m.name`)
 	if err != nil {
 		return nil, err
 	}
