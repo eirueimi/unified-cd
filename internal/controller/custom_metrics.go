@@ -218,30 +218,37 @@ func (c *shapeCache) invalidate() {
 
 func (c *shapeCache) lookup(name string) (dsl.MetricShape, bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	age := time.Since(c.loaded)
-	if c.byName == nil || c.invalid || age > shapeCacheTTL {
-		c.refreshLocked()
+	stale := c.byName == nil || c.invalid || time.Since(c.loaded) > shapeCacheTTL
+	c.mu.Unlock()
+	if stale {
+		c.refresh()
 	}
-	if sh, ok := c.byName[name]; ok {
-		return sh, true
-	}
-	if time.Since(c.loaded) > shapeCacheMissRefill {
-		c.refreshLocked()
-		sh, ok := c.byName[name]
+	c.mu.Lock()
+	sh, ok := c.byName[name]
+	missStale := !ok && time.Since(c.loaded) > shapeCacheMissRefill
+	c.mu.Unlock()
+	if ok || !missStale {
 		return sh, ok
 	}
-	return dsl.MetricShape{}, false
+	c.refresh()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sh, ok = c.byName[name]
+	return sh, ok
 }
 
-func (c *shapeCache) refreshLocked() {
+// refresh lists the jobs without holding the lock (ListJobs can take seconds),
+// then swaps the new map in under it.
+func (c *shapeCache) refresh() {
 	ctx, cancel := context.WithTimeout(context.Background(), customMetricsTimeout)
 	defer cancel()
 	jobs, err := c.st.ListJobs(ctx)
 	if err != nil {
 		slog.Warn("custom metrics: list jobs for shapes", "error", err)
 		// Keep serving the previous map; retry after the miss interval.
+		c.mu.Lock()
 		c.loaded = time.Now().Add(-shapeCacheTTL + shapeCacheMissRefill)
+		c.mu.Unlock()
 		return
 	}
 	m := map[string]dsl.MetricShape{}
@@ -259,7 +266,9 @@ func (c *shapeCache) refreshLocked() {
 			}
 		}
 	}
+	c.mu.Lock()
 	c.byName, c.loaded, c.invalid = m, time.Now(), false
+	c.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -268,23 +277,34 @@ func (c *shapeCache) refreshLocked() {
 
 // specCache keeps recently parsed run specs: a run's spec is immutable, and the
 // step-report path would otherwise load and parse it on every step start.
+// An entry with none set records that the run's spec has no metrics at all, so
+// a metric-free run costs no spec load or parse.
 type specCache struct {
 	mu    sync.Mutex
 	max   int
 	order []string
-	m     map[string]dsl.Spec
+	m     map[string]specEntry
 }
 
-func newSpecCache(max int) *specCache { return &specCache{max: max, m: map[string]dsl.Spec{}} }
+type specEntry struct {
+	spec dsl.Spec
+	none bool
+}
 
-func (c *specCache) get(id string) (dsl.Spec, bool) {
+func newSpecCache(max int) *specCache { return &specCache{max: max, m: map[string]specEntry{}} }
+
+func (c *specCache) get(id string) (specEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s, ok := c.m[id]
 	return s, ok
 }
 
-func (c *specCache) put(id string, s dsl.Spec) {
+func (c *specCache) put(id string, s dsl.Spec) { c.set(id, specEntry{spec: s}) }
+
+func (c *specCache) putNone(id string) { c.set(id, specEntry{none: true}) }
+
+func (c *specCache) set(id string, e specEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.m[id]; !ok {
@@ -294,7 +314,7 @@ func (c *specCache) put(id string, s dsl.Spec) {
 			c.order = c.order[1:]
 		}
 	}
-	c.m[id] = s
+	c.m[id] = e
 }
 
 func (c *specCache) drop(id string) {
@@ -305,12 +325,16 @@ func (c *specCache) drop(id string) {
 
 // runSpec returns the run's parsed spec. ok is false when it cannot be loaded.
 func (c *customMetrics) runSpec(ctx context.Context, runID string) (dsl.Spec, bool) {
-	if s, ok := c.specs.get(runID); ok {
-		return s, true
+	if e, ok := c.specs.get(runID); ok {
+		return e.spec, !e.none
 	}
 	b, err := c.st.GetRunSpec(ctx, runID)
 	if err != nil {
 		slog.Warn("custom metrics: load run spec", "run", runID, "error", err)
+		return dsl.Spec{}, false
+	}
+	if !bytes.Contains(b, []byte(`"metrics"`)) {
+		c.specs.putNone(runID)
 		return dsl.Spec{}, false
 	}
 	return c.putSpec(runID, b)
@@ -499,7 +523,11 @@ func claimStepKey(stageIndex, stepIndex int, variant string) string {
 // parseClaimedSpec parses a claimed run's spec snapshot, but only when custom
 // metrics are enabled and the spec mentions metrics at all.
 func (c *customMetrics) parseClaimedSpec(runID string, specJSON []byte) (dsl.Spec, bool) {
-	if !c.enabled() || !bytes.Contains(specJSON, []byte(`"metrics"`)) {
+	if !c.enabled() {
+		return dsl.Spec{}, false
+	}
+	if !bytes.Contains(specJSON, []byte(`"metrics"`)) {
+		c.specs.putNone(runID)
 		return dsl.Spec{}, false
 	}
 	return c.putSpec(runID, specJSON)
@@ -675,8 +703,17 @@ func (s *Server) ConfigureCustomMetrics(cfg metrics.CustomConfig, gauges metrics
 }
 
 // OnRunFinished is the store's run-finished hook (store.Postgres.SetRunFinishedHook).
-func (s *Server) OnRunFinished(ctx context.Context, runID string, status api.RunStatus) {
-	s.custom.onRunFinished(ctx, runID, status)
+// st is the store view that made the transition; its reads and writes use that
+// view's pool, so a hook fired from a reaper stays on the background pool.
+func (s *Server) OnRunFinished(ctx context.Context, st store.Store, runID string, status api.RunStatus) {
+	if !s.custom.enabled() {
+		return
+	}
+	cc := *s.custom // shares the caches and emitter; only the store differs
+	if st != nil {
+		cc.st = st
+	}
+	cc.onRunFinished(ctx, runID, status)
 }
 
 // customRunClaimed is called by the claim handler once the claim succeeded.
@@ -730,29 +767,37 @@ const customMetricsSweepLockKey = int64(0x636d7472) // 'cmtr'
 // advisory lock, deletes gauge rows older than ttl and realtime rows of
 // terminal runs every hour. It returns when ctx is done.
 func RunCustomMetricsSweeper(ctx context.Context, st store.Store, e *metrics.CustomEmitter, ttl time.Duration) {
-	runCustomMetricsSweeper(ctx, st, e, ttl, time.Minute, time.Hour)
+	runCustomMetricsSweeper(ctx, st, e, ttl, time.Minute, time.Hour, 30*time.Second)
 }
 
-func runCustomMetricsSweeper(ctx context.Context, st store.Store, e *metrics.CustomEmitter, ttl, sweepEvery, cleanEvery time.Duration) {
+// runCustomMetricsSweeper also cleans once after firstClean, so a fleet that
+// restarts more often than every cleanEvery still gets its cleanup.
+func runCustomMetricsSweeper(ctx context.Context, st store.Store, e *metrics.CustomEmitter, ttl, sweepEvery, cleanEvery, firstClean time.Duration) {
 	sweep := time.NewTicker(sweepEvery)
 	clean := time.NewTicker(cleanEvery)
+	first := time.NewTimer(firstClean)
 	defer sweep.Stop()
 	defer clean.Stop()
+	defer first.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-first.C:
+			metrics.ObservePass("custom_metrics_sweeper", func() (int, int, error) {
+				return cleanCustomMetricsAsLeader(ctx, st, ttl, time.Now())
+			})
 		case now := <-sweep.C:
 			e.Sweep(now)
 		case <-clean.C:
 			metrics.ObservePass("custom_metrics_sweeper", func() (int, int, error) {
-				return cleanCustomMetricsAsLeader(ctx, st, ttl)
+				return cleanCustomMetricsAsLeader(ctx, st, ttl, time.Now())
 			})
 		}
 	}
 }
 
-func cleanCustomMetricsAsLeader(ctx context.Context, st store.Store, ttl time.Duration) (int, int, error) {
+func cleanCustomMetricsAsLeader(ctx context.Context, st store.Store, ttl time.Duration, now time.Time) (int, int, error) {
 	release, err := st.AcquireAdvisoryLock(ctx, customMetricsSweepLockKey)
 	if err != nil {
 		slog.Warn("custom metrics sweeper lock", "error", err)
@@ -764,7 +809,7 @@ func cleanCustomMetricsAsLeader(ctx context.Context, st store.Store, ttl time.Du
 	defer release()
 	var gauges int64
 	if ttl > 0 {
-		gauges, err = st.DeleteMetricGaugesBefore(ctx, time.Now().Add(-ttl))
+		gauges, err = st.DeleteMetricGaugesBefore(ctx, now.Add(-ttl))
 		if err != nil {
 			slog.Error("custom metrics sweeper: delete old gauges", "error", err)
 			return 0, 0, err

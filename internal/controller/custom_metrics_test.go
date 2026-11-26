@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -419,20 +420,64 @@ func TestResolveClaimStep_MatchesClaimNumbering(t *testing.T) {
 	assert.False(t, ok, "index 0 lives in stage 0")
 }
 
-func TestCustomMetricsSweeper_CleansOldGaugesAndTerminalRealtimeRows(t *testing.T) {
-	_, pg, _ := newCustomMetricsServer(t, true)
-	old := store.MetricGauge{Name: "unifiedcd_job_old", Help: "h", Labels: map[string]string{}, Value: 1, UpdatedAt: time.Now()}
-	require.NoError(t, pg.ApplyMetricGauge(t.Context(), old, "h1", "Set", 0))
-	time.Sleep(300 * time.Millisecond) // the store stamps rows itself, so age the first one for real
-	fresh := store.MetricGauge{Name: "unifiedcd_job_fresh", Help: "h", Labels: map[string]string{}, Value: 1, UpdatedAt: time.Now()}
-	require.NoError(t, pg.ApplyMetricGauge(t.Context(), fresh, "h2", "Set", 0))
+const plainSteps = `  steps:
+    - name: s
+      run: echo
+`
 
-	_, _, err := cleanCustomMetricsAsLeader(t.Context(), pg, 150*time.Millisecond)
+func TestCustomMetricsSweeper_CleansOldGaugesAndTerminalRealtimeRows(t *testing.T) {
+	s, pg, _ := newCustomMetricsServer(t, true)
+	g := store.MetricGauge{Name: "unifiedcd_job_g", Help: "h", Labels: map[string]string{}, Value: 1, UpdatedAt: time.Now()}
+	require.NoError(t, pg.ApplyMetricGauge(t.Context(), g, "h1", "Set", 0))
+
+	mustApplyJob(t, s, metricsJobYAML("plain", plainSteps))
+	terminal := createMetricRun(t, pg, "plain")
+	live := createMetricRun(t, pg, "plain")
+	for _, id := range []string{terminal.ID, live.ID} {
+		require.NoError(t, pg.PutMetricRealtime(t.Context(), store.MetricRealtime{RunID: id, Name: "unifiedcd_job_x", Help: "h", Labels: map[string]string{}, StartedAt: time.Now()}))
+	}
+	_, err := pg.FinishRun(t.Context(), terminal.ID, api.RunFailed)
 	require.NoError(t, err)
-	rows, err := pg.ListMetricGauges(t.Context(), time.Time{})
+
+	// A clock 48h ahead makes the gauge row older than the 24h TTL.
+	_, _, err = cleanCustomMetricsAsLeader(t.Context(), pg, 24*time.Hour, time.Now().Add(48*time.Hour))
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, "unifiedcd_job_fresh", rows[0].Name)
+	gauges, err := pg.ListMetricGauges(t.Context(), time.Time{})
+	require.NoError(t, err)
+	assert.Empty(t, gauges, "old gauge row removed")
+	rows, err := pg.ListMetricRealtime(t.Context())
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "only the live run keeps its realtime row")
+	assert.Equal(t, live.ID, rows[0].RunID)
+}
+
+// countingSpecStore counts GetRunSpec calls.
+type countingSpecStore struct {
+	store.Store
+	specCalls int
+}
+
+func (c *countingSpecStore) GetRunSpec(ctx context.Context, id string) ([]byte, error) {
+	c.specCalls++
+	return c.Store.GetRunSpec(ctx, id)
+}
+
+// A run of a job without metrics costs no spec load at finish or step report.
+func TestRunMetrics_MetricFreeRunLoadsNoSpec(t *testing.T) {
+	s, pg, _ := newCustomMetricsServer(t, true)
+	mustApplyJob(t, s, metricsJobYAML("plain", plainSteps))
+	run := createMetricRun(t, pg, "plain")
+	_, err := pg.TransitionPendingToQueued(t.Context(), 10)
+	require.NoError(t, err)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+	rec := agentPostJSON(t, s, token, "/api/v1/agents/a1/claim?timeout=2s", api.ClaimRequest{})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	counting := &countingSpecStore{Store: pg}
+	s.custom.st = counting
+	reportStepHTTP(t, s, token, api.StepReportRequest{RunID: run.ID, StepIndex: 0, StepName: "s", Status: "Succeeded", StartedAt: time.Now().Add(-time.Second), EndedAt: time.Now()})
+	s.OnRunFinished(t.Context(), counting, run.ID, api.RunSucceeded)
+	assert.Zero(t, counting.specCalls)
 }
 
 // A run the store fails itself (here: an unexpandable concurrency template while

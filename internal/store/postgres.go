@@ -39,8 +39,10 @@ type Postgres struct {
 
 // RunFinishedHook is called after a run's terminal transition has committed,
 // and only by the call that performed the transition (never for a CAS miss).
+// st is the store view that made the transition (API or background pool), so the
+// hook's own reads and writes stay on the caller's pool.
 // It must not block for long; it runs on the caller's goroutine.
-type RunFinishedHook func(ctx context.Context, runID string, status api.RunStatus)
+type RunFinishedHook func(ctx context.Context, st Store, runID string, status api.RunStatus)
 
 type runFinishedHolder struct {
 	fn atomic.Pointer[RunFinishedHook]
@@ -66,7 +68,7 @@ func (p *Postgres) notifyRunFinished(ctx context.Context, runID string, status a
 		return
 	}
 	if h := p.finishHook.fn.Load(); h != nil {
-		(*h)(ctx, runID, status)
+		(*h)(ctx, p, runID, status)
 	}
 }
 
