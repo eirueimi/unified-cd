@@ -38,10 +38,10 @@ type TemplateData struct {
 // RunData is the run metadata exposed to templates as .Run.
 type RunData struct {
 	ID, URL, TriggeredBy, Trigger, ReplayOf, DisplayName, ParamsJSON, Status string
-	CreatedAt, StartedAt, ScheduledAt                                      time.Time
-	Parent                                                                 ParentRunData
-	Failures                                                               []StepFailure
-	Duration                                                               int64 // seconds
+	CreatedAt, StartedAt, ScheduledAt                                        time.Time
+	Parent                                                                   ParentRunData
+	Failures                                                                 []StepFailure
+	Duration                                                                 int64 // seconds
 }
 
 // ParentRunData identifies the call: step that started a child run.

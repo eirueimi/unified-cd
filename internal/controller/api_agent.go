@@ -10,8 +10,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
