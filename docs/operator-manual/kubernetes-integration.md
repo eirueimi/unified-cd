@@ -225,6 +225,8 @@ Job-side policy opt-ins go in the same file, in a `jobPodPolicy:` block (see [Jo
 
 Before starting a Pod agent, configure the controller with a Kubernetes cluster verifier and an enabled policy that binds the exact agent ServiceAccount and namespace. The Helm chart and the release bundles declare `in-cluster` and `unified-cd-k8s-agents`; its policy accepts only ServiceAccount `unified-cd-k8s-agent` in the release namespace (`unified-cd` in the bundles), `kind:kubernetes`, and `pod`/`container` capabilities. The controller must run with the TokenReview and bounded Pod-read RBAC in [`charts/unified-cd/templates/controller/rbac.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/controller/rbac.yaml). To replace the policy list, set `controller.config.agentAuth.kubernetesEnrollmentPolicies` in the chart values; a list you supply replaces the computed one entirely.
 
+The chart also renders the controller config key `externalUrl` (the controller's public base URL). Set `controller.externalUrl` explicitly, or leave it empty to derive it from the first `ingress.hosts` entry when the Ingress is enabled: `https://<host>` if an `ingress.tls` entry lists that host, otherwise `http://<host>`. With no value and no Ingress host the key is omitted. `controller.config.externalUrl` overrides both.
+
 The agent Pod mounts a projected ServiceAccount token with audience `unified-cd-agent-enrollment`. It exchanges that token for a short-lived access token in memory; it never stores a refresh token or receives a shared controller token.
 
 The k8s-agent has no `make build` target; build it from source or use its Docker image:

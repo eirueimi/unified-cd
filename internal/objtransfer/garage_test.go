@@ -50,11 +50,11 @@ func TestGarage_ClientEndToEnd(t *testing.T) {
 	// Two runs of one job, both claimed by the agent: the second reads the
 	// first's artifact.
 	spec := []byte(`{}`)
-	_, err = pg.UpsertJob(t.Context(), "e2e-job", "unified-cd/v1", spec)
+	_, err = pg.UpsertJob(t.Context(), "e2e-job", "unified-cd/v1", spec, store.JobMeta{})
 	require.NoError(t, err)
 	var runIDs []string
 	for range 2 {
-		run, err := pg.CreateRun(t.Context(), "e2e-job", nil, spec, nil, nil, "", "")
+		run, err := pg.CreateRun(t.Context(), "e2e-job", nil, spec, nil, nil, "", "", store.RunOrigin{})
 		require.NoError(t, err)
 		_, err = pg.TransitionPendingToQueued(t.Context(), 100)
 		require.NoError(t, err)

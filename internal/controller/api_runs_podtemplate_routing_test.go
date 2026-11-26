@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +42,7 @@ func TestAPI_TriggerRun_HostRunnablePodTemplate_NotPinnedToKubernetes(t *testing
 		`"podTemplate":{"workspace":{"mountPath":"/workspace"},` +
 		`"spec":{"containers":[{"name":"job","image":"python:3.12-slim"},{"name":"ruff","image":"python:3.12-slim"}]}},` +
 		`"steps":[{"name":"s","run":"echo x"}]}`
-	_, _ = pg.UpsertJob(t.Context(), "podjob-host", "unified-cd/v1", []byte(spec))
+	_, _ = pg.UpsertJob(t.Context(), "podjob-host", "unified-cd/v1", []byte(spec), store.JobMeta{})
 
 	// Trigger two separate runs of the same job: one claimed by a legacy
 	// (never-registered) agent, one by an agent that explicitly advertises
@@ -79,7 +80,7 @@ func TestAPI_TriggerRun_KubernetesOnlyPodTemplate_RequiresPodCapability(t *testi
 	spec := `{"agentSelector":["kind:docker"],` +
 		`"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","volumeMounts":[]}]}},` +
 		`"steps":[{"name":"s","run":"echo x"}]}`
-	_, _ = pg.UpsertJob(t.Context(), "podjob-k8sonly", "unified-cd/v1", []byte(spec))
+	_, _ = pg.UpsertJob(t.Context(), "podjob-k8sonly", "unified-cd/v1", []byte(spec), store.JobMeta{})
 
 	triggerAndQueue(t, s, "podjob-k8sonly")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)

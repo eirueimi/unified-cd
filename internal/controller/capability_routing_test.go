@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -21,9 +22,9 @@ import (
 func TestAgentAPI_Claim_RestoresCapabilitiesOnARecreatedRow(t *testing.T) {
 	s, pg := newTestServer(t)
 	const podSpec = `{"podTemplate":{"spec":{"containers":[{"name":"c","image":"alpine"}],"volumes":[{"name":"v","emptyDir":{}}]}}}`
-	_, err := pg.UpsertJob(t.Context(), "pj", "unified-cd/v1", []byte(podSpec))
+	_, err := pg.UpsertJob(t.Context(), "pj", "unified-cd/v1", []byte(podSpec), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "pj", nil, []byte(podSpec), nil, dsl.RequiredCaps(mustSpec(t, podSpec)), "", "")
+	run, err := pg.CreateRun(t.Context(), "pj", nil, []byte(podSpec), nil, dsl.RequiredCaps(mustSpec(t, podSpec)), "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)
@@ -85,11 +86,11 @@ func TestResolveGitPendingRuns_TemplateThatNeedsKubernetesMovesTheRunToPod(t *te
 	ctx := t.Context()
 	require.NoError(t, pg.UpsertAgent(ctx, "host", "h", "linux", "", nil, []string{dsl.CapNative, dsl.CapContainer}, nil, nil))
 	require.NoError(t, pg.UpsertAgent(ctx, "k8s", "k", "linux/k8s", "", nil, []string{dsl.CapPod, dsl.CapContainer}, nil, nil))
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 
 	submitted := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
 	require.Equal(t, []string{dsl.CapContainer}, dsl.RequiredCaps(mustSpec(t, string(submitted))))
-	run, err := pg.CreateRun(ctx, "j", nil, submitted, nil, []string{dsl.CapContainer}, "", "")
+	run, err := pg.CreateRun(ctx, "j", nil, submitted, nil, []string{dsl.CapContainer}, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	tmpl := []byte("apiVersion: unified-cd/v1\nkind: JobTemplate\nmetadata: {name: tmpl}\nspec:\n  podTemplate:\n    spec:\n      containers: [{name: tools, image: alpine:3, volumeMounts: [{name: cache, mountPath: /c}]}]\n      volumes: [{name: cache, emptyDir: {}}]\n  steps:\n    - {name: s, container: tools, run: echo hi}\n")
@@ -115,10 +116,10 @@ func TestResolveGitPendingRuns_HostRunnableTemplateStaysClaimableByAHostAgent(t 
 	pg := storetest.NewTestPostgres(t)
 	ctx := t.Context()
 	require.NoError(t, pg.UpsertAgent(ctx, "host", "h", "linux", "", nil, []string{dsl.CapNative, dsl.CapContainer}, nil, nil))
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 
 	submitted := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
-	run, err := pg.CreateRun(ctx, "j", nil, submitted, nil, []string{dsl.CapContainer}, "", "")
+	run, err := pg.CreateRun(ctx, "j", nil, submitted, nil, []string{dsl.CapContainer}, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	tmpl := []byte("apiVersion: unified-cd/v1\nkind: JobTemplate\nmetadata: {name: tmpl}\nspec:\n  podTemplate:\n    spec:\n      containers: [{name: tools, image: alpine:3}]\n  steps:\n    - {name: s, container: tools, run: echo hi}\n")

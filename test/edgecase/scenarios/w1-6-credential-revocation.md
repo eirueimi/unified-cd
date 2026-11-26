@@ -23,9 +23,9 @@
   not the agent can authenticate to anything. Unlike W1-5's `sideeffect`
   workload it writes to stdout, so the log pipeline (and therefore the
   agent's authenticated `logs/bulk` calls) is exercised continuously.
-  - **Known workload caveat (same as W1-5):** `UNIFIED_RUN_ID` is **not**
-    injected into native steps, so nothing inside the step output identifies
-    the run. Correlation is by run id from the API plus wall-clock time.
+  - **Known workload caveat (same as W1-5):** the workload does not print
+    `$UNIFIED_RUN_ID` (agents inject it, the payload does not use it), so
+    nothing inside the step output identifies the run. Correlation is by run id from the API plus wall-clock time.
 
 - **Injection mechanism:** the `unified-cli` admin verbs, run inside the
   `agent-enroll` service (it is the only service in this compose that has

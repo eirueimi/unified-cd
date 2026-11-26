@@ -114,9 +114,9 @@ func TestAgentAPI_FetchSecrets(t *testing.T) {
 	s.Router().ServeHTTP(httptest.NewRecorder(), req)
 
 	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.MY_SECRET }}"}]}`)
-	_, err := pg.UpsertJob(t.Context(), "secret-fetch", "unified-cd/v1", specJSON)
+	_, err := pg.UpsertJob(t.Context(), "secret-fetch", "unified-cd/v1", specJSON, store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "secret-fetch", nil, specJSON, nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "secret-fetch", nil, specJSON, nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "a1", run.ID)
 
@@ -144,15 +144,15 @@ func TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent(t *testing.T) {
 	s.Router().ServeHTTP(httptest.NewRecorder(), set)
 
 	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.MY_SECRET }}"}]}`)
-	_, err := pg.UpsertJob(t.Context(), "secret-fetch-guard", "unified-cd/v1", specJSON)
+	_, err := pg.UpsertJob(t.Context(), "secret-fetch-guard", "unified-cd/v1", specJSON, store.JobMeta{})
 	require.NoError(t, err)
-	owned, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "", "")
+	owned, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-a", owned.ID)
-	other, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "", "")
+	other, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-b", other.ID)
-	unclaimed, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "", "")
+	unclaimed, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	token := issueAgentAccessForTest(t, pg, "agent-a", nil, nil)
@@ -193,9 +193,9 @@ func TestAPI_FetchSecrets_MissingSecretIsAnError(t *testing.T) {
 	s, pg := newTestServerWithKM(t)
 
 	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.NO_SUCH_SECRET }}"}]}`)
-	_, err := pg.UpsertJob(t.Context(), "fetch-missing-secret", "unified-cd/v1", specJSON)
+	_, err := pg.UpsertJob(t.Context(), "fetch-missing-secret", "unified-cd/v1", specJSON, store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "fetch-missing-secret", nil, specJSON, nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "fetch-missing-secret", nil, specJSON, nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "agent-1", nil, nil)
@@ -223,9 +223,9 @@ func TestAPI_FetchSecrets_ReturnsExistingSecret(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, setRec.Code, setRec.Body.String())
 
 	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.PRESENT }}"}]}`)
-	_, err := pg.UpsertJob(t.Context(), "fetch-existing-secret", "unified-cd/v1", specJSON)
+	_, err := pg.UpsertJob(t.Context(), "fetch-existing-secret", "unified-cd/v1", specJSON, store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "fetch-existing-secret", nil, specJSON, nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "fetch-existing-secret", nil, specJSON, nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "agent-1", nil, nil)
@@ -306,9 +306,9 @@ func newSecretsFetchFixture(t *testing.T, specYAML string) (srv *Server, agentID
 	require.NoError(t, err)
 
 	const jobName = "secrets-fetch-fixture"
-	_, err = pg.UpsertJob(t.Context(), jobName, "unified-cd/v1", specJSON)
+	_, err = pg.UpsertJob(t.Context(), jobName, "unified-cd/v1", specJSON, store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), jobName, nil, specJSON, nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), jobName, nil, specJSON, nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	agentID = "fixture-agent"
@@ -571,14 +571,14 @@ func newClaimedRunForJob(t *testing.T, pg store.Store, agentID, jobName, specYAM
 	require.NoError(t, yaml.Unmarshal([]byte(specYAML), &spec))
 	specJSON, err := json.Marshal(spec)
 	require.NoError(t, err)
-	_, err = pg.UpsertJob(t.Context(), jobName, "unified-cd/v1", specJSON)
+	_, err = pg.UpsertJob(t.Context(), jobName, "unified-cd/v1", specJSON, store.JobMeta{})
 	require.NoError(t, err)
 	runSpec := specJSON
 	if params != nil {
 		runSpec, err = prepareRunSpec(specJSON, params)
 		require.NoError(t, err)
 	}
-	run, err := pg.CreateRun(t.Context(), jobName, params, runSpec, nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), jobName, params, runSpec, nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	claimRunForTest(t, pg, agentID, run.ID)
 	return run.ID

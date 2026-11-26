@@ -19,11 +19,11 @@ import (
 func TestDecideApproval_RefusedOnceTheRunIsTerminal(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 
 	for _, terminal := range []api.RunStatus{api.RunFailed, api.RunCancelled, api.RunSucceeded} {
 		t.Run(string(terminal), func(t *testing.T) {
-			run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+			run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 			require.NoError(t, err)
 			future := time.Now().Add(time.Hour)
 			require.NoError(t, pg.CreatePendingApproval(ctx, run.ID, 1, "gate", "ok?", &future))
@@ -52,8 +52,8 @@ func TestDecideApproval_RefusedOnceTheRunIsTerminal(t *testing.T) {
 func TestDecideApproval_RefusedOnceTheGateHasExpired(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 
 	past := time.Now().Add(-time.Minute)
@@ -73,8 +73,8 @@ func TestDecideApproval_RefusedOnceTheGateHasExpired(t *testing.T) {
 func TestDecideApproval_AcceptedWhileTheRunIsLiveAndTheGateIsOpen(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -98,8 +98,8 @@ func TestDecideApproval_AcceptedWhileTheRunIsLiveAndTheGateIsOpen(t *testing.T) 
 func TestDecideApproval_NullTimeoutIsNotTreatedAsExpired(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	require.NoError(t, pg.CreatePendingApproval(ctx, run.ID, 1, "gate", "ok?", nil))
 

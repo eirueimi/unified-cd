@@ -270,6 +270,9 @@ func (r *Resolver) resolveSteps(
 		if err != nil {
 			return nil, podContribution{}, newResolveError("step %q: expand uses: %v", s.Name, err)
 		}
+		if err := dsl.ValidateStepEntriesEnv(expanded); err != nil {
+			return nil, podContribution{}, newResolveError("step %q: expand uses: %v", s.Name, err)
+		}
 
 		for _, es := range expanded {
 			if es.Name == s.Name {

@@ -34,8 +34,8 @@ func TestPostgres_WebhookReceiverCRUD(t *testing.T) {
 func TestPostgres_CreateRun_TriggeredBy(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "webhook:github-push", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "webhook:github-push", "", RunOrigin{})
 	require.NoError(t, err)
 	assert.Equal(t, "webhook:github-push", run.TriggeredBy)
 

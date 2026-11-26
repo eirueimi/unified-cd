@@ -1,0 +1,40 @@
+# Demonstrates: run metadata. A step echoes a link back to its own run using
+# UNIFIED_RUN_URL, and a finally: step reports UNIFIED_RUN_STATUS and
+# UNIFIED_RUN_FAILURES_JSON. See docs/user-guide/writing-jobs/run-metadata.md.
+# Usage:
+#   unified-cd apply -f examples/jobs/run-metadata/job.yaml
+#   unified-cd run trigger run-metadata-demo                      # success path
+#   unified-cd run trigger run-metadata-demo --param fail=true    # failure path
+# UNIFIED_RUN_URL is set only when the controller has an external URL
+# (controller.externalUrl in the Helm chart, or UNIFIED_EXTERNAL_URL).
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: run-metadata-demo
+spec:
+  params:
+    inputs:
+      - name: fail
+        type: bool
+        default: false
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: announce
+      run: |
+        echo "run $UNIFIED_RUN_ID of job $UNIFIED_JOB_NAME on agent $UNIFIED_RUN_AGENT_ID"
+        if [ -n "${UNIFIED_RUN_URL:-}" ]; then
+          echo "Build link: $UNIFIED_RUN_URL"
+        else
+          echo "No external URL configured; no run link available"
+        fi
+    - name: work
+      run: |
+        echo "step $UNIFIED_STEP_NAME, attempt $UNIFIED_STEP_ATTEMPT of $UNIFIED_STEP_MAX_ATTEMPTS"
+        [ "{{ .Params.fail }}" != "true" ]
+  finally:
+    - name: report
+      run: |
+        echo "status:   $UNIFIED_RUN_STATUS"
+        echo "duration: ${UNIFIED_RUN_DURATION_SECONDS}s"
+        echo "failures: $UNIFIED_RUN_FAILURES_JSON"

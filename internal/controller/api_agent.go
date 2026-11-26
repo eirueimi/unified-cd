@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -448,6 +449,9 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 			resp, cerr := api.ClaimResponse{}, verr
 			if cerr == nil {
 				resp, cerr = buildClaimResponse(claimed, globalVars)
+				if cerr == nil {
+					resp.Run = s.claimRunMeta(r.Context(), claimed.Run)
+				}
 			}
 			if cerr != nil {
 				// ClaimNextRun already flipped this run to Running in the same SQL
@@ -575,6 +579,33 @@ func mergedGlobalVars(ctx context.Context, st store.Store) (map[string]string, e
 		}
 	}
 	return merged, nil
+}
+
+// claimRunMeta builds the run-level metadata sent with a claim. A failed
+// parent lookup is logged and leaves Parent nil: metadata must not fail a claim.
+func (s *Server) claimRunMeta(ctx context.Context, run api.Run) *api.ClaimRunMeta {
+	meta := &api.ClaimRunMeta{
+		CreatedAt:      run.CreatedAt,
+		TriggeredBy:    run.TriggeredBy,
+		Trigger:        run.Trigger,
+		ScheduledAt:    run.ScheduledAt,
+		DisplayName:    run.DisplayName,
+		JobLabels:      run.JobLabels,
+		JobAnnotations: run.JobAnnotations,
+	}
+	if run.Trigger == api.TriggerReplay {
+		meta.ReplayOf = strings.TrimPrefix(run.TriggeredBy, "replay:")
+	}
+	if base := strings.TrimRight(s.cfg.ExternalURL, "/"); base != "" {
+		meta.URL = base + "/ui/#/runs/" + run.ID
+	}
+	parent, err := s.store.GetRunParent(ctx, run.ID)
+	if err != nil {
+		slog.Warn("claim: get run parent failed", "runId", run.ID, "error", err)
+	} else {
+		meta.Parent = parent
+	}
+	return meta
 }
 
 // buildClaimResponse constructs a ClaimResponse from a ClaimedRun.
@@ -1336,7 +1367,7 @@ func (s *Server) handleAgentCreateChildRun(w http.ResponseWriter, r *http.Reques
 	if respondRunWriteVerdict(w, v, parentRunID) {
 		return
 	}
-	var req api.TriggerRunRequest
+	var req api.CreateChildRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
 		return
@@ -1345,10 +1376,24 @@ func (s *Server) handleAgentCreateChildRun(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "jobName is required", http.StatusBadRequest)
 		return
 	}
-	run, status, msg := s.createRunFromJob(r.Context(), req.JobName, req.Params, "agent:"+agentID)
+	run, status, msg := s.createRunFromJob(r.Context(), req.JobName, req.Params, "agent:"+agentID, api.TriggerCall)
 	if status != 0 {
 		http.Error(w, msg, status)
 		return
+	}
+	// Record the parent link before replying: the child is already claimable,
+	// and an agent that claims it must find its parent (UNIFIED_RUN_PARENT_*).
+	// The agent's later Running step report re-sends the same link (the upsert
+	// is idempotent). Old agents omit the step identity and keep the old path.
+	if req.StepName != "" {
+		stepName, _ := sanitizeAgentText(req.StepName)
+		variant, _ := sanitizeAgentText(req.Variant)
+		callJobName, _ := sanitizeAgentText(req.JobName)
+		if err := s.store.UpsertStepReport(r.Context(), parentRunID, req.StepIndex, req.StageIndex, stepName, variant, "Running", nil, nil, nil, run.ID, callJobName); err != nil && !errors.Is(err, store.ErrRunFinalized) {
+			// The child exists already; do not fail the request. The agent's
+			// step report retries the link.
+			slog.Warn("create child run: record parent link", "parentRunId", parentRunID, "childRunId", run.ID, "error", err)
+		}
 	}
 	writeJSON(w, http.StatusOK, run)
 }

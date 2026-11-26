@@ -13,8 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"unicode/utf8"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/cache"
@@ -233,9 +233,9 @@ func seedRun(t *testing.T, st store.Store, jobName, spec string) string {
 	if spec == "" {
 		spec = `{}`
 	}
-	_, err := st.UpsertJob(t.Context(), jobName, "unified-cd/v1", []byte(spec))
+	_, err := st.UpsertJob(t.Context(), jobName, "unified-cd/v1", []byte(spec), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := st.CreateRun(t.Context(), jobName, nil, []byte(spec), nil, nil, "", "")
+	run, err := st.CreateRun(t.Context(), jobName, nil, []byte(spec), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	return run.ID
 }

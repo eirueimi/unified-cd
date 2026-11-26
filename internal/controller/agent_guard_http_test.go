@@ -42,9 +42,9 @@ func seedGuardRun(t *testing.T, pg store.Store, terminal bool) string {
 	ctx := context.Background()
 	specJSON := []byte(`{"steps":[{"name":"s","run":"echo x"}]}`)
 	const jobName = "guard-job"
-	_, err := pg.UpsertJob(ctx, jobName, "unified-cd/v1", specJSON)
+	_, err := pg.UpsertJob(ctx, jobName, "unified-cd/v1", specJSON, store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, jobName, nil, specJSON, nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, jobName, nil, specJSON, nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)

@@ -97,9 +97,9 @@ func TestArtifact_UploadDownload_RoundTrip(t *testing.T) {
 
 	// handleArtifactUpload now 404s for runs the store doesn't know about, so
 	// seed a real job+run rather than uploading to a bare literal like "run1".
-	_, err := st.UpsertJob(t.Context(), "artifact-roundtrip-job", "unified-cd/v1", []byte(`{}`))
+	_, err := st.UpsertJob(t.Context(), "artifact-roundtrip-job", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := st.CreateRun(t.Context(), "artifact-roundtrip-job", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := st.CreateRun(t.Context(), "artifact-roundtrip-job", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	// The upload route has no {agentId} path segment, so the ownership check
@@ -152,9 +152,9 @@ folders:
 func seedClaimedArtifactRun(t *testing.T, st store.Store, obj objectstore.ObjectStore, jobName, ownerAgent, name string, payload []byte) string {
 	t.Helper()
 	ctx := t.Context()
-	_, err := st.UpsertJob(ctx, jobName, "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := st.UpsertJob(ctx, jobName, "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := st.CreateRun(ctx, jobName, nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+	run, err := st.CreateRun(ctx, jobName, nil, []byte(`{"steps":[]}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(ctx, 1)
 	require.NoError(t, err)
@@ -208,9 +208,9 @@ func TestArtifactList_ReturnsNames(t *testing.T) {
 	// only list/download, which don't consult s.store at all.
 	s, st := newTestServer(t)
 	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
-	_, err := st.UpsertJob(t.Context(), "artifact-list-job", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := st.UpsertJob(t.Context(), "artifact-list-job", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := st.CreateRun(t.Context(), "artifact-list-job", nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+	run, err := st.CreateRun(t.Context(), "artifact-list-job", nil, []byte(`{"steps":[]}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	ownerToken := issueAgentAccessForTest(t, st, "artifact-list-owner", nil, nil)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
@@ -306,9 +306,9 @@ func TestArtifactUpload_RejectsNonAgentToken(t *testing.T) {
 func TestArtifactUpload_RejectsMismatchedOwnerPrincipal(t *testing.T) {
 	s, st := newTestServer(t)
 	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
-	_, err := st.UpsertJob(t.Context(), "artifact-legacy-reject", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := st.UpsertJob(t.Context(), "artifact-legacy-reject", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := st.CreateRun(t.Context(), "artifact-legacy-reject", nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+	run, err := st.CreateRun(t.Context(), "artifact-legacy-reject", nil, []byte(`{"steps":[]}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)
@@ -329,9 +329,9 @@ func TestArtifactUpload_RejectsNonOwnerPrincipal(t *testing.T) {
 	s, st := newTestServer(t)
 	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
 	intruderToken := issueAgentAccessForTest(t, st, "intruder", nil, nil)
-	_, err := st.UpsertJob(t.Context(), "artifact-owner", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := st.UpsertJob(t.Context(), "artifact-owner", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := st.CreateRun(t.Context(), "artifact-owner", nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+	run, err := st.CreateRun(t.Context(), "artifact-owner", nil, []byte(`{"steps":[]}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)
@@ -367,8 +367,8 @@ func TestLogsArchive_MissingObject_Returns404(t *testing.T) {
 	s, st := newTestServer(t)
 	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
 
-	_, _ = st.UpsertJob(t.Context(), "arch404-job", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
-	run, err := st.CreateRun(t.Context(), "arch404-job", nil, []byte(`{}`), nil, nil, "test", "")
+	_, _ = st.UpsertJob(t.Context(), "arch404-job", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
+	run, err := st.CreateRun(t.Context(), "arch404-job", nil, []byte(`{}`), nil, nil, "test", "", store.RunOrigin{})
 	require.NoError(t, err)
 	require.NoError(t, st.CreateLogArchive(t.Context(), run.ID, "logs/"+run.ID+".ndjson", 42, 0, 0))
 

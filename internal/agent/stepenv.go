@@ -140,7 +140,7 @@ func SynthesizedStepEnv() []string {
 // than once ever (see SynthesizedStepEnv). It is the prefix counterpart of that
 // list: derived into varDenied, and checked against dsl.ReservedVarPrefixes.
 func SynthesizedStepEnvPrefixes() []string {
-	return []string{dsl.VolumeEnvPrefix}
+	return []string{dsl.VolumeEnvPrefix, dsl.RunEnvPrefix, dsl.JobEnvPrefix, dsl.StepEnvPrefix}
 }
 
 // volumeExtraEnv renders the mounted volumes' paths as UNIFIED_VOLUME_<ALIAS>

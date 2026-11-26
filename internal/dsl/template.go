@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+	"time"
 )
 
 // TemplateData is the context used during template expansion, for both step.Run
@@ -27,6 +28,48 @@ type TemplateData struct {
 	Secrets map[string]string // resolved secret values (must not be written to logs)
 	Foreach map[string]string // set during foreach step execution; key = ForeachDef.Key
 	Matrix  map[string]string // set during matrix/foreach step execution; key = dimension name
+
+	Run   RunData         // run metadata
+	Job   JobData         // job metadata
+	Step  CurrentStepData // the step being expanded
+	Agent AgentData       // the agent executing the step
+}
+
+// RunData is the run metadata exposed to templates as .Run.
+type RunData struct {
+	ID, URL, TriggeredBy, Trigger, ReplayOf, DisplayName, ParamsJSON, Status string
+	CreatedAt, StartedAt, ScheduledAt                                        time.Time
+	Parent                                                                   ParentRunData
+	Failures                                                                 []StepFailure
+	Duration                                                                 int64 // seconds
+}
+
+// ParentRunData identifies the call: step that started a child run.
+type ParentRunData struct{ ID, Job, Step string }
+
+// JobData is the job metadata exposed to templates as .Job.
+type JobData struct {
+	Name                string
+	Labels, Annotations map[string]string
+}
+
+// CurrentStepData describes the step being expanded, exposed as .Step.
+type CurrentStepData struct {
+	Name                               string
+	Attempt, MaxAttempts, LastExitCode int
+}
+
+// AgentData identifies the agent executing the step, exposed as .Agent.
+type AgentData struct{ ID string }
+
+// StepFailure records one failed step of a run.
+type StepFailure struct {
+	Name      string    `json:"name"`
+	Stage     int       `json:"stage"`
+	ExitCode  int       `json:"exitCode"`
+	StartedAt time.Time `json:"startedAt"`
+	EndedAt   time.Time `json:"endedAt"`
+	MatrixKey string    `json:"matrixKey,omitempty"`
 }
 
 // StepData holds the captured outputs of a previously executed step.
@@ -38,6 +81,10 @@ type StepData struct {
 	// non-matrix call steps; a map[string]string keyed by combination key
 	// for matrix call steps (mirroring how Outputs aggregates).
 	ChildRunID any
+	// Status, ExitCode, StartedAt and EndedAt describe how the step ended.
+	Status             string
+	ExitCode           int
+	StartedAt, EndedAt time.Time
 }
 
 // secretsRefRe matches "{{ secrets.NAME }}" (without leading dot).

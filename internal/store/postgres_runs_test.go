@@ -34,20 +34,20 @@ func TestPostgres_CreateRun_PersistsDetached(t *testing.T) {
 	ctx := context.Background()
 
 	// runs.job_name has a FK to jobs; upsert the jobs first.
-	_, err := pg.UpsertJob(ctx, "orch", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "orch", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
-	_, err = pg.UpsertJob(ctx, "normal", "unified-cd/v1", []byte(`{}`))
+	_, err = pg.UpsertJob(ctx, "normal", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 
 	run, err := pg.CreateRun(ctx, "orch", nil,
-		[]byte(`{"detached":true,"steps":[{"name":"s","call":{"job":"c"}}]}`), nil, nil, "", "")
+		[]byte(`{"detached":true,"steps":[{"name":"s","call":{"job":"c"}}]}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	var detached bool
 	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT detached FROM runs WHERE id=$1`, run.ID).Scan(&detached))
 	assert.True(t, detached)
 
 	run2, err := pg.CreateRun(ctx, "normal", nil,
-		[]byte(`{"steps":[{"name":"s","run":"true"}]}`), nil, nil, "", "")
+		[]byte(`{"steps":[{"name":"s","run":"true"}]}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT detached FROM runs WHERE id=$1`, run2.ID).Scan(&detached))
 	assert.False(t, detached, "a spec without detached defaults to false")
@@ -59,15 +59,15 @@ func TestPostgres_RunParentLinkage(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
-	parent, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
+	parent, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
-	childA, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
+	childA, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
-	childB, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
+	childB, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
-	unrelated, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
+	unrelated, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 
 	// The parent's call: step reports record each spawned child via child_run_id.
@@ -91,9 +91,9 @@ func TestPostgres_FinishRun_ReportsUpdated(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 
 	updated, err := pg.FinishRun(ctx, run.ID, api.RunSucceeded)
@@ -114,10 +114,10 @@ func TestPostgres_CreateAndGetRun(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 
-	run, err := pg.CreateRun(ctx, "hello", map[string]string{"k": "v"}, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "hello", map[string]string{"k": "v"}, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	assert.Equal(t, api.RunPending, run.Status)
 	assert.Equal(t, "v", run.Params["k"])
@@ -132,9 +132,9 @@ func TestPostgres_TransitionPendingToQueued(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
-	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
+	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 
 	n, err := pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -150,9 +150,9 @@ func TestPostgres_TransitionPendingToQueued_SkipsUnresolvedUses(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	run, _ := pg.CreateRun(ctx, "hello", nil,
-		[]byte(`{"steps":[{"name":"s","uses":{"job":"git://github.com/org/repo/x.yaml@v1"}}]}`), nil, nil, "", "")
+		[]byte(`{"steps":[{"name":"s","uses":{"job":"git://github.com/org/repo/x.yaml@v1"}}]}`), nil, nil, "", "", RunOrigin{})
 
 	n, err := pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -167,8 +167,8 @@ func TestPostgres_ClaimNextRun(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "", RunOrigin{})
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
 
 	claimed, err := pg.ClaimNextRun(ctx, "agent-1", nil, nil)
@@ -185,8 +185,8 @@ func TestPostgres_MarkRunFinished(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, _ := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
 	_, _ = pg.ClaimNextRun(ctx, "agent-1", nil, nil)
 	require.NoError(t, pg.MarkRunRunning(ctx, run.ID))
@@ -200,9 +200,9 @@ func TestMarkRunFinished_Idempotent(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "hello", nil, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "hello", nil, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -236,9 +236,9 @@ func TestPostgres_GetRunSpec(t *testing.T) {
 	ctx := context.Background()
 	specJSON := []byte(`{"steps":[{"name":"deploy","run":"echo deploy"}]}`)
 
-	_, err := pg.UpsertJob(ctx, "deploy", "unified-cd/v1", specJSON)
+	_, err := pg.UpsertJob(ctx, "deploy", "unified-cd/v1", specJSON, JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "deploy", nil, specJSON, nil, nil, "api", "")
+	run, err := pg.CreateRun(ctx, "deploy", nil, specJSON, nil, nil, "api", "", RunOrigin{})
 	require.NoError(t, err)
 
 	got, err := pg.GetRunSpec(ctx, run.ID)
@@ -252,9 +252,9 @@ func TestPostgres_DeleteJob_CascadesToRuns(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "cascade-job", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "cascade-job", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "cascade-job", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "cascade-job", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 
 	require.NoError(t, pg.DeleteJob(ctx, "cascade-job"))
@@ -269,10 +269,10 @@ func TestPostgres_DeleteRun(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "del-run-job", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "del-run-job", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 	run, err := pg.CreateRun(ctx, "del-run-job", nil,
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "")
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "s", "", "Succeeded", nil, nil, nil, "", ""))
 
@@ -289,14 +289,14 @@ func TestPostgres_ListActiveRuns(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "job-a", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.UpsertJob(ctx, "job-b", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "job-a", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	_, _ = pg.UpsertJob(ctx, "job-b", "unified-cd/v1", []byte(`{}`), JobMeta{})
 
 	// Active Runs (created in Pending state)
-	r1, _ := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "", "")
-	r2, _ := pg.CreateRun(ctx, "job-b", nil, []byte(`{}`), nil, nil, "", "")
+	r1, _ := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
+	r2, _ := pg.CreateRun(ctx, "job-b", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	// A Run in a terminal state
-	r3, _ := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "", "")
+	r3, _ := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	_ = pg.MarkRunFinished(ctx, r3.ID, api.RunSucceeded)
 
 	runs, err := pg.ListActiveRuns(ctx)
@@ -317,15 +317,15 @@ func TestPostgres_ListActiveRuns(t *testing.T) {
 func TestPostgres_ListRunningRunIDsByAgent(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 
 	// Creation order drives FIFO claim order below.
-	mine, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	mine, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
-	other, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	other, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
-	done, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	done, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)

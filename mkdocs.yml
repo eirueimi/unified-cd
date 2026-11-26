@@ -98,6 +98,7 @@ nav:
           - Parameters: user-guide/writing-jobs/parameters.md
           - Steps: user-guide/writing-jobs/steps.md
           - Expressions and Conditions: user-guide/writing-jobs/expressions.md
+          - Run Metadata: user-guide/writing-jobs/run-metadata.md
           - Artifacts and Cache: user-guide/writing-jobs/artifacts-and-cache.md
           - Templates and Reuse: user-guide/writing-jobs/templates-and-reuse.md
           - Isolation and Containers: user-guide/writing-jobs/isolation-and-containers.md
@@ -155,6 +156,7 @@ nav:
           - "Kubernetes Volume PVC Names": operator-manual/migrations/2026-11-20-k8s-volume-pvc-names.md
           - "Run-Scoped Object Access": operator-manual/migrations/2026-11-20-run-scoped-object-access.md
           - "Host Agent Claim-Pod Behaviour": operator-manual/migrations/2026-11-20-host-claim-pod-parity.md
+          - "Run Metadata Reserved Prefixes": operator-manual/migrations/2026-11-26-run-metadata-reserved-prefixes.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md

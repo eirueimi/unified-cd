@@ -73,7 +73,7 @@ func TestAPI_ApplyJob_RejectsInvalidYAML(t *testing.T) {
 
 func TestAPI_GetJob(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "hello", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, _ = pg.UpsertJob(t.Context(), "hello", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/hello", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -86,8 +86,8 @@ func TestAPI_GetJob(t *testing.T) {
 
 func TestAPI_ListJobs(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "a", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.UpsertJob(t.Context(), "b", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "a", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	_, _ = pg.UpsertJob(t.Context(), "b", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -101,7 +101,7 @@ func TestAPI_ListJobs(t *testing.T) {
 func TestAPI_GetJob_ReturnsInputs(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := `{"params":{"inputs":[{"name":"ENV","type":"string","required":true,"description":"Target environment"}]},"steps":[]}`
-	_, _ = pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", []byte(specJSON))
+	_, _ = pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", []byte(specJSON), store.JobMeta{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/deploy", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -119,7 +119,7 @@ func TestAPI_GetJob_ReturnsInputs(t *testing.T) {
 func TestAPI_ListJobs_ReturnsInputs(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := `{"params":{"inputs":[{"name":"BRANCH","type":"string"}]},"steps":[]}`
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(specJSON))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(specJSON), store.JobMeta{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -134,7 +134,7 @@ func TestAPI_ListJobs_ReturnsInputs(t *testing.T) {
 
 func TestAPI_GetJob_NoInputsWhenEmpty(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "simple", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, _ = pg.UpsertJob(t.Context(), "simple", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/simple", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -148,7 +148,7 @@ func TestAPI_GetJob_NoInputsWhenEmpty(t *testing.T) {
 func TestAPI_GetJobYAML(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := []byte(`{"steps":[{"name":"build","run":"echo hi"}],"params":{"inputs":[{"name":"ENV","type":"string"}]}}`)
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", specJSON)
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", specJSON, store.JobMeta{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/build/yaml", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -178,7 +178,7 @@ func TestAPI_GetJobYAML_NotFound(t *testing.T) {
 
 func TestAPI_GetJobYAML_BadSpec(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "broken", "unified-cd/v1", []byte(`{"steps":"broken"}`))
+	_, _ = pg.UpsertJob(t.Context(), "broken", "unified-cd/v1", []byte(`{"steps":"broken"}`), store.JobMeta{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/broken/yaml", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -192,7 +192,7 @@ func TestAPI_GetJobYAML_BadSpec(t *testing.T) {
 
 func TestAPI_DeleteJob(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "to-delete", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "to-delete", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/to-delete", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -208,8 +208,8 @@ func TestAPI_DeleteJob(t *testing.T) {
 // that the associated Runs are also cascade-deleted (migration 014).
 func TestAPI_DeleteJob_CascadesRuns(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "to-delete-with-runs", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "to-delete-with-runs", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "to-delete-with-runs", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "to-delete-with-runs", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/to-delete-with-runs", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -341,7 +341,7 @@ func TestListJobs_DerivesPathAndLeaf(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
 	s := &Server{store: pg}
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "team-a/build", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "team-a/build", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 
 	jobs, err := s.listJobsDecorated(ctx)
@@ -388,7 +388,7 @@ func TestParseJobWildcard(t *testing.T) {
 // job itself and its YAML rendering.
 func TestAPI_GetJob_SlashInName(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(t.Context(), "team-a/build", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := pg.UpsertJob(t.Context(), "team-a/build", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/team-a/build", nil)
@@ -413,7 +413,7 @@ func TestAPI_GetJob_SlashInName(t *testing.T) {
 func TestAPI_GetJob_ReturnsDescription(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := `{"description":"Deploys the app to production","steps":[]}`
-	_, _ = pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", []byte(specJSON))
+	_, _ = pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", []byte(specJSON), store.JobMeta{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/deploy", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -427,7 +427,7 @@ func TestAPI_GetJob_ReturnsDescription(t *testing.T) {
 func TestAPI_ListJobs_ReturnsDescription(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := `{"description":"Nightly build","steps":[]}`
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(specJSON))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(specJSON), store.JobMeta{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -441,7 +441,7 @@ func TestAPI_ListJobs_ReturnsDescription(t *testing.T) {
 
 func TestAPI_GetJob_NoDescriptionWhenEmpty(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "simple", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, _ = pg.UpsertJob(t.Context(), "simple", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/simple", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()

@@ -100,9 +100,9 @@ func TestAgentAPI_Claim_EmptyWhenNoQueued(t *testing.T) {
 func TestAgentAPI_Claim_ReturnsQueuedRun(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	run, _ := pg.CreateRun(t.Context(), "j", nil,
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "")
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "", store.RunOrigin{})
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
@@ -199,8 +199,8 @@ func TestAgentAPI_Claim_DoesNotClobberRegisteredAgent(t *testing.T) {
 
 func TestAgentAPI_ReportStep(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 	body, _ := json.Marshal(api.StepReportRequest{
@@ -215,8 +215,8 @@ func TestAgentAPI_ReportStep(t *testing.T) {
 
 func TestAgentAPI_AppendLog(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 	body, _ := json.Marshal(api.LogAppendRequest{
@@ -243,8 +243,8 @@ func TestAgentAPI_Claim_IncludesOutputsAndCall(t *testing.T) {
 			{"name":"deploy","call":{"job":"deploy-runner","with":{"target":"{{ .Params.env }}"}}}
 		]
 	}`)
-	_, _ = pg.UpsertJob(t.Context(), "multi", "unified-cd/v1", specJSON)
-	_, _ = pg.CreateRun(t.Context(), "multi", map[string]string{"env": "prod"}, specJSON, nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "multi", "unified-cd/v1", specJSON, store.JobMeta{})
+	_, _ = pg.CreateRun(t.Context(), "multi", map[string]string{"env": "prod"}, specJSON, nil, nil, "", "", store.RunOrigin{})
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
@@ -268,8 +268,8 @@ func TestAgentAPI_Claim_IncludesOutputsAndCall(t *testing.T) {
 
 func TestAgentAPI_SetStepOutputs(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
@@ -291,8 +291,8 @@ func TestAgentAPI_SetStepOutputs(t *testing.T) {
 
 func TestAgentAPI_SetRunOutputs(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
@@ -325,8 +325,8 @@ func TestAgentAPI_ClaimResponse_CollectsSecretsNeeded(t *testing.T) {
 			}
 		]
 	}`)
-	_, _ = pg.UpsertJob(t.Context(), "s", "unified-cd/v1", specJSON)
-	_, _ = pg.CreateRun(t.Context(), "s", nil, specJSON, nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "s", "unified-cd/v1", specJSON, store.JobMeta{})
+	_, _ = pg.CreateRun(t.Context(), "s", nil, specJSON, nil, nil, "", "", store.RunOrigin{})
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
@@ -396,8 +396,8 @@ func TestBuildClaimResponse_RejectsDynamicSecretNamesWithFieldContext(t *testing
 func TestAgentAPI_Claim_FailsRunWhenBuildClaimResponseErrors(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := []byte(`{"steps":[{"name":"compile","run":"go build ./...","runsIn":{"image":"golang:1.22"}}]}`)
-	_, _ = pg.UpsertJob(t.Context(), "legacy-job", "unified-cd/v1", specJSON)
-	run, _ := pg.CreateRun(t.Context(), "legacy-job", nil, specJSON, nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "legacy-job", "unified-cd/v1", specJSON, store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "legacy-job", nil, specJSON, nil, nil, "", "", store.RunOrigin{})
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
@@ -433,8 +433,8 @@ func TestAgentAPI_Claim_FailsRunWhenBuildClaimResponseErrors(t *testing.T) {
 
 func TestAgentAPI_LogBulk(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
@@ -468,12 +468,12 @@ func TestAgentAPI_LogBulk(t *testing.T) {
 // not-owned run's line is discovered mid-loop.
 func TestAgentAPI_LogBulk_MixedOwnershipRejectsWholeBatch(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 
-	ownedRun, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	ownedRun, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", ownedRun.ID)
 
-	otherRun, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	otherRun, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a2", otherRun.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
@@ -786,14 +786,14 @@ func TestAgentHeartbeat_ReconcilesLostClaims(t *testing.T) {
 	require.True(t, ok, "test relies on concrete *store.Postgres for claimed_at backdating")
 	ctx := context.Background()
 
-	_, err := pgc.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pgc.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 
-	r1, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	r1, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
-	r2, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	r2, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
-	r3, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	r3, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pgc.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -844,10 +844,10 @@ func TestAgentHeartbeat_ReconcileEmptyActiveSetStillFails(t *testing.T) {
 	require.True(t, ok, "test relies on concrete *store.Postgres for claimed_at backdating")
 	ctx := context.Background()
 
-	_, err := pgc.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pgc.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 
-	r4, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	r4, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pgc.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -882,10 +882,10 @@ func TestAgentHeartbeat_BodylessSkipsReconcile(t *testing.T) {
 	require.True(t, ok, "test relies on concrete *store.Postgres for claimed_at backdating")
 	ctx := context.Background()
 
-	_, err := pgc.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pgc.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 
-	r5, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	r5, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pgc.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -913,9 +913,9 @@ func TestAgentHeartbeat_BodylessSkipsReconcile(t *testing.T) {
 // (enforcement) is covered separately in object_requester_test.go.
 func TestAgentHeartbeat_RecordsPodBindings(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-hb-pod", run.ID)
 
@@ -945,9 +945,9 @@ func TestAgentHeartbeat_RecordsPodBindings(t *testing.T) {
 // dropped (it no longer owns the run).
 func TestAgentHeartbeat_PodBindingsOverwritesOnReclaim(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-hb-old", run.ID)
 	tokenOld := issueAgentAccessForTest(t, pg, "agent-hb-old", nil, nil)
@@ -993,9 +993,9 @@ func TestAgentHeartbeat_PodBindingsOverwritesOnReclaim(t *testing.T) {
 // either PodBindings or PodBindingSets.
 func TestAgentHeartbeat_PodBindingsRequireRunOwnership(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-owner", run.ID)
 	tokenA := issueAgentAccessForTest(t, pg, "agent-owner", nil, nil)
@@ -1040,9 +1040,9 @@ func TestAgentHeartbeat_PodBindingsRequireRunOwnership(t *testing.T) {
 // TestAgentFinishRun_DeletesPodBindings: finishing a run unbinds its Pods.
 func TestAgentFinishRun_DeletesPodBindings(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-fin", run.ID)
 	token := issueAgentAccessForTest(t, pg, "agent-fin", nil, nil)
@@ -1199,8 +1199,8 @@ func TestClaimDrainBroadcast(t *testing.T) {
 // report on a non-terminal run transitions it and returns 204.
 func TestAgentAPI_FinishRun_FreshTransition(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
@@ -1221,10 +1221,10 @@ func TestAgentAPI_FinishRun_FreshTransition(t *testing.T) {
 // Cancelled so they don't linger.
 func TestAgentAPI_FinishRun_FailedCancelsChildren(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", parent.ID)
-	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	// Link the parent's call step to the child run.
 	require.NoError(t, pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j"))
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
@@ -1250,8 +1250,8 @@ func TestAgentAPI_FinishRun_FailedCancelsChildren(t *testing.T) {
 // alreadyFinalized rather than a plain 204, and does not overwrite the status.
 func TestAgentAPI_FinishRun_AlreadyTerminal(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", run.ID)
 	// Simulate the reaper finalizing the run as Failed before the agent's late report.
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunFailed))
@@ -1279,8 +1279,8 @@ func TestAgentAPI_FinishRun_AlreadyTerminal(t *testing.T) {
 // write happened.
 func TestAgentAPI_ReportStep_AlreadyTerminal(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", run.ID)
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunFailed))
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
@@ -1478,9 +1478,9 @@ func TestBuildOneClaimStep_CarriesRetry(t *testing.T) {
 // by parent-run ownership.
 func TestAgentAPI_CreateChildRun_OwnedParent(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "parent-job", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`))
-	parent, _ := pg.CreateRun(t.Context(), "parent-job", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "parent-job", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`), store.JobMeta{})
+	parent, _ := pg.CreateRun(t.Context(), "parent-job", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", parent.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
@@ -1499,15 +1499,46 @@ func TestAgentAPI_CreateChildRun_OwnedParent(t *testing.T) {
 	assert.Equal(t, "agent:a1", child.TriggeredBy, "child run must be attributed to the spawning agent")
 }
 
+// TestAgentAPI_CreateChildRun_RecordsParentLink verifies the parent link is
+// readable (GetRunParent) as soon as create-child-run returns, before any
+// separate step report, so an agent claiming the child never misses its parent.
+func TestAgentAPI_CreateChildRun_RecordsParentLink(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "parent-job", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`), store.JobMeta{})
+	parent, _ := pg.CreateRun(t.Context(), "parent-job", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
+	claimRunForTest(t, pg, "a1", parent.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	body, _ := json.Marshal(api.CreateChildRunRequest{
+		TriggerRunRequest: api.TriggerRunRequest{JobName: "child-job"},
+		StageIndex:        1, StepIndex: 2, Variant: "", StepName: "call-child",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+parent.ID+"/children", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var child api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &child))
+	cb, err := pg.GetRunParent(t.Context(), child.ID)
+	require.NoError(t, err)
+	require.NotNil(t, cb)
+	assert.Equal(t, parent.ID, cb.ParentRunID)
+	assert.Equal(t, "parent-job", cb.ParentJobName)
+	assert.Equal(t, "call-child", cb.StepName)
+}
+
 func TestAgentAPI_CreateChildRunStoresResolvedSecretNameParameter(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "parent-job", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "parent-job", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	_, err := pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{
 		"params":{"inputs":[{"name":"token_secret","type":"string"}]},
 		"steps":[{"name":"deploy","env":{"TOKEN":"{{ index .Secrets .Params.token_secret }}"},"run":"true"}]
-	}`))
+	}`), store.JobMeta{})
 	require.NoError(t, err)
-	parent, err := pg.CreateRun(t.Context(), "parent-job", nil, []byte(`{}`), nil, nil, "", "")
+	parent, err := pg.CreateRun(t.Context(), "parent-job", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "a1", parent.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
@@ -1537,9 +1568,9 @@ func TestAgentAPI_CreateChildRunStoresResolvedSecretNameParameter(t *testing.T) 
 // child for a run claimed by a DIFFERENT agent (403, no run created).
 func TestAgentAPI_CreateChildRun_NotOwnedParent(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`))
-	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`), store.JobMeta{})
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a2", parent.ID) // owned by a2, not a1
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
@@ -1561,9 +1592,9 @@ func TestAgentAPI_CreateChildRun_NotOwnedParent(t *testing.T) {
 // asserts no child run was created rather than a 4xx status.
 func TestAgentAPI_CreateChildRun_TerminalParent(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`))
-	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`), store.JobMeta{})
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", parent.ID)
 	// Simulate the reaper finalizing the parent before the call: step's spawn
 	// request arrives.
@@ -1591,8 +1622,8 @@ func TestAgentAPI_CreateChildRun_TerminalParent(t *testing.T) {
 // its outputs (the call: poll path), even a run it did not claim.
 func TestAgentAPI_ReadRunAndOutputs(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	// Claimed by a different agent; the reader (a1) never claimed it.
 	claimRunForTest(t, pg, "a2", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
@@ -1612,8 +1643,8 @@ func TestAgentAPI_ReadRunAndOutputs(t *testing.T) {
 // session) must still be rejected, not fall through to the handler.
 func TestAgentAPI_ReadRunAndOutputs_RejectsAnonymous(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 
 	for _, path := range []string{"/api/v1/runs/" + run.ID, "/api/v1/runs/" + run.ID + "/outputs"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil) // no Authorization header
@@ -1645,9 +1676,9 @@ func TestBuildOneClaimStep_DownloadArtifactRunID(t *testing.T) {
 // old PodBindings for the same run.
 func TestAgentHeartbeat_PodBindingSetsRecordEveryPod(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-hb-sets", run.ID)
 	token := issueAgentAccessForTest(t, pg, "agent-hb-sets", nil, nil)

@@ -46,6 +46,10 @@ var templateDataFieldPolicies = map[string]templateDataFieldPolicy{
 	"Stdout":  fieldPerStep,
 	"Foreach": fieldPerStep,
 	"Matrix":  fieldPerStep,
+	"Run":     fieldSnapshotted,
+	"Job":     fieldSnapshotted,
+	"Agent":   fieldSnapshotted,
+	"Step":    fieldPerStep,
 }
 
 // TestSafeStepCtxSnapshot_EveryTemplateDataFieldHasAPolicy is the coverage
@@ -76,6 +80,9 @@ func TestSafeStepCtxSnapshot_CarriesEverySnapshottedField(t *testing.T) {
 		Vars:    map[string]string{"v": "1"},
 		Steps:   map[string]dsl.StepData{"build": {Outputs: map[string]any{"o": "1"}}},
 		Secrets: map[string]string{"s": "1"},
+		Run:     dsl.RunData{ID: "r1", Failures: []dsl.StepFailure{{Name: "a"}}},
+		Job:     dsl.JobData{Name: "j", Labels: map[string]string{"l": "1"}, Annotations: map[string]string{"a": "1"}},
+		Agent:   dsl.AgentData{ID: "ag1"},
 	}}
 	snap := sctx.snapshot()
 
@@ -99,4 +106,11 @@ func TestSafeStepCtxSnapshot_CarriesEverySnapshottedField(t *testing.T) {
 	assert.Equal(t, "1", snap.Params["p"], "snapshot must not share the live Params map")
 	assert.Equal(t, "1", snap.Vars["v"], "snapshot must not share the live Vars map")
 	assert.Equal(t, "1", snap.Secrets["s"], "snapshot must not share the live Secrets map")
+
+	sctx.data.Job.Labels["l"] = "2"
+	sctx.data.Job.Annotations["a"] = "2"
+	sctx.data.Run.Failures[0].Name = "b"
+	assert.Equal(t, "1", snap.Job.Labels["l"], "snapshot must not share the live Job.Labels map")
+	assert.Equal(t, "1", snap.Job.Annotations["a"], "snapshot must not share the live Job.Annotations map")
+	assert.Equal(t, "a", snap.Run.Failures[0].Name, "snapshot must not share the live Run.Failures slice")
 }

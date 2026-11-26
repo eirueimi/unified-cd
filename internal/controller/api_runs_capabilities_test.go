@@ -3,6 +3,7 @@ package controller
 import (
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +21,7 @@ func TestTriggerRun_PersistsRequiredCaps(t *testing.T) {
 	t.Run("native job requires native", func(t *testing.T) {
 		s, pg := newTestServer(t)
 		spec := `{"native":true,"steps":[{"name":"s","run":"echo x"}]}`
-		_, _ = pg.UpsertJob(t.Context(), "nativejob", "unified-cd/v1", []byte(spec))
+		_, _ = pg.UpsertJob(t.Context(), "nativejob", "unified-cd/v1", []byte(spec), store.JobMeta{})
 		triggerAndQueue(t, s, "nativejob")
 		_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
@@ -39,7 +40,7 @@ func TestTriggerRun_PersistsRequiredCaps(t *testing.T) {
 	t.Run("isolated (no podTemplate) job requires container", func(t *testing.T) {
 		s, pg := newTestServer(t)
 		spec := `{"steps":[{"name":"s","run":"echo x"}]}`
-		_, _ = pg.UpsertJob(t.Context(), "isolatedjob", "unified-cd/v1", []byte(spec))
+		_, _ = pg.UpsertJob(t.Context(), "isolatedjob", "unified-cd/v1", []byte(spec), store.JobMeta{})
 		triggerAndQueue(t, s, "isolatedjob")
 		_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
@@ -61,7 +62,7 @@ func TestTriggerRun_PersistsRequiredCaps(t *testing.T) {
 			`"podTemplate":{"workspace":{"mountPath":"/workspace"},` +
 			`"spec":{"containers":[{"name":"job","image":"python:3.12-slim"},{"name":"ruff","image":"python:3.12-slim"}]}},` +
 			`"steps":[{"name":"s","run":"echo x"}]}`
-		_, _ = pg.UpsertJob(t.Context(), "podjob-host-caps", "unified-cd/v1", []byte(spec))
+		_, _ = pg.UpsertJob(t.Context(), "podjob-host-caps", "unified-cd/v1", []byte(spec), store.JobMeta{})
 		triggerAndQueue(t, s, "podjob-host-caps")
 		_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
@@ -81,7 +82,7 @@ func TestTriggerRun_PersistsRequiredCaps(t *testing.T) {
 		spec := `{"agentSelector":["kind:docker"],` +
 			`"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","volumeMounts":[]}]}},` +
 			`"steps":[{"name":"s","run":"echo x"}]}`
-		_, _ = pg.UpsertJob(t.Context(), "podjob-k8sonly-caps", "unified-cd/v1", []byte(spec))
+		_, _ = pg.UpsertJob(t.Context(), "podjob-k8sonly-caps", "unified-cd/v1", []byte(spec), store.JobMeta{})
 		triggerAndQueue(t, s, "podjob-k8sonly-caps")
 		_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 

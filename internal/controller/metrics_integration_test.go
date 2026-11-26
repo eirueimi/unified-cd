@@ -10,6 +10,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/metrics"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,10 +38,10 @@ func TestMetricsEndToEndWiring(t *testing.T) {
 	s := NewServer(Config{}, st)
 	s.SetMetrics(m)
 
-	_, err = pg.UpsertJob(context.Background(), "wiring-job", "unified-cd/v1", []byte(`{}`))
+	_, err = pg.UpsertJob(context.Background(), "wiring-job", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 
-	run, err := st.CreateRun(context.Background(), "wiring-job", nil, []byte(`{}`), nil, nil, "api", "")
+	run, err := st.CreateRun(context.Background(), "wiring-job", nil, []byte(`{}`), nil, nil, "api", "", store.RunOrigin{})
 	require.NoError(t, err)
 	require.NoError(t, st.MarkRunFinished(context.Background(), run.ID, api.RunFailed))
 

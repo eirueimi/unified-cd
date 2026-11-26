@@ -288,11 +288,21 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		}
 	}()
 
+	// Run metadata exposed to steps as UNIFIED_RUN_*/UNIFIED_JOB_*/UNIFIED_STEP_*
+	// env vars and the .Run/.Job/.Step/.Agent template roots. startedAt is when
+	// this agent began the claim, not when the controller created the run.
+	startedAt := time.Now().UTC()
+	meta := newRunMeta(c, agentID, startedAt)
+	metaRun, metaJob, metaAgent := meta.templateData(dsl.CurrentStepData{}, nil)
+
 	sctx := &safeStepCtx{
 		data: dsl.TemplateData{
 			Params: c.Params,
 			Vars:   c.Vars,
 			Steps:  map[string]dsl.StepData{},
+			Run:    metaRun,
+			Job:    metaJob,
+			Agent:  metaAgent,
 		},
 	}
 
@@ -555,8 +565,27 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	//      `retry:` on a finally step to a single attempt, and suppressed the
 	//      "step failed to execute" diagnostic, leaving a genuinely broken
 	//      finally step with an empty log.
-	makeStepRunner := func(statusFn func() dsl.RunStatusView, implicitSuccess bool, failedFlag *atomic.Bool, suppressOnCancel bool) func(context.Context, api.ClaimStep) error {
+	makeStepRunner := func(statusFn func() dsl.RunStatusView, implicitSuccess bool, failedFlag *atomic.Bool, suppressOnCancel bool, final *finalView) func(context.Context, api.ClaimStep) error {
+		// final is nil for the main pipeline and the frozen run outcome for
+		// finally: steps; only the main pipeline feeds the failure list.
+		isFinally := final != nil
 		return func(stepCtx context.Context, step api.ClaimStep) error {
+			stepStart := time.Now().UTC()
+			// recordResult publishes how this step ended to .Steps.<name> and,
+			// for a failed main-pipeline step (continueOnError included), to
+			// the failure list finally: steps see.
+			recordResult := func(status string, exit int, started, ended time.Time) {
+				// A failure that a master cancellation masks (see
+				// cancelMasksFailure below) is a Cancelled step, not a failure.
+				status = maskedStepStatus(status, suppressOnCancel && cancelledByMaster.Load())
+				sctx.setStepResult(step.Name, dsl.StepData{Status: status, ExitCode: exit, StartedAt: started, EndedAt: ended})
+				if status == "Failed" && !isFinally {
+					sctx.addFailure(dsl.StepFailure{
+						Name: step.Name, Stage: step.StageIndex, ExitCode: exit,
+						StartedAt: started, EndedAt: ended, MatrixKey: step.MatrixKey,
+					})
+				}
+			}
 			// cancelMasksFailure reports whether a master/user cancellation
 			// should be treated as "this step did not really fail" for THIS
 			// phase. See the phase-discriminator note on makeStepRunner: true
@@ -583,6 +612,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			// report a Failed status when their internal helper returns an error.
 			markFailed := func(reportCtx context.Context) {
 				recordFailure()
+				recordResult("Failed", 0, stepStart, time.Now().UTC())
 				_ = client.ReportStep(reportCtx, agentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
 					StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", EndedAt: time.Now().UTC(),
@@ -663,6 +693,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				recordIfDiagnostic(step, w)
 			}
 			if !ok {
+				recordResult("Skipped", 0, time.Time{}, time.Time{})
 				retryUntilSuccess(ctx, func(callCtx context.Context) error {
 					return client.ReportStep(callCtx, agentID, api.StepReportRequest{
 						RunID:      c.RunID,
@@ -690,11 +721,13 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			if step.Approval != nil {
 				approved := WaitForApproval(stepCtx, client, agentID, c.RunID, step, ApprovalPollInterval)
 				if approved {
+					recordResult("Succeeded", 0, stepStart, time.Now().UTC())
 					_ = client.ReportStep(stepCtx, agentID, api.StepReportRequest{
 						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
 						StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", EndedAt: time.Now().UTC(),
 					})
 				} else {
+					recordResult("Failed", 0, stepStart, time.Now().UTC())
 					_ = client.ReportStep(stepCtx, agentID, api.StepReportRequest{
 						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
 						StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", EndedAt: time.Now().UTC(),
@@ -714,6 +747,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					// operation (no restore, no deferred save). Unlike
 					// artifact upload/download, which remain fail-loud.
 					slog.Warn("cache scope unavailable; skipping cache for step", "step", step.Name, "error", serr)
+					recordResult("Succeeded", 0, stepStart, time.Now().UTC())
 					_ = client.ReportStep(context.WithoutCancel(stepCtx), agentID, api.StepReportRequest{
 						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
 						StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", EndedAt: time.Now().UTC(),
@@ -723,6 +757,8 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				if err := executeCacheStep(stepCtx, client, agentID, step, c.RunID, sctx, &postHooksMu, &postHooks, b, scope); err != nil {
 					slog.Error("cache step failed", "step", step.Name, "error", err)
 					markFailed(context.WithoutCancel(stepCtx))
+				} else {
+					recordResult("Succeeded", 0, stepStart, time.Now().UTC())
 				}
 				return nil
 			}
@@ -736,6 +772,8 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				if err := executeUploadArtifact(stepCtx, client, agentID, step, c.RunID, b, scope); err != nil {
 					slog.Error("upload artifact failed", "step", step.Name, "error", err)
 					markFailed(context.WithoutCancel(stepCtx))
+				} else {
+					recordResult("Succeeded", 0, stepStart, time.Now().UTC())
 				}
 				return nil
 			}
@@ -754,6 +792,8 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				if err := executeDownloadArtifact(stepCtx, client, agentID, step, c.RunID, b, scope, dlData); err != nil {
 					slog.Error("download artifact failed", "step", step.Name, "error", err)
 					markFailed(context.WithoutCancel(stepCtx))
+				} else {
+					recordResult("Succeeded", 0, stepStart, time.Now().UTC())
 				}
 				return nil
 			}
@@ -800,12 +840,6 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					}
 				}
 			} else {
-				expandedRun, tplErr := dsl.ExpandStepTemplate(step.Run, tplData, "")
-				if tplErr != nil {
-					slog.Error("template expansion failed", "step", step.Name, "error", tplErr)
-					expandedRun = step.Run
-				}
-
 				// UNIFIED_AGENT_OS lets job authors determine the running OS from within a step.
 				// Scoped / runsIn.image steps run in a Linux container regardless of
 				// backend; every other step reports b.DefaultAgentOS() — see agentOSForStep.
@@ -824,7 +858,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				if isScopedStep(step) {
 					workspaceScope = NewScopeHandle(step.ScopeID)
 				}
-				extraEnv := []string{
+				baseEnv := []string{
 					EnvAgentOS + "=" + agentOSForStep(step, b.DefaultAgentOS()),
 					EnvWorkspace + "=" + b.WorkspacePath(workspaceScope),
 				}
@@ -833,15 +867,20 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				// Written before the variables like the two above, and
 				// protected the same way: the whole prefix is reserved, so
 				// varsExtraEnv drops a variable of that name.
-				extraEnv = append(extraEnv, volumeExtraEnv(b.VolumePaths(workspaceScope))...)
+				baseEnv = append(baseEnv, volumeExtraEnv(b.VolumePaths(workspaceScope))...)
 				// Vars first, step env second: precedence is expressed as
 				// ordering, because a later duplicate key wins. varsExtraEnv
 				// also drops any var named after an agent credential — see
 				// its doc comment; StepEnv does not filter extraEnv itself.
-				extraEnv = append(extraEnv, varsExtraEnv(c.Vars)...)
-				for k, v := range step.Env {
-					expanded, _ := dsl.ExpandStepTemplate(v, tplData, "")
-					extraEnv = append(extraEnv, k+"="+expanded)
+				baseEnv = append(baseEnv, varsExtraEnv(c.Vars)...)
+				// A step env: key under a reserved metadata prefix can only come
+				// from a run snapshot taken before apply-time validation refused
+				// it. The built-in values are appended after step.Env below, so
+				// they win; say so rather than silently dropping the author's value.
+				for k := range step.Env {
+					if isMetadataEnvName(k) {
+						slog.Warn("step env overrides reserved run metadata; built-in value wins", "step", step.Name, "var", k)
+					}
 				}
 
 				// attempts/backoff: a plain step (no retry:) runs its body exactly
@@ -856,7 +895,30 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				var ec int
 				var runErr error
 				var capturedStdout string
+				// lastData is the template context of the most recent attempt,
+				// reused for output templates so they see the same .Step.
+				lastData := tplData
 				for try := 1; try <= attempts; try++ {
+					// Expand run: and env: per attempt so .Step.Attempt and
+					// UNIFIED_STEP_ATTEMPT are current on every try. ec still
+					// holds the previous attempt's exit code here.
+					attemptData := tplData
+					attemptData.Step = dsl.CurrentStepData{
+						Name: step.DisplayName(), Attempt: try, MaxAttempts: attempts, LastExitCode: ec,
+					}
+					lastData = attemptData
+					expandedRun, tplErr := dsl.ExpandStepTemplate(step.Run, attemptData, "")
+					if tplErr != nil {
+						slog.Error("template expansion failed", "step", step.Name, "error", tplErr)
+						expandedRun = step.Run
+					}
+					extraEnv := append([]string(nil), baseEnv...)
+					for k, v := range step.Env {
+						expanded, _ := dsl.ExpandStepTemplate(v, attemptData, "")
+						extraEnv = append(extraEnv, k+"="+expanded)
+					}
+					extraEnv = append(extraEnv, meta.env(attemptData.Step, final)...)
+
 					// Per-attempt timeout (retry steps only; non-retry steps use
 					// stepCtx as-is — its own whole-step timeout, if any, was
 					// already applied above).
@@ -982,6 +1044,10 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 						Secrets: tplData.Secrets,
 						Matrix:  tplData.Matrix,
 						Foreach: tplData.Foreach,
+						Run:     lastData.Run,
+						Job:     lastData.Job,
+						Step:    lastData.Step,
+						Agent:   lastData.Agent,
 					}
 					for outKey, outTpl := range step.Outputs {
 						val, err := dsl.ExpandStepTemplate(outTpl, outputCtx, "")
@@ -1051,6 +1117,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			retryUntilSuccess(reportCtx, func(callCtx context.Context) error {
 				return client.ReportStep(callCtx, agentID, reportReq)
 			})
+			recordResult(status, exitCode, started, ended)
 			if status == "Failed" {
 				recordFailure()
 				return nil
@@ -1193,6 +1260,9 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			for k, v := range entry.post.Env {
 				extraEnv = append(extraEnv, k+"="+v)
 			}
+			// Run- and job-level metadata only: a hook is not a step attempt,
+			// so there are no UNIFIED_STEP_* entries.
+			extraEnv = append(extraEnv, meta.env(dsl.CurrentStepData{}, nil)...)
 			// The owning step's scope (if any) is still alive here — both
 			// drains run before the deferred b.CloseScopes (see the `defer`
 			// registered alongside masker installation above).
@@ -1223,7 +1293,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		}
 	}
 
-	mainRunner := makeStepRunner(statusView, true, &anyStepFailed, true)
+	mainRunner := makeStepRunner(statusView, true, &anyStepFailed, true, nil)
 	dagErr := RunPipeline(runCtx, c.Stages, getData, c.MatrixMaxCombinations, b.ConcurrencyMode(), mainRunner)
 
 	// post-hooks run regardless of DAG success/failure (cache save should always attempt).
@@ -1241,7 +1311,20 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	if len(c.Finally) > 0 {
 		frozen := dsl.RunStatusView{Failed: mainFailed, Cancelled: cancelled}
 		finallyStatus := func() dsl.RunStatusView { return frozen }
-		finallyRunner := makeStepRunner(finallyStatus, false, &finallyFailed, false)
+		// The frozen outcome finally: steps see as UNIFIED_RUN_STATUS,
+		// UNIFIED_RUN_FAILURES_JSON, UNIFIED_RUN_DURATION_SECONDS and .Run.*.
+		view := &finalView{Status: "Succeeded", Failures: sctx.failures(), Duration: time.Since(startedAt)}
+		switch {
+		case cancelled:
+			view.Status = "Cancelled"
+		case mainFailed:
+			view.Status = "Failed"
+		}
+		finalRun, _, _ := meta.templateData(dsl.CurrentStepData{}, view)
+		sctx.mu.Lock()
+		sctx.data.Run = finalRun
+		sctx.mu.Unlock()
+		finallyRunner := makeStepRunner(finallyStatus, false, &finallyFailed, false, view)
 		// Non-cancelling, but NOT unbounded. Cancellation is deliberately not
 		// inherited — that is why `finally:` exists — while the phase still
 		// carries a deadline of its own, because WithoutCancel also strips the
@@ -1480,7 +1563,7 @@ func executeDownloadArtifact(ctx context.Context, client *Client, agentID string
 
 	targetRunID := runID
 	if da.RunID != "" {
-		restricted := dsl.TemplateData{Params: tplData.Params, Vars: tplData.Vars, Steps: tplData.Steps, Matrix: tplData.Matrix, Foreach: tplData.Foreach}
+		restricted := dsl.TemplateData{Params: tplData.Params, Vars: tplData.Vars, Steps: tplData.Steps, Matrix: tplData.Matrix, Foreach: tplData.Foreach, Run: tplData.Run, Job: tplData.Job, Agent: tplData.Agent}
 		expanded, err := dsl.ExpandStepTemplate(da.RunID, restricted, "")
 		if err != nil {
 			return failStep(fmt.Errorf("runId template: %w", err))

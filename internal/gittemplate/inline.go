@@ -67,7 +67,13 @@ func checkScopeStepAllowed(name string, container string, hasApproval, hasCall b
 // end-to-end against api.ClaimStep.
 func ExpandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn, outerContainer, outerIf string) ([]dsl.StepEntry, error) {
 	steps, _, err := expandUsesStep(usesName, with, tplSpec, outerRunsIn, outerContainer, outerIf)
-	return steps, err
+	if err != nil {
+		return nil, err
+	}
+	if err := dsl.ValidateStepEntriesEnv(steps); err != nil {
+		return nil, err
+	}
+	return steps, nil
 }
 
 // unsafeNameChar matches any character that isn't a Go-template identifier

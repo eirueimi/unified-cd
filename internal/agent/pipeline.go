@@ -16,6 +16,9 @@ import (
 type safeStepCtx struct {
 	mu   sync.RWMutex
 	data dsl.TemplateData
+	// fails lists every main-pipeline step that ended Failed. It is kept apart
+	// from data.Run.Failures, which is only populated for finally: steps.
+	fails []dsl.StepFailure
 }
 
 // snapshot returns a copy of the current template data (for template expansion).
@@ -41,12 +44,34 @@ func (s *safeStepCtx) snapshot() dsl.TemplateData {
 	for k, v := range s.data.Vars {
 		vars[k] = v
 	}
+	// Run, Job and Agent are run-scoped metadata. Step is per-step (the
+	// orchestrator sets it on the returned copy), so it stays zero here.
+	run := s.data.Run
+	run.Failures = append([]dsl.StepFailure(nil), s.data.Run.Failures...)
+	job := s.data.Job
+	job.Labels = copyStringMap(s.data.Job.Labels)
+	job.Annotations = copyStringMap(s.data.Job.Annotations)
 	return dsl.TemplateData{
 		Params:  params,
 		Vars:    vars,
 		Steps:   steps,
 		Secrets: secr,
+		Run:     run,
+		Job:     job,
+		Agent:   s.data.Agent,
 	}
+}
+
+// copyStringMap returns an independent copy of m, nil for a nil map.
+func copyStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // setStep writes the outputs for a step.
@@ -57,6 +82,38 @@ func (s *safeStepCtx) setStep(name string, data dsl.StepData) {
 		s.data.Steps = make(map[string]dsl.StepData)
 	}
 	s.data.Steps[name] = data
+}
+
+// setStepResult records how a step ended (status, exit code, start and end)
+// under name, keeping any outputs and child run ID already stored there. A
+// matrix or foreach step calls it once per combination and the results
+// aggregate: Failed if any combination failed, the earliest start and the
+// latest end. The Steps map is rebuilt copy-on-write like the other writers.
+func (s *safeStepCtx) setStepResult(name string, r dsl.StepData) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	newSteps := make(map[string]dsl.StepData, len(s.data.Steps)+1)
+	for k, v := range s.data.Steps {
+		newSteps[k] = v
+	}
+	newSteps[name] = mergeStepResult(newSteps[name], r)
+	s.data.Steps = newSteps
+}
+
+// addFailure records a failed main-pipeline step for UNIFIED_RUN_FAILURES_JSON.
+func (s *safeStepCtx) addFailure(f dsl.StepFailure) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fails = append(s.fails, f)
+}
+
+// failures returns a sorted copy of the recorded failures.
+func (s *safeStepCtx) failures() []dsl.StepFailure {
+	s.mu.RLock()
+	out := append([]dsl.StepFailure(nil), s.fails...)
+	s.mu.RUnlock()
+	sortFailures(out)
+	return out
 }
 
 // setStepMatrixOutputs merges one matrix copy's outputs into the aggregated
@@ -230,4 +287,3 @@ func runOne(ctx context.Context, step api.ClaimStep, run func(context.Context, a
 	}
 	return e
 }
-

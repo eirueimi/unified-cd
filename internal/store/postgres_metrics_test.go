@@ -15,16 +15,16 @@ func TestCountRunsByStatus(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a job first
-	_, err := pg.UpsertJob(ctx, "job-a", "v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "job-a", "v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 
 	// Two Pending (CreateRun default), one of them moved to Running,
 	// one finished (must not be counted).
-	r1, err := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "api", "")
+	r1, err := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "api", "", RunOrigin{})
 	require.NoError(t, err)
-	_, err = pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "api", "")
+	_, err = pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "api", "", RunOrigin{})
 	require.NoError(t, err)
-	r3, err := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "api", "")
+	r3, err := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "api", "", RunOrigin{})
 	require.NoError(t, err)
 	require.NoError(t, pg.MarkRunRunning(ctx, r1.ID))
 	require.NoError(t, pg.MarkRunFinished(ctx, r3.ID, api.RunSucceeded))

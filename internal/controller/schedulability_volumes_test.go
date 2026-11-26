@@ -8,6 +8,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -116,7 +117,7 @@ func TestAPI_GetJobSchedulability_UnknownVolume(t *testing.T) {
 	s, pg := newTestServer(t)
 	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", nil, []string{"native", "container"}, []string{"cache"}, nil))
 	specJSON := []byte(`{"native":true,"volumes":[{"name":["unity-main"],"as":"unity-main","mountPath":"."}],"steps":[{"name":"build","run":"echo hi"}]}`)
-	_, err := pg.UpsertJob(t.Context(), "build", "unified-cd/v1", specJSON)
+	_, err := pg.UpsertJob(t.Context(), "build", "unified-cd/v1", specJSON, store.JobMeta{})
 	require.NoError(t, err)
 
 	get := func() Schedulability {

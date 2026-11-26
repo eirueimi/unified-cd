@@ -12,6 +12,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/controller"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -102,9 +103,9 @@ func TestPhase7_RunsByJobAPI(t *testing.T) {
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
-	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
-	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "api", "")
-	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "webhook:gh", "")
+	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
+	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "api", "", store.RunOrigin{})
+	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "webhook:gh", "", store.RunOrigin{})
 	req, _ := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/v1/runs?jobName=myjob", nil)
 	req.Header.Set("Authorization", "Bearer t")
 	resp, err := http.DefaultClient.Do(req)
@@ -122,8 +123,8 @@ func TestPhase7_CancelRun(t *testing.T) {
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "", store.RunOrigin{})
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 	_, _ = pg.ClaimNextRun(t.Context(), "agent-1", nil, nil)
 	_ = pg.MarkRunRunning(t.Context(), run.ID)
@@ -150,8 +151,8 @@ func TestPhase7_SSE_RejectsTokenQuery(t *testing.T) {
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "", store.RunOrigin{})
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 	_, _ = pg.ClaimNextRun(t.Context(), "ag", nil, nil)
 	_ = pg.MarkRunRunning(t.Context(), run.ID)

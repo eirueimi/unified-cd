@@ -20,11 +20,11 @@ func TestHA_NoDoubleClaim(t *testing.T) {
 	const runs = 50
 	const claimers = 8
 
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 	spec := []byte(`{"steps":[{"name":"s","run":"echo x"}]}`)
 	for i := 0; i < runs; i++ {
-		_, err := pg.CreateRun(ctx, "j", nil, spec, nil, nil, "", "")
+		_, err := pg.CreateRun(ctx, "j", nil, spec, nil, nil, "", "", RunOrigin{})
 		require.NoError(t, err)
 	}
 	// Move all Pending -> Queued so ClaimNextRun can pick them up.

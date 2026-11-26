@@ -157,9 +157,9 @@ func TestAgentRegister_RejectsBodyIdentityMismatch(t *testing.T) {
 func TestAgentClaim_UsesAuthorizedPrincipalLabels(t *testing.T) {
 	s, st := newTestServer(t)
 	token := issueAgentAccessForTest(t, st, "agent-a", []string{"pool:default"}, []string{"native"})
-	_, err := st.UpsertJob(t.Context(), "principal-labels", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := st.UpsertJob(t.Context(), "principal-labels", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
-	_, err = st.CreateRun(t.Context(), "principal-labels", nil, []byte(`{"steps":[]}`), []string{"pool:default"}, nil, "", "")
+	_, err = st.CreateRun(t.Context(), "principal-labels", nil, []byte(`{"steps":[]}`), []string{"pool:default"}, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)

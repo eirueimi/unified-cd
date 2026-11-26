@@ -23,7 +23,7 @@ func TestClaimJobNameEqualsRunRecord_CallChildAndFolderJob(t *testing.T) {
 	const spec = `{"steps":[{"name":"s","run":"true"}]}`
 
 	parentID := seedClaimedRun(t, st, "team-a/build", "agent-a", spec)
-	_, err := st.UpsertJob(t.Context(), "team-a/sub/child", "unified-cd/v1", []byte(spec))
+	_, err := st.UpsertJob(t.Context(), "team-a/sub/child", "unified-cd/v1", []byte(spec), store.JobMeta{})
 	require.NoError(t, err)
 
 	body, err := json.Marshal(api.TriggerRunRequest{JobName: "team-a/sub/child"})

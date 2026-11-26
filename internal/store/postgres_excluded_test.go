@@ -15,11 +15,11 @@ import (
 func TestExcludedParam(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 
 	mkTerminal := func() string {
-		run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+		run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 		require.NoError(t, err)
 		require.NoError(t, pg.MarkRunFinished(ctx, run.ID, api.RunSucceeded))
 		_, err = pg.pool.Exec(ctx, `UPDATE runs SET updated_at = NOW() - interval '40 days' WHERE id = $1`, run.ID)
@@ -58,11 +58,11 @@ func TestExcludedParam(t *testing.T) {
 func TestListPendingRuns_ExcludedAndCreatedAt(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
-	a, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	a, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
-	b, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	b, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 
 	runs, err := pg.ListPendingRuns(ctx, 10, []string{a.ID})

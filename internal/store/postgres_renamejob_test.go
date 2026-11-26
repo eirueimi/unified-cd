@@ -16,10 +16,10 @@ func TestPostgres_RenameJob_SimpleRename(t *testing.T) {
 	ctx := context.Background()
 
 	spec := []byte(`{"steps":[{"name":"s","run":"echo x"}]}`)
-	_, err := pg.UpsertJob(ctx, "build", "unified-cd/v1", spec)
+	_, err := pg.UpsertJob(ctx, "build", "unified-cd/v1", spec, JobMeta{})
 	require.NoError(t, err)
 
-	run, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 
 	require.NoError(t, pg.RenameJob(ctx, "build", "team-a/build"))
@@ -50,16 +50,16 @@ func TestPostgres_RenameJob_QualifiedAlreadyExists(t *testing.T) {
 	ctx := context.Background()
 
 	bareSpec := []byte(`{"steps":[{"name":"legacy","run":"legacy-marker"}]}`)
-	_, err := pg.UpsertJob(ctx, "build", "unified-cd/v1", bareSpec)
+	_, err := pg.UpsertJob(ctx, "build", "unified-cd/v1", bareSpec, JobMeta{})
 	require.NoError(t, err)
 
 	// A run referencing the bare name (legacy history).
-	run, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 
 	// The qualified row already exists (as applyResource would have created it).
 	qualifiedSpec := []byte(`{"steps":[{"name":"c","run":"true"}]}`)
-	_, err = pg.UpsertJob(ctx, "team-a/build", "unified-cd/v1", qualifiedSpec)
+	_, err = pg.UpsertJob(ctx, "team-a/build", "unified-cd/v1", qualifiedSpec, JobMeta{})
 	require.NoError(t, err)
 
 	require.NoError(t, pg.RenameJob(ctx, "build", "team-a/build"))
@@ -88,7 +88,7 @@ func TestPostgres_RenameJob_MissingOldIsNoop(t *testing.T) {
 	ctx := context.Background()
 
 	qualifiedSpec := []byte(`{"steps":[{"name":"c","run":"true"}]}`)
-	_, err := pg.UpsertJob(ctx, "team-a/build", "unified-cd/v1", qualifiedSpec)
+	_, err := pg.UpsertJob(ctx, "team-a/build", "unified-cd/v1", qualifiedSpec, JobMeta{})
 	require.NoError(t, err)
 
 	require.NoError(t, pg.RenameJob(ctx, "build", "team-a/build"))

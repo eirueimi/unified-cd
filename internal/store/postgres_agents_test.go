@@ -141,10 +141,10 @@ func TestListRunsByAgent(t *testing.T) {
 	st := NewTestPostgres(t)
 	ctx := context.Background()
 
-	if _, err := st.UpsertJob(ctx, "test-job", "v1", []byte(`{}`)); err != nil {
+	if _, err := st.UpsertJob(ctx, "test-job", "v1", []byte(`{}`), JobMeta{}); err != nil {
 		t.Fatal(err)
 	}
-	run, err := st.CreateRun(ctx, "test-job", nil, []byte(`{}`), nil, nil, "api", "")
+	run, err := st.CreateRun(ctx, "test-job", nil, []byte(`{}`), nil, nil, "api", "", RunOrigin{})
 	if err != nil {
 		t.Fatal(err)
 	}

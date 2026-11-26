@@ -12,6 +12,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -126,8 +127,8 @@ func TestAPI_GetRunSteps_ArtifactEntrySurvivesTrim(t *testing.T) {
 	ctx := context.Background()
 
 	specJSON := []byte(`{"steps":[{"name":"a","run":"echo a"}]}`)
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", specJSON)
-	run, err := pg.CreateRun(ctx, "j", nil, specJSON, nil, nil, "api", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", specJSON, store.JobMeta{})
+	run, err := pg.CreateRun(ctx, "j", nil, specJSON, nil, nil, "api", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.AppendLog(ctx, run.ID, dsl.ArtifactLogIndex, "stderr", time.Now(), "pushing artifact foo")
 	require.NoError(t, err)

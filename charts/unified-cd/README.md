@@ -102,6 +102,14 @@ Secrets, and HTTPS in front of the controller.
    agent enrollment and token refresh count all clients together. See
    [Reverse proxy and request limits](../../docs/operator-manual/reverse-proxy.md).
 
+   Set `controller.externalUrl` to the controller's public base URL (for example
+   `--set controller.externalUrl=https://cd.example.com`); the chart renders it
+   as the controller config key `externalUrl`. When it is empty and the Ingress
+   is enabled, the chart derives it from the first `ingress.hosts` entry:
+   `https://<host>` if an `ingress.tls` entry lists that host, otherwise
+   `http://<host>`. With neither, the key is omitted.
+   `controller.config.externalUrl` overrides both.
+
    The Ingress does not create certificates. For cert-manager, add its
    annotation through `ingress.annotations`.
 

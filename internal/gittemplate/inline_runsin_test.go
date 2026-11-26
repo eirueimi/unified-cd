@@ -84,3 +84,12 @@ func TestInline_UsesContainerPropagatesToInnerSteps(t *testing.T) {
 	assert.Equal(t, "tools", one.Container)
 	assert.Equal(t, "custom", two.Container)
 }
+
+func TestExpandUsesStep_RejectsReservedStepEnv(t *testing.T) {
+	tplSpec := dsl.Spec{Steps: []dsl.StepEntry{
+		{Name: "a", Run: "echo", Env: map[string]string{"UNIFIED_STEP_NAME": "x"}},
+	}}
+	_, err := ExpandUsesStep("tmpl", nil, tplSpec, nil, "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `uses reserved prefix "UNIFIED_STEP_"`)
+}

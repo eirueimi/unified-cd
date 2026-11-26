@@ -246,7 +246,7 @@ func TestClient_CreateChildRun(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := newStreamClient(srv.URL, "t")
-	run, err := c.CreateChildRun(t.Context(), "agent-1", "parent-run-1", "hello", map[string]string{"k": "v"})
+	run, err := c.CreateChildRun(t.Context(), "agent-1", "parent-run-1", "hello", map[string]string{"k": "v"}, api.ClaimStep{})
 	require.NoError(t, err)
 	assert.Equal(t, "run-123", run.ID)
 	assert.Equal(t, "/api/v1/agents/agent-1/runs/parent-run-1/children", gotPath)
@@ -268,7 +268,7 @@ func TestClient_CreateChildRun_ParentTerminal(t *testing.T) {
 	defer srv.Close()
 	c := newStreamClient(srv.URL, "t")
 
-	run, err := c.CreateChildRun(t.Context(), "agent-1", "parent-run-1", "hello", nil)
+	run, err := c.CreateChildRun(t.Context(), "agent-1", "parent-run-1", "hello", nil, api.ClaimStep{})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrParentRunAlreadyTerminal), "want ErrParentRunAlreadyTerminal, got %v", err)
 	assert.Empty(t, run.ID, "no child run is created when the parent is terminal")

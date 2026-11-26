@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +26,7 @@ func TestWebhookIngress_PersistsRequiredCaps(t *testing.T) {
 	t.Run("native job requires native capability, not a kubernetes label", func(t *testing.T) {
 		s, pg := newTestServer(t)
 		_, _ = pg.UpsertJob(t.Context(), "nativejob", "unified-cd/v1",
-			[]byte(`{"native":true,"steps":[{"name":"s","run":"echo x"}]}`))
+			[]byte(`{"native":true,"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 		spec, _ := json.Marshal(map[string]any{
 			"trigger": map[string]any{"job": "nativejob"},
 			"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -65,7 +66,7 @@ func TestWebhookIngress_PersistsRequiredCaps(t *testing.T) {
 		podSpec := `{"agentSelector":["kind:docker"],` +
 			`"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","volumeMounts":[]}]}},` +
 			`"steps":[{"name":"s","run":"echo x"}]}`
-		_, _ = pg.UpsertJob(t.Context(), "podjob-k8sonly-hook", "unified-cd/v1", []byte(podSpec))
+		_, _ = pg.UpsertJob(t.Context(), "podjob-k8sonly-hook", "unified-cd/v1", []byte(podSpec), store.JobMeta{})
 		spec, _ := json.Marshal(map[string]any{
 			"trigger": map[string]any{"job": "podjob-k8sonly-hook"},
 			"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},

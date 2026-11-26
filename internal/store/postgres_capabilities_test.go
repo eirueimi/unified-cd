@@ -19,9 +19,9 @@ func TestClaimNextRun_CapabilityMatch(t *testing.T) {
 	require.NoError(t, pg.UpsertAgent(ctx, "host-1", "h1", "linux", "", []string{}, []string{"native", "container"}, nil, nil))
 	require.NoError(t, pg.UpsertAgent(ctx, "k8s-1", "k1", "linux/k8s", "", []string{}, []string{"pod", "container"}, nil, nil))
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	// a run that needs native must be claimable only by host-1
-	nativeRun, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{"native"}, "test", "")
+	nativeRun, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{"native"}, "test", "", RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -49,8 +49,8 @@ func TestClaimNextRun_LegacyAgentGetsHostBaselineNotAFreePass(t *testing.T) {
 	// so it still claims this native run by labels. TestClaimNextRun_
 	// NullCapabilitiesMeansLegacyHostBaseline pins the pod side of the rule.
 	require.NoError(t, pg.UpsertAgent(ctx, "legacy-1", "l1", "linux", "", []string{}, nil, nil, nil))
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	_, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{"native"}, "test", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	_, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{"native"}, "test", "", RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)

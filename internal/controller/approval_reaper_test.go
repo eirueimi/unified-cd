@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,9 +17,9 @@ import (
 func TestRunApprovalReaperAsLeader_MarksExpired(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "jrr", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "jrr", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 
-	run, err := pg.CreateRun(ctx, "jrr", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "jrr", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	past := time.Now().Add(-time.Hour)
 	require.NoError(t, pg.CreatePendingApproval(ctx, run.ID, 0, "gate", "ok?", &past))

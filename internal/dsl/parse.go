@@ -398,6 +398,9 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 			}
 			for j2, st := range entry.Parallel {
 				subPath := fmt.Sprintf("%s[%d].parallel[%d]", pathPrefix, i, j2)
+				if err := ValidateStepEnv(st.Name, st.Env); err != nil {
+					return err
+				}
 				if !allowApproval && st.Approval != nil {
 					return fmt.Errorf("%s: approval: is not supported in finally steps", subPath)
 				}
@@ -445,6 +448,9 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 				return fmt.Errorf("%s[%d]: name is required (or use parallel: for a parallel block)", pathPrefix, i)
 			}
 			entryPath := fmt.Sprintf("%s[%d]", pathPrefix, i)
+			if err := ValidateStepEnv(entry.Name, entry.Env); err != nil {
+				return err
+			}
 			if !allowApproval && entry.Approval != nil {
 				return fmt.Errorf("%s: approval: is not supported in finally steps", entryPath)
 			}

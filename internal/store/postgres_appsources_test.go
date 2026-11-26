@@ -123,7 +123,7 @@ func TestPostgres_DeleteJob(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 
 	require.NoError(t, pg.DeleteJob(ctx, "hello"))

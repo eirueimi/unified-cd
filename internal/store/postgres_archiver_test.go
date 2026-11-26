@@ -13,9 +13,9 @@ func TestPostgres_ListRunsNeedingArchival(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run1, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
-	_, _ = pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "") // run2 stays Pending
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run1, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
+	_, _ = pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{}) // run2 stays Pending
 
 	// transition run1 to a completed state
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
@@ -33,8 +33,8 @@ func TestPostgres_CreateAndGetLogArchive(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 
 	// returns nil when no archive is registered
 	arch, err := pg.GetLogArchive(ctx, run.ID)

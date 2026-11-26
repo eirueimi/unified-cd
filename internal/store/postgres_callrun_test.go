@@ -15,10 +15,10 @@ func mustCreateRun(t *testing.T, p *Postgres, jobName string) string {
 	t.Helper()
 	ctx := t.Context()
 
-	_, err := p.UpsertJob(ctx, jobName, "unified-cd/v1", []byte(`{}`))
+	_, err := p.UpsertJob(ctx, jobName, "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 
-	run, err := p.CreateRun(ctx, jobName, nil, []byte(`{}`), nil, nil, "", "")
+	run, err := p.CreateRun(ctx, jobName, nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	return run.ID
 }

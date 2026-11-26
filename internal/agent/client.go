@@ -292,8 +292,18 @@ var ErrParentRunAlreadyTerminal = errors.New("parent run already terminal; child
 // not reachable with a uca_ credential). It returns ErrParentRunAlreadyTerminal
 // if the parent had already finalized (the controller creates no child in that
 // case).
-func (c *Client) CreateChildRun(ctx context.Context, agentID, parentRunID, jobName string, params map[string]string) (api.Run, error) {
-	body := api.TriggerRunRequest{JobName: jobName, Params: params}
+//
+// step identifies the calling step (stage/step index, variant, name); the
+// controller records the parent link before replying so the child never runs
+// without it.
+func (c *Client) CreateChildRun(ctx context.Context, agentID, parentRunID, jobName string, params map[string]string, step api.ClaimStep) (api.Run, error) {
+	body := api.CreateChildRunRequest{
+		TriggerRunRequest: api.TriggerRunRequest{JobName: jobName, Params: params},
+		StageIndex:        step.StageIndex,
+		StepIndex:         step.Index,
+		Variant:           step.MatrixKey,
+		StepName:          step.DisplayName(),
+	}
 	// The success response is a full api.Run; the terminal-parent response is
 	// respondRunWriteVerdict's {"runId":…, "alreadyFinalized":true} (which
 	// carries no "id", so run.ID stays empty). Decode both shapes at once.

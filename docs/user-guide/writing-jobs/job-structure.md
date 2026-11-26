@@ -49,6 +49,8 @@ spec:
 | `metadata.name` | string | Yes | Unique job identifier. Used in CLI, API, and when calling this job from another job. |
 | `metadata.labels` | map[string]string | No | Arbitrary labels. Not used for routing; reserved for future filtering. |
 
+Labels and annotations are recorded on each run when it is created and are exposed to steps as `UNIFIED_JOB_LABELS_JSON`, `UNIFIED_JOB_ANNOTATIONS_JSON` and `.Job.Labels` / `.Job.Annotations`. See [Run Metadata](run-metadata.md).
+
 ### Hierarchical grouping (annotations.path)
 
 A job's position in the Web UI tree comes from `metadata.annotations.path`.

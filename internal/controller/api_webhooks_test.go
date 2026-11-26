@@ -50,7 +50,7 @@ spec:
 
 func TestAPI_ApplyWebhook(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 
 	body, _ := json.Marshal(api.ApplyWebhookRequest{YAML: testWebhookYAML})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks", bytes.NewReader(body))
@@ -90,7 +90,7 @@ func TestAPI_ListWebhooks(t *testing.T) {
 func TestWebhookIngress_NoAuth_RejectsLegacyRowWithoutFlag(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	// Written directly via the store, bypassing Validate(), exactly like a
 	// legacy pre-migration row: type "none", no allowUnauthenticated.
 	spec, _ := json.Marshal(map[string]any{
@@ -122,7 +122,7 @@ func TestWebhookIngress_NoAuth_AllowedWithFlag(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
 		"params": {"inputs": [{"name": "branch", "type": "string", "pattern": "^[A-Za-z0-9._/-]+$"}]},
 		"steps": [{"name": "s", "run": "echo x"}]
-	}`))
+	}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger":       map[string]any{"job": "build"},
 		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -149,7 +149,7 @@ func TestWebhookIngressStoresResolvedSecretNameParameter(t *testing.T) {
 	_, err := pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
 		"params":{"inputs":[{"name":"token_secret","type":"string","pattern":"^[A-Za-z0-9_-]+$"}]},
 		"steps":[{"name":"deploy","env":{"TOKEN":"{{ index .Secrets .Params.token_secret }}"},"run":"true"}]
-	}`))
+	}`), store.JobMeta{})
 	require.NoError(t, err)
 	webhookSpec, err := json.Marshal(map[string]any{
 		"trigger":       map[string]any{"job": "build"},
@@ -185,6 +185,7 @@ func TestWebhookIngressRejectsInvalidStoredJobSpecWithoutCreatingRun(t *testing.
 		"build",
 		"unified-cd/v1",
 		[]byte(`{"steps":"not-an-array"}`),
+		store.JobMeta{},
 	)
 	require.NoError(t, err)
 	webhookSpec, err := json.Marshal(map[string]any{
@@ -215,7 +216,7 @@ func TestWebhookIngress_ExpandsAgentSelectorParams(t *testing.T) {
 		"agentSelector": ["pool:{{ .Params.pool }}"],
 		"params": {"inputs": [{"name": "pool", "type": "string", "pattern": "^[A-Za-z0-9._/-]+$"}]},
 		"steps": [{"name": "s", "run": "echo x"}]
-	}`))
+	}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger":       map[string]any{"job": "build"},
 		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -244,7 +245,7 @@ func TestWebhookIngress_MissingRequiredParam(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
 		"params": {"inputs": [{"name": "image", "type": "string", "required": true}]},
 		"steps": [{"name": "s", "run": "echo x"}]
-	}`))
+	}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"job": "build"},
 		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -271,7 +272,7 @@ func TestWebhookIngress_InjectsDefaultParam(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
 		"params": {"inputs": [{"name": "tag", "type": "string", "default": "latest"}]},
 		"steps": [{"name": "s", "run": "echo x"}]
-	}`))
+	}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"job": "build"},
 		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -303,7 +304,7 @@ func TestWebhookIngress_PayloadMappedParamWithoutPatternRejected(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
 		"params": {"inputs": [{"name": "ref", "type": "string"}]},
 		"steps": [{"name": "s", "run": "echo x"}]
-	}`))
+	}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger":       map[string]any{"job": "build"},
 		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -334,7 +335,7 @@ func TestWebhookIngress_PayloadMappedParamWithPatternAccepted(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
 		"params": {"inputs": [{"name": "ref", "type": "string", "pattern": "^[A-Za-z0-9._/-]+$"}]},
 		"steps": [{"name": "s", "run": "echo x"}]
-	}`))
+	}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger":       map[string]any{"job": "build"},
 		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -362,7 +363,7 @@ func TestWebhookIngress_PayloadMappedParamWithUnvalidatedAccepted(t *testing.T) 
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
 		"params": {"inputs": [{"name": "message", "type": "string", "unvalidated": true}]},
 		"steps": [{"name": "s", "run": "echo x"}]
-	}`))
+	}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger":       map[string]any{"job": "build"},
 		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -386,7 +387,7 @@ func TestWebhookIngress_LiteralParamMappingNeedsNoPattern(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
 		"params": {"inputs": [{"name": "image", "type": "string"}]},
 		"steps": [{"name": "s", "run": "echo x"}]
-	}`))
+	}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger":       map[string]any{"job": "build"},
 		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -405,7 +406,7 @@ func TestWebhookIngress_LiteralParamMappingNeedsNoPattern(t *testing.T) {
 func TestWebhookIngress_FilterRejectsNonMain(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"job": "build"},
 		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -430,7 +431,7 @@ func TestWebhookIngress_HMACVerification(t *testing.T) {
 	s.SetKeyManager(km)
 
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 
 	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "webhook-secret", Value: "mysecret"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
@@ -463,7 +464,7 @@ func TestWebhookIngress_HMACBadSignature(t *testing.T) {
 	s.SetKeyManager(km)
 
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "webhook-secret", Value: "mysecret"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -684,7 +685,7 @@ func TestWebhookIngress_TokenVerification(t *testing.T) {
 	s.SetKeyManager(km)
 
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 
 	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "gl-token", Value: "s3cr3t"})
 	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
@@ -712,7 +713,7 @@ func TestWebhookIngress_TokenBadToken(t *testing.T) {
 	s.SetKeyManager(km)
 
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "gl-token", Value: "s3cr3t"})
 	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
 	sreq.Header.Set("Authorization", "Bearer secret")
@@ -739,7 +740,7 @@ func TestWebhookIngress_TokenMissingHeader(t *testing.T) {
 	s.SetKeyManager(km)
 
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "gl-token", Value: "s3cr3t"})
 	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
 	sreq.Header.Set("Authorization", "Bearer secret")
@@ -765,7 +766,7 @@ func TestWebhookIngress_TokenCustomHeader(t *testing.T) {
 	s.SetKeyManager(km)
 
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "gl-token", Value: "s3cr3t"})
 	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
 	sreq.Header.Set("Authorization", "Bearer secret")
@@ -793,7 +794,7 @@ func TestWebhookIngress_TokenCustomHeader(t *testing.T) {
 // and any DSL-mapped payload fields past the truncation point.
 func TestWebhookIngress_BodyOverConfiguredLimitRejected(t *testing.T) {
 	s, pg := newTestServerWithConfig(t, Config{WebhookMaxBodyBytes: 16})
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"job": "build"},
 		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -820,7 +821,7 @@ func TestWebhookIngress_BodyOverConfiguredLimitRejected(t *testing.T) {
 func TestWebhookIngress_BodyOverLimitSkipsAuthVerification(t *testing.T) {
 	s, pg := newTestServerWithConfig(t, Config{WebhookMaxBodyBytes: 16})
 	s.SetKeyManager(testKeyManager(t))
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 
 	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "webhook-secret", Value: "mysecret"})
 	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
@@ -859,7 +860,7 @@ func TestWebhookIngress_BodyOverLimitRecordsRejectedMetric(t *testing.T) {
 	s, pg := newTestServerWithConfig(t, Config{WebhookMaxBodyBytes: 8})
 	m := metrics.New()
 	s.SetMetrics(m)
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"job": "build"},
 		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -879,7 +880,7 @@ func TestWebhookIngress_BodyOverLimitRecordsRejectedMetric(t *testing.T) {
 // (or under) the configured limit still succeeds unchanged.
 func TestWebhookIngress_BodyAtConfiguredLimitAccepted(t *testing.T) {
 	s, pg := newTestServerWithConfig(t, Config{WebhookMaxBodyBytes: 64})
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"job": "build"},
 		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -905,7 +906,7 @@ func TestWebhookIngress_BodyAtConfiguredLimitAccepted(t *testing.T) {
 // old silent-truncation behavior.
 func TestWebhookIngress_DefaultBodyLimitAppliesWhenUnconfigured(t *testing.T) {
 	s, pg := newTestServer(t) // Config{} -> WebhookMaxBodyBytes == 0 -> default 1<<20
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"job": "build"},
 		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
@@ -935,7 +936,7 @@ func TestWebhookIngressMetricOutcomes(t *testing.T) {
 	s.SetMetrics(m)
 
 	_, _ = pg.UpsertJob(t.Context(), "wh-metrics-job", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 
 	// Receiver with no auth and a filter that only passes ref=="main".
 	spec, _ := json.Marshal(map[string]any{

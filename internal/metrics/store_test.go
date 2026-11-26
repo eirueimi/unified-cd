@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -19,10 +20,10 @@ func TestInstrumentedStoreCountsTransitions(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a job first (required for foreign key)
-	_, err := pg.UpsertJob(ctx, "job-a", "v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "job-a", "v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 
-	run, err := st.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "webhook:push", "")
+	run, err := st.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "webhook:push", "", store.RunOrigin{})
 	require.NoError(t, err)
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.runsCreated.WithLabelValues("webhook")))
 

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +18,7 @@ func TestAPI_GetJobSchedulability_Satisfiable(t *testing.T) {
 	s, pg := newTestServer(t)
 	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", []string{"kind:docker"}, []string{"native", "container"}, nil, nil))
 	specJSON := []byte(`{"native":true,"steps":[{"name":"build","run":"echo hi"}]}`)
-	_, err := pg.UpsertJob(t.Context(), "build", "unified-cd/v1", specJSON)
+	_, err := pg.UpsertJob(t.Context(), "build", "unified-cd/v1", specJSON, store.JobMeta{})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/build/schedulability", nil)
@@ -39,7 +40,7 @@ func TestAPI_GetJobSchedulability_Unsatisfiable(t *testing.T) {
 	s, pg := newTestServer(t)
 	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", []string{"kind:k8s"}, []string{"pod", "container"}, nil, nil))
 	specJSON := []byte(`{"native":true,"steps":[{"name":"build","run":"echo hi"}]}`)
-	_, err := pg.UpsertJob(t.Context(), "build", "unified-cd/v1", specJSON)
+	_, err := pg.UpsertJob(t.Context(), "build", "unified-cd/v1", specJSON, store.JobMeta{})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/build/schedulability", nil)
@@ -71,7 +72,7 @@ func TestAPI_GetJobSchedulability_NotFound(t *testing.T) {
 func TestAPI_GetJobSchedulability_HierarchicalName(t *testing.T) {
 	s, pg := newTestServer(t)
 	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", []string{"kind:docker"}, []string{"native", "container"}, nil, nil))
-	_, err := pg.UpsertJob(t.Context(), "team-a/build", "unified-cd/v1", []byte(`{"native":true}`))
+	_, err := pg.UpsertJob(t.Context(), "team-a/build", "unified-cd/v1", []byte(`{"native":true}`), store.JobMeta{})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/team-a/build/schedulability", nil)

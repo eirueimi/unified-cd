@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/require"
 )
@@ -32,9 +33,9 @@ func TestAPI_RunEvents_SSE_TwoViewersOneRun_ShareOneListenConnection(t *testing.
 	// cancelled before the pool it's reading from closes underneath it.
 	t.Cleanup(s.Close)
 
-	_, err = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, err = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)
@@ -93,9 +94,9 @@ func TestAPI_RunEvents_SSE_DisconnectRemovesSubscriber(t *testing.T) {
 	s := NewServer(Config{}, pg)
 	t.Cleanup(s.Close)
 
-	_, err = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, err = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)

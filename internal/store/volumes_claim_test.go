@@ -20,8 +20,8 @@ import (
 func queueRunWithRequiredVolumes(t *testing.T, pg *Postgres, required string) string {
 	t.Helper()
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{}, "test", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{}, "test", "", RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -121,11 +121,11 @@ func TestTryQueueRun_PersistsExpandedRequiredVolumes(t *testing.T) {
 	}
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	spec := []byte(`{"volumes":[` +
 		`{"name":["lib-{{ .Params.LIB }}"],"as":"lib","mountPath":"/lib"},` +
 		`{"name":["cache-1","cache-2"],"as":"cache","mountPath":"/cache"}]}`)
-	run, err := pg.CreateRun(ctx, "j", map[string]string{"LIB": "x"}, spec, []string{}, []string{}, "test", "")
+	run, err := pg.CreateRun(ctx, "j", map[string]string{"LIB": "x"}, spec, []string{}, []string{}, "test", "", RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -141,9 +141,9 @@ func TestTryQueueRun_EmptyVolumeNameFailsTheRun(t *testing.T) {
 	}
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	spec := []byte(`{"volumes":[{"name":["{{ .Params.MISSING }}"],"as":"v","mountPath":"/v"}]}`)
-	run, err := pg.CreateRun(ctx, "j", nil, spec, []string{}, []string{}, "test", "")
+	run, err := pg.CreateRun(ctx, "j", nil, spec, []string{}, []string{}, "test", "", RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -168,8 +168,8 @@ func TestTryQueueRun_NoVolumesPersistsAnEmptyArray(t *testing.T) {
 	}
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{}, "test", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{}, "test", "", RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)

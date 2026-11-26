@@ -16,14 +16,14 @@ import (
 func TestPostgres_ListExpiredRuns(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 
 	// mkRun creates a run, optionally finishes it, and backdates updated_at.
 	// A terminal run's updated_at never changes again, so it is the finish time.
 	mkRun := func(status api.RunStatus, age string) string {
 		t.Helper()
-		run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+		run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 		require.NoError(t, err)
 		if status != "" {
 			require.NoError(t, pg.MarkRunFinished(ctx, run.ID, status))

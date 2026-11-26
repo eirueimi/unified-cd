@@ -21,7 +21,7 @@ import (
 func TestTransitionPendingToQueued_FixedWindowStarvesRunsBehindABlockedHead(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 
 	const window = 5
 	blockedSpec := []byte(`{"concurrency":{"mutex":"hog"}}`)
@@ -29,10 +29,10 @@ func TestTransitionPendingToQueued_FixedWindowStarvesRunsBehindABlockedHead(t *t
 	// Pending; the remaining `window` stay Pending forever (nothing releases it)
 	// and occupy the whole head window on every tick.
 	for i := 0; i < window+1; i++ {
-		_, err := pg.CreateRun(ctx, "j", nil, blockedSpec, nil, nil, "", "")
+		_, err := pg.CreateRun(ctx, "j", nil, blockedSpec, nil, nil, "", "", RunOrigin{})
 		require.NoError(t, err)
 	}
-	probe, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	probe, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 
 	// The fixed head window: however many ticks pass, the probe is never examined.
@@ -68,12 +68,12 @@ func TestTransitionPendingToQueued_FixedWindowStarvesRunsBehindABlockedHead(t *t
 func TestTransitionPendingToQueuedFrom_SweepsEveryRunAndWraps(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 
 	const total = 12
 	ids := make([]string, 0, total)
 	for i := 0; i < total; i++ {
-		r, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+		r, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 		require.NoError(t, err)
 		ids = append(ids, r.ID)
 	}
@@ -106,11 +106,11 @@ func TestTransitionPendingToQueuedFrom_SweepsEveryRunAndWraps(t *testing.T) {
 func TestTransitionPendingToQueuedFrom_TiedCreatedAtIsNotSkipped(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 
 	ids := make([]string, 0, 4)
 	for i := 0; i < 4; i++ {
-		r, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+		r, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 		require.NoError(t, err)
 		ids = append(ids, r.ID)
 	}
@@ -140,10 +140,10 @@ func TestTransitionPendingToQueuedFrom_TiedCreatedAtIsNotSkipped(t *testing.T) {
 func TestListUnclaimableQueuedRuns_RespectsTheBatchBound(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 
 	for i := 0; i < 7; i++ {
-		_, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+		_, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 		require.NoError(t, err)
 	}
 	_, err := pg.TransitionPendingToQueued(ctx, 20)

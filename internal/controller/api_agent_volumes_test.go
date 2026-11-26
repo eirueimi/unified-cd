@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -73,9 +74,9 @@ func TestAgentAPI_Register_PersistsVolumes(t *testing.T) {
 
 func TestAgentAPI_Claim_HonoursBusyVolumesFromTheBody(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(t.Context(), "vj", "unified-cd/v1", []byte(volumeJobSpec))
+	_, err := pg.UpsertJob(t.Context(), "vj", "unified-cd/v1", []byte(volumeJobSpec), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "vj", map[string]string{"LIB": "unity"}, []byte(volumeJobSpec), nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "vj", map[string]string{"LIB": "unity"}, []byte(volumeJobSpec), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)
@@ -114,9 +115,9 @@ func TestAgentAPI_Claim_HonoursBusyVolumesFromTheBody(t *testing.T) {
 // run sits Queued under a "no agent declares the volume" reason that is false.
 func TestAgentAPI_Claim_RecreatedAgentRowCarriesItsVolumes(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(t.Context(), "vj", "unified-cd/v1", []byte(volumeJobSpec))
+	_, err := pg.UpsertJob(t.Context(), "vj", "unified-cd/v1", []byte(volumeJobSpec), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "vj", map[string]string{"LIB": "unity"}, []byte(volumeJobSpec), nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "vj", map[string]string{"LIB": "unity"}, []byte(volumeJobSpec), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)
@@ -144,9 +145,9 @@ func TestAgentAPI_Claim_RecreatedAgentRowCarriesItsVolumes(t *testing.T) {
 
 func TestAgentAPI_Claim_AcceptsAnEmptyJSONBody(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(t.Context(), "plain", "unified-cd/v1", []byte(`{"native":true,"steps":[{"name":"s","run":"echo x"}]}`))
+	_, err := pg.UpsertJob(t.Context(), "plain", "unified-cd/v1", []byte(`{"native":true,"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "plain", nil, []byte(`{"native":true,"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "plain", nil, []byte(`{"native":true,"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)

@@ -24,9 +24,9 @@ import (
 func sealRun(t *testing.T, st store.Store) string {
 	t.Helper()
 	ctx := context.Background()
-	_, err := st.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := st.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := st.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := st.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -97,9 +97,9 @@ func TestArtifactUpload_TerminalRunStillAccepted(t *testing.T) {
 	s, st := newTestServer(t)
 	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
 	ctx := context.Background()
-	_, err := st.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := st.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := st.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := st.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	// The artifact upload route has no {agentId} path segment, so a legacy

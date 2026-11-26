@@ -16,14 +16,14 @@ func TestPostgres_ClaimNextRun_DetachedFilter(t *testing.T) {
 	ctx := context.Background()
 
 	// runs.job_name has a FK to jobs; upsert the jobs first.
-	_, err := pg.UpsertJob(ctx, "n", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "n", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
-	_, err = pg.UpsertJob(ctx, "d", "unified-cd/v1", []byte(`{}`))
+	_, err = pg.UpsertJob(ctx, "d", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 
-	normal, err := pg.CreateRun(ctx, "n", nil, []byte(`{"steps":[{"name":"s","run":"true"}]}`), nil, nil, "", "")
+	normal, err := pg.CreateRun(ctx, "n", nil, []byte(`{"steps":[{"name":"s","run":"true"}]}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
-	det, err := pg.CreateRun(ctx, "d", nil, []byte(`{"detached":true,"steps":[{"name":"s","call":{"job":"c"}}]}`), nil, nil, "", "")
+	det, err := pg.CreateRun(ctx, "d", nil, []byte(`{"detached":true,"steps":[{"name":"s","call":{"job":"c"}}]}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -43,9 +43,9 @@ func TestPostgres_MutexAcquireAndRelease(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run1, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
-	run2, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run1, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
+	run2, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 
 	ok, err := pg.AcquireMutex(ctx, "deploy-prod", run1.ID)
 	require.NoError(t, err)
@@ -66,10 +66,10 @@ func TestPostgres_SemaphorePool(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run1, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
-	run2, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
-	run3, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run1, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
+	run2, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
+	run3, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 
 	require.NoError(t, pg.UpsertSemaphorePool(ctx, "tokens", 2))
 
@@ -97,9 +97,9 @@ func TestPostgres_TransitionPendingToQueued_WithMutex(t *testing.T) {
 	ctx := context.Background()
 
 	specWithMutex := []byte(`{"concurrency":{"mutex":"deploy-prod"}}`)
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run1, _ := pg.CreateRun(ctx, "j", nil, specWithMutex, nil, nil, "", "")
-	run2, _ := pg.CreateRun(ctx, "j", nil, specWithMutex, nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run1, _ := pg.CreateRun(ctx, "j", nil, specWithMutex, nil, nil, "", "", RunOrigin{})
+	run2, _ := pg.CreateRun(ctx, "j", nil, specWithMutex, nil, nil, "", "", RunOrigin{})
 
 	n, err := pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -116,9 +116,9 @@ func TestPostgres_MarkRunFinished_ReleasesMutex(t *testing.T) {
 	ctx := context.Background()
 
 	specWithMutex := []byte(`{"concurrency":{"mutex":"deploy-prod"}}`)
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run1, _ := pg.CreateRun(ctx, "j", nil, specWithMutex, nil, nil, "", "")
-	run2, _ := pg.CreateRun(ctx, "j", nil, specWithMutex, nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run1, _ := pg.CreateRun(ctx, "j", nil, specWithMutex, nil, nil, "", "", RunOrigin{})
+	run2, _ := pg.CreateRun(ctx, "j", nil, specWithMutex, nil, nil, "", "", RunOrigin{})
 
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
 	_, _ = pg.ClaimNextRun(ctx, "agent-1", nil, nil)
@@ -161,9 +161,9 @@ func TestPostgres_TransitionPendingToQueued_ExpandsTemplatedMutex(t *testing.T) 
 	ctx := context.Background()
 
 	specWithTemplatedMutex := []byte(`{"concurrency":{"mutex":"deploy-{{ .Params.env }}"}}`)
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run1, _ := pg.CreateRun(ctx, "j", map[string]string{"env": "prod"}, specWithTemplatedMutex, nil, nil, "", "")
-	run2, _ := pg.CreateRun(ctx, "j", map[string]string{"env": "prod"}, specWithTemplatedMutex, nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run1, _ := pg.CreateRun(ctx, "j", map[string]string{"env": "prod"}, specWithTemplatedMutex, nil, nil, "", "", RunOrigin{})
+	run2, _ := pg.CreateRun(ctx, "j", map[string]string{"env": "prod"}, specWithTemplatedMutex, nil, nil, "", "", RunOrigin{})
 
 	n, err := pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -178,7 +178,7 @@ func TestPostgres_TransitionPendingToQueued_ExpandsTemplatedMutex(t *testing.T) 
 	// A different env value must expand to a different, non-contending mutex name
 	// ('deploy-staging' vs 'deploy-prod'). Without expansion, run3 would share the
 	// same literal template string as run1/run2 and would NOT be able to queue.
-	run3, _ := pg.CreateRun(ctx, "j", map[string]string{"env": "staging"}, specWithTemplatedMutex, nil, nil, "", "")
+	run3, _ := pg.CreateRun(ctx, "j", map[string]string{"env": "staging"}, specWithTemplatedMutex, nil, nil, "", "", RunOrigin{})
 	n2, err := pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n2, "run3 should queue immediately since its expanded mutex is 'deploy-staging', not 'deploy-prod'")
@@ -191,16 +191,16 @@ func TestPostgres_TransitionPendingToQueued_ExpandsTemplatedSemaphorePool(t *tes
 	ctx := context.Background()
 
 	specWithTemplatedPool := []byte(`{"concurrency":{"semaphores":[{"pool":"{{ .Params.env }}-tokens","capacity":1}]}}`)
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.CreateRun(ctx, "j", map[string]string{"env": "staging"}, specWithTemplatedPool, nil, nil, "", "")
-	_, _ = pg.CreateRun(ctx, "j", map[string]string{"env": "staging"}, specWithTemplatedPool, nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	_, _ = pg.CreateRun(ctx, "j", map[string]string{"env": "staging"}, specWithTemplatedPool, nil, nil, "", "", RunOrigin{})
+	_, _ = pg.CreateRun(ctx, "j", map[string]string{"env": "staging"}, specWithTemplatedPool, nil, nil, "", "", RunOrigin{})
 
 	n, err := pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "only one run should win the expanded pool 'staging-tokens' (capacity 1)")
 
 	// A different env value expands to a different, unrelated pool — must not contend.
-	run3, _ := pg.CreateRun(ctx, "j", map[string]string{"env": "prod"}, specWithTemplatedPool, nil, nil, "", "")
+	run3, _ := pg.CreateRun(ctx, "j", map[string]string{"env": "prod"}, specWithTemplatedPool, nil, nil, "", "", RunOrigin{})
 	n2, err := pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n2, "run3 should queue immediately since it expands to a different pool 'prod-tokens'")
@@ -214,9 +214,9 @@ func TestPostgres_TransitionPendingToQueued_BadTemplateFailsOnlyThatRun(t *testi
 
 	badSpec := []byte(`{"concurrency":{"mutex":"deploy-{{ .Params.env"}}`) // missing closing }}
 	goodSpec := []byte(`{}`)
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	badRun, _ := pg.CreateRun(ctx, "j", map[string]string{"env": "prod"}, badSpec, nil, nil, "", "")
-	goodRun, _ := pg.CreateRun(ctx, "j", nil, goodSpec, nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	badRun, _ := pg.CreateRun(ctx, "j", map[string]string{"env": "prod"}, badSpec, nil, nil, "", "", RunOrigin{})
+	goodRun, _ := pg.CreateRun(ctx, "j", nil, goodSpec, nil, nil, "", "", RunOrigin{})
 
 	n, err := pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err, "a bad template must not abort the whole batch")
@@ -240,16 +240,16 @@ func TestPostgres_TransitionPendingToQueued_OrLockAcquiresFreeCandidate(t *testi
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 
 	// env-a is already held by another run; only env-b should be free.
-	holder, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	holder, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	ok, err := pg.AcquireMutex(ctx, "env-a", holder.ID)
 	require.NoError(t, err)
 	require.True(t, ok)
 
 	specWithOrLock := []byte(`{"concurrency":{"orLocks":[{"name":"env","in":{"literal":["env-a","env-b"]}}]}}`)
-	run, _ := pg.CreateRun(ctx, "j", nil, specWithOrLock, nil, nil, "", "")
+	run, _ := pg.CreateRun(ctx, "j", nil, specWithOrLock, nil, nil, "", "", RunOrigin{})
 
 	// holder itself has no concurrency constraints, so it also queues trivially
 	// in this same batch alongside run (which must win env-b); n covers both.
@@ -266,17 +266,17 @@ func TestPostgres_TransitionPendingToQueued_OrLockAllCandidatesExhausted(t *test
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 
-	holder1, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
-	holder2, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	holder1, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
+	holder2, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	_, err := pg.AcquireMutex(ctx, "env-a", holder1.ID)
 	require.NoError(t, err)
 	_, err = pg.AcquireMutex(ctx, "env-b", holder2.ID)
 	require.NoError(t, err)
 
 	specWithOrLock := []byte(`{"concurrency":{"orLocks":[{"name":"env","in":{"literal":["env-a","env-b"]}}]}}`)
-	run, _ := pg.CreateRun(ctx, "j", nil, specWithOrLock, nil, nil, "", "")
+	run, _ := pg.CreateRun(ctx, "j", nil, specWithOrLock, nil, nil, "", "", RunOrigin{})
 
 	// holder1 and holder2 have no concurrency constraints, so they queue trivially
 	// in this same batch; n covers both holders, but run itself must stay Pending
@@ -293,9 +293,9 @@ func TestPostgres_TransitionPendingToQueued_OrLockParamConflictFailsRun(t *testi
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	specWithOrLock := []byte(`{"concurrency":{"orLocks":[{"name":"env","in":{"literal":["env-a","env-b"]}}]}}`)
-	run, _ := pg.CreateRun(ctx, "j", map[string]string{"ENV_LOCK_VALUE": "already-set"}, specWithOrLock, nil, nil, "", "")
+	run, _ := pg.CreateRun(ctx, "j", map[string]string{"ENV_LOCK_VALUE": "already-set"}, specWithOrLock, nil, nil, "", "", RunOrigin{})
 
 	n, err := pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -317,10 +317,10 @@ func TestPostgres_MarkRunFinished_ReleasesOrLockCandidate(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	specWithOrLock := []byte(`{"concurrency":{"orLocks":[{"name":"env","in":{"literal":["env-a"]}}]}}`)
-	run1, _ := pg.CreateRun(ctx, "j", nil, specWithOrLock, nil, nil, "", "")
-	run2, _ := pg.CreateRun(ctx, "j", nil, specWithOrLock, nil, nil, "", "")
+	run1, _ := pg.CreateRun(ctx, "j", nil, specWithOrLock, nil, nil, "", "", RunOrigin{})
+	run2, _ := pg.CreateRun(ctx, "j", nil, specWithOrLock, nil, nil, "", "", RunOrigin{})
 
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
 	_, _ = pg.ClaimNextRun(ctx, "agent-1", nil, nil)
