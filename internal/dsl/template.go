@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -415,6 +417,96 @@ func ExpandVolumes(vs []VolumeMount, params map[string]string) ([]VolumeMount, e
 		}
 	}
 	return out, nil
+}
+
+// MetricStepData describes the step a custom metric is being recorded for,
+// exposed to metric templates as .Step. Duration is in seconds.
+type MetricStepData struct {
+	Name, Status, MatrixKey   string
+	ExitCode, Attempts, Stage int
+	Duration                  float64
+}
+
+// MetricTemplateData is the controller-side context for rendering custom
+// metric labels, `when` conditions and values.
+type MetricTemplateData struct {
+	Run RunData // run metadata; .Run.Duration renders RunDurationSeconds instead
+	// RunDurationSeconds is the run duration in float seconds. RunData.Duration
+	// is whole seconds, so metric templates see this value as .Run.Duration.
+	RunDurationSeconds float64
+	Job                JobData
+	Params             map[string]string
+	Outputs            map[string]string
+	Step               MetricStepData
+}
+
+// metricRunData wraps RunData so that its own float64 Duration shadows the
+// embedded int64 one; every other field is promoted from RunData.
+type metricRunData struct {
+	RunData
+	Duration float64
+}
+
+// metricExecData is the value actually handed to the template engine.
+type metricExecData struct {
+	Run     metricRunData
+	Job     JobData
+	Params  map[string]string
+	Outputs map[string]string
+	Step    MetricStepData
+}
+
+// ExpandMetricTemplate renders tpl against the metric context using the
+// controller-safe funcMap. Missing map keys render as empty strings.
+func ExpandMetricTemplate(tpl string, d MetricTemplateData) (string, error) {
+	t, err := template.New("").Funcs(funcMap).Option("missingkey=zero").Parse(tpl)
+	if err != nil {
+		return "", fmt.Errorf("parse metric template: %w", err)
+	}
+	data := metricExecData{
+		Run:     metricRunData{RunData: d.Run, Duration: d.RunDurationSeconds},
+		Job:     d.Job,
+		Params:  d.Params,
+		Outputs: d.Outputs,
+		Step:    d.Step,
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("execute metric template: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// MetricWhen evaluates a metric `when` template. An empty template is true;
+// otherwise the trimmed output must be exactly "true".
+func MetricWhen(tpl string, d MetricTemplateData) (bool, error) {
+	if tpl == "" {
+		return true, nil
+	}
+	out, err := ExpandMetricTemplate(tpl, d)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) == "true", nil
+}
+
+// MetricValue renders a metric value template and parses it as a float64. It
+// fails on an empty result, non-numeric text, NaN and +/-Inf. Callers
+// substitute "1" for counters that have no value template.
+func MetricValue(tpl string, d MetricTemplateData) (float64, error) {
+	out, err := ExpandMetricTemplate(tpl, d)
+	if err != nil {
+		return 0, err
+	}
+	s := strings.TrimSpace(out)
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("metric value %q is not a number: %w", s, err)
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("metric value %q is not a finite number", s)
+	}
+	return v, nil
 }
 
 // WebhookTemplateData is the template context used when evaluating webhook payload mappings and filters.
