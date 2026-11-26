@@ -187,8 +187,16 @@ func (m *Metrics) Custom() *CustomEmitter {
 // EXPOSED metric name (unifiedcd_job_<name>) to its current shape. Call it at
 // most once per Metrics.
 func (m *Metrics) ConfigureCustom(cfg CustomConfig, gauges CustomGaugeStore, shapes func(name string) (dsl.MetricShape, bool)) error {
+	if m == nil {
+		return nil
+	}
+	// Register first: the emitter stays disabled if the collector cannot be
+	// installed, so samples are not accepted that could never be exported.
+	if err := registerCustomCollector(m.reg, cfg, gauges, shapes, m.customErrors, nil, m.custom.exposesFamily); err != nil {
+		return err
+	}
 	m.custom.configure(cfg, gauges)
-	return RegisterCustomCollector(m.reg, cfg, gauges, shapes, m.customErrors, nil)
+	return nil
 }
 
 // SetBuildInfo publishes the controller's build version as the label of a

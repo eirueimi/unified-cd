@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -84,6 +85,10 @@ type CustomEmitter struct {
 	cfg    CustomConfig
 	gauges CustomGaugeStore
 	vecs   map[string]*customVec
+	// rejected caches definitions that failed validation (name -> shape hash),
+	// so a repeatedly emitted bad definition does not rebuild a scratch registry
+	// on every sample.
+	rejected map[string]string
 }
 
 // NewCustomEmitter builds an emitter. errs is the
@@ -94,7 +99,7 @@ type CustomEmitter struct {
 // a shape change could never re-register. Instead the emitter registers one
 // unchecked collector that exposes whichever vecs are current.
 func NewCustomEmitter(reg *prometheus.Registry, cfg CustomConfig, gauges CustomGaugeStore, errs *prometheus.CounterVec) *CustomEmitter {
-	e := &CustomEmitter{reg: reg, cfg: cfg, gauges: gauges, errors: errs, vecs: map[string]*customVec{}}
+	e := &CustomEmitter{reg: reg, cfg: cfg, gauges: gauges, errors: errs, vecs: map[string]*customVec{}, rejected: map[string]string{}}
 	if err := reg.Register((*vecCollector)(e)); err != nil {
 		slog.Error("metrics: register custom vec collector", "error", err)
 	}
@@ -215,17 +220,26 @@ func (e *CustomEmitter) familyTaken(name string, fams []string) bool {
 
 func seriesKey(values []string) string { return fmt.Sprintf("%q", values) }
 
+// validateVec rejects definitions client_golang cannot represent before a vec
+// is built (it panics on them when the first child is created).
+func validateVec(shape dsl.MetricShape) error {
+	if shape.Kind == "histogram" {
+		for _, k := range shape.LabelKeys {
+			if k == "le" {
+				return errors.New(`histogram label "le" is reserved`)
+			}
+		}
+		for i, b := range shape.Buckets {
+			if math.IsNaN(b) || (i > 0 && b <= shape.Buckets[i-1]) {
+				return errors.New("histogram buckets must be strictly increasing")
+			}
+		}
+	}
+	return nil
+}
+
 func (e *CustomEmitter) emitVec(def dsl.MetricDef, shape dsl.MetricShape, labels map[string]string, value float64, cfg CustomConfig) {
 	name := def.ExposedName()
-	// client_golang panics on a few definitions it cannot represent (a
-	// histogram label named "le"); a job must never be able to crash the
-	// controller, so this is the backstop for any such case.
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Warn("metrics: custom metric rejected by client_golang", "metric", name, "panic", r)
-			e.CountError(name, ReasonConflict)
-		}
-	}()
 	vals, ok := labelValues(shape.LabelKeys, labels)
 	if !ok {
 		e.CountError(name, ReasonTemplate)
@@ -233,8 +247,23 @@ func (e *CustomEmitter) emitVec(def dsl.MetricDef, shape dsl.MetricShape, labels
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
 	hash := shape.Hash()
+	// Backstop for any definition client_golang still panics on after
+	// validateVec: log loudly, drop the vec so it cannot re-panic on every
+	// sample, and keep the controller alive.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("metrics: custom metric panicked in client_golang", "metric", name, "panic", r, "stack", string(debug.Stack()))
+			delete(e.vecs, name)
+			e.rejected[name] = hash
+			e.CountError(name, ReasonConflict)
+		}
+	}()
+
+	if e.rejected[name] == hash {
+		e.CountError(name, ReasonConflict)
+		return
+	}
 	v := e.vecs[name]
 	if v != nil && v.hash != hash {
 		if len(v.series) > 0 {
@@ -245,6 +274,12 @@ func (e *CustomEmitter) emitVec(def dsl.MetricDef, shape dsl.MetricShape, labels
 		v = nil
 	}
 	if v == nil {
+		if err := validateVec(shape); err != nil {
+			slog.Warn("metrics: custom metric rejected", "metric", name, "error", err)
+			e.rejected[name] = hash
+			e.CountError(name, ReasonConflict)
+			return
+		}
 		nv := &customVec{hash: hash, fams: def.Families(), series: map[string]*seriesEntry{}}
 		if shape.Kind == "counter" {
 			nv.counter = prometheus.NewCounterVec(prometheus.CounterOpts{Name: name, Help: shape.Help}, shape.LabelKeys)
@@ -256,10 +291,16 @@ func (e *CustomEmitter) emitVec(def dsl.MetricDef, shape dsl.MetricShape, labels
 			nv.hist = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: name, Help: shape.Help, Buckets: buckets}, shape.LabelKeys)
 		}
 		// A scratch registry rejects an invalid descriptor here instead of
-		// poisoning every later scrape, and the family check keeps two vecs from
-		// exposing the same family (which would also fail the scrape).
-		if err := prometheus.NewRegistry().Register(nv.collector()); err != nil || e.familyTaken(name, nv.fams) {
+		// poisoning every later scrape.
+		if err := prometheus.NewRegistry().Register(nv.collector()); err != nil {
 			slog.Warn("metrics: custom metric rejected", "metric", name, "error", err)
+			e.rejected[name] = hash
+			e.CountError(name, ReasonConflict)
+			return
+		}
+		// Another vec exposing the same family would fail the whole scrape.
+		// This can clear once that vec expires, so it is not cached.
+		if e.familyTaken(name, nv.fams) {
 			e.CountError(name, ReasonConflict)
 			return
 		}
@@ -348,14 +389,34 @@ func (e *CustomEmitter) Sweep(now time.Time) {
 	if e.cfg.TTL <= 0 {
 		return
 	}
-	for _, v := range e.vecs {
+	for name, v := range e.vecs {
 		for k, s := range v.series {
 			if now.Sub(s.lastUpdate) > e.cfg.TTL {
 				v.delete(s.labelValues)
 				delete(v.series, k)
 			}
 		}
+		// A vec with no series left holds nothing; dropping it frees its
+		// families for other definitions.
+		if len(v.series) == 0 {
+			delete(e.vecs, name)
+		}
 	}
+}
+
+// exposesFamily reports whether a live vec exposes the given family name. The
+// DB collector uses it to skip rows that would collide with a vec.
+func (e *CustomEmitter) exposesFamily(family string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, v := range e.vecs {
+		for _, f := range v.fams {
+			if f == family {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 var fqNameRe = regexp.MustCompile(`fqName: "([^"]*)"`)

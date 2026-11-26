@@ -18,7 +18,7 @@ func newCollectorReg(t *testing.T, f *fakeGauges, cfg CustomConfig, now time.Tim
 	cfg.Enabled = true
 	err := RegisterCustomCollector(reg, cfg, f, func(name string) (dsl.MetricShape, bool) {
 		k, ok := shapes[name]
-		return dsl.MetricShape{Kind: "gauge", LabelKeys: k}, ok
+		return dsl.MetricShape{Kind: "gauge", Help: "h", LabelKeys: k}, ok
 	}, errs, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +84,7 @@ func TestDBCollector_ConfigureCustomEndToEnd(t *testing.T) {
 	}}
 	m := New()
 	if err := m.ConfigureCustom(CustomConfig{Enabled: true, TTL: time.Hour}, f, func(string) (dsl.MetricShape, bool) {
-		return dsl.MetricShape{Kind: "gauge"}, true
+		return dsl.MetricShape{Kind: "gauge", Help: "h"}, true
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -21,6 +21,10 @@ type customCollector struct {
 	shapes func(name string) (dsl.MetricShape, bool)
 	errs   *prometheus.CounterVec
 	now    func() time.Time
+	// taken, when set, reports whether an in-memory vec already exposes the
+	// family; such rows are skipped so the two collectors never emit the same
+	// family in one scrape.
+	taken func(family string) bool
 }
 
 // RegisterCustomCollector registers the unchecked collector on reg. now may be
@@ -29,7 +33,14 @@ func RegisterCustomCollector(reg *prometheus.Registry, cfg CustomConfig, gauges 
 	if now == nil {
 		now = time.Now
 	}
-	return reg.Register(&customCollector{cfg: cfg, gauges: gauges, shapes: shapes, errs: errs, now: now})
+	return registerCustomCollector(reg, cfg, gauges, shapes, errs, now, nil)
+}
+
+func registerCustomCollector(reg *prometheus.Registry, cfg CustomConfig, gauges CustomGaugeStore, shapes func(name string) (dsl.MetricShape, bool), errs *prometheus.CounterVec, now func() time.Time, taken func(string) bool) error {
+	if now == nil {
+		now = time.Now
+	}
+	return reg.Register(&customCollector{cfg: cfg, gauges: gauges, shapes: shapes, errs: errs, now: now, taken: taken})
 }
 
 func (c *customCollector) Describe(chan<- *prometheus.Desc) {}
@@ -71,22 +82,19 @@ func (c *customCollector) Collect(ch chan<- prometheus.Metric) {
 		since = now.Add(-c.cfg.TTL)
 	}
 
-	// Keyed by name + label values. The first help seen for a name wins; a
-	// row with a different help would make the scrape inconsistent.
+	// Keyed by name + label values. The help always comes from the current
+	// shape, so every row of a name agrees (client_golang rejects a gather
+	// where one family has two help strings).
 	out := map[string]*collected{}
-	helps := map[string]string{}
-	add := func(name, help string, labels map[string]string, v float64, realtime bool) {
+	add := func(name string, labels map[string]string, v float64, realtime bool) {
 		shape, ok := c.shapes(name)
 		keys := sortedKeys(labels)
-		if !ok || strings.Join(keys, "\x00") != strings.Join(shape.LabelKeys, "\x00") || len(keys) != len(shape.LabelKeys) {
+		// A row whose name is now a counter or histogram would collide with that
+		// family and fail the whole /metrics response.
+		if !ok || shape.Kind != "gauge" || (c.taken != nil && c.taken(name)) || strings.Join(keys, "\x00") != strings.Join(shape.LabelKeys, "\x00") || len(keys) != len(shape.LabelKeys) {
 			c.countError(name, ReasonConflict)
 			return
 		}
-		if h, seen := helps[name]; seen && h != help {
-			c.countError(name, ReasonConflict)
-			return
-		}
-		helps[name] = help
 		vals := make([]string, len(keys))
 		for i, k := range keys {
 			vals[i] = labels[k]
@@ -98,7 +106,7 @@ func (c *customCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 			return
 		}
-		out[id] = &collected{name: name, help: help, keys: keys, vals: vals, value: v}
+		out[id] = &collected{name: name, help: shape.Help, keys: keys, vals: vals, value: v}
 	}
 
 	rows, err := c.gauges.ListMetricGauges(ctx, since)
@@ -107,7 +115,7 @@ func (c *customCollector) Collect(ch chan<- prometheus.Metric) {
 		c.countError("", ReasonDB)
 	}
 	for _, g := range rows {
-		add(g.Name, g.Help, g.Labels, g.Value, false)
+		add(g.Name, g.Labels, g.Value, false)
 	}
 	rt, err := c.gauges.ListMetricRealtime(ctx)
 	if err != nil {
@@ -115,7 +123,7 @@ func (c *customCollector) Collect(ch chan<- prometheus.Metric) {
 		c.countError("", ReasonDB)
 	}
 	for _, r := range rt {
-		add(r.Name, r.Help, r.Labels, now.Sub(r.StartedAt).Seconds(), true)
+		add(r.Name, r.Labels, now.Sub(r.StartedAt).Seconds(), true)
 	}
 
 	for _, s := range out {
