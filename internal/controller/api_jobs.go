@@ -76,7 +76,20 @@ func (s *Server) storeJob(ctx context.Context, job *dsl.Job, name string) (*api.
 	if err != nil {
 		return nil, fmt.Errorf("marshal spec: %w", err)
 	}
-	return s.store.UpsertJob(ctx, name, job.APIVersion, specJSON, store.JobMeta{Labels: job.Metadata.Labels, Annotations: job.Metadata.Annotations})
+	// A metric that clashes with another job's is a client error, like an invalid
+	// definition: the check belongs next to the upsert it guards.
+	if err := checkMetricConflicts(ctx, s.store, name, job.Spec); err != nil {
+		var conflict *metricConflictError
+		if errors.As(err, &conflict) {
+			return nil, errBadRequest{err}
+		}
+		return nil, err
+	}
+	stored, err := s.store.UpsertJob(ctx, name, job.APIVersion, specJSON, store.JobMeta{Labels: job.Metadata.Labels, Annotations: job.Metadata.Annotations})
+	if err == nil {
+		s.invalidateMetricShapes()
+	}
+	return stored, err
 }
 
 // validatePathAnnotation validates each non-empty segment of the "path"
@@ -264,6 +277,7 @@ func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.invalidateMetricShapes()
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -238,6 +238,9 @@ func main() {
 		}
 		return 20
 	}(), "sustained requests per second of the same rate limits (env: UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND)")
+	customMetricsEnabled := flag.Bool("custom-metrics-enabled", eff.CustomMetricsEnabled(), "emit and export job-defined custom metrics (metrics: blocks of a Job); when false they still validate at apply time but nothing is emitted (env: UNIFIED_CUSTOM_METRICS_ENABLED)")
+	customMetricsMaxSeries := flag.Int("custom-metrics-max-series-per-metric", eff.CustomMetricsMaxSeries(), "max label combinations per custom metric name per replica; new combinations over the cap are dropped; 0 = unlimited (env: UNIFIED_CUSTOM_METRICS_MAX_SERIES_PER_METRIC)")
+	customMetricsTTL := flag.Duration("custom-metrics-ttl", eff.CustomMetricsTTL(), "drop a custom metric series that has not been updated for this long; 0 disables expiry (env: UNIFIED_CUSTOM_METRICS_TTL)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
 	auditRetentionDays := flag.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
 	runRetentionDays := flag.Int("run-retention-days", runRetentionDaysDefault(), "days to keep terminal runs incl. their logs, log archives, and artifacts; 0 = keep forever (env: UNIFIED_RUN_RETENTION_DAYS)")
@@ -475,6 +478,18 @@ func main() {
 	// OS reclaiming the process.
 	defer srv.Close()
 	srv.SetMetrics(m)
+	if *customMetricsMaxSeries < 0 || *customMetricsTTL < 0 {
+		slog.Error("invalid custom metrics settings: --custom-metrics-max-series-per-metric and --custom-metrics-ttl must not be negative")
+		os.Exit(1)
+	}
+	customCfg := metrics.CustomConfig{Enabled: *customMetricsEnabled, MaxSeriesPerMetric: *customMetricsMaxSeries, TTL: *customMetricsTTL}
+	if err := srv.ConfigureCustomMetrics(customCfg, pg); err != nil {
+		slog.Error("custom metrics init", "error", err)
+		os.Exit(1)
+	}
+	// Runs are terminalized in several places, some inside the store itself;
+	// hooking the store covers all of them exactly once.
+	pg.SetRunFinishedHook(srv.OnRunFinished)
 	srv.SetKeyManager(km)
 	// One GitHub App token issuer per process: the AppSource reconciler, the
 	// uses: resolver and job token hand-outs share its token cache. The
@@ -579,6 +594,7 @@ func main() {
 		}
 	}
 	go controller.RunApprovalReaper(ctx, backgroundSt, time.Minute)
+	go controller.RunCustomMetricsSweeper(ctx, backgroundSt, m.Custom(), customCfg.TTL)
 	go controller.RunStuckRunReaper(ctx, backgroundSt, 30*time.Second, 90*time.Second, 60*time.Second)
 	// Fail runs that have sat Queued for longer than the grace period (default
 	// 5m, configurable via UNIFIED_QUEUED_RUN_GRACE) with no live agent able to

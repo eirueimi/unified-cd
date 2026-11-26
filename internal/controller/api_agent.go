@@ -475,6 +475,7 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			resp.MatrixMaxCombinations = s.cfg.MatrixMaxCombinations
+			s.customRunClaimed(r.Context(), claimed)
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
@@ -983,7 +984,9 @@ func (s *Server) handleAgentStepReport(w http.ResponseWriter, r *http.Request) {
 	// handleAgentFinishRun) so the agent's client — which treats >=400 as an error —
 	// does not spuriously fail. GetRun's not-found/transient errors are handled
 	// separately so a transient DB blip does not masquerade as "already finalized".
+	var curRun *api.Run
 	if run, err := s.store.GetRun(r.Context(), req.RunID); err == nil {
+		curRun = run
 		switch run.Status {
 		case api.RunSucceeded, api.RunFailed, api.RunCancelled:
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -1018,7 +1021,8 @@ func (s *Server) handleAgentStepReport(w http.ResponseWriter, r *http.Request) {
 	stepName, _ := sanitizeAgentText(req.StepName)
 	variant, _ := sanitizeAgentText(req.Variant)
 	callJobName, _ := sanitizeAgentText(req.CallJobName)
-	if _, err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, stepName, variant, req.Status, exit, startedAt, endedAt, req.ChildRunID, callJobName); err != nil {
+	firstTerminal, err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, stepName, variant, req.Status, exit, startedAt, endedAt, req.ChildRunID, callJobName)
+	if err != nil {
 		if errors.Is(err, store.ErrRunFinalized) {
 			// Run was finalized between the pre-check above and the write; the
 			// store refused the report atomically. Same response as the pre-check.
@@ -1037,6 +1041,11 @@ func (s *Server) handleAgentStepReport(w http.ResponseWriter, r *http.Request) {
 	if req.Status == "Running" {
 		_ = s.store.MarkRunRunning(r.Context(), req.RunID)
 	}
+	// Job-defined custom metrics: realtime rows on Running, samples on the first
+	// terminal report. Never fails the request.
+	customReq := req
+	customReq.StepName, customReq.Variant = stepName, variant
+	s.customStepReported(r.Context(), curRun, customReq, firstTerminal)
 	w.WriteHeader(http.StatusNoContent)
 }
 

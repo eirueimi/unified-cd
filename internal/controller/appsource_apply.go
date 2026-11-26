@@ -59,6 +59,15 @@ func applyResource(ctx context.Context, st store.Store, kind, dir string, doc []
 			return "", err
 		}
 		name := job.Metadata.QualifiedName()
+		// A conflicting metric definition is skippable like any invalid document;
+		// a failure to run the check itself is a store failure and aborts.
+		if err := checkMetricConflicts(ctx, st, name, job.Spec); err != nil {
+			var conflict *metricConflictError
+			if errors.As(err, &conflict) {
+				return "", err
+			}
+			return "", fmt.Errorf("%w: %v", errStoreWrite, err)
+		}
 		if _, err := st.UpsertJob(ctx, name, job.APIVersion, specJSON, store.JobMeta{Labels: job.Metadata.Labels, Annotations: job.Metadata.Annotations}); err != nil {
 			return "", fmt.Errorf("%w: %v", errStoreWrite, err)
 		}
