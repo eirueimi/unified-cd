@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
-	"sync/atomic"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
