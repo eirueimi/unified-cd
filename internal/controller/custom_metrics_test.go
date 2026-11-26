@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
@@ -586,19 +587,73 @@ func TestSpecCache_OrderStaysConsistent(t *testing.T) {
 	assert.LessOrEqual(t, len(c.order), 3)
 }
 
+// skewedCutoffStore shifts the gauge cleanup cutoff an hour forward so a test
+// does not depend on the test host's clock agreeing with the database's.
+type skewedCutoffStore struct{ store.Store }
+
+func (s skewedCutoffStore) DeleteMetricGaugesBefore(ctx context.Context, before time.Time) (int64, error) {
+	return s.Store.DeleteMetricGaugesBefore(ctx, before.Add(time.Hour))
+}
+
 func TestRunCustomMetricsSweeper_CleansShortlyAfterStart(t *testing.T) {
 	_, pg, _ := newCustomMetricsServer(t, true)
 	g := store.MetricGauge{Name: "unifiedcd_job_g", Help: "h", Labels: map[string]string{}, Value: 1, UpdatedAt: time.Now()}
 	require.NoError(t, pg.ApplyMetricGauge(t.Context(), g, "h1", "Set", 0))
-	time.Sleep(50 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	// ttl 10ms: the row is already older; sweep/clean tickers are far away, so
-	// only the startup clean can remove it.
-	go runCustomMetricsSweeper(ctx, pg, nil, 10*time.Millisecond, time.Hour, time.Hour, 50*time.Millisecond)
+	// The row is stamped with the database clock, so the cutoff is moved an hour
+	// into the future (skewedCutoffStore): the row is older than it whatever the
+	// clock skew between the test host and the database VM. Sweep/clean tickers
+	// are far away, so only the startup clean can remove it.
+	go runCustomMetricsSweeper(ctx, skewedCutoffStore{pg}, nil, time.Minute, time.Hour, time.Hour, 50*time.Millisecond)
 	require.Eventually(t, func() bool {
 		rows, err := pg.ListMetricGauges(t.Context(), time.Time{})
 		return err == nil && len(rows) == 0
 	}, 5*time.Second, 50*time.Millisecond)
+}
+
+type countingListStore struct {
+	store.Store
+	calls int
+}
+
+func (s *countingListStore) ListJobs(ctx context.Context) ([]api.Job, error) {
+	s.calls++
+	return nil, nil
+}
+
+func TestShapeCache_UnknownNameIsNegativelyCached(t *testing.T) {
+	st := &countingListStore{}
+	c := newShapeCache(st)
+	_, ok := c.lookup("gone")
+	assert.False(t, ok)
+	assert.Equal(t, 1, st.calls)
+
+	// Past the miss-refill interval but within the normal TTL: no new listing.
+	c.mu.Lock()
+	c.loaded = time.Now().Add(-2 * shapeCacheMissRefill)
+	c.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		_, ok = c.lookup("gone")
+		assert.False(t, ok)
+	}
+	assert.Equal(t, 1, st.calls)
+
+	// An invalidation clears the negative entry.
+	c.invalidate()
+	_, _ = c.lookup("gone")
+	assert.Equal(t, 2, st.calls)
+}
+
+func TestTruncateLabelValue(t *testing.T) {
+	assert.Equal(t, "short", truncateLabelValue("short"))
+	long := strings.Repeat("a", maxLabelValueBytes+50)
+	assert.Len(t, truncateLabelValue(long), maxLabelValueBytes)
+
+	// A multi-byte rune straddling the limit is dropped whole, never split.
+	multi := strings.Repeat("a", maxLabelValueBytes-1) + "é" + "tail"
+	got := truncateLabelValue(multi)
+	assert.True(t, utf8.ValidString(got))
+	assert.Equal(t, strings.Repeat("a", maxLabelValueBytes-1), got)
 }

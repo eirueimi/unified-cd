@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
@@ -198,13 +199,16 @@ const (
 // definitions of all stored jobs. It is rebuilt when older than shapeCacheTTL,
 // when this replica applies or deletes a job, and (at most every
 // shapeCacheMissRefill) on a lookup miss, so a job applied through another
-// replica is picked up quickly.
+// replica is picked up quickly. A name still unknown after such a refresh is
+// remembered as missing until the next refresh or invalidation, so names of
+// deleted jobs or renamed metrics do not list jobs on every scrape.
 type shapeCache struct {
 	st store.Store
 
 	mu      sync.Mutex
 	loaded  time.Time
 	byName  map[string]dsl.MetricShape
+	missing map[string]struct{}
 	invalid bool
 	// gen counts invalidations; a refresh keeps the cache invalid when it
 	// changed while the job list was being read.
@@ -219,6 +223,7 @@ func newShapeCache(st store.Store) *shapeCache { return &shapeCache{st: st} }
 func (c *shapeCache) invalidate() {
 	c.mu.Lock()
 	c.invalid = true
+	c.missing = nil
 	c.gen++
 	c.mu.Unlock()
 }
@@ -232,15 +237,25 @@ func (c *shapeCache) lookup(name string) (dsl.MetricShape, bool) {
 	}
 	c.mu.Lock()
 	sh, ok := c.byName[name]
-	missStale := !ok && time.Since(c.loaded) > shapeCacheMissRefill
+	_, knownMissing := c.missing[name]
+	missStale := !ok && !knownMissing && time.Since(c.loaded) > shapeCacheMissRefill
 	c.mu.Unlock()
-	if ok || !missStale {
-		return sh, ok
+	if missStale {
+		c.refresh()
+		c.mu.Lock()
+		sh, ok = c.byName[name]
+		c.mu.Unlock()
 	}
-	c.refresh()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	sh, ok = c.byName[name]
+	if !ok {
+		c.mu.Lock()
+		if !c.invalid {
+			if c.missing == nil {
+				c.missing = map[string]struct{}{}
+			}
+			c.missing[name] = struct{}{}
+		}
+		c.mu.Unlock()
+	}
 	return sh, ok
 }
 
@@ -289,6 +304,7 @@ func (c *shapeCache) refresh() {
 	}
 	c.mu.Lock()
 	c.byName, c.loaded, c.invalid = m, time.Now(), c.gen != gen
+	c.missing = nil
 	c.mu.Unlock()
 }
 
@@ -453,8 +469,23 @@ func (c *customMetrics) countError(def dsl.MetricDef, reason string) {
 	c.emitter.CountError(def.ExposedName(), reason)
 }
 
+// maxLabelValueBytes caps a rendered label value before it is emitted or stored.
+const maxLabelValueBytes = 1024
+
+// truncateLabelValue cuts v to at most maxLabelValueBytes on a UTF-8 boundary.
+func truncateLabelValue(v string) string {
+	if len(v) <= maxLabelValueBytes {
+		return v
+	}
+	cut := maxLabelValueBytes
+	for cut > 0 && !utf8.RuneStart(v[cut]) {
+		cut--
+	}
+	return v[:cut]
+}
+
 // renderLabels renders a definition's label templates; invalid UTF-8 is replaced
-// with U+FFFD. ok is false (and the error counted) when a template fails.
+// with U+FFFD and values are truncated to maxLabelValueBytes. ok is false (and the error counted) when a template fails.
 func (c *customMetrics) renderLabels(runID string, def dsl.MetricDef, d dsl.MetricTemplateData) (map[string]string, bool) {
 	labels := make(map[string]string, len(def.Labels))
 	for _, l := range def.Labels {
@@ -464,7 +495,7 @@ func (c *customMetrics) renderLabels(runID string, def dsl.MetricDef, d dsl.Metr
 			c.countError(def, metrics.ReasonTemplate)
 			return nil, false
 		}
-		labels[l.Key] = strings.ToValidUTF8(v, "�")
+		labels[l.Key] = truncateLabelValue(strings.ToValidUTF8(v, "�"))
 	}
 	return labels, true
 }
