@@ -16,6 +16,9 @@ import (
 type safeStepCtx struct {
 	mu   sync.RWMutex
 	data dsl.TemplateData
+	// fails lists every main-pipeline step that ended Failed. It is kept apart
+	// from data.Run.Failures, which is only populated for finally: steps.
+	fails []dsl.StepFailure
 }
 
 // snapshot returns a copy of the current template data (for template expansion).
@@ -79,6 +82,38 @@ func (s *safeStepCtx) setStep(name string, data dsl.StepData) {
 		s.data.Steps = make(map[string]dsl.StepData)
 	}
 	s.data.Steps[name] = data
+}
+
+// setStepResult records how a step ended (status, exit code, start and end)
+// under name, keeping any outputs and child run ID already stored there. A
+// matrix or foreach step calls it once per combination and the results
+// aggregate: Failed if any combination failed, the earliest start and the
+// latest end. The Steps map is rebuilt copy-on-write like the other writers.
+func (s *safeStepCtx) setStepResult(name string, r dsl.StepData) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	newSteps := make(map[string]dsl.StepData, len(s.data.Steps)+1)
+	for k, v := range s.data.Steps {
+		newSteps[k] = v
+	}
+	newSteps[name] = mergeStepResult(newSteps[name], r)
+	s.data.Steps = newSteps
+}
+
+// addFailure records a failed main-pipeline step for UNIFIED_RUN_FAILURES_JSON.
+func (s *safeStepCtx) addFailure(f dsl.StepFailure) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fails = append(s.fails, f)
+}
+
+// failures returns a sorted copy of the recorded failures.
+func (s *safeStepCtx) failures() []dsl.StepFailure {
+	s.mu.RLock()
+	out := append([]dsl.StepFailure(nil), s.fails...)
+	s.mu.RUnlock()
+	sortFailures(out)
+	return out
 }
 
 // setStepMatrixOutputs merges one matrix copy's outputs into the aggregated
