@@ -14,6 +14,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/controller"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -158,7 +159,7 @@ spec:
 
 	// mutex should be released after both runs finish
 	// Create a temporary run for verification and call AcquireMutex (because run_id is a UUID type + foreign key constraint)
-	verifyRun, err := pg.CreateRun(ctx, "exclusive", nil, []byte(`{}`), nil, nil, "", "")
+	verifyRun, err := pg.CreateRun(ctx, "exclusive", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	ok, err := pg.AcquireMutex(ctx, "exclusive-lock", verifyRun.ID)
 	require.NoError(t, err)

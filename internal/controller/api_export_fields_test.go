@@ -29,7 +29,7 @@ func getList(t *testing.T, s *Server, path string, v any) {
 func TestAPI_ListSchedules_IncludesParams(t *testing.T) {
 	s, pg := newTestServer(t)
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 	_, err = pg.UpsertSchedule(ctx, "nightly", "0 3 * * *", "hello", map[string]string{"env": "prod"})
 	require.NoError(t, err)

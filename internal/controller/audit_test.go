@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -60,7 +61,7 @@ func TestAudit_JobDeleteRecordsQualifiedName(t *testing.T) {
 	// Hierarchical job names (containing "/") cannot be created via the YAML
 	// apply endpoint (dsl name validation forbids "/" in metadata.name); seed
 	// the store directly, mirroring TestAPI_GetJob_SlashInName.
-	_, err := pg.UpsertJob(t.Context(), "team-a/build", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := pg.UpsertJob(t.Context(), "team-a/build", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
 
 	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/team-a/build", nil)

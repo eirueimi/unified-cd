@@ -19,10 +19,10 @@ func mustCreateRun(t *testing.T, pg store.Store, jobName string) string {
 	t.Helper()
 	ctx := t.Context()
 
-	_, err := pg.UpsertJob(ctx, jobName, "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, jobName, "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 
-	run, err := pg.CreateRun(ctx, jobName, nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, jobName, nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	return run.ID
 }

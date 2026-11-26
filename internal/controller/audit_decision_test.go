@@ -32,9 +32,9 @@ folders:
 func auditSeedRun(t *testing.T, st store.Store, job string) string {
 	t.Helper()
 	ctx := context.Background()
-	_, err := st.UpsertJob(ctx, job, "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := st.UpsertJob(ctx, job, "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := st.CreateRun(ctx, job, nil, []byte(`{"steps":[]}`), nil, nil, "api", "")
+	run, err := st.CreateRun(ctx, job, nil, []byte(`{"steps":[]}`), nil, nil, "api", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = st.FinishRun(ctx, run.ID, api.RunSucceeded)
 	require.NoError(t, err)
@@ -69,7 +69,7 @@ func TestAudit_ReplayRecorded(t *testing.T) {
 
 func TestAudit_AllowedWriteRecordsGrant(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, auditDecisionPolicy)
-	_, err := pg.UpsertJob(t.Context(), "team-a/x", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo hi"}]}`))
+	_, err := pg.UpsertJob(t.Context(), "team-a/x", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo hi"}]}`), store.JobMeta{})
 	require.NoError(t, err)
 
 	rec := bodyPost(t, s, "/api/v1/runs", bearer("dev@example.com", "my-org:team-a"), api.TriggerRunRequest{JobName: "team-a/x"})
@@ -211,7 +211,7 @@ func TestAudit_DeniedReadRecordedEvenAs404(t *testing.T) {
 // read is answered 204.
 func TestAudit_HiddenAnswerRecordsActualStatus(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, auditDecisionPolicy)
-	_, err := pg.UpsertJob(t.Context(), "team-a/x", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := pg.UpsertJob(t.Context(), "team-a/x", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
 	_, err = pg.UpsertSchedule(t.Context(), "sch", "0 3 * * *", "team-a/x", nil)
 	require.NoError(t, err)

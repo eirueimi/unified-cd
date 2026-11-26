@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,9 +22,9 @@ func TestAgentRouteIdentityMatrixRejectsImpersonation(t *testing.T) {
 	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
 	tokenA := issueAgentAccessForTest(t, st, "agent-a", nil, nil)
 
-	_, err := st.UpsertJob(t.Context(), "route-matrix", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := st.UpsertJob(t.Context(), "route-matrix", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := st.CreateRun(t.Context(), "route-matrix", nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+	run, err := st.CreateRun(t.Context(), "route-matrix", nil, []byte(`{"steps":[]}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)

@@ -58,7 +58,7 @@ func TestAPI_ApplyJob_RejectedWhenManaged(t *testing.T) {
 
 func TestAPI_DeleteJob_RejectedWhenManaged(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(context.Background(), "hello", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(context.Background(), "hello", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 	setupManagedJob(t, pg, `{"repoURL":"https://example.com/r.git","targetRevision":"main","path":"jobs"}`)
 
@@ -123,7 +123,7 @@ func TestAPI_DeleteManagedResources_Rejected(t *testing.T) {
 
 func TestAPI_ApplySchedule_RejectedWhenManaged(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(context.Background(), "hello", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(context.Background(), "hello", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 	manageResource(t, pg, "Schedule", "nightly")
 	b, _ := json.Marshal(api.ApplyScheduleRequest{YAML: `

@@ -13,7 +13,7 @@ func TestPostgres_UpsertAndGetJob(t *testing.T) {
 	ctx := context.Background()
 
 	spec := []byte(`{"steps":[{"name":"s","run":"echo x"}]}`)
-	job, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", spec)
+	job, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", spec, JobMeta{})
 	require.NoError(t, err)
 	assert.Equal(t, "hello", job.Name)
 	assert.NotEmpty(t, job.ID)
@@ -24,7 +24,7 @@ func TestPostgres_UpsertAndGetJob(t *testing.T) {
 	assert.JSONEq(t, string(spec), string(got.Spec))
 
 	spec2 := []byte(`{"steps":[{"name":"s","run":"echo y"}]}`)
-	_, err = pg.UpsertJob(ctx, "hello", "unified-cd/v1", spec2)
+	_, err = pg.UpsertJob(ctx, "hello", "unified-cd/v1", spec2, JobMeta{})
 	require.NoError(t, err)
 
 	got2, err := pg.GetJob(ctx, "hello")
@@ -36,8 +36,8 @@ func TestPostgres_ListJobs(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "a", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.UpsertJob(ctx, "b", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "a", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	_, _ = pg.UpsertJob(ctx, "b", "unified-cd/v1", []byte(`{}`), JobMeta{})
 
 	jobs, err := pg.ListJobs(ctx)
 	require.NoError(t, err)

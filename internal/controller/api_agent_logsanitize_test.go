@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -174,8 +175,8 @@ func TestAgentSetStepOutputs_NULByteValue_Lands(t *testing.T) {
 // this branch exists to remove, relocated from logs to step status.
 func TestAgentStepReport_NULByteInStepNameAndVariant_Lands(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(context.Background(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(context.Background(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(context.Background(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(context.Background(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 

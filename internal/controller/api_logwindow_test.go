@@ -21,9 +21,9 @@ import (
 func TestAPI_LogWindow(t *testing.T) {
 	s, pg := newTestServer(t)
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	now := time.Now().UTC()
 	for i := 0; i < 3; i++ {

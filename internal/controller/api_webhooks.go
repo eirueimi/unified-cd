@@ -15,6 +15,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -285,7 +286,7 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	requiredCaps := dsl.RequiredCaps(jobSpec)
 
 	// Create the Run.
-	run, err := s.store.CreateRun(r.Context(), job.Name, params, runSpec, agentSelector, requiredCaps, "webhook:"+name, displayName)
+	run, err := s.store.CreateRun(r.Context(), job.Name, params, runSpec, agentSelector, requiredCaps, "webhook:"+name, displayName, store.RunOrigin{})
 	if err != nil {
 		s.countWebhookEvent(name, "error")
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)

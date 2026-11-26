@@ -90,7 +90,7 @@ func (s *Server) createRunFromJob(ctx context.Context, jobName string, reqParams
 	// workspace.mountPath) yields "container" and is left to route by the author's agentSelector, so it
 	// can run on a standard agent too.
 	requiredCaps := dsl.RequiredCaps(spec)
-	run, err := s.store.CreateRun(ctx, job.Name, params, runSpec, agentSelector, requiredCaps, triggeredBy, displayName)
+	run, err := s.store.CreateRun(ctx, job.Name, params, runSpec, agentSelector, requiredCaps, triggeredBy, displayName, store.RunOrigin{})
 	if err != nil {
 		return nil, http.StatusInternalServerError, "create run: " + err.Error()
 	}
@@ -171,7 +171,7 @@ func (s *Server) handleReplayRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requiredCaps := dsl.RequiredCaps(spec)
-	run, err := s.store.CreateRun(r.Context(), orig.JobName, params, runSpec, agentSelector, requiredCaps, "replay:"+id, displayName)
+	run, err := s.store.CreateRun(r.Context(), orig.JobName, params, runSpec, agentSelector, requiredCaps, "replay:"+id, displayName, store.RunOrigin{})
 	if err != nil {
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
 		return

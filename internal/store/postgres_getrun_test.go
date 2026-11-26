@@ -12,11 +12,11 @@ func TestGetRun_ClaimedByReflectsClaimingAgent(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 
 	// Unclaimed run: ClaimedBy is empty.
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "api", "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "api", "", RunOrigin{})
 	require.NoError(t, err)
 	got, err := pg.GetRun(ctx, run.ID)
 	require.NoError(t, err)

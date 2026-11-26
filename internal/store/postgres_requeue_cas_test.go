@@ -19,9 +19,9 @@ func newClaimedRun(t *testing.T, pg *Postgres, agentID string) string {
 	t.Helper()
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(requeueRunSpec), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(requeueRunSpec), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)

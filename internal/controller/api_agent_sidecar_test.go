@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,8 +19,8 @@ import (
 // the store, retrievable via GetSidecarStatuses.
 func TestAgentAPI_SidecarStatus(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
@@ -47,8 +48,8 @@ func TestAgentAPI_SidecarStatus(t *testing.T) {
 // rather than creating a duplicate.
 func TestAgentAPI_SidecarStatus_UpsertsOnExit(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	claimRunForTest(t, pg, "a1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 

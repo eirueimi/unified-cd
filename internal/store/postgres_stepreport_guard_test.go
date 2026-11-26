@@ -19,8 +19,8 @@ func TestPostgres_UpsertStepReport_RejectsTerminalRun(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "s0", "", "Running", nil, nil, nil, "", ""))
 	updated, err := pg.FinishRun(ctx, run.ID, api.RunFailed)
 	require.NoError(t, err)

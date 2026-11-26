@@ -11,10 +11,10 @@ func TestCreateRunPersistsAndReturnsDisplayName(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "test-job", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := pg.UpsertJob(ctx, "test-job", "unified-cd/v1", []byte(`{"steps":[]}`), JobMeta{})
 	require.NoError(t, err)
 
-	run, err := pg.CreateRun(ctx, "test-job", map[string]string{"env": "prod"}, []byte(`{"steps":[]}`), nil, nil, "api", "deploy prod")
+	run, err := pg.CreateRun(ctx, "test-job", map[string]string{"env": "prod"}, []byte(`{"steps":[]}`), nil, nil, "api", "deploy prod", RunOrigin{})
 	require.NoError(t, err)
 	require.Equal(t, "deploy prod", run.DisplayName)
 
@@ -27,10 +27,10 @@ func TestCreateRunWithEmptyDisplayNameStoresNoneAndListRunsOmitsIt(t *testing.T)
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, err := pg.UpsertJob(ctx, "test-job2", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := pg.UpsertJob(ctx, "test-job2", "unified-cd/v1", []byte(`{"steps":[]}`), JobMeta{})
 	require.NoError(t, err)
 
-	run, err := pg.CreateRun(ctx, "test-job2", nil, []byte(`{"steps":[]}`), nil, nil, "api", "")
+	run, err := pg.CreateRun(ctx, "test-job2", nil, []byte(`{"steps":[]}`), nil, nil, "api", "", RunOrigin{})
 	require.NoError(t, err)
 	require.Empty(t, run.DisplayName) // existing-run rendering must be unaffected
 

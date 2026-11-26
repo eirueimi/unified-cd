@@ -21,7 +21,7 @@ import (
 func TestAPI_TriggerRun(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "hello", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "hello", Params: map[string]string{"k": "v"}})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -41,7 +41,7 @@ func TestAPI_TriggerRun(t *testing.T) {
 func TestAPI_TriggerRun_ExpandsAgentSelectorParams(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "hello", "unified-cd/v1",
-		[]byte(`{"agentSelector":["pool:{{ .Params.pool }}"],"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"agentSelector":["pool:{{ .Params.pool }}"],"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "hello", Params: map[string]string{"pool": "build"}})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -65,7 +65,7 @@ func TestAPI_TriggerRun_ExpandsAgentSelectorParams(t *testing.T) {
 func TestAPI_TriggerRun_InterpolatesDisplayName(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "hello", "unified-cd/v1",
-		[]byte(`{"displayName":"deploy {{ .Params.env }}","steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"displayName":"deploy {{ .Params.env }}","steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "hello", Params: map[string]string{"env": "prod"}})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -84,7 +84,7 @@ func TestAPI_TriggerRun_InterpolatesDisplayName(t *testing.T) {
 func TestAPI_TriggerRun_MalformedDisplayNameRejectsWithoutCreatingRun(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "bad-display-name", "unified-cd/v1",
-		[]byte(`{"displayName":"deploy {{ .Params.env","steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"displayName":"deploy {{ .Params.env","steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "bad-display-name", Params: map[string]string{"env": "prod"}})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -103,7 +103,7 @@ func TestAPI_TriggerRun_MalformedDisplayNameRejectsWithoutCreatingRun(t *testing
 func TestAPI_TriggerRun_NoDisplayNameLeavesItEmpty(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "no-display-name", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "no-display-name"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -120,7 +120,7 @@ func TestAPI_TriggerRunStoresResolvedSecretNameParameter(t *testing.T) {
 	_, err := pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", []byte(`{
 "params":{"inputs":[{"name":"token_secret","type":"string"}]},
 "steps":[{"name":"deploy","env":{"TOKEN":"{{ index .Secrets .Params.token_secret }}"},"run":"true"}]
-}`))
+}`), store.JobMeta{})
 	require.NoError(t, err)
 	body, err := json.Marshal(api.TriggerRunRequest{
 		JobName: "deploy",
@@ -150,6 +150,7 @@ func TestAPI_TriggerRunRejectsInvalidStoredJobSpecWithoutCreatingRun(t *testing.
 		"invalid-spec",
 		"unified-cd/v1",
 		[]byte(`{"steps":"not-an-array"}`),
+		store.JobMeta{},
 	)
 	require.NoError(t, err)
 	body, err := json.Marshal(api.TriggerRunRequest{JobName: "invalid-spec"})
@@ -179,8 +180,8 @@ func TestAPI_TriggerRun_UnknownJob(t *testing.T) {
 
 func TestAPI_GetRun(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	r, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	r, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+r.ID, nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -208,8 +209,8 @@ func TestAPI_GetRun_NotFound(t *testing.T) {
 
 func TestAPI_GetRunOutputs_Empty(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	r, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	r, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+r.ID+"/outputs", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -225,9 +226,9 @@ func TestAPI_GetRunOutputs_Empty(t *testing.T) {
 
 func TestAPI_ListRunsByJob(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
-	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "api", "")
-	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "api", "")
+	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
+	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "api", "", store.RunOrigin{})
+	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "api", "", store.RunOrigin{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs?jobName=myjob", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -240,8 +241,8 @@ func TestAPI_ListRunsByJob(t *testing.T) {
 
 func TestAPI_CancelRun(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "", store.RunOrigin{})
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 	_, _ = pg.ClaimNextRun(t.Context(), "agent-1", nil, nil)
 	require.NoError(t, pg.MarkRunRunning(t.Context(), run.ID))
@@ -256,8 +257,8 @@ func TestAPI_CancelRun(t *testing.T) {
 
 func TestAPI_RunEvents_SSE_ReceivesExistingLogs(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 
 	now := time.Now().UTC()
 	_, _ = pg.AppendLog(t.Context(), run.ID, 0, "stdout", now, "hello SSE")
@@ -291,8 +292,8 @@ func TestAPI_RunEvents_SSE_BackfillTruncatesToTail(t *testing.T) {
 	defer func() { sseBackfillLimit = old }()
 
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	now := time.Now().UTC()
 	for _, ln := range []string{"line-1", "line-2", "line-3", "line-4", "line-5"} {
 		_, _ = pg.AppendLog(t.Context(), run.ID, 0, "stdout", now, ln)
@@ -320,8 +321,8 @@ func TestAPI_RunEvents_SSE_BackfillTruncatesToTail(t *testing.T) {
 func TestAPI_GetRunYAML(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := []byte(`{"steps":[{"name":"deploy","run":"echo deploy"}]}`)
-	_, _ = pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", specJSON)
-	r, _ := pg.CreateRun(t.Context(), "deploy", map[string]string{"env": "prod"}, specJSON, nil, nil, "api", "")
+	_, _ = pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", specJSON, store.JobMeta{})
+	r, _ := pg.CreateRun(t.Context(), "deploy", map[string]string{"env": "prod"}, specJSON, nil, nil, "api", "", store.RunOrigin{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+r.ID+"/yaml", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -349,8 +350,8 @@ func TestAPI_GetRunYAML_NotFound(t *testing.T) {
 func TestAPI_GetRunYAML_BadSpec(t *testing.T) {
 	s, pg := newTestServer(t)
 	badSpecJSON := []byte(`{"steps":"broken"}`)
-	_, _ = pg.UpsertJob(t.Context(), "broken-run", "unified-cd/v1", badSpecJSON)
-	r, _ := pg.CreateRun(t.Context(), "broken-run", nil, badSpecJSON, nil, nil, "api", "")
+	_, _ = pg.UpsertJob(t.Context(), "broken-run", "unified-cd/v1", badSpecJSON, store.JobMeta{})
+	r, _ := pg.CreateRun(t.Context(), "broken-run", nil, badSpecJSON, nil, nil, "api", "", store.RunOrigin{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+r.ID+"/yaml", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -364,8 +365,8 @@ func TestAPI_GetRunYAML_BadSpec(t *testing.T) {
 
 func TestAPI_DeleteRun_TerminalState(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunSucceeded))
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/runs/"+run.ID, nil)
@@ -380,8 +381,8 @@ func TestAPI_DeleteRun_TerminalState(t *testing.T) {
 
 func TestAPI_DeleteRun_RejectsNonTerminalState(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	// CreateRun creates the Run in Pending state (not a terminal state).
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/runs/"+run.ID, nil)
@@ -409,10 +410,10 @@ func TestAPI_DeleteRun_NotFound(t *testing.T) {
 
 func TestAPI_CancelRun_CascadesToChildRuns(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
-	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
-	grandchild, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
+	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
+	grandchild, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	// Link parent→child→grandchild via call: step reports (child_run_id).
 	require.NoError(t, pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j"))
 	require.NoError(t, pg.UpsertStepReport(t.Context(), child.ID, 0, 0, "call-grandchild", "", "Running", nil, nil, nil, grandchild.ID, "j"))
@@ -440,7 +441,7 @@ func TestTriggerRun_RecordsPrincipal(t *testing.T) {
 
 	// Create a job to trigger.
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "j"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
@@ -463,7 +464,7 @@ func TestAPI_TriggerRun_MissingRequiredParam(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "needs-image", "unified-cd/v1", []byte(`{
 		"params": {"inputs": [{"name": "image", "type": "string", "required": true}]},
 		"steps": [{"name": "s", "run": "echo x"}]
-	}`))
+	}`), store.JobMeta{})
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "needs-image"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -484,7 +485,7 @@ func TestAPI_TriggerRun_InjectsDefaultParam(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "has-default", "unified-cd/v1", []byte(`{
 		"params": {"inputs": [{"name": "tag", "type": "string", "default": "latest"}]},
 		"steps": [{"name": "s", "run": "echo x"}]
-	}`))
+	}`), store.JobMeta{})
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "has-default"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -503,7 +504,7 @@ func TestAPI_TriggerRun_RequiredParamProvided_Succeeds(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "needs-image2", "unified-cd/v1", []byte(`{
 		"params": {"inputs": [{"name": "image", "type": "string", "required": true}]},
 		"steps": [{"name": "s", "run": "echo x"}]
-	}`))
+	}`), store.JobMeta{})
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "needs-image2", Params: map[string]string{"image": "nginx"}})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -517,7 +518,7 @@ func TestAPI_TriggerRun_RequiredParamProvided_Succeeds(t *testing.T) {
 
 func TestAPI_ListActiveRuns(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 
 	// Create an active Run
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "myjob"})
@@ -548,9 +549,9 @@ func TestAPI_DeleteRun_RemovesObjectStoreData(t *testing.T) {
 	s.SetObjectStore(obj)
 	ctx := context.Background()
 
-	_, err := st.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := st.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := st.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := st.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	require.NoError(t, st.MarkRunFinished(ctx, run.ID, api.RunSucceeded))
 

@@ -130,9 +130,9 @@ func TestArtifactRoundTrip(t *testing.T) {
 	// Seed a real job+run and claim it as the agent that will upload, so the
 	// upload passes agentRunGuard's ownership check instead of relying on a
 	// nil-store bypass that no longer exists.
-	_, err := pg.UpsertJob(ctx, "artifact-roundtrip-job", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := pg.UpsertJob(ctx, "artifact-roundtrip-job", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "artifact-roundtrip-job", nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "artifact-roundtrip-job", nil, []byte(`{"steps":[]}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 1)
 	require.NoError(t, err)

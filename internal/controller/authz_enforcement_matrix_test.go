@@ -52,9 +52,9 @@ func seedMatrix(t *testing.T, st store.Store) matrixFixture {
 	ctx := context.Background()
 	f := matrixFixture{runs: map[string]string{}}
 	for _, j := range matrixJobs {
-		_, err := st.UpsertJob(ctx, j, "unified-cd/v1", []byte(`{"steps":[]}`))
+		_, err := st.UpsertJob(ctx, j, "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 		require.NoError(t, err)
-		run, err := st.CreateRun(ctx, j, nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+		run, err := st.CreateRun(ctx, j, nil, []byte(`{"steps":[]}`), nil, nil, "", "", store.RunOrigin{})
 		require.NoError(t, err)
 		_, err = st.FinishRun(ctx, run.ID, api.RunSucceeded)
 		require.NoError(t, err)
@@ -419,9 +419,9 @@ func TestAuthorize_AgentBypassUnchanged(t *testing.T) {
 func TestAuthorize_ApprovalCheckedAgainstCurrentJobName(t *testing.T) {
 	s, st := matrixServer(t)
 	ctx := context.Background()
-	_, err := st.UpsertJob(ctx, "x", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := st.UpsertJob(ctx, "x", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := st.CreateRun(ctx, "x", nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+	run, err := st.CreateRun(ctx, "x", nil, []byte(`{"steps":[]}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	require.NoError(t, st.RenameJob(ctx, "x", "team-a/x"))
 

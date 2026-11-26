@@ -13,8 +13,8 @@ import (
 func queueRun(t *testing.T, pg *Postgres, caps ...string) string {
 	t.Helper()
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, caps, "test", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, caps, "test", "", RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -171,8 +171,8 @@ func TestUpdateRunSpec_RecomputesRequiredCaps(t *testing.T) {
 		pg := NewTestPostgres(t)
 		require.NoError(t, pg.UpsertAgent(ctx, "host", "h", "linux", "", []string{}, []string{"native", "container"}, nil, nil))
 		require.NoError(t, pg.UpsertAgent(ctx, "k8s", "k", "linux/k8s", "", []string{}, []string{"pod", "container"}, nil, nil))
-		_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-		run, err := pg.CreateRun(ctx, "j", nil, []byte(plain), []string{}, []string{"container"}, "test", "")
+		_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+		run, err := pg.CreateRun(ctx, "j", nil, []byte(plain), []string{}, []string{"container"}, "test", "", RunOrigin{})
 		require.NoError(t, err)
 
 		require.NoError(t, pg.UpdateRunSpec(ctx, run.ID, []byte(withPodVolumes)))
@@ -191,13 +191,13 @@ func TestUpdateRunSpec_RecomputesRequiredCaps(t *testing.T) {
 
 	t.Run("a resolution that changes nothing relevant leaves it alone", func(t *testing.T) {
 		pg := NewTestPostgres(t)
-		_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-		run, err := pg.CreateRun(ctx, "j", nil, []byte(hostRunnable), []string{}, []string{"container"}, "test", "")
+		_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+		run, err := pg.CreateRun(ctx, "j", nil, []byte(hostRunnable), []string{}, []string{"container"}, "test", "", RunOrigin{})
 		require.NoError(t, err)
 		require.NoError(t, pg.UpdateRunSpec(ctx, run.ID, []byte(hostRunnable)))
 		assert.Equal(t, []string{"container"}, requiredCaps(t, pg, run.ID))
 
-		nat, err := pg.CreateRun(ctx, "j", nil, []byte(`{"native":true}`), []string{}, []string{"native"}, "test", "")
+		nat, err := pg.CreateRun(ctx, "j", nil, []byte(`{"native":true}`), []string{}, []string{"native"}, "test", "", RunOrigin{})
 		require.NoError(t, err)
 		require.NoError(t, pg.UpdateRunSpec(ctx, nat.ID, []byte(`{"native":true,"steps":[{"name":"s","run":"true"}]}`)))
 		assert.Equal(t, []string{"native"}, requiredCaps(t, pg, nat.ID))
@@ -205,8 +205,8 @@ func TestUpdateRunSpec_RecomputesRequiredCaps(t *testing.T) {
 
 	t.Run("a run that is no longer Pending keeps both spec and caps", func(t *testing.T) {
 		pg := NewTestPostgres(t)
-		_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-		run, err := pg.CreateRun(ctx, "j", nil, []byte(plain), []string{}, []string{"container"}, "test", "")
+		_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+		run, err := pg.CreateRun(ctx, "j", nil, []byte(plain), []string{}, []string{"container"}, "test", "", RunOrigin{})
 		require.NoError(t, err)
 		_, err = pg.TransitionPendingToQueued(ctx, 10)
 		require.NoError(t, err)
@@ -216,8 +216,8 @@ func TestUpdateRunSpec_RecomputesRequiredCaps(t *testing.T) {
 
 	t.Run("an unparseable spec is refused rather than written with stale caps", func(t *testing.T) {
 		pg := NewTestPostgres(t)
-		_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-		run, err := pg.CreateRun(ctx, "j", nil, []byte(plain), []string{}, []string{"container"}, "test", "")
+		_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+		run, err := pg.CreateRun(ctx, "j", nil, []byte(plain), []string{}, []string{"container"}, "test", "", RunOrigin{})
 		require.NoError(t, err)
 		require.Error(t, pg.UpdateRunSpec(ctx, run.ID, []byte(`not json`)))
 	})

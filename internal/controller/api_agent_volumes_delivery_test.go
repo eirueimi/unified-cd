@@ -224,9 +224,9 @@ func TestHeartbeatCorruptStoredSpecReturns503(t *testing.T) {
 // not have it ready, so a run needing it would fail on the agent.
 func TestClaimWithoutVolumesKnownRoutesAsNoVolumes(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(t.Context(), "vj", "unified-cd/v1", []byte(volumeJobSpec))
+	_, err := pg.UpsertJob(t.Context(), "vj", "unified-cd/v1", []byte(volumeJobSpec), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "vj", map[string]string{"LIB": "u"}, []byte(volumeJobSpec), nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "vj", map[string]string{"LIB": "u"}, []byte(volumeJobSpec), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)

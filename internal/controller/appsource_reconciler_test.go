@@ -147,7 +147,7 @@ func TestReconciler_PruneDeletesRemovedJobs(t *testing.T) {
 	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(pruneSpec))
 	require.NoError(t, err)
 
-	_, _ = pg.UpsertJob(ctx, "old-job", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"x"}]}`))
+	_, _ = pg.UpsertJob(ctx, "old-job", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"x"}]}`), store.JobMeta{})
 	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute), []store.ResourceRef{{Kind: "Job", Name: "old-job"}}))
 
 	fetcher := &mockAppSourceFetcher{
@@ -171,7 +171,7 @@ func TestReconciler_WarnOnlyWithoutPrune(t *testing.T) {
 	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(appSourceSpecJSON))
 	require.NoError(t, err)
 
-	_, _ = pg.UpsertJob(ctx, "old-job", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"x"}]}`))
+	_, _ = pg.UpsertJob(ctx, "old-job", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"x"}]}`), store.JobMeta{})
 	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute), []store.ResourceRef{{Kind: "Job", Name: "old-job"}}))
 
 	fetcher := &mockAppSourceFetcher{
@@ -266,7 +266,7 @@ func TestReconciler_PruneNonCascadeAppSource(t *testing.T) {
 
 	// Give the child a managed Job directly, to prove non-cascade deletion.
 	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "child", "x", time.Now(), []store.ResourceRef{{Kind: "Job", Name: "orphan"}}))
-	_, err = pg.UpsertJob(ctx, "orphan", "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err = pg.UpsertJob(ctx, "orphan", "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
 
 	// Back-date the parent's last sync so the second sync isn't skipped by the interval check.
@@ -405,11 +405,11 @@ func TestReconciler_LegacyBareJobNameNotPrunedOnUpgrade(t *testing.T) {
 	// the live job is stored under the BARE name, and managed_resources records it bare.
 	// We stamp a recognizable spec so we can prove the row is never delete+recreated.
 	const seededSpec = `{"steps":[{"name":"legacy","run":"legacy-marker"}]}`
-	_, err = pg.UpsertJob(ctx, "build", "unified-cd/v1", []byte(seededSpec))
+	_, err = pg.UpsertJob(ctx, "build", "unified-cd/v1", []byte(seededSpec), store.JobMeta{})
 	require.NoError(t, err)
 	// A run recorded against the BARE legacy name; it must be repointed to the
 	// qualified name so run history survives the re-key (bug #25 follow-up).
-	legacyRun, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, nil, "", "")
+	legacyRun, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute),
 		[]store.ResourceRef{{Kind: "Job", Name: "build"}}))
@@ -479,7 +479,7 @@ func TestReconciler_LegacyBareGuardDoesNotSpareGenuinelyRemovedJob(t *testing.T)
 	require.NoError(t, err)
 
 	// "gone" is a bare legacy entry whose leaf ("gone") is not present in git anymore.
-	_, err = pg.UpsertJob(ctx, "gone", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"x"}]}`))
+	_, err = pg.UpsertJob(ctx, "gone", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"x"}]}`), store.JobMeta{})
 	require.NoError(t, err)
 	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute),
 		[]store.ResourceRef{{Kind: "Job", Name: "gone"}}))

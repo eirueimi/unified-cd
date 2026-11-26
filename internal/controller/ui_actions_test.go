@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/authz"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/require"
 )
 
@@ -96,9 +97,9 @@ func TestUIActionInventoryIsEnforced(t *testing.T) {
 	// together with the seeded run ID.
 	do := func(c check, email string) (*httptest.ResponseRecorder, string) {
 		seq++
-		_, err := st.UpsertJob(ctx, job, "unified-cd/v1", []byte(`{"steps":[]}`))
+		_, err := st.UpsertJob(ctx, job, "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 		require.NoError(t, err)
-		run, err := st.CreateRun(ctx, job, nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+		run, err := st.CreateRun(ctx, job, nil, []byte(`{"steps":[]}`), nil, nil, "", "", store.RunOrigin{})
 		require.NoError(t, err)
 		_ = st.CreatePendingApproval(ctx, run.ID, 0, "gate", "", nil) // best effort: the gate may need a step
 		_, err = st.UpsertAppSource(ctx, "apps", []byte(`{"repoURL":"https://github.com/org/repo","targetRevision":"main","path":"jobs/"}`))

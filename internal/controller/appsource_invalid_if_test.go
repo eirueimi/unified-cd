@@ -52,7 +52,7 @@ func TestReconciler_InvalidIfDeletesTheJobUnderPrune(t *testing.T) {
 
 	// The job as it exists today: applied by an earlier version, live, and
 	// recorded as managed by this AppSource.
-	_, err = pg.UpsertJob(ctx, "legacy", "unified-cd/v1", []byte(`{"steps":[{"name":"deploy","run":"./deploy.sh"}]}`))
+	_, err = pg.UpsertJob(ctx, "legacy", "unified-cd/v1", []byte(`{"steps":[{"name":"deploy","run":"./deploy.sh"}]}`), store.JobMeta{})
 	require.NoError(t, err)
 	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute),
 		[]store.ResourceRef{{Kind: "Job", Name: "legacy"}}))
@@ -80,7 +80,7 @@ func TestReconciler_InvalidIfStopsUpdatesWithoutPrune(t *testing.T) {
 	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(appSourceSpecJSON))
 	require.NoError(t, err)
 
-	_, err = pg.UpsertJob(ctx, "legacy", "unified-cd/v1", []byte(`{"steps":[{"name":"deploy","run":"./old-deploy.sh"}]}`))
+	_, err = pg.UpsertJob(ctx, "legacy", "unified-cd/v1", []byte(`{"steps":[{"name":"deploy","run":"./old-deploy.sh"}]}`), store.JobMeta{})
 	require.NoError(t, err)
 	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute),
 		[]store.ResourceRef{{Kind: "Job", Name: "legacy"}}))

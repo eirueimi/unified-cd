@@ -24,7 +24,7 @@ func probeSetup(t *testing.T) *store.Postgres {
 	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
 	_, err := pg.UpsertJob(ctx, "probe-job", "unified-cd/v1",
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 	require.NoError(t, err)
 	return pg
 }

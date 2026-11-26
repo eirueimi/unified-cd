@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +27,7 @@ spec:
 
 func TestAPI_ApplySchedule(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
 
 	body, _ := json.Marshal(api.ApplyScheduleRequest{YAML: testScheduleYAML})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/schedules", bytes.NewReader(body))
@@ -76,7 +77,7 @@ func TestAPI_ApplySchedule_JobNotFound(t *testing.T) {
 
 func TestAPI_ListSchedules(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	_, _ = pg.UpsertSchedule(t.Context(), "nightly-build", "0 2 * * *", "build", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/schedules", nil)
@@ -92,7 +93,7 @@ func TestAPI_ListSchedules(t *testing.T) {
 
 func TestAPI_DeleteSchedule(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	_, _ = pg.UpsertSchedule(t.Context(), "nightly-build", "0 2 * * *", "build", nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/schedules/nightly-build", nil)

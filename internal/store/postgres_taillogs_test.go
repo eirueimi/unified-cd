@@ -13,11 +13,11 @@ import (
 func TestPostgres_LogsRangeStatsSearch(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
-	other, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	other, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	now := time.Now().UTC()
 	// 他 run の行が混入しないことの検証用

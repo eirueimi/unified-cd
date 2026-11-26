@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,9 +17,9 @@ import (
 // Shutdown until its timeout.
 func TestAPI_RunEvents_SSE_EndsOnShutdown(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)

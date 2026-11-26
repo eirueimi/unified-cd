@@ -180,9 +180,9 @@ func TestSessionClaimsNullVsEmpty(t *testing.T) {
 func TestRunJobName(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "team-a/build", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "team-a/build", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "team-a/build", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "team-a/build", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 
 	job, found, err := pg.RunJobName(ctx, run.ID)

@@ -33,14 +33,14 @@ func waitQueued(t *testing.T, pg *store.Postgres, runID string, within time.Dura
 func TestHA_SchedulerFailover(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 
 	// Replica A becomes leader and queues a pending run.
 	ctxA, cancelA := context.WithCancel(context.Background())
 	go RunScheduler(ctxA, pg, 50*time.Millisecond)
 
-	runA, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	runA, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	waitQueued(t, pg, runA.ID, 3*time.Second) // A is leader
 
@@ -52,7 +52,7 @@ func TestHA_SchedulerFailover(t *testing.T) {
 	defer cancelB()
 	go RunScheduler(ctxB, pg, 50*time.Millisecond)
 
-	runB, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	runB, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	waitQueued(t, pg, runB.ID, 5*time.Second) // B took over
 }

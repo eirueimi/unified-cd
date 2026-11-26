@@ -11,9 +11,9 @@ import (
 func seedBindingRun(t *testing.T, pg *Postgres) string {
 	t.Helper()
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
 	return run.ID
 }

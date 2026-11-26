@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,8 +23,8 @@ func TestApprovals_DecideFlow(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create a job and run to hang approvals off.
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	// Create a pending approval for step 0 directly via the store.
@@ -70,8 +71,8 @@ func TestApprovals_DecideFlow(t *testing.T) {
 func TestApprovals_ListRunApprovals(t *testing.T) {
 	s, pg := newTestServer(t)
 
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	require.NoError(t, pg.CreatePendingApproval(t.Context(), run.ID, 0, "gate-a", "msg a", nil))
@@ -92,8 +93,8 @@ func TestApprovals_ListRunApprovals(t *testing.T) {
 func TestApprovals_AgentCreateAndGet(t *testing.T) {
 	s, pg := newTestServer(t)
 
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	// Register an agent so agentId exists.
@@ -135,8 +136,8 @@ func TestApprovals_AgentCreateAndGet(t *testing.T) {
 func TestApprovals_AgentGet_NotFound(t *testing.T) {
 	s, pg := newTestServer(t)
 
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", nil, nil, nil, nil))
@@ -153,8 +154,8 @@ func TestApprovals_AgentGet_NotFound(t *testing.T) {
 func TestApprovals_DecideFlow_BadDecision(t *testing.T) {
 	s, pg := newTestServer(t)
 
-	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "")
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "", store.RunOrigin{})
 	require.NoError(t, err)
 	require.NoError(t, pg.CreatePendingApproval(t.Context(), run.ID, 0, "gate", "msg", nil))
 

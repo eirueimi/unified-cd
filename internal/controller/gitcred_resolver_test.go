@@ -293,9 +293,9 @@ func TestResolveGitPendingRuns_PassesJobName(t *testing.T) {
 	e := newGitCredEnv(t)
 	ctx := context.Background()
 	e.putGitHubApp(t, &api.GitJobAccess{Folders: []string{"team-a"}, Repositories: []string{"acme/*"}, Permissions: map[string]string{"contents": "read"}})
-	_, err := e.st.UpsertJob(ctx, "team-a/build", "unified-cd/v1", []byte(`{}`))
+	_, err := e.st.UpsertJob(ctx, "team-a/build", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
-	run, err := e.st.CreateRun(ctx, "team-a/build", nil, []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/acme/ci/x.yaml@v1"}}]}`), nil, nil, "", "")
+	run, err := e.st.CreateRun(ctx, "team-a/build", nil, []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/acme/ci/x.yaml@v1"}}]}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 
 	fetcher := &credRecordingFetcher{yaml: []byte(simpleTemplate)}
@@ -315,7 +315,7 @@ func TestResolveGitPendingRuns_TemplateCacheDoesNotLeakAcrossJobAccess(t *testin
 	e.putGitHubApp(t, &api.GitJobAccess{Folders: []string{"team-a"}, Repositories: []string{"acme/*"}, Permissions: map[string]string{"contents": "read"}})
 	spec := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/acme/ci/x.yaml@v1"}}]}`)
 	for _, job := range []string{"team-a/build", "team-b/x"} {
-		_, err := e.st.UpsertJob(ctx, job, "unified-cd/v1", []byte(`{}`))
+		_, err := e.st.UpsertJob(ctx, job, "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 		require.NoError(t, err)
 	}
 
@@ -325,7 +325,7 @@ func TestResolveGitPendingRuns_TemplateCacheDoesNotLeakAcrossJobAccess(t *testin
 	resolver := gittemplate.NewResolver(fetcher, cache)
 	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
 
-	allowed, err := e.st.CreateRun(ctx, "team-a/build", nil, spec, nil, nil, "", "")
+	allowed, err := e.st.CreateRun(ctx, "team-a/build", nil, spec, nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	resolveGitPendingRuns(ctx, e.st, resolver, e.creds, bo, time.Hour)
 	gotSpec, err := e.st.GetRunSpec(ctx, allowed.ID)
@@ -333,7 +333,7 @@ func TestResolveGitPendingRuns_TemplateCacheDoesNotLeakAcrossJobAccess(t *testin
 	require.NotContains(t, string(gotSpec), "git://", "run 1 resolves and populates the cache")
 	require.Len(t, fetcher.creds, 1)
 
-	denied, err := e.st.CreateRun(ctx, "team-b/x", nil, spec, nil, nil, "", "")
+	denied, err := e.st.CreateRun(ctx, "team-b/x", nil, spec, nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	resolveGitPendingRuns(ctx, e.st, resolver, e.creds, bo, time.Hour)
 	got, err := e.st.GetRun(ctx, denied.ID)

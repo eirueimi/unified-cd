@@ -32,7 +32,20 @@ type Job struct {
 	Inputs      []InputDef `json:"inputs,omitempty"`
 	Description string     `json:"description,omitempty"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
+	// Labels and Annotations are the job's metadata.labels and
+	// metadata.annotations as last applied.
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
+
+// Run trigger kinds recorded in Run.Trigger.
+const (
+	TriggerAPI      = "api"
+	TriggerWebhook  = "webhook"
+	TriggerSchedule = "schedule"
+	TriggerCall     = "call"
+	TriggerReplay   = "replay"
+)
 
 type RunStatus string
 
@@ -66,6 +79,27 @@ type Run struct {
 	// showing the truncated run ID in that case, unchanged from today.
 	DisplayName string    `json:"displayName,omitempty"`
 	CalledBy    *CalledBy `json:"calledBy,omitempty"`
+	// Trigger is how the run was started (one of the Trigger* constants).
+	Trigger string `json:"trigger,omitempty"`
+	// ScheduledAt is the schedule fire time; set only for schedule-triggered runs.
+	ScheduledAt *time.Time `json:"scheduledAt,omitempty"`
+	// JobLabels and JobAnnotations snapshot the job's metadata at run creation.
+	JobLabels      map[string]string `json:"jobLabels,omitempty"`
+	JobAnnotations map[string]string `json:"jobAnnotations,omitempty"`
+}
+
+// ClaimRunMeta is the run-level metadata an agent receives with a claim.
+type ClaimRunMeta struct {
+	CreatedAt      time.Time         `json:"createdAt"`
+	TriggeredBy    string            `json:"triggeredBy"`
+	Trigger        string            `json:"trigger"`
+	ScheduledAt    *time.Time        `json:"scheduledAt,omitempty"`
+	ReplayOf       string            `json:"replayOf,omitempty"`
+	Parent         *CalledBy         `json:"parent,omitempty"`
+	DisplayName    string            `json:"displayName,omitempty"`
+	URL            string            `json:"url,omitempty"`
+	JobLabels      map[string]string `json:"jobLabels,omitempty"`
+	JobAnnotations map[string]string `json:"jobAnnotations,omitempty"`
 }
 
 // CalledBy identifies the call step (and its run) that launched this run.
@@ -218,6 +252,8 @@ type ClaimResponse struct {
 	RunID   string            `json:"runId"`
 	JobName string            `json:"jobName"`
 	Params  map[string]string `json:"params"`
+	// Run is the run-level metadata (trigger, origin, job labels).
+	Run *ClaimRunMeta `json:"run,omitempty"`
 	// Vars are the merged plain-text variables for this run: global Vars
 	// manifests overlaid by the job's spec.vars. Merged once here, at claim
 	// assembly, so a manifest change affects runs claimed after it and does

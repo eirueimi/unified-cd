@@ -55,7 +55,7 @@ func bodyPost(t *testing.T, s *Server, path, token string, v any) *httptest.Resp
 
 func bodySeedJob(t *testing.T, st store.Store, name string) {
 	t.Helper()
-	_, err := st.UpsertJob(context.Background(), name, "unified-cd/v1", []byte(`{"steps":[]}`))
+	_, err := st.UpsertJob(context.Background(), name, "unified-cd/v1", []byte(`{"steps":[]}`), store.JobMeta{})
 	require.NoError(t, err)
 }
 
@@ -243,7 +243,7 @@ func TestFilter_ActiveRuns(t *testing.T) {
 	s, st := bodyServer(t)
 	bodySeedFolders(t, st)
 	for _, j := range []string{"team-a/x", "team-b/x"} {
-		_, err := st.CreateRun(context.Background(), j, nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+		_, err := st.CreateRun(context.Background(), j, nil, []byte(`{"steps":[]}`), nil, nil, "", "", store.RunOrigin{})
 		require.NoError(t, err)
 	}
 	assert.Equal(t, []string{"team-a/x"}, bodyRunNames(t, doAs(t, s, http.MethodGet, "/api/v1/runs/active", bearer("r@example.com", "g-ra"), nil)))
@@ -255,7 +255,7 @@ func TestFilter_AgentRuns(t *testing.T) {
 	ctx := context.Background()
 	bodySeedFolders(t, st)
 	for _, j := range []string{"team-a/x", "team-b/x"} {
-		_, err := st.CreateRun(ctx, j, nil, []byte(`{"steps":[]}`), nil, nil, "", "")
+		_, err := st.CreateRun(ctx, j, nil, []byte(`{"steps":[]}`), nil, nil, "", "", store.RunOrigin{})
 		require.NoError(t, err)
 		_, err = st.TransitionPendingToQueued(ctx, 10)
 		require.NoError(t, err)

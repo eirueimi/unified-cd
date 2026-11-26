@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,14 +31,14 @@ func reconcilePost(s *Server, agentID, bearer string) *httptest.ResponseRecorder
 func TestAPI_AgentReconcile_FailsOrphanedRunsAndCascades(t *testing.T) {
 	s, pg := newTestServer(t)
 	ctx := context.Background()
-	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
 	require.NoError(t, err)
 
-	parent, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	parent, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
-	child, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	child, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
-	bystander, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	bystander, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)

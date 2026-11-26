@@ -14,7 +14,7 @@ func TestPostgres_ScheduleCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	// prerequisite: create a job (FK constraint)
-	_, err := pg.UpsertJob(ctx, "nightly-build", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(ctx, "nightly-build", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	require.NoError(t, err)
 
 	// Upsert
@@ -53,7 +53,7 @@ func TestPostgres_ScheduleCRUD(t *testing.T) {
 func TestPostgres_UpsertSchedule_Update(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "job1", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "job1", "unified-cd/v1", []byte(`{}`), JobMeta{})
 
 	_, err := pg.UpsertSchedule(ctx, "s1", "0 2 * * *", "job1", nil)
 	require.NoError(t, err)
@@ -68,7 +68,7 @@ func TestPostgres_UpsertSchedule_Update(t *testing.T) {
 func TestPostgres_Schedule_DeleteOnJobDelete(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, _ = pg.UpsertJob(ctx, "job2", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(ctx, "job2", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	_, err := pg.UpsertSchedule(ctx, "s2", "0 2 * * *", "job2", nil)
 	require.NoError(t, err)
 

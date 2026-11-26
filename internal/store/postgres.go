@@ -217,41 +217,79 @@ func isUniqueViolation(err error) bool {
 	return false
 }
 
-func (p *Postgres) UpsertJob(ctx context.Context, name, apiVersion string, spec []byte) (*api.Job, error) {
-	const q = `
-		INSERT INTO jobs(name, api_version, spec, updated_at)
-		VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (name) DO UPDATE
-		  SET api_version = EXCLUDED.api_version,
-		      spec        = EXCLUDED.spec,
-		      updated_at  = NOW()
-		RETURNING id, name, api_version, spec, updated_at;
-	`
-	var j api.Job
-	err := p.pool.QueryRow(ctx, q, name, apiVersion, spec).
-		Scan(&j.ID, &j.Name, &j.APIVersion, &j.Spec, &j.UpdatedAt)
+// stringMapJSON encodes a string map for a nullable jsonb column: a nil or
+// empty map is stored as SQL NULL.
+func stringMapJSON(m map[string]string) ([]byte, error) {
+	if len(m) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(m)
+}
+
+// stringMapFromJSON decodes a nullable jsonb column; NULL and an empty object
+// both give a nil map.
+func stringMapFromJSON(b []byte) map[string]string {
+	if len(b) == 0 {
+		return nil
+	}
+	var m map[string]string
+	if json.Unmarshal(b, &m) != nil || len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+func (p *Postgres) UpsertJob(ctx context.Context, name, apiVersion string, spec []byte, meta JobMeta) (*api.Job, error) {
+	labels, err := stringMapJSON(meta.Labels)
 	if err != nil {
 		return nil, fmt.Errorf("upsert job: %w", err)
 	}
+	annotations, err := stringMapJSON(meta.Annotations)
+	if err != nil {
+		return nil, fmt.Errorf("upsert job: %w", err)
+	}
+	const q = `
+		INSERT INTO jobs(name, api_version, spec, labels, annotations, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (name) DO UPDATE
+		  SET api_version = EXCLUDED.api_version,
+		      spec        = EXCLUDED.spec,
+		      labels      = EXCLUDED.labels,
+		      annotations = EXCLUDED.annotations,
+		      updated_at  = NOW()
+		RETURNING id, name, api_version, spec, updated_at, labels, annotations;
+	`
+	var j api.Job
+	var labelsOut, annotationsOut []byte
+	err = p.pool.QueryRow(ctx, q, name, apiVersion, spec, labels, annotations).
+		Scan(&j.ID, &j.Name, &j.APIVersion, &j.Spec, &j.UpdatedAt, &labelsOut, &annotationsOut)
+	if err != nil {
+		return nil, fmt.Errorf("upsert job: %w", err)
+	}
+	j.Labels = stringMapFromJSON(labelsOut)
+	j.Annotations = stringMapFromJSON(annotationsOut)
 	return &j, nil
 }
 
 func (p *Postgres) GetJob(ctx context.Context, name string) (*api.Job, error) {
-	const q = `SELECT id, name, api_version, spec, updated_at FROM jobs WHERE name = $1`
+	const q = `SELECT id, name, api_version, spec, updated_at, labels, annotations FROM jobs WHERE name = $1`
 	var j api.Job
+	var labels, annotations []byte
 	err := p.pool.QueryRow(ctx, q, name).
-		Scan(&j.ID, &j.Name, &j.APIVersion, &j.Spec, &j.UpdatedAt)
+		Scan(&j.ID, &j.Name, &j.APIVersion, &j.Spec, &j.UpdatedAt, &labels, &annotations)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, JobNotFoundError()
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get job: %w", err)
 	}
+	j.Labels = stringMapFromJSON(labels)
+	j.Annotations = stringMapFromJSON(annotations)
 	return &j, nil
 }
 
 func (p *Postgres) ListJobs(ctx context.Context) ([]api.Job, error) {
-	const q = `SELECT id, name, api_version, spec, updated_at FROM jobs ORDER BY name`
+	const q = `SELECT id, name, api_version, spec, updated_at, labels, annotations FROM jobs ORDER BY name`
 	rows, err := p.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -261,14 +299,17 @@ func (p *Postgres) ListJobs(ctx context.Context) ([]api.Job, error) {
 	var out []api.Job
 	for rows.Next() {
 		var j api.Job
-		if err := rows.Scan(&j.ID, &j.Name, &j.APIVersion, &j.Spec, &j.UpdatedAt); err != nil {
+		var labels, annotations []byte
+		if err := rows.Scan(&j.ID, &j.Name, &j.APIVersion, &j.Spec, &j.UpdatedAt, &labels, &annotations); err != nil {
 			return nil, err
 		}
+		j.Labels = stringMapFromJSON(labels)
+		j.Annotations = stringMapFromJSON(annotations)
 		out = append(out, j)
 	}
 	return out, rows.Err()
 }
-func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string, displayName string) (*api.Run, error) {
+func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string, displayName string, origin RunOrigin) (*api.Run, error) {
 	if params == nil {
 		params = map[string]string{}
 	}
@@ -281,7 +322,18 @@ func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[str
 	if triggeredBy == "" {
 		triggeredBy = "api"
 	}
+	if origin.Trigger == "" {
+		origin.Trigger = api.TriggerAPI
+	}
 	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	jobLabels, err := stringMapJSON(origin.JobLabels)
+	if err != nil {
+		return nil, err
+	}
+	jobAnnotations, err := stringMapJSON(origin.JobAnnotations)
 	if err != nil {
 		return nil, err
 	}
@@ -295,19 +347,25 @@ func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[str
 		}
 	}
 	const q = `
-		INSERT INTO runs(job_name, params, spec, agent_selector, required_caps, triggered_by, detached, display_name)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''))
-		RETURNING id, job_name, status, params, created_at, updated_at, triggered_by, display_name;
+		INSERT INTO runs(job_name, params, spec, agent_selector, required_caps, triggered_by, detached, display_name,
+		                 trigger, job_labels, job_annotations, scheduled_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), $9, $10, $11, $12)
+		RETURNING id, job_name, status, params, created_at, updated_at, triggered_by, display_name,
+		          trigger, job_labels, job_annotations, scheduled_at;
 	`
 	var r api.Run
-	var paramsOut []byte
+	var paramsOut, labelsOut, annotationsOut []byte
 	var status string
 	var displayNameOut *string
-	err = p.pool.QueryRow(ctx, q, jobName, paramsJSON, spec, agentSelector, requiredCaps, triggeredBy, detached, displayName).
-		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &displayNameOut)
+	err = p.pool.QueryRow(ctx, q, jobName, paramsJSON, spec, agentSelector, requiredCaps, triggeredBy, detached, displayName,
+		origin.Trigger, jobLabels, jobAnnotations, origin.ScheduledAt).
+		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &displayNameOut,
+			&r.Trigger, &labelsOut, &annotationsOut, &r.ScheduledAt)
 	if err != nil {
 		return nil, fmt.Errorf("create run: %w", err)
 	}
+	r.JobLabels = stringMapFromJSON(labelsOut)
+	r.JobAnnotations = stringMapFromJSON(annotationsOut)
 	r.Status = api.RunStatus(status)
 	_ = json.Unmarshal(paramsOut, &r.Params)
 	if r.Params == nil {
@@ -417,20 +475,23 @@ func JobNotFoundError() error {
 var ErrArchiveIncomplete = errors.New("archive does not cover all of the run's logs")
 
 func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
-	const q = `SELECT id, job_name, status, params, created_at, updated_at, triggered_by, claimed_by, display_name FROM runs WHERE id = $1`
+	const q = `SELECT id, job_name, status, params, created_at, updated_at, triggered_by, claimed_by, display_name, trigger, job_labels, job_annotations, scheduled_at FROM runs WHERE id = $1`
 	var r api.Run
-	var paramsOut []byte
+	var paramsOut, labelsOut, annotationsOut []byte
 	var status string
 	var claimedBy *string
 	var displayName *string
 	err := p.pool.QueryRow(ctx, q, id).
-		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &claimedBy, &displayName)
+		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &claimedBy, &displayName,
+			&r.Trigger, &labelsOut, &annotationsOut, &r.ScheduledAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, RunNotFoundError(id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get run: %w", err)
 	}
+	r.JobLabels = stringMapFromJSON(labelsOut)
+	r.JobAnnotations = stringMapFromJSON(annotationsOut)
 	r.Status = api.RunStatus(status)
 	if claimedBy != nil {
 		r.ClaimedBy = *claimedBy
@@ -931,19 +992,27 @@ func (p *Postgres) claimNextRun(ctx context.Context, agentID string, agentLabels
 		)
 		UPDATE runs r SET claimed_by = $1, claimed_at = NOW(), updated_at = NOW(), status = 'Running'
 		FROM picked WHERE r.id = picked.id
-		RETURNING r.id, r.job_name, r.status, r.params, r.spec, r.created_at, r.updated_at;
+		RETURNING r.id, r.job_name, r.status, r.params, r.spec, r.created_at, r.updated_at,
+		          r.triggered_by, r.display_name, r.trigger, r.job_labels, r.job_annotations, r.scheduled_at;
 	`
 	var cr ClaimedRun
 	var status string
-	var paramsOut []byte
+	var paramsOut, labelsOut, annotationsOut []byte
+	var displayName *string
 	err := p.pool.QueryRow(ctx, q, agentID, agentLabels, detached, busyVolumes, dsl.LegacyAgentCapabilities()).
-		Scan(&cr.ID, &cr.JobName, &status, &paramsOut, &cr.Spec, &cr.CreatedAt, &cr.UpdatedAt)
+		Scan(&cr.ID, &cr.JobName, &status, &paramsOut, &cr.Spec, &cr.CreatedAt, &cr.UpdatedAt,
+			&cr.TriggeredBy, &displayName, &cr.Trigger, &labelsOut, &annotationsOut, &cr.ScheduledAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("claim next run: %w", err)
 	}
+	if displayName != nil {
+		cr.DisplayName = *displayName
+	}
+	cr.JobLabels = stringMapFromJSON(labelsOut)
+	cr.JobAnnotations = stringMapFromJSON(annotationsOut)
 	cr.Status = api.RunStatus(status)
 	_ = json.Unmarshal(paramsOut, &cr.Params)
 	if cr.Params == nil {

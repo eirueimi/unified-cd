@@ -12,8 +12,8 @@ func TestPostgres_StepOutputs(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 
 	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "", "artifact_url", "s3://bucket/a.tar.gz"))
 	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "", "version", "1.2.3"))
@@ -38,8 +38,8 @@ func TestStepOutputs_VariantKeyed(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 
 	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "linux/amd64", "version", "1.2"))
 	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "linux/arm64", "version", "1.3"))
@@ -82,8 +82,8 @@ func TestPostgres_GetStepOutputs_Empty(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 
 	outputs, err := pg.GetStepOutputs(ctx, run.ID, 0)
 	require.NoError(t, err)
@@ -94,8 +94,8 @@ func TestPostgres_RunOutputs(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 
 	require.NoError(t, pg.SetRunOutput(ctx, run.ID, "artifact_url", "s3://bucket/a.tar.gz"))
 	require.NoError(t, pg.SetRunOutput(ctx, run.ID, "version", "1.2.3"))
@@ -110,8 +110,8 @@ func TestPostgres_GetRunOutputs_Empty(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 
 	outputs, err := pg.GetRunOutputs(ctx, run.ID)
 	require.NoError(t, err)

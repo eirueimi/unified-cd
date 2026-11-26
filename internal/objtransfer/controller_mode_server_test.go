@@ -66,10 +66,10 @@ func newLocalEnv(t *testing.T) *localEnv {
 	e.token = issued.Plaintext
 
 	spec := []byte(`{}`)
-	_, err = pg.UpsertJob(t.Context(), "local-job", "unified-cd/v1", spec)
+	_, err = pg.UpsertJob(t.Context(), "local-job", "unified-cd/v1", spec, store.JobMeta{})
 	require.NoError(t, err)
 	for range 2 {
-		run, err := pg.CreateRun(t.Context(), "local-job", nil, spec, nil, nil, "", "")
+		run, err := pg.CreateRun(t.Context(), "local-job", nil, spec, nil, nil, "", "", store.RunOrigin{})
 		require.NoError(t, err)
 		_, err = pg.TransitionPendingToQueued(t.Context(), 100)
 		require.NoError(t, err)

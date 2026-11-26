@@ -265,8 +265,23 @@ type LogAppend struct {
 	Line      string
 }
 
+// RunOrigin is the origin metadata CreateRun records on a run. The zero value
+// is an API-triggered run with no job metadata.
+type RunOrigin struct {
+	Trigger        string
+	JobLabels      map[string]string
+	JobAnnotations map[string]string
+	ScheduledAt    *time.Time
+}
+
+// JobMeta is the job metadata UpsertJob records. Nil maps clear the stored value.
+type JobMeta struct {
+	Labels      map[string]string
+	Annotations map[string]string
+}
+
 type Store interface {
-	UpsertJob(ctx context.Context, name, apiVersion string, spec []byte) (*api.Job, error)
+	UpsertJob(ctx context.Context, name, apiVersion string, spec []byte, meta JobMeta) (*api.Job, error)
 	GetJob(ctx context.Context, name string) (*api.Job, error)
 	ListJobs(ctx context.Context) ([]api.Job, error)
 	DeleteJob(ctx context.Context, name string) error
@@ -275,7 +290,7 @@ type Store interface {
 	// treated as an orphan: run history is repointed to newName and the orphan is
 	// deleted. Idempotent: a missing oldName is a no-op.
 	RenameJob(ctx context.Context, oldName, newName string) error
-	CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string, displayName string) (*api.Run, error)
+	CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string, displayName string, origin RunOrigin) (*api.Run, error)
 	// ListChildRunIDs returns the IDs of runs directly spawned by parentRunID via
 	// call: steps (recorded as child_run_id on the parent's step reports), so a
 	// cancellation of the parent can cascade to its children.
