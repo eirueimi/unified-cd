@@ -38,7 +38,7 @@ Go `text/template`, Helm chart rendered in Go tests (`internal/helmchart`).
 - The run URL is `strings.TrimRight(externalURL, "/") + "/ui/#/runs/" + runID`.
 - Times in env vars are RFC 3339 in UTC (`time.RFC3339`). Template time fields
   are `time.Time`.
-- `UNIFIED_RUN_FAILURES_JSON` is at most 32768 bytes. Overflow is replaced by
+- `UNIFIED_RUN_FAILURES_JSON` is at most 16384 bytes. Overflow is replaced by
   a trailing `{"truncated": N}` element.
 - Do not hand-edit `docs/reference/field-reference.md` or
   `schemas/unified-cd.schema.json`. Run `go generate ./...`.
@@ -252,7 +252,7 @@ Go `text/template`, Helm chart rendered in Go tests (`internal/helmchart`).
   func (m runMeta) templateData(step dsl.CurrentStepData, final *finalView) (dsl.RunData, dsl.JobData, dsl.AgentData)
   func (m runMeta) env(step dsl.CurrentStepData, final *finalView) []string // "K=V" entries, absent values omitted
   type finalView struct { Status string; Failures []dsl.StepFailure; Duration time.Duration }
-  func failuresJSON(f []dsl.StepFailure, max int) string // max = 32768
+  func failuresJSON(f []dsl.StepFailure, max int) string // max = 16384
   func (c *safeStepCtx) setStepResult(name string, r dsl.StepData)
   func (c *safeStepCtx) addFailure(f dsl.StepFailure)
   func (c *safeStepCtx) failures() []dsl.StepFailure
@@ -292,7 +292,7 @@ Go `text/template`, Helm chart rendered in Go tests (`internal/helmchart`).
   - `TestRunMetaEnv_Full`: given a `ClaimResponse` with every `Run` field, `env` contains exactly the expected `K=V` set, with RFC 3339 UTC times and compact `UNIFIED_JOB_LABELS_JSON`.
   - `TestRunMetaEnv_NilClaimRun`: with `c.Run == nil`, the env still has `UNIFIED_RUN_ID`, `_STARTED_AT`, `_PARAMS_JSON`, `_AGENT_ID`, `UNIFIED_JOB_NAME` and the step entries. `_URL`, `_TRIGGER` and `_CREATED_AT` are absent. No panic.
   - `TestRunMetaEnv_AbsentNotEmpty`: no entry ends in `=`. For example, no `UNIFIED_RUN_URL=` when the URL is empty.
-  - `TestFailuresJSON_Truncates`: 5000 failures produce output of at most 32768 bytes that ends with `{"truncated":N}`, where N plus the kept entries equals 5000.
+  - `TestFailuresJSON_Truncates`: 5000 failures produce output of at most 16384 bytes that ends with `{"truncated":N}`, where N plus the kept entries equals 5000.
   - `TestRetry_AttemptEnvAndTemplate`: a step with `retry.attempts: 2` fails on try 1 with exit 7. On try 2 its env has `UNIFIED_STEP_ATTEMPT=2`, `UNIFIED_STEP_MAX_ATTEMPTS=2` and `UNIFIED_STEP_LAST_EXIT_CODE=7`, and `run: echo {{ .Step.Attempt }}` expanded to `echo 2`.
   - `TestStepsStatus_VisibleAfterFailure`: a `continueOnError` failing step `a`, followed by step `b` whose `run` uses `{{ .Steps.a.Status }}`, gives `Failed`.
   - `TestFinally_StatusAndFailures`: a failing main step makes the `finally:` step's env contain `UNIFIED_RUN_STATUS=Failed`, a `UNIFIED_RUN_FAILURES_JSON` naming that step, and `UNIFIED_RUN_DURATION_SECONDS`. A main step does not get `UNIFIED_RUN_STATUS`.

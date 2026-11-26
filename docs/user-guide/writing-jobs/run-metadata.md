@@ -80,7 +80,7 @@ These exist only in `finally:` steps and are absent everywhere else.
 
 - A step that failed under `continueOnError: true` **is** listed in the failures, because it did fail, but it does not change `UNIFIED_RUN_STATUS`.
 - Steps stopped by a run cancellation are **not** listed.
-- `UNIFIED_RUN_FAILURES_JSON` is capped at 32768 bytes. When the list does not fit, trailing entries are dropped and the last array element is a marker object `{"truncated":N}`, where `N` is the number of entries omitted.
+- `UNIFIED_RUN_FAILURES_JSON` is capped at 16384 bytes. When the list does not fit, trailing entries are dropped and the last array element is a marker object `{"truncated":N}`, where `N` is the number of entries omitted.
 
 See [Approval and Finally](approval-and-finally.md) for the `finally:` block itself.
 

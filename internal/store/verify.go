@@ -68,7 +68,7 @@ var schemaSentinels = []sentinel{
 	{version: 32, migration: "032_cli_login_codes", table: "cli_login_codes"},
 	// A run may hold several pod bindings: the primary key becomes (run_id, pod_uid), probed through the unique index that replaces it.
 	{version: 33, migration: "033_run_pod_bindings_multi", table: "run_pod_bindings", index: "run_pod_bindings_run_pod_uid_key"},
-	// The same file also adds runs.job_labels, job_annotations and scheduled_at, and jobs.labels and annotations.
+	// trigger is nullable with no default (rows from pre-034 replicas stay NULL). The same file also adds runs.job_labels, job_annotations and scheduled_at, and jobs.labels and annotations.
 	{version: 34, migration: "034_run_metadata", table: "runs", column: "trigger"},
 }
 

@@ -14,7 +14,7 @@ import (
 // maxFailuresJSONBytes caps UNIFIED_RUN_FAILURES_JSON so a run with thousands
 // of failed matrix combinations cannot push a step's environment over the OS
 // limit.
-const maxFailuresJSONBytes = 32768
+const maxFailuresJSONBytes = 16384
 
 // runMeta is the run-level metadata an agent exposes to steps, both as
 // UNIFIED_RUN_* / UNIFIED_JOB_* / UNIFIED_STEP_* environment variables and as

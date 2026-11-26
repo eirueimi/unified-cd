@@ -149,6 +149,18 @@ func TestMigration034_BackfillsTrigger(t *testing.T) {
 		assert.Equal(t, trig, got, by)
 	}
 
+	// A replica that predates 034 inserts without the column: the row stays
+	// NULL and reads back as an empty trigger, never as a wrong 'api'.
+	var oldID string
+	require.NoError(t, pg.pool.QueryRow(ctx,
+		`INSERT INTO runs(job_name, params, spec, triggered_by) VALUES ('job', '{}', '{}', 'alice') RETURNING id`).Scan(&oldID))
+	var isNull bool
+	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT trigger IS NULL FROM runs WHERE id = $1`, oldID).Scan(&isNull))
+	assert.True(t, isNull, "insert without trigger leaves NULL")
+	got, err := pg.GetRun(ctx, oldID)
+	require.NoError(t, err)
+	assert.Equal(t, "", got.Trigger)
+
 	require.NoError(t, (&Postgres{}).MigrateTo(dsn, 33))
 	var n int
 	require.NoError(t, pg.pool.QueryRow(ctx,

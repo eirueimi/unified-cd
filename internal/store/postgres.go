@@ -475,7 +475,7 @@ func JobNotFoundError() error {
 var ErrArchiveIncomplete = errors.New("archive does not cover all of the run's logs")
 
 func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
-	const q = `SELECT id, job_name, status, params, created_at, updated_at, triggered_by, claimed_by, display_name, trigger, job_labels, job_annotations, scheduled_at FROM runs WHERE id = $1`
+	const q = `SELECT id, job_name, status, params, created_at, updated_at, triggered_by, claimed_by, display_name, COALESCE(trigger, ''), job_labels, job_annotations, scheduled_at FROM runs WHERE id = $1`
 	var r api.Run
 	var paramsOut, labelsOut, annotationsOut []byte
 	var status string
@@ -993,7 +993,7 @@ func (p *Postgres) claimNextRun(ctx context.Context, agentID string, agentLabels
 		UPDATE runs r SET claimed_by = $1, claimed_at = NOW(), updated_at = NOW(), status = 'Running'
 		FROM picked WHERE r.id = picked.id
 		RETURNING r.id, r.job_name, r.status, r.params, r.spec, r.created_at, r.updated_at,
-		          r.triggered_by, r.display_name, r.trigger, r.job_labels, r.job_annotations, r.scheduled_at;
+		          r.triggered_by, r.display_name, COALESCE(r.trigger, ''), r.job_labels, r.job_annotations, r.scheduled_at;
 	`
 	var cr ClaimedRun
 	var status string

@@ -126,8 +126,8 @@ func TestFailuresJSON_Truncates(t *testing.T) {
 	for i := 0; i < 5000; i++ {
 		f = append(f, dsl.StepFailure{Name: "step", Stage: i, ExitCode: 1})
 	}
-	out := failuresJSON(f, 32768)
-	assert.LessOrEqual(t, len(out), 32768)
+	out := failuresJSON(f, 16384)
+	assert.LessOrEqual(t, len(out), 16384)
 	var arr []map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &arr), "truncated output must still be valid JSON")
 	last := arr[len(arr)-1]
@@ -136,7 +136,7 @@ func TestFailuresJSON_Truncates(t *testing.T) {
 	assert.Equal(t, 5000, len(arr)-1+int(trunc))
 
 	assert.Equal(t, "[]", failuresJSON(nil, 100))
-	assert.NotContains(t, failuresJSON(f[:2], 32768), "truncated")
+	assert.NotContains(t, failuresJSON(f[:2], 16384), "truncated")
 }
 
 func TestSetStepResult_AggregatesMatrixAndKeepsOutputs(t *testing.T) {

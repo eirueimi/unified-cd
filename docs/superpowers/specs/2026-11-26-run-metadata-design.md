@@ -157,18 +157,22 @@ A step that failed under `continueOnError: true` **is** listed in
 the agent's `StartedAt`, so it is also set with an old controller.
 
 Outside `finally:` these are absent. `UNIFIED_RUN_FAILURES_JSON` is capped at
-32 KiB. When the list does not fit, it is cut to the entries that fit and an
+16 KiB (Windows limits one variable to 32,767 characters). When the list does not fit, it is cut to the entries that fit and an
 entry `{"truncated": <n omitted>}` is appended, so a long matrix cannot push
 the environment past OS limits.
 
 ## Data model and protocol
 
 - **Migration 034** adds four columns to `runs`:
-  - `trigger text NOT NULL DEFAULT 'api'`. Each `CreateRun` call site sets it
-    explicitly. Existing rows are backfilled from the `triggered_by` prefix:
-    `webhook:` becomes `webhook`, `schedule:` becomes `schedule`, `replay:`
-    becomes `replay`, `agent:` becomes `call`, and anything else becomes
-    `api`. The backfill is a one-time best guess for old rows only.
+  - `trigger text`, nullable with no default. Each `CreateRun` call site sets
+    it explicitly (an empty origin trigger is written as `api`). Existing rows
+    are backfilled once from the `triggered_by` prefix: `webhook:` becomes
+    `webhook`, `schedule:` becomes `schedule`, `replay:` becomes `replay`,
+    `agent:` becomes `call`, and anything else becomes `api`. The backfill is
+    a one-time best guess for old rows only. During a rolling upgrade, old
+    controller replicas keep inserting runs without the column; those rows
+    stay NULL, which reads back as an empty trigger, so `UNIFIED_RUN_TRIGGER`
+    and `.Run.Trigger` are absent for them rather than wrongly `api`.
   - `job_labels jsonb`, filled by `CreateRun` from the job's metadata at
     creation time;
   - `job_annotations jsonb`, the same;
