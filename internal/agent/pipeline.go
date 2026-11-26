@@ -41,12 +41,34 @@ func (s *safeStepCtx) snapshot() dsl.TemplateData {
 	for k, v := range s.data.Vars {
 		vars[k] = v
 	}
+	// Run, Job and Agent are run-scoped metadata. Step is per-step (the
+	// orchestrator sets it on the returned copy), so it stays zero here.
+	run := s.data.Run
+	run.Failures = append([]dsl.StepFailure(nil), s.data.Run.Failures...)
+	job := s.data.Job
+	job.Labels = copyStringMap(s.data.Job.Labels)
+	job.Annotations = copyStringMap(s.data.Job.Annotations)
 	return dsl.TemplateData{
 		Params:  params,
 		Vars:    vars,
 		Steps:   steps,
 		Secrets: secr,
+		Run:     run,
+		Job:     job,
+		Agent:   s.data.Agent,
 	}
+}
+
+// copyStringMap returns an independent copy of m, nil for a nil map.
+func copyStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // setStep writes the outputs for a step.
