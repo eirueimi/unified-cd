@@ -206,6 +206,12 @@ type shapeCache struct {
 	loaded  time.Time
 	byName  map[string]dsl.MetricShape
 	invalid bool
+	// gen counts invalidations; a refresh keeps the cache invalid when it
+	// changed while the job list was being read.
+	gen uint64
+	// refreshing is set while one refresh runs; concurrent lookups use the
+	// current map instead of listing jobs again.
+	refreshing bool
 }
 
 func newShapeCache(st store.Store) *shapeCache { return &shapeCache{st: st} }
@@ -213,6 +219,7 @@ func newShapeCache(st store.Store) *shapeCache { return &shapeCache{st: st} }
 func (c *shapeCache) invalidate() {
 	c.mu.Lock()
 	c.invalid = true
+	c.gen++
 	c.mu.Unlock()
 }
 
@@ -240,6 +247,20 @@ func (c *shapeCache) lookup(name string) (dsl.MetricShape, bool) {
 // refresh lists the jobs without holding the lock (ListJobs can take seconds),
 // then swaps the new map in under it.
 func (c *shapeCache) refresh() {
+	c.mu.Lock()
+	if c.refreshing {
+		c.mu.Unlock()
+		return
+	}
+	c.refreshing = true
+	gen := c.gen
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.refreshing = false
+		c.mu.Unlock()
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), customMetricsTimeout)
 	defer cancel()
 	jobs, err := c.st.ListJobs(ctx)
@@ -267,7 +288,7 @@ func (c *shapeCache) refresh() {
 		}
 	}
 	c.mu.Lock()
-	c.byName, c.loaded, c.invalid = m, time.Now(), false
+	c.byName, c.loaded, c.invalid = m, time.Now(), c.gen != gen
 	c.mu.Unlock()
 }
 
@@ -319,8 +340,19 @@ func (c *specCache) set(id string, e specEntry) {
 
 func (c *specCache) drop(id string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.m[id]; !ok {
+		return
+	}
 	delete(c.m, id)
-	c.mu.Unlock()
+	// Keep order in step with the map, so it stays bounded by max and holds no
+	// stale ids that would evict live entries early.
+	for i, o := range c.order {
+		if o == id {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
 }
 
 // runSpec returns the run's parsed spec. ok is false when it cannot be loaded.

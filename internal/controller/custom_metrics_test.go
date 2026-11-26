@@ -3,10 +3,12 @@ package controller
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -506,4 +508,97 @@ func TestRunMetrics_StoreInternalFinishEmitsOnce(t *testing.T) {
 	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)
 	assert.Contains(t, scrapeMetrics(t, m), `unifiedcd_job_runs_total{status="Failed"} 1`)
+}
+
+// slowListStore blocks ListJobs until released, counting calls.
+type slowListStore struct {
+	store.Store
+	mu      sync.Mutex
+	calls   int
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *slowListStore) ListJobs(ctx context.Context) ([]api.Job, error) {
+	s.mu.Lock()
+	s.calls++
+	first := s.calls == 1
+	s.mu.Unlock()
+	if first {
+		close(s.entered)
+		<-s.release
+	}
+	return nil, nil
+}
+
+func TestShapeCache_InvalidateDuringRefreshIsNotLost(t *testing.T) {
+	st := &slowListStore{entered: make(chan struct{}), release: make(chan struct{})}
+	c := newShapeCache(st)
+	done := make(chan struct{})
+	go func() { c.lookup("x"); close(done) }()
+	<-st.entered
+	c.invalidate() // lands between ListJobs and the swap
+	close(st.release)
+	<-done
+	c.mu.Lock()
+	invalid := c.invalid
+	c.mu.Unlock()
+	assert.True(t, invalid, "an invalidation during a refresh must keep the cache invalid")
+}
+
+func TestShapeCache_ConcurrentStaleLookupsListOnce(t *testing.T) {
+	st := &slowListStore{entered: make(chan struct{}), release: make(chan struct{})}
+	c := newShapeCache(st)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); c.lookup("x") }()
+	<-st.entered
+	for i := 0; i < 5; i++ {
+		c.lookup("x") // refresh in progress: must not list again
+	}
+	close(st.release)
+	wg.Wait()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	assert.Equal(t, 1, st.calls)
+}
+
+func TestSpecCache_OrderStaysConsistent(t *testing.T) {
+	c := newSpecCache(3)
+	c.put("a", dsl.Spec{})
+	c.put("b", dsl.Spec{})
+	c.drop("a")
+	c.put("a", dsl.Spec{}) // re-insert after drop: no duplicate id
+	c.put("c", dsl.Spec{})
+	assert.Equal(t, []string{"b", "a", "c"}, c.order)
+	c.put("a", dsl.Spec{}) // overwrite: still no duplicate
+	assert.Len(t, c.order, 3)
+	c.put("d", dsl.Spec{}) // evicts the oldest live entry, b
+	_, hasB := c.get("b")
+	_, hasA := c.get("a")
+	assert.False(t, hasB)
+	assert.True(t, hasA)
+	for i := 0; i < 100; i++ {
+		id := fmt.Sprint("x", i)
+		c.put(id, dsl.Spec{})
+		c.drop(id)
+	}
+	assert.LessOrEqual(t, len(c.order), 3)
+}
+
+func TestRunCustomMetricsSweeper_CleansShortlyAfterStart(t *testing.T) {
+	_, pg, _ := newCustomMetricsServer(t, true)
+	g := store.MetricGauge{Name: "unifiedcd_job_g", Help: "h", Labels: map[string]string{}, Value: 1, UpdatedAt: time.Now()}
+	require.NoError(t, pg.ApplyMetricGauge(t.Context(), g, "h1", "Set", 0))
+	time.Sleep(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	// ttl 10ms: the row is already older; sweep/clean tickers are far away, so
+	// only the startup clean can remove it.
+	go runCustomMetricsSweeper(ctx, pg, nil, 10*time.Millisecond, time.Hour, time.Hour, 50*time.Millisecond)
+	require.Eventually(t, func() bool {
+		rows, err := pg.ListMetricGauges(t.Context(), time.Time{})
+		return err == nil && len(rows) == 0
+	}, 5*time.Second, 50*time.Millisecond)
 }
