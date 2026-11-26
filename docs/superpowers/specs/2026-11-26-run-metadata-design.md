@@ -191,6 +191,15 @@ the environment past OS limits.
   `oidc.externalUrl` and is otherwise unset. The controller never derives it
   from request headers or from the agent-facing URL, because those are often
   internal addresses.
+- **Helm chart.** Add `controller.externalUrl` (default empty). The chart
+  passes it to the controller as `UNIFIED_EXTERNAL_URL`. When it is empty,
+  `ingress.enabled` is true and `ingress.hosts[0].host` is set, the chart
+  derives the URL from that host. The scheme is `https` if any
+  `ingress.tls[].hosts` entry contains that host, and `http` otherwise. An
+  explicit `controller.externalUrl` always wins. Without either, the
+  variable is not set. Document this in `charts/unified-cd/values.yaml` and
+  the Kubernetes install docs, and cover the derivation with the chart's
+  template tests or a `helm template` check in the Helm CI job.
 - **Version skew.**
   - Old agent with a new controller: the new fields are ignored, and nothing
     changes for that agent.
@@ -237,6 +246,7 @@ already overrides `imageStepEnv`. No second implementation is needed.
 - `docs/user-guide/writing-jobs/`: a new "Run metadata" page with the full
   catalogue, linked from the job-structure and templates pages.
 - `docs/reference/configuration.md`: the `externalUrl` setting.
+- `charts/unified-cd/values.yaml` and `docs/operator-manual/kubernetes-integration.md`: `controller.externalUrl` and the ingress-host fallback.
 - `docs/reference/field-reference.md` and the schema: regenerate.
 - `docs/operator-manual/migrations/`: the reserved prefixes, with the error
   text.
