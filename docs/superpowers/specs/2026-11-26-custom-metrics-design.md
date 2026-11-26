@@ -39,6 +39,10 @@ unified-cd, keeping Argo's shape so that its users recognise it.
 - Metrics emitted from inside a step's process. Users who need that keep
   using their own SDKs, and the run metadata design gives them labels.
 - Summaries (quantiles).
+- `metrics:` in a `kind: JobTemplate`. It is rejected when the template is
+  parsed (`metrics: is not supported in a JobTemplate; define metrics on the
+  Job`), and `uses:` expansion refuses it too, so metrics never travel through
+  template inlining in v1. Define them on the Job.
 - Exposing a running step's live outputs. Values are read when the step
   finishes.
 
@@ -139,7 +143,8 @@ seconds. A run that never reached an agent, for example one cancelled while
 queued, has `.Run.Duration = 0` and gets no realtime row. `.Step.Duration`
 is `endedAt - startedAt`, or 0 if either is missing.
 
-Label values are plain strings. Invalid UTF-8 is replaced with U+FFFD. An
+Label values are plain strings. Invalid UTF-8 is replaced with U+FFFD, and a
+value longer than 1024 bytes is truncated to 1024 bytes on a UTF-8 boundary. An
 empty value is exported as an empty label, which Prometheus treats as the
 label being absent.
 
@@ -151,11 +156,11 @@ at 0. `.Run.Duration` and `.Step.Duration` are float seconds.
 
 - `name` and label `key` must match `^[a-zA-Z_][a-zA-Z0-9_]*$`. The exposed
   name must be a valid Prometheus name.
-- Label keys `job`, `instance`, `le` and `quantile` are rejected. Prometheus
-  attaches or reserves them.
+- Label keys `job`, `instance`, `le` and `quantile`, and any key starting
+  with `__`, are rejected. Prometheus attaches or reserves them.
 - `help` is required and non-empty.
 - At most 50 metrics per block, and at most 10 labels per metric.
-- `histogram.buckets` is optional (default: Prometheus `DefBuckets`); if given it must be strictly increasing.
+- `histogram.buckets` is optional (default: Prometheus `DefBuckets`); if given it must be finite (no NaN or infinities) and strictly increasing.
 - `realtime: true` is only allowed on a gauge whose `value` is exactly
   `{{ .Run.Duration }}` (run-level) or `{{ .Step.Duration }}` (step-level).
   Its labels may use only fields that are known when the run or step starts:
@@ -193,7 +198,11 @@ at 0. `.Run.Duration` and `.Step.Duration` are float seconds.
   for a `(run, stageIndex, stepIndex, variant)`. `UpsertStepReport` gains a
   return value that says whether this call moved the row from non-terminal
   to terminal: a compare on the previous status in the same statement.
-  Duplicate or retried POSTs then emit nothing.
+  Duplicate or retried POSTs then emit nothing. To keep the hot path cheap,
+  only a terminal report (`Succeeded`, `Failed`, `Cancelled`, `Skipped`) takes
+  a transaction with a per-step advisory lock and reads the previous status.
+  `Running` reports and the child-run link call use the single guarded
+  statement and return `firstTerminal = false`.
   - Terminal statuses are `Succeeded`, `Failed`, `Cancelled` and `Skipped`.
     All of them emit, and users filter with `when`.
   - Steps that `MarkRunStepsInterrupted` flips to Failed do not emit step
@@ -277,7 +286,9 @@ at 0. `.Run.Duration` and `.Step.Duration` are float seconds.
   - run-level, when the run is claimed;
   - step-level, on the step's `Running` report.
 - Rows are deleted on the terminal transition or report. The leader removes
-  rows whose run is terminal, as a backstop.
+  rows whose run is terminal, as a backstop, and the scrape-time read joins
+  `runs` and ignores rows of terminal runs, so a leftover row (for example
+  from a replica without this feature) is never exposed.
 - At scrape, the value is `now - started_at`. Two rows with the same name
   and labels, such as two concurrent runs of one job, are exported as the
   maximum.
@@ -308,6 +319,10 @@ validate at apply time, but nothing is emitted, and the realtime and gauge
 rows are not written.
 
 ## Migration
+
+During a rolling upgrade, runs and steps that finish on a replica without this
+feature are not counted. Their leftover realtime rows are hidden once the run
+is terminal and removed by the hourly sweep.
 
 Migration 035, which runs after the run metadata design's 034, creates the
 two tables. There are no changes to existing tables.

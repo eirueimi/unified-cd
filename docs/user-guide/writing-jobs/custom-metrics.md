@@ -63,7 +63,9 @@ The exposed name is `unifiedcd_job_` plus your `name`. Counters get a `_total` s
 Rules checked when you apply the job:
 
 - `name` and label keys match `^[a-zA-Z_][a-zA-Z0-9_]*$`.
-- Label keys `job`, `instance`, `le` and `quantile` are reserved. Keys may not repeat.
+- Label keys `job`, `instance`, `le` and `quantile` are reserved, as is any key starting with `__`. Keys may not repeat.
+- Histogram `buckets` must be finite numbers (no `NaN` or infinities) and strictly increasing.
+- `metrics:` is not supported in a JobTemplate. A template step that declares it is rejected, so define the metrics on the Job that uses the template.
 - At most 50 metrics per block and 10 labels per metric.
 - `operation` is only valid on a gauge.
 
@@ -86,7 +88,7 @@ Metric templates see these fields. Run-level metrics run when the run finishes; 
 Notes:
 
 - Durations are float seconds. `.Run.Duration` counts from the moment an agent claimed the run. A run that never reached an agent (for example cancelled while queued) has `.Run.Duration` of `0` and gets no realtime row. `.Step.Duration` is the step's end time minus its start time, or `0` when either is missing.
-- A missing key (for example an unset label or output) renders as an empty string. An empty label value is exported as an empty label, which Prometheus treats as the label being absent. A value template that renders empty or non-numeric is counted as an error, see below.
+- A missing key (for example an unset label or output) renders as an empty string. An empty label value is exported as an empty label, which Prometheus treats as the label being absent. Label values longer than 1024 bytes are truncated to 1024 bytes (on a UTF-8 character boundary). A value template that renders empty or non-numeric is counted as an error, see below.
 - `.Step.Attempts` is `1` unless the step was retried and the agent reported the attempt count.
 - Steps that were interrupted (for example Failed by the controller after an agent was lost) do **not** emit step-level metrics. The run's own `spec.metrics` still emit when the run finishes.
 
@@ -114,7 +116,7 @@ Run-level realtime rows appear when an agent claims the run. Step-level rows app
 
 ## Reading the metrics with several controller replicas
 
-Counters and histograms are kept in memory on the replica that handled the run's finish, so each replica holds only part of the total. Gauges are stored in the database, so every replica shows the same value. Therefore:
+Counters and histograms are kept in memory on the replica that produced the sample, so each replica holds only part of the total. Run-level samples are produced on the replica that finished the run; step-level samples are produced on the replica that received the step's report. Gauges are stored in the database, so every replica shows the same value. Therefore:
 
 - **Scrape every controller replica separately.** Do not scrape through a load balancer, which would hit a different replica on each scrape.
 - **Counters and histograms:** aggregate with `sum(rate(...))`, for example `sum by (status) (rate(unifiedcd_job_deploy_runs_total[5m]))`. A replica restart resets its counters; `rate()` handles that.
@@ -131,6 +133,10 @@ Each distinct combination of label values is a separate series. Keep label value
 ## Errors at run time
 
 Problems that only appear when a sample is produced do not fail the run. They increment `unifiedcd_custom_metric_errors_total{metric,reason}` with `reason` one of `template`, `value`, `conflict`, `series_cap` and `db`; see [Operations: Metrics](../../operator-manual/operations.md#metrics) for what each means.
+
+## Rolling upgrades
+
+Runs and steps that finish on a controller replica that does not yet have this feature are not counted, and neither are their gauge updates. Realtime rows such a replica leaves behind are hidden from scrapes once the run is terminal and are removed by the hourly sweep. Metrics are complete again once every replica runs the new version.
 
 ## Changing a metric's shape
 
