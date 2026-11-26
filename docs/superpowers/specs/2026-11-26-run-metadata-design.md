@@ -86,13 +86,13 @@ an empty string pretending to be a value.
 | Env var | Template | Value | Argo equivalent |
 |---|---|---|---|
 | `UNIFIED_RUN_ID` | `.Run.ID` | run UUID | `workflow.uid` |
-| `UNIFIED_RUN_URL` | `.Run.URL` | `<externalUrl>/ui/#/runs/<id>`. Absent if no external URL is configured. | (none) |
+| `UNIFIED_RUN_URL` | `.Run.URL` | `<externalUrl>/ui/#/runs/<id>`, built by the controller with any trailing `/` on `externalUrl` trimmed. The route is `/runs/:id` in `web/src/App.svelte`, under the hash router served at `/ui/`. Absent if no external URL is configured. | (none) |
 | `UNIFIED_RUN_CREATED_AT` | `.Run.CreatedAt` | Env: RFC 3339 UTC. Template: `time.Time`, so `.Run.CreatedAt.Format "2006-01-02"` works. | `workflow.creationTimestamp` (+ format) |
-| `UNIFIED_RUN_STARTED_AT` | `.Run.StartedAt` | When the agent claimed the run. Same types as `CreatedAt`. | (none) |
+| `UNIFIED_RUN_STARTED_AT` | `.Run.StartedAt` | Agent clock when the agent received the claim. Same types as `CreatedAt`. Agent-known, so it is set even with an old controller. | (none) |
 | `UNIFIED_RUN_TRIGGERED_BY` | `.Run.TriggeredBy` | The raw `triggered_by` string, for example `webhook:gh-push` | (none) |
-| `UNIFIED_RUN_TRIGGER` | `.Run.Trigger` | One of `api`, `webhook`, `schedule`, `call`, `replay` | (none) |
-| `UNIFIED_RUN_SCHEDULED_AT` | `.Run.ScheduledAt` | Schedule runs only: the cron fire time the run was created for | `workflow.scheduledTime` |
-| `UNIFIED_RUN_PARENT_ID`, `UNIFIED_RUN_PARENT_JOB`, `UNIFIED_RUN_PARENT_STEP` | `.Run.Parent.ID`, `.Job`, `.Step` | `call:` children only | `workflow.mainEntrypoint` (closest match) |
+| `UNIFIED_RUN_TRIGGER` | `.Run.Trigger` | One of `api`, `webhook`, `schedule`, `call`, `replay`, read from the new `runs.trigger` column (see Data model). It is never parsed from `triggered_by`: a principal's display name can look like `webhook:x`. | (none) |
+| `UNIFIED_RUN_SCHEDULED_AT` | `.Run.ScheduledAt` | Schedule runs only: the cron fire time the run was created for. Absent on a replay, which is not a scheduled fire. | `workflow.scheduledTime` |
+| `UNIFIED_RUN_PARENT_ID`, `UNIFIED_RUN_PARENT_JOB`, `UNIFIED_RUN_PARENT_STEP` | `.Run.Parent.ID`, `.Job`, `.Step` | `call:` children only, from `GetRunParent`. Absent on a replay of a child, which has no parent. | `workflow.mainEntrypoint` (closest match) |
 | `UNIFIED_RUN_REPLAY_OF` | `.Run.ReplayOf` | Replays only: the original run ID | (none) |
 | `UNIFIED_RUN_DISPLAY_NAME` | `.Run.DisplayName` | The resolved display name. Absent when the job has none. | (none) |
 | `UNIFIED_RUN_PARAMS_JSON` | `.Run.ParamsJSON` | All params as a JSON object | `workflow.parameters.json` |
@@ -133,6 +133,11 @@ finishes in any status, so `continueOnError` steps and `finally:` can see
 failures. Code that tests for a missing entry to mean "not succeeded" has to
 check `Status` instead. Find and fix every in-repo use.
 
+Times for a step span all its attempts: `StartedAt` is when the first
+attempt started and `EndedAt` when the last ended. A matrix or foreach step
+spans its combinations: earliest start, latest end. A skipped step has
+`Status: Skipped` and zero times and exit code.
+
 These are template-only. Putting every earlier step into the environment of
 each later step would make the environment grow with the job.
 
@@ -144,6 +149,13 @@ each later step would make the environment grow with the job.
 | `UNIFIED_RUN_FAILURES_JSON` | `.Run.Failures` | JSON array of the failed main-pipeline steps, each with `name`, `stage`, `exitCode`, `startedAt`, `endedAt` and `matrixKey` if set | `workflow.failures` |
 | `UNIFIED_RUN_DURATION_SECONDS` | `.Run.Duration` | Seconds from `StartedAt` to when `finally:` began | `workflow.duration` |
 
+The agent keeps a new failure list as each main-pipeline step finishes. It
+has no such list today, only the `anyStepFailed` flag behind `statusView()`.
+A step that failed under `continueOnError: true` **is** listed in
+`.Run.Failures`, because it did fail, but it does not change
+`.Run.Status`. That matches how `failure()` treats it today. Duration uses
+the agent's `StartedAt`, so it is also set with an old controller.
+
 Outside `finally:` these are absent. `UNIFIED_RUN_FAILURES_JSON` is capped at
 32 KiB. When the list does not fit, it is cut to the entries that fit and an
 entry `{"truncated": <n omitted>}` is appended, so a long matrix cannot push
@@ -151,7 +163,12 @@ the environment past OS limits.
 
 ## Data model and protocol
 
-- **Migration 034** adds three columns to `runs`:
+- **Migration 034** adds four columns to `runs`:
+  - `trigger text NOT NULL DEFAULT 'api'`. Each `CreateRun` call site sets it
+    explicitly. Existing rows are backfilled from the `triggered_by` prefix:
+    `webhook:` becomes `webhook`, `schedule:` becomes `schedule`, `replay:`
+    becomes `replay`, `agent:` becomes `call`, and anything else becomes
+    `api`. The backfill is a one-time best guess for old rows only.
   - `job_labels jsonb`, filled by `CreateRun` from the job's metadata at
     creation time;
   - `job_annotations jsonb`, the same;
@@ -159,8 +176,11 @@ the environment past OS limits.
     `next` time it fired for.
 
   Every `CreateRun` call site passes the job's metadata: trigger, webhook,
-  schedule, `call:` child and replay. A replay copies the original run's
-  values. `api.Job` and job storage start persisting labels and annotations
+  schedule, `call:` child and replay. A replay copies the original run's labels
+  and annotations. It leaves `scheduled_at` NULL and sets
+  `trigger = 'replay'`. Labels already exist in the DSL as
+  `metadata.labels` (`internal/dsl/types.go:19`). They are just not
+  persisted. `api.Job` and job storage start persisting labels and annotations
   for this.
 - **`ClaimResponse`** gains one `Run` object: `createdAt`, `triggeredBy`,
   `scheduledAt`, `parent` (from `GetRunParent`), `displayName`, `url`,
@@ -188,7 +208,11 @@ run-time rules in step.
 
 Step-level `env:` that sets a reserved name is rejected at apply time with a
 clear error. Today `step.Env` is not checked against reserved names. This
-design adds that check for the new prefixes only. Whether to extend it to the
+design adds that check for the new prefixes only. It runs on the job spec
+after `uses:` templates are expanded, so template-provided `env:` is covered
+too. A run whose snapshot was created before the upgrade can still carry such
+a name. In that case the agent puts the built-in value last, so it wins, and
+logs a warning naming the variable. Whether to extend the check to the
 existing reserved names is left to the builder.
 
 This is a **breaking change** for any `Vars` manifest or step `env:` that
