@@ -2,6 +2,7 @@ package dsl
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 )
@@ -58,6 +59,9 @@ func validateMetric(m MetricDef, level string) error {
 		if !metricNameRe.MatchString(l.Key) {
 			return fmt.Errorf("labels[%d].key %q must match %s", j, l.Key, metricNameRe.String())
 		}
+		if strings.HasPrefix(l.Key, "__") {
+			return fmt.Errorf("labels[%d].key %q is reserved (keys starting with \"__\" are Prometheus-internal)", j, l.Key)
+		}
 		if reservedMetricLabels[l.Key] {
 			return fmt.Errorf("labels[%d].key %q is reserved (job, instance, le and quantile cannot be used)", j, l.Key)
 		}
@@ -77,6 +81,11 @@ func validateMetric(m MetricDef, level string) error {
 	}
 	if m.Histogram != nil {
 		b := m.Histogram.Buckets
+		for i, v := range b {
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				return fmt.Errorf("histogram.buckets[%d] must be a finite number (got %g)", i, v)
+			}
+		}
 		for i := 1; i < len(b); i++ {
 			if b[i] <= b[i-1] {
 				return fmt.Errorf("histogram.buckets must be strictly increasing (%g after %g)", b[i], b[i-1])

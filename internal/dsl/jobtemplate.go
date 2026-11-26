@@ -85,6 +85,12 @@ func (t *JobTemplate) Validate() error {
 			}
 		}
 	}
+	if err := rejectTemplateMetrics(t.Spec.Steps, "spec.steps"); err != nil {
+		return err
+	}
+	if err := rejectTemplateMetrics(t.Spec.Finally, "spec.finally"); err != nil {
+		return err
+	}
 	if err := validateStepTargetedWorkingDir(t.ToSpec()); err != nil {
 		return err
 	}
@@ -103,6 +109,23 @@ func (t *JobTemplate) Validate() error {
 		}
 		if o.Type == "" {
 			return fmt.Errorf("spec.params.outputs[%d].type is required", i)
+		}
+	}
+	return nil
+}
+
+// rejectTemplateMetrics refuses metrics: on template steps. Custom metrics are
+// defined on the Job; v1 does not carry them through uses: expansion.
+func rejectTemplateMetrics(entries []StepEntry, prefix string) error {
+	const msg = "metrics: is not supported in a JobTemplate; define metrics on the Job"
+	for i, e := range entries {
+		if len(e.Metrics) > 0 {
+			return fmt.Errorf("%s[%d] (%s): %s", prefix, i, e.Name, msg)
+		}
+		for j, st := range e.Parallel {
+			if len(st.Metrics) > 0 {
+				return fmt.Errorf("%s[%d].parallel[%d] (%s): %s", prefix, i, j, st.Name, msg)
+			}
 		}
 	}
 	return nil
