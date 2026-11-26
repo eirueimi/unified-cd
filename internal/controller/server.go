@@ -87,6 +87,10 @@ type Config struct {
 	// human artifact downloads answer with a presigned GET after the usual
 	// checks. Agents are always proxied. See config.ArtifactDownloadRedirect.
 	ArtifactDownload string
+
+	// ExternalURL is the controller's public base URL, used to build the run
+	// URL sent to agents on claim. Empty means no run URL is sent.
+	ExternalURL string
 }
 
 // OIDCConfig holds the OIDC provider configuration.

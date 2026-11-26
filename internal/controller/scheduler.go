@@ -234,7 +234,8 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 					continue
 				}
 			}
-			_, err := st.CreateRun(ctx, sc.JobName, params, runSpec, agentSelector, requiredCaps, "schedule:"+sc.Name, displayName, store.RunOrigin{})
+			scheduledAt := next
+			_, err := st.CreateRun(ctx, sc.JobName, params, runSpec, agentSelector, requiredCaps, "schedule:"+sc.Name, displayName, store.RunOrigin{Trigger: api.TriggerSchedule, JobLabels: job.Labels, JobAnnotations: job.Annotations, ScheduledAt: &scheduledAt})
 			if err != nil {
 				slog.Warn("checkAndFireSchedules: failed to create Run", "schedule", sc.Name, "error", err)
 				continue // Do not update last_fired_at — allow retry on the next tick.

@@ -139,13 +139,17 @@ type ControllerOIDCConfig struct {
 // ControllerConfig holds all configuration for the controller binary.
 // Populated from a YAML file via LoadController; zero-value fields mean "not set".
 type ControllerConfig struct {
-	DSN        string `yaml:"dsn"`
-	Addr       string `yaml:"addr"`
-	Token      string `yaml:"token"`
-	S3Endpoint string `yaml:"s3Endpoint"`
-	S3Bucket   string `yaml:"s3Bucket"`
-	S3Key      string `yaml:"s3Key"`
-	S3Secret   string `yaml:"s3Secret"`
+	DSN  string `yaml:"dsn"`
+	Addr string `yaml:"addr"`
+	// ExternalURL is the controller's public base URL (env: UNIFIED_EXTERNAL_URL).
+	// It is used to build run links handed to agents (UNIFIED_RUN_URL). When unset,
+	// ControllerEffective falls back to oidc.externalUrl.
+	ExternalURL string `yaml:"externalUrl"`
+	Token       string `yaml:"token"`
+	S3Endpoint  string `yaml:"s3Endpoint"`
+	S3Bucket    string `yaml:"s3Bucket"`
+	S3Key       string `yaml:"s3Key"`
+	S3Secret    string `yaml:"s3Secret"`
 	// S3UseSSL makes the controller reach the store over https (env: UNIFIED_S3_USE_SSL).
 	// Presigned URLs travel to clients, so S3 and GCS need it.
 	S3UseSSL bool `yaml:"s3UseSSL"`
@@ -326,15 +330,16 @@ func LoadController(path string) (*ControllerConfig, error) {
 // Priority (lowest to highest): env vars → config file → CLI flags.
 func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	eff := &ControllerConfig{
-		DSN:        os.Getenv("UNIFIED_DB_DSN"),
-		Token:      os.Getenv("UNIFIED_TOKEN"),
-		S3Endpoint: os.Getenv("UNIFIED_S3_ENDPOINT"),
-		S3Bucket:   os.Getenv("UNIFIED_S3_BUCKET"),
-		S3Key:      os.Getenv("UNIFIED_S3_KEY"),
-		S3Secret:   os.Getenv("UNIFIED_S3_SECRET"),
-		S3UseSSL:   envBool("UNIFIED_S3_USE_SSL"),
-		S3Region:   os.Getenv("UNIFIED_S3_REGION"),
-		DataDir:    os.Getenv("UNIFIED_DATA_DIR"),
+		DSN:         os.Getenv("UNIFIED_DB_DSN"),
+		ExternalURL: os.Getenv("UNIFIED_EXTERNAL_URL"),
+		Token:       os.Getenv("UNIFIED_TOKEN"),
+		S3Endpoint:  os.Getenv("UNIFIED_S3_ENDPOINT"),
+		S3Bucket:    os.Getenv("UNIFIED_S3_BUCKET"),
+		S3Key:       os.Getenv("UNIFIED_S3_KEY"),
+		S3Secret:    os.Getenv("UNIFIED_S3_SECRET"),
+		S3UseSSL:    envBool("UNIFIED_S3_USE_SSL"),
+		S3Region:    os.Getenv("UNIFIED_S3_REGION"),
+		DataDir:     os.Getenv("UNIFIED_DATA_DIR"),
 		KeySource: KeySource{
 			KeyFile:        os.Getenv("UNIFIED_CONTROLLER_KEY_FILE"),
 			KMSURI:         os.Getenv("UNIFIED_KMS_URI"),
@@ -409,6 +414,7 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		if err := validateOIDCDevice(eff.OIDC); err != nil {
 			return nil, err
 		}
+		eff.applyExternalURLFallback()
 		eff.addDeprecationWarnings()
 		return eff, nil
 	}
@@ -422,6 +428,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.Addr != "" {
 		eff.Addr = file.Addr
+	}
+	if file.ExternalURL != "" {
+		eff.ExternalURL = file.ExternalURL
 	}
 	if file.Token != "" {
 		eff.Token = file.Token
@@ -567,8 +576,17 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	if err := validateControllerAgentAuth(eff.AgentAuth); err != nil {
 		return nil, err
 	}
+	eff.applyExternalURLFallback()
 	eff.addDeprecationWarnings()
 	return eff, nil
+}
+
+// applyExternalURLFallback makes oidc.externalUrl the effective ExternalURL
+// when no top-level one is set.
+func (c *ControllerConfig) applyExternalURLFallback() {
+	if c.ExternalURL == "" && c.OIDC != nil {
+		c.ExternalURL = c.OIDC.ExternalURL
+	}
 }
 
 // addDeprecationWarnings records one warning per deprecated setting that is

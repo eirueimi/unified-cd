@@ -59,7 +59,7 @@ func applyResource(ctx context.Context, st store.Store, kind, dir string, doc []
 			return "", err
 		}
 		name := job.Metadata.QualifiedName()
-		if _, err := st.UpsertJob(ctx, name, job.APIVersion, specJSON, store.JobMeta{}); err != nil {
+		if _, err := st.UpsertJob(ctx, name, job.APIVersion, specJSON, store.JobMeta{Labels: job.Metadata.Labels, Annotations: job.Metadata.Annotations}); err != nil {
 			return "", fmt.Errorf("%w: %v", errStoreWrite, err)
 		}
 		return name, nil

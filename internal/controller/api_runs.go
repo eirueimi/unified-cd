@@ -40,7 +40,7 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 	if p, ok := principalFromContext(r.Context()); ok && p.Name != "" {
 		triggeredBy = p.Name
 	}
-	run, status, msg := s.createRunFromJob(r.Context(), req.JobName, req.Params, triggeredBy)
+	run, status, msg := s.createRunFromJob(r.Context(), req.JobName, req.Params, triggeredBy, api.TriggerAPI)
 	if status != 0 {
 		http.Error(w, msg, status)
 		return
@@ -52,7 +52,7 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 // (agentSelector + required capability), and creates the run. Shared by the
 // human trigger route and the agent child-run route. Returns (run, 0, "") on
 // success or (nil, httpStatus, message) describing the failure.
-func (s *Server) createRunFromJob(ctx context.Context, jobName string, reqParams map[string]string, triggeredBy string) (*api.Run, int, string) {
+func (s *Server) createRunFromJob(ctx context.Context, jobName string, reqParams map[string]string, triggeredBy, trigger string) (*api.Run, int, string) {
 	job, err := s.store.GetJob(ctx, jobName)
 	if err != nil {
 		return nil, http.StatusNotFound, "job not found: " + jobName
@@ -90,7 +90,7 @@ func (s *Server) createRunFromJob(ctx context.Context, jobName string, reqParams
 	// workspace.mountPath) yields "container" and is left to route by the author's agentSelector, so it
 	// can run on a standard agent too.
 	requiredCaps := dsl.RequiredCaps(spec)
-	run, err := s.store.CreateRun(ctx, job.Name, params, runSpec, agentSelector, requiredCaps, triggeredBy, displayName, store.RunOrigin{})
+	run, err := s.store.CreateRun(ctx, job.Name, params, runSpec, agentSelector, requiredCaps, triggeredBy, displayName, store.RunOrigin{Trigger: trigger, JobLabels: job.Labels, JobAnnotations: job.Annotations})
 	if err != nil {
 		return nil, http.StatusInternalServerError, "create run: " + err.Error()
 	}
@@ -171,7 +171,7 @@ func (s *Server) handleReplayRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requiredCaps := dsl.RequiredCaps(spec)
-	run, err := s.store.CreateRun(r.Context(), orig.JobName, params, runSpec, agentSelector, requiredCaps, "replay:"+id, displayName, store.RunOrigin{})
+	run, err := s.store.CreateRun(r.Context(), orig.JobName, params, runSpec, agentSelector, requiredCaps, "replay:"+id, displayName, store.RunOrigin{Trigger: api.TriggerReplay, JobLabels: orig.JobLabels, JobAnnotations: orig.JobAnnotations})
 	if err != nil {
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
 		return

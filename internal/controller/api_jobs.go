@@ -76,7 +76,7 @@ func (s *Server) storeJob(ctx context.Context, job *dsl.Job, name string) (*api.
 	if err != nil {
 		return nil, fmt.Errorf("marshal spec: %w", err)
 	}
-	return s.store.UpsertJob(ctx, name, job.APIVersion, specJSON, store.JobMeta{})
+	return s.store.UpsertJob(ctx, name, job.APIVersion, specJSON, store.JobMeta{Labels: job.Metadata.Labels, Annotations: job.Metadata.Annotations})
 }
 
 // validatePathAnnotation validates each non-empty segment of the "path"

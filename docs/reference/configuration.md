@@ -12,6 +12,7 @@ unified-cd-controller [FLAGS]
   -f                      string   Config file path (YAML)
   --dsn                   string   PostgreSQL DSN (env: UNIFIED_DB_DSN)
   --addr                  string   Listen address (default: :8080)
+  --external-url          string   Public base URL for run links (env: UNIFIED_EXTERNAL_URL; falls back to oidc.externalUrl)
   --token                 string   Static bearer token (env: UNIFIED_TOKEN)
   --s3-endpoint           string   S3-compatible endpoint (env: UNIFIED_S3_ENDPOINT)
   --s3-bucket             string   S3 bucket name (env: UNIFIED_S3_BUCKET)
@@ -78,6 +79,7 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_OIDC_ISSUER` | No (SSO only) | OIDC issuer URL, e.g. `https://accounts.example.com` or `http://localhost:8080/dex` |
 | `UNIFIED_OIDC_ISSUER_INTERNAL` | No (SSO only) | Internal issuer URL for Docker/container scenarios where the public issuer URL is not reachable inside the container |
 | `UNIFIED_OIDC_EXTERNAL_URL` | No (SSO only) | External base URL for OIDC callbacks, e.g. `https://unified-cd.example.com`. Required when the controller is behind a reverse proxy with a different external URL. |
+| `UNIFIED_EXTERNAL_URL` | No | The controller's public base URL, e.g. `https://unified-cd.example.com`. Used to build the run link (`<url>/ui/#/runs/<id>`) sent to agents with each claim. When unset it falls back to the OIDC `externalUrl` (`UNIFIED_OIDC_EXTERNAL_URL`); with neither set, no run URL is sent. Flag: `--external-url`; config key `externalUrl`. |
 | `UNIFIED_INSECURE_COOKIES` | No | When `true`, omits the `Secure` attribute from session cookies. Only for plain-HTTP deployments (see [Authentication](../operator-manual/authentication.md)); leave unset (default `false`) whenever TLS is terminated anywhere in front of the controller. |
 | `UNIFIED_TRUSTED_PROXIES` | No | Comma-separated CIDRs or IPs of the reverse proxies in front of the controller. Only a request whose TCP peer is in this list has its `X-Forwarded-For` / `X-Real-IP` honoured for the client address (rate limits, access log). Default empty: those headers are ignored. See [Reverse Proxy](../operator-manual/reverse-proxy.md). |
 | `UNIFIED_MAX_REQUEST_BODY_BYTES` | No | Maximum size, in bytes, of an API request body (default `1048576`, 1 MiB). A larger body is rejected with `413`. Applies to every route except webhook ingress (`UNIFIED_WEBHOOK_MAX_BODY_BYTES`), artifact upload and agent log routes. See [Reverse Proxy and Request Limits](../operator-manual/reverse-proxy.md). |
@@ -124,6 +126,7 @@ dataDir: /var/lib/unified-cd    # local object-store fallback (dev; alternative 
 
 webDir: /srv/unified-cd/web         # static web assets; unset => /ui/* returns 404
 uiProxyTarget: http://localhost:5173 # dev only: proxy /ui/* to a Vite dev server
+externalUrl: https://unified-cd.example.com   # public base URL for run links; falls back to oidc.externalUrl
 stderrPlain: false                   # true => run-log stderr is the same color as stdout
 insecureCookies: false                # true => drop Secure attribute on session cookies (plain-HTTP deployments only)
 maxRequestBodyBytes: 1048576          # max API request body (default 1 MiB); larger => 413
