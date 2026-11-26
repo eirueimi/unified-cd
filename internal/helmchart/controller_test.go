@@ -169,3 +169,41 @@ func TestControllerTrustedProxiesValue(t *testing.T) {
 	cfg = controllerConfig(t, Render(t, "unified-cd", "controller.trustedProxies[0]=10.244.0.0/16"))
 	assert.Equal(t, []any{"10.244.0.0/16"}, cfg["trustedProxies"])
 }
+
+// ingressSet enables an Ingress for cd.example.com. The bundled trial
+// credentials are refused behind an Ingress, so it uses an existing Secret.
+func ingressSet(extra ...string) []string {
+	return append([]string{
+		"bundledStores.enabled=false", "controller.existingSecret=prod",
+		"ingress.enabled=true", "ingress.hosts[0].host=cd.example.com",
+	}, extra...)
+}
+
+func TestControllerExternalURL_Explicit(t *testing.T) {
+	cfg := controllerConfig(t, Render(t, "unified-cd",
+		ingressSet("controller.externalUrl=https://x.example")...))
+	assert.Equal(t, "https://x.example", cfg["externalUrl"])
+}
+
+func TestControllerExternalURL_FromIngressTLS(t *testing.T) {
+	cfg := controllerConfig(t, Render(t, "unified-cd",
+		ingressSet("ingress.tls[0].secretName=cd-tls", "ingress.tls[0].hosts[0]=cd.example.com")...))
+	assert.Equal(t, "https://cd.example.com", cfg["externalUrl"])
+}
+
+func TestControllerExternalURL_FromIngressNoTLS(t *testing.T) {
+	cfg := controllerConfig(t, Render(t, "unified-cd", ingressSet()...))
+	assert.Equal(t, "http://cd.example.com", cfg["externalUrl"])
+}
+
+func TestControllerExternalURL_Unset(t *testing.T) {
+	cfg := controllerConfig(t, Render(t, "unified-cd"))
+	_, set := cfg["externalUrl"]
+	assert.False(t, set, "externalUrl is omitted when neither a value nor an ingress host is set")
+}
+
+func TestControllerExternalURL_ConfigOverrides(t *testing.T) {
+	cfg := controllerConfig(t, Render(t, "unified-cd",
+		ingressSet("controller.config.externalUrl=https://override.example")...))
+	assert.Equal(t, "https://override.example", cfg["externalUrl"])
+}

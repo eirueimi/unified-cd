@@ -58,6 +58,12 @@ controller:
   # NetworkPolicy so only the Ingress namespace and agents reach the controller.
   # The proxy must append X-Forwarded-For and overwrite/strip X-Real-IP.
   trustedProxies: []
+  # Public base URL of the controller (no trailing slash), e.g.
+  # https://cd.example.com. Rendered as `externalUrl` in the controller config
+  # and used for links to runs. Empty derives it from the first ingress host
+  # (https when ingress.tls lists that host, else http); with no ingress host
+  # the key is omitted. controller.config.externalUrl overrides it.
+  externalUrl: ""
   service:
     # Service type for the controller (HTTP only; terminate TLS at an Ingress).
     type: ClusterIP

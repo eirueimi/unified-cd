@@ -54,7 +54,28 @@ Secret when the chart renders it).
 Chart-computed controller config, rendered as YAML. controller.config is
 deep-merged over it by the ConfigMap template.
 */}}
+{{/*
+Public base URL of the controller: controller.externalUrl when set, else
+derived from the first ingress host (https when an ingress.tls entry lists that
+host, http otherwise), else empty.
+*/}}
+{{- define "unified-cd.externalUrl" -}}
+{{- if .Values.controller.externalUrl -}}
+{{- .Values.controller.externalUrl -}}
+{{- else if and .Values.ingress.enabled .Values.ingress.hosts (index .Values.ingress.hosts 0).host -}}
+{{- $host := (index .Values.ingress.hosts 0).host -}}
+{{- $tls := false -}}
+{{- range .Values.ingress.tls -}}
+{{- if has $host (.hosts | default list) -}}{{- $tls = true -}}{{- end -}}
+{{- end -}}
+{{- if $tls -}}https://{{ $host }}{{- else -}}http://{{ $host }}{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "unified-cd.controllerConfigDefault" -}}
+{{- with (include "unified-cd.externalUrl" .) }}
+externalUrl: {{ . | quote }}
+{{- end }}
 {{- with .Values.controller.trustedProxies }}
 trustedProxies:
   {{- toYaml . | nindent 2 }}
