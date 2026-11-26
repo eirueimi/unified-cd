@@ -11,6 +11,11 @@ Job YAML values support Go template expressions (`{{ expr }}`).
 | `{{ .Params.NAME }}` | `run`, `env`, `agentSelector`, `concurrency`, `outputs`, `displayName`, `call.with`, `uses.with`, `cache.key`, `cache.path`, `cache.restoreKeys` | Input parameter value |
 | `{{ .Vars.NAME }}` | `run`, `env`, `outputs`, `call.with`, `cache.key`, `cache.path`, `cache.restoreKeys` | Plain-text variable — a global `kind: Vars` manifest merged with the job's `spec.vars`. See [Variables](../variables.md). |
 | `{{ .Steps.NAME.Outputs.KEY }}` | `run`, `env`, `outputs` | Output from a completed step |
+| `{{ .Steps.NAME.Status }}`, `.ExitCode`, `.StartedAt`, `.EndedAt` | `run`, `env`, `outputs` | How a finished step ended (`Succeeded`, `Failed`, `Skipped`, `Cancelled`) and when. See [Run Metadata](run-metadata.md#previous-steps). |
+| `{{ .Run.ID }}`, `.Run.URL`, `.Run.Trigger`, ... | `run`, `env`, `outputs` | Run metadata. `.Run.Status`, `.Run.Failures` and `.Run.Duration` exist only in `finally:`. See [Run Metadata](run-metadata.md). |
+| `{{ .Job.Name }}`, `.Job.Labels.K`, `.Job.Annotations.K` | `run`, `env`, `outputs` | Job metadata, as recorded when the run was created |
+| `{{ .Step.Name }}`, `.Step.Attempt`, `.Step.MaxAttempts`, `.Step.LastExitCode` | `run`, `env`, `outputs` | The step being run; `Attempt` is current in every retry |
+| `{{ .Agent.ID }}` | `run`, `env`, `outputs` | The agent executing the step |
 | `{{ secrets.NAME }}` | `env` values, `run` strings | Decrypted secret value |
 
 > **None of these `{{ }}` forms work in `if:`.** `if:` is
@@ -26,8 +31,8 @@ Job YAML values support Go template expressions (`{{ expr }}`).
 > expands to the empty string, silently. Use `{{ .Params.NAME }}` there. See
 > [Variables: where variables do not reach](../variables.md#where-variables-do-not-reach).
 
-> Step status is not exposed as a template variable. To branch on a step's
-> outcome in an `if:` expression, use the CEL functions `failure()`,
+> `.Steps.NAME.Status` is available in `{{ }}` templates, but not in `if:`. To
+> branch on a step's outcome in an `if:` expression, use the CEL functions `failure()`,
 > `success()`, or `always()` (see [Status Functions in `if:`](#status-functions-in-if)).
 
 ### Template functions

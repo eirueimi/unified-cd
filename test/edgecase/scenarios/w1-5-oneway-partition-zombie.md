@@ -30,9 +30,10 @@
     `edge-mutex-successor`, same `spec.concurrency.mutex: edge-mutex`, one
     native step `probe`: `echo acquired-mutex-ok`. This is the I3 probe: it can
     only run if the partitioned run's mutex was actually released.
-  - **Known workload caveat:** `UNIFIED_RUN_ID` is **not** injected into native
-    steps, so the first CSV field in `sideeffect.log` is the literal string
-    `run`, not a run id. Correlating log lines to a run therefore relies on the
+  - **Known workload caveat:** the workload's first CSV field in
+    `sideeffect.log` is the literal string `run`, not `$UNIFIED_RUN_ID`
+    (agents now inject it into every step, but the workload payload does not
+    use it). Correlating log lines to a run therefore relies on the
     per-line `HH:MM:SS` timestamp plus the invariant that only one
     `edge-sideeffect` run exists in the whole scenario (verified explicitly in
     the I2 accounting step below), **not** on the id field.

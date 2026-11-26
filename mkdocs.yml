@@ -98,6 +98,7 @@ nav:
           - Parameters: user-guide/writing-jobs/parameters.md
           - Steps: user-guide/writing-jobs/steps.md
           - Expressions and Conditions: user-guide/writing-jobs/expressions.md
+          - Run Metadata: user-guide/writing-jobs/run-metadata.md
           - Artifacts and Cache: user-guide/writing-jobs/artifacts-and-cache.md
           - Templates and Reuse: user-guide/writing-jobs/templates-and-reuse.md
           - Isolation and Containers: user-guide/writing-jobs/isolation-and-containers.md
