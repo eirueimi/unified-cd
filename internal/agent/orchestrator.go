@@ -575,6 +575,9 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			// for a failed main-pipeline step (continueOnError included), to
 			// the failure list finally: steps see.
 			recordResult := func(status string, exit int, started, ended time.Time) {
+				// A failure that a master cancellation masks (see
+				// cancelMasksFailure below) is a Cancelled step, not a failure.
+				status = maskedStepStatus(status, suppressOnCancel && cancelledByMaster.Load())
 				sctx.setStepResult(step.Name, dsl.StepData{Status: status, ExitCode: exit, StartedAt: started, EndedAt: ended})
 				if status == "Failed" && !isFinally {
 					sctx.addFailure(dsl.StepFailure{

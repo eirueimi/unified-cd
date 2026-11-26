@@ -201,6 +201,15 @@ func failuresJSON(f []dsl.StepFailure, max int) string {
 	return "[" + strings.Join(parts[:kept], ",") + "," + marker + "]"
 }
 
+// maskedStepStatus turns a Failed result into Cancelled when a master
+// cancellation masks the failure, so the step stays out of the failure list.
+func maskedStepStatus(status string, cancelMasked bool) string {
+	if status == "Failed" && cancelMasked {
+		return "Cancelled"
+	}
+	return status
+}
+
 // isMetadataEnvName reports whether name falls under one of the env prefixes
 // the agent reserves for run metadata.
 func isMetadataEnvName(name string) bool {

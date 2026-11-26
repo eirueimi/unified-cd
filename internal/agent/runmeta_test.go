@@ -5,6 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"regexp"
+	"sync/atomic"
 	"strings"
 	"testing"
 	"time"
@@ -205,7 +209,9 @@ func TestFinally_StatusAndFailures(t *testing.T) {
 	assert.Contains(t, out, `"name":"boom"`)
 	assert.Contains(t, out, `"exitCode":5`)
 	assert.Contains(t, out, "tpl=[Failed]")
-	assert.Contains(t, out, " dur=[0] ")
+	m := regexp.MustCompile(` dur=\[([^\]]*)\] `).FindStringSubmatch(out)
+	require.NotNil(t, m, out)
+	assert.Regexp(t, `^[0-9]+$`, m[1])
 	assert.Contains(t, out, "main-status=[] main-dur=[]")
 }
 
@@ -221,4 +227,59 @@ func TestStepEnv_BuiltinWinsOverReservedStepEnv(t *testing.T) {
 	assert.Contains(t, out, "id=[run-builtinwins]")
 	assert.Contains(t, buf.String(), "step env overrides reserved run metadata; built-in value wins")
 	assert.Contains(t, buf.String(), "UNIFIED_RUN_ID")
+}
+
+func TestMaskedStepStatus(t *testing.T) {
+	assert.Equal(t, "Cancelled", maskedStepStatus("Failed", true))
+	assert.Equal(t, "Failed", maskedStepStatus("Failed", false))
+	assert.Equal(t, "Succeeded", maskedStepStatus("Succeeded", true))
+}
+
+// A step that fails through markFailed (here: an if: that cannot be
+// evaluated) after the master cancelled the run is Cancelled, not a failure.
+func TestFinally_CancelledStepNotInFailures(t *testing.T) {
+	old := CancelPollInterval
+	CancelPollInterval = 100 * time.Millisecond
+	t.Cleanup(func() { CancelPollInterval = old })
+
+	h := &varsTestHarness{}
+	var polls atomic.Int32
+	mux := http.NewServeMux()
+	ok := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }
+	mux.HandleFunc("POST /api/v1/agents/register", ok)
+	mux.HandleFunc("POST /api/v1/agents/a1/steps", ok)
+	mux.HandleFunc("POST /api/v1/agents/a1/runs/{runId}/finish", ok)
+	mux.HandleFunc("POST /api/v1/agents/a1/runs/{runId}/steps/{idx}/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
+		var reqs []api.LogAppendRequest
+		_ = json.NewDecoder(r.Body).Decode(&reqs)
+		for _, l := range reqs {
+			h.record(l.Line)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /api/v1/runs/run-cf", func(w http.ResponseWriter, r *http.Request) {
+		st := api.RunRunning
+		if polls.Add(1) >= 2 {
+			st = api.RunCancelled
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(api.Run{ID: "run-cf", Status: st})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	a := &Agent{ID: "a1", Client: NewClient(srv.URL, "tok")}
+	a.executeRun(context.Background(), api.ClaimResponse{
+		Native: true, RunID: "run-cf", JobName: "cf",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "slow", Run: "sleep 30"}},
+			{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "badif", Run: "true", If: "1 +"}},
+		},
+		Finally: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 2, StageIndex: 0, Name: "report", Run: `echo "st=[$UNIFIED_RUN_STATUS] f=[$UNIFIED_RUN_FAILURES_JSON]"`}},
+		},
+	}, t.TempDir())
+	out := h.output()
+	assert.Contains(t, out, "st=[Cancelled]")
+	assert.Contains(t, out, "f=[[]]", out)
 }
