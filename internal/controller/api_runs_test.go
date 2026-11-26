@@ -415,8 +415,8 @@ func TestAPI_CancelRun_CascadesToChildRuns(t *testing.T) {
 	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	grandchild, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	// Link parent→child→grandchild via call: step reports (child_run_id).
-	require.NoError(t, pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j"))
-	require.NoError(t, pg.UpsertStepReport(t.Context(), child.ID, 0, 0, "call-grandchild", "", "Running", nil, nil, nil, grandchild.ID, "j"))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j")))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(t.Context(), child.ID, 0, 0, "call-grandchild", "", "Running", nil, nil, nil, grandchild.ID, "j")))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+parent.ID+"/cancel", nil)
 	req.Header.Set("Authorization", "Bearer secret")

@@ -71,8 +71,8 @@ func TestPostgres_RunParentLinkage(t *testing.T) {
 	require.NoError(t, err)
 
 	// The parent's call: step reports record each spawned child via child_run_id.
-	require.NoError(t, pg.UpsertStepReport(ctx, parent.ID, 0, 0, "call-a", "", "Succeeded", nil, nil, nil, childA.ID, "hello"))
-	require.NoError(t, pg.UpsertStepReport(ctx, parent.ID, 1, 0, "call-b", "", "Succeeded", nil, nil, nil, childB.ID, "hello"))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, parent.ID, 0, 0, "call-a", "", "Succeeded", nil, nil, nil, childA.ID, "hello")))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, parent.ID, 1, 0, "call-b", "", "Succeeded", nil, nil, nil, childB.ID, "hello")))
 
 	ids, err := pg.ListChildRunIDs(ctx, parent.ID)
 	require.NoError(t, err)
@@ -274,7 +274,7 @@ func TestPostgres_DeleteRun(t *testing.T) {
 	run, err := pg.CreateRun(ctx, "del-run-job", nil,
 		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "", RunOrigin{})
 	require.NoError(t, err)
-	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "s", "", "Succeeded", nil, nil, nil, "", ""))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, run.ID, 0, 0, "s", "", "Succeeded", nil, nil, nil, "", "")))
 
 	require.NoError(t, pg.DeleteRun(ctx, run.ID))
 

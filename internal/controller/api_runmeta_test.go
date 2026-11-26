@@ -170,7 +170,7 @@ func TestClaimRunMeta_Parent(t *testing.T) {
 	require.NoError(t, err)
 	child, status, msg := s.createRunFromJob(ctx, "build", nil, "agent:a1", api.TriggerCall)
 	require.Zero(t, status, msg)
-	require.NoError(t, pg.UpsertStepReport(ctx, parent.ID, 0, 0, "call-step", "", "Running", nil, nil, nil, child.ID, "build"))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, parent.ID, 0, 0, "call-step", "", "Running", nil, nil, nil, child.ID, "build")))
 
 	got, err := pg.GetRun(ctx, child.ID)
 	require.NoError(t, err)

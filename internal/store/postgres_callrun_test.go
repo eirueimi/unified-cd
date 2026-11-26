@@ -35,7 +35,7 @@ func TestStepReport_ChildRunLink(t *testing.T) {
 	child := mustCreateRun(t, p, "child-job")
 
 	// report the call step with the child link
-	require.NoError(t, p.UpsertStepReport(ctx, parent, 0, 0, "call-child", "", "Succeeded", nil, nil, nil, child, "child-job"))
+	require.NoError(t, dropFirstTerminal(p.UpsertStepReport(ctx, parent, 0, 0, "call-child", "", "Succeeded", nil, nil, nil, child, "child-job")))
 
 	// forward: parent's steps carry the child link
 	steps, err := p.GetRunSteps(ctx, parent)
@@ -68,14 +68,14 @@ func TestStepReport_ChildRunStatusIsAuthoritative(t *testing.T) {
 	parent := mustCreateRun(t, p, "status-parent-job")
 	child := mustCreateRun(t, p, "status-child-job")
 
-	require.NoError(t, p.UpsertStepReport(
+	require.NoError(t, dropFirstTerminal(p.UpsertStepReport(
 		ctx, parent, 0, 0, "call-child", "", "Running",
 		nil, nil, nil, child, "status-child-job",
-	))
-	require.NoError(t, p.UpsertStepReport(
+	)))
+	require.NoError(t, dropFirstTerminal(p.UpsertStepReport(
 		ctx, parent, 1, 1, "plain-step", "", "Succeeded",
 		nil, nil, nil, "", "",
-	))
+	)))
 
 	steps, err := p.GetRunSteps(ctx, parent)
 	require.NoError(t, err)
@@ -103,10 +103,10 @@ func TestStepReport_MissingChildRunFallsBackToStoredStatus(t *testing.T) {
 
 	parent := mustCreateRun(t, p, "missing-child-status-parent-job")
 	missingChildID := "00000000-0000-4000-8000-000000000001"
-	require.NoError(t, p.UpsertStepReport(
+	require.NoError(t, dropFirstTerminal(p.UpsertStepReport(
 		ctx, parent, 0, 0, "call-missing-child", "", "Running",
 		nil, nil, nil, missingChildID, "missing-child-status-job",
-	))
+	)))
 
 	steps, err := p.GetRunSteps(ctx, parent)
 	require.NoError(t, err)

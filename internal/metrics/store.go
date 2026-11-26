@@ -62,15 +62,15 @@ func (s *InstrumentedStore) MarkRunFinished(ctx context.Context, runID string, s
 	return err
 }
 
-func (s *InstrumentedStore) UpsertStepReport(ctx context.Context, runID string, stepIndex, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) error {
-	err := s.Store.UpsertStepReport(ctx, runID, stepIndex, stageIndex, stepName, variant, status, exitCode, startedAt, endedAt, childRunID, callJobName)
+func (s *InstrumentedStore) UpsertStepReport(ctx context.Context, runID string, stepIndex, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) (bool, error) {
+	firstTerminal, err := s.Store.UpsertStepReport(ctx, runID, stepIndex, stageIndex, stepName, variant, status, exitCode, startedAt, endedAt, childRunID, callJobName)
 	if err == nil && status != "Running" {
 		s.m.StepCompleted(status)
 		if startedAt != nil && endedAt != nil {
 			s.m.StepDuration(status, endedAt.Sub(*startedAt).Seconds())
 		}
 	}
-	return err
+	return firstTerminal, err
 }
 
 // ClaimNextRun records how long the claimed run waited before an agent took

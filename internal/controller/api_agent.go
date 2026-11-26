@@ -1018,7 +1018,7 @@ func (s *Server) handleAgentStepReport(w http.ResponseWriter, r *http.Request) {
 	stepName, _ := sanitizeAgentText(req.StepName)
 	variant, _ := sanitizeAgentText(req.Variant)
 	callJobName, _ := sanitizeAgentText(req.CallJobName)
-	if err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, stepName, variant, req.Status, exit, startedAt, endedAt, req.ChildRunID, callJobName); err != nil {
+	if _, err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, stepName, variant, req.Status, exit, startedAt, endedAt, req.ChildRunID, callJobName); err != nil {
 		if errors.Is(err, store.ErrRunFinalized) {
 			// Run was finalized between the pre-check above and the write; the
 			// store refused the report atomically. Same response as the pre-check.
@@ -1389,7 +1389,7 @@ func (s *Server) handleAgentCreateChildRun(w http.ResponseWriter, r *http.Reques
 		stepName, _ := sanitizeAgentText(req.StepName)
 		variant, _ := sanitizeAgentText(req.Variant)
 		callJobName, _ := sanitizeAgentText(req.JobName)
-		if err := s.store.UpsertStepReport(r.Context(), parentRunID, req.StepIndex, req.StageIndex, stepName, variant, "Running", nil, nil, nil, run.ID, callJobName); err != nil && !errors.Is(err, store.ErrRunFinalized) {
+		if _, err := s.store.UpsertStepReport(r.Context(), parentRunID, req.StepIndex, req.StageIndex, stepName, variant, "Running", nil, nil, nil, run.ID, callJobName); err != nil && !errors.Is(err, store.ErrRunFinalized) {
 			// The child exists already; do not fail the request. The agent's
 			// step report retries the link.
 			slog.Warn("create child run: record parent link", "parentRunId", parentRunID, "childRunId", run.ID, "error", err)

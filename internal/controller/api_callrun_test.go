@@ -49,7 +49,7 @@ func TestGetRun_CalledBy(t *testing.T) {
 
 	parent := mustCreateRun(t, pg, "parent-job")
 	child := mustCreateRun(t, pg, "child-job")
-	require.NoError(t, pg.UpsertStepReport(ctx, parent, 0, 0, "call-child", "", "Succeeded", nil, nil, nil, child, "child-job"))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, parent, 0, 0, "call-child", "", "Succeeded", nil, nil, nil, child, "child-job")))
 
 	// GET /runs/{child} → response.calledBy points at the parent
 	run := getRunViaAPI(t, srv, child)

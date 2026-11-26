@@ -1160,7 +1160,24 @@ var ErrRunFinalized = errors.New("run already finalized")
 // concurrent finalization (FinishRun's CAS UPDATE) either commits first -- and the
 // guard sees it -- or waits until this write commits. Returns ErrRunFinalized when
 // the run is terminal and ErrRunNotFound when it does not exist.
-func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) error {
+func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) (bool, error) {
+	// A transaction-scoped advisory lock keyed on the step serializes concurrent
+	// reports of one step, so the previous status read below is exact and exactly
+	// one report observes the move into a terminal status.
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, fmt.Sprintf("step_reports/%s/%d/%s", runID, stepIndex, variant)); err != nil {
+		return false, err
+	}
+	var prev *string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM step_reports WHERE run_id = $1 AND step_index = $2 AND variant = $3`,
+		runID, stepIndex, variant).Scan(&prev); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
 	const q = `
 		INSERT INTO step_reports(run_id, step_index, variant, stage_index, step_name, status, exit_code, started_at, ended_at, child_run_id, call_job_name)
 		SELECT r.id, $2, $3, $4, $5, $6, $7, $8, $9, NULLIF($10,'')::uuid, NULLIF($11,'')
@@ -1177,18 +1194,29 @@ func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex
 		      child_run_id  = COALESCE(EXCLUDED.child_run_id, step_reports.child_run_id),
 		      call_job_name = COALESCE(EXCLUDED.call_job_name, step_reports.call_job_name);
 	`
-	tag, err := p.pool.Exec(ctx, q, runID, stepIndex, variant, stageIndex, stepName, status, exitCode, startedAt, endedAt, childRunID, callJobName)
+	tag, err := tx.Exec(ctx, q, runID, stepIndex, variant, stageIndex, stepName, status, exitCode, startedAt, endedAt, childRunID, callJobName)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if tag.RowsAffected() == 0 {
 		// The guard matched no run: it is either missing or already terminal.
 		if _, gerr := p.GetRun(ctx, runID); gerr != nil {
-			return gerr
+			return false, gerr
 		}
-		return ErrRunFinalized
+		return false, ErrRunFinalized
 	}
-	return nil
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return isTerminalStepStatus(status) && (prev == nil || !isTerminalStepStatus(*prev)), nil
+}
+
+func isTerminalStepStatus(s string) bool {
+	switch s {
+	case "Succeeded", "Failed", "Cancelled", "Skipped":
+		return true
+	}
+	return false
 }
 
 // MarkRunStepsInterrupted terminalizes a reaped run's Running step reports: a

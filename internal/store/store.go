@@ -347,7 +347,7 @@ type Store interface {
 	// CountAgentsByLiveness partitions registered agents by heartbeat freshness.
 	CountAgentsByLiveness(ctx context.Context, staleAfter time.Duration) (alive, stale int, err error)
 	DeleteRun(ctx context.Context, id string) error
-	UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) error
+	UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) (firstTerminal bool, err error)
 	GetRunSteps(ctx context.Context, runID string) ([]api.StepReport, error)
 	// MarkRunStepsInterrupted terminalizes a reaped run's Running step reports so
 	// a run failed by the stuck-run reaper / agent-reconcile (agent lost) does
@@ -514,6 +514,18 @@ type Store interface {
 	// Outputs — step level
 	SetStepOutput(ctx context.Context, runID string, stepIndex int, variant, key, value string) error
 	GetStepOutputs(ctx context.Context, runID string, stepIndex int) (map[string]string, error)
+	// GetStepVariantOutputs returns only one variant's outputs (variant "" is a non-matrix step).
+	GetStepVariantOutputs(ctx context.Context, runID string, stepIndex int, variant string) (map[string]string, error)
+
+	// Custom metrics
+	ApplyMetricGauge(ctx context.Context, g MetricGauge, labelsHash, op string, maxSeries int) error
+	ListMetricGauges(ctx context.Context, since time.Time) ([]MetricGauge, error)
+	DeleteMetricGaugesBefore(ctx context.Context, before time.Time) (int64, error)
+	PutMetricRealtime(ctx context.Context, r MetricRealtime) error
+	// DeleteMetricRealtime removes one step's rows; stepKey "" deletes the run-level rows only.
+	DeleteMetricRealtime(ctx context.Context, runID, stepKey string) error
+	ListMetricRealtime(ctx context.Context) ([]MetricRealtime, error)
+	DeleteMetricRealtimeForTerminalRuns(ctx context.Context) (int64, error)
 
 	// Outputs — run level
 	SetRunOutput(ctx context.Context, runID, key, value string) error

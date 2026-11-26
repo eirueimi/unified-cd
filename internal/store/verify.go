@@ -70,6 +70,8 @@ var schemaSentinels = []sentinel{
 	{version: 33, migration: "033_run_pod_bindings_multi", table: "run_pod_bindings", index: "run_pod_bindings_run_pod_uid_key"},
 	// trigger is nullable with no default (rows from pre-034 replicas stay NULL). The same file also adds runs.job_labels, job_annotations and scheduled_at, and jobs.labels and annotations.
 	{version: 34, migration: "034_run_metadata", table: "runs", column: "trigger"},
+	// The same file also creates custom_metric_realtime.
+	{version: 35, migration: "035_custom_metrics", table: "custom_metric_gauges"},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel
