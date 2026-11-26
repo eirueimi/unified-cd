@@ -31,8 +31,8 @@ func TestInstrumentedStoreCountsTransitions(t *testing.T) {
 	// only when both timestamps are present.
 	started := time.Now().Add(-30 * time.Second)
 	ended := time.Now()
-	require.NoError(t, st.UpsertStepReport(ctx, run.ID, 0, 0, "build", "", "Running", nil, &started, nil, "", ""))
-	require.NoError(t, st.UpsertStepReport(ctx, run.ID, 0, 0, "build", "", "Succeeded", nil, &started, &ended, "", ""))
+	require.NoError(t, dropFirstTerminal(st.UpsertStepReport(ctx, run.ID, 0, 0, "build", "", "Running", nil, &started, nil, "", "")))
+	require.NoError(t, dropFirstTerminal(st.UpsertStepReport(ctx, run.ID, 0, 0, "build", "", "Succeeded", nil, &started, &ended, "", "")))
 	assert.Equal(t, 0.0, testutil.ToFloat64(m.stepsCompleted.WithLabelValues("Running")))
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.stepsCompleted.WithLabelValues("Succeeded")))
 

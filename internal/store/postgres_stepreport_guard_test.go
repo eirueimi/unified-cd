@@ -21,16 +21,16 @@ func TestPostgres_UpsertStepReport_RejectsTerminalRun(t *testing.T) {
 
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
-	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "s0", "", "Running", nil, nil, nil, "", ""))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, run.ID, 0, 0, "s0", "", "Running", nil, nil, nil, "", "")))
 	updated, err := pg.FinishRun(ctx, run.ID, api.RunFailed)
 	require.NoError(t, err)
 	require.True(t, updated)
 
 	ec := 0
 	end := time.Now().UTC()
-	err = pg.UpsertStepReport(ctx, run.ID, 0, 0, "s0", "", "Succeeded", &ec, nil, &end, "", "")
+	_, err = pg.UpsertStepReport(ctx, run.ID, 0, 0, "s0", "", "Succeeded", &ec, nil, &end, "", "")
 	require.ErrorIs(t, err, ErrRunFinalized)
-	err = pg.UpsertStepReport(ctx, run.ID, 1, 0, "s1", "", "Running", nil, nil, nil, "", "")
+	_, err = pg.UpsertStepReport(ctx, run.ID, 1, 0, "s1", "", "Running", nil, nil, nil, "", "")
 	require.ErrorIs(t, err, ErrRunFinalized)
 
 	steps, err := pg.GetRunSteps(ctx, run.ID)
@@ -39,6 +39,6 @@ func TestPostgres_UpsertStepReport_RejectsTerminalRun(t *testing.T) {
 	assert.Equal(t, "Running", steps[0].Status)
 	assert.Nil(t, steps[0].ExitCode)
 
-	err = pg.UpsertStepReport(ctx, "00000000-0000-0000-0000-000000000000", 0, 0, "s", "", "Running", nil, nil, nil, "", "")
+	_, err = pg.UpsertStepReport(ctx, "00000000-0000-0000-0000-000000000000", 0, 0, "s", "", "Running", nil, nil, nil, "", "")
 	require.ErrorIs(t, err, ErrRunNotFound)
 }

@@ -136,7 +136,7 @@ func TestAPI_GetRunSteps_MergesPlanned(t *testing.T) {
 	require.NoError(t, err)
 
 	// Only step 0 ("a") has been reported so far.
-	require.NoError(t, pg.UpsertStepReport(t.Context(), run.ID, 0, 0, "a", "", "Succeeded", nil, nil, nil, "", ""))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(t.Context(), run.ID, 0, 0, "a", "", "Succeeded", nil, nil, nil, "", "")))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+run.ID+"/steps", nil)
 	req.Header.Set("Authorization", "Bearer secret")

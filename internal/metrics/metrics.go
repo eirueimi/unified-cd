@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -38,6 +39,10 @@ type Metrics struct {
 	logLines   *prometheus.CounterVec
 	logBytes   prometheus.Counter
 	queueWait  prometheus.Histogram
+
+	customErrors      *prometheus.CounterVec
+	custom            *CustomEmitter
+	builtinCollectors []prometheus.Collector
 }
 
 // New builds a Metrics with its own registry (never the global default, so
@@ -135,10 +140,17 @@ func New() *Metrics {
 			Buckets: []float64{1, 5, 15, 30, 60, 300, 900, 1800, 3600},
 		}),
 	}
-	m.reg.MustRegister(m.runsCreated, m.runsFinished, m.stepsCompleted,
+	m.customErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "unifiedcd_custom_metric_errors_total",
+		Help: "Runtime failures of job-defined custom metrics, by exposed metric name and reason (template, value, conflict, series_cap, db).",
+	}, []string{"metric", "reason"})
+	m.builtinCollectors = []prometheus.Collector{m.runsCreated, m.runsFinished, m.stepsCompleted,
 		m.stepDuration, m.webhookEvents, m.httpRequests, m.httpDuration,
 		m.agentAuthEvents, m.gitCredentialTokens, m.githubAppTokenRequests, m.collectorErrors, m.buildInfo,
-		m.bgRuns, m.bgDuration, m.bgItems, m.logLines, m.logBytes, m.queueWait)
+		m.bgRuns, m.bgDuration, m.bgItems, m.logLines, m.logBytes, m.queueWait, m.customErrors}
+	m.reg.MustRegister(m.builtinCollectors...)
+	// Disabled until ConfigureCustom; a disabled emitter ignores every sample.
+	m.custom = NewCustomEmitter(m.reg, CustomConfig{}, nil, m.customErrors)
 
 	// The Go and process collectors have to be registered explicitly here.
 	// prometheus.DefaultRegisterer installs them for you; a private registry
@@ -151,11 +163,42 @@ func New() *Metrics {
 	// Metrics instances in one process get their own copies rather than
 	// colliding, which is what a duplicate registration against the global
 	// registry would do.
-	m.reg.MustRegister(
+	goProc := []prometheus.Collector{
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-	)
+	}
+	m.reg.MustRegister(goProc...)
+	m.builtinCollectors = append(m.builtinCollectors, goProc...)
 	return m
+}
+
+// Custom returns the job-defined metric emitter. It is disabled (every sample
+// ignored) until ConfigureCustom is called. A nil Metrics returns nil, and a
+// nil emitter is a no-op.
+func (m *Metrics) Custom() *CustomEmitter {
+	if m == nil {
+		return nil
+	}
+	return m.custom
+}
+
+// ConfigureCustom enables the emitter with cfg and registers the unchecked
+// collector that exports DB-backed gauges and realtime rows. shapes resolves an
+// EXPOSED metric name (unifiedcd_job_<name>) to its current shape. Call it at
+// most once per Metrics.
+func (m *Metrics) ConfigureCustom(cfg CustomConfig, gauges CustomGaugeStore, shapes func(name string) (dsl.MetricShape, bool)) error {
+	if m == nil {
+		return nil
+	}
+	// Register first: the emitter stays disabled if the collector cannot be
+	// installed, so samples are not accepted that could never be exported.
+	// The combined collector takes over exposing the vecs (see
+	// customCollector.em); the emitter's own vec collector then goes quiet.
+	if err := registerCustomCollector(m.reg, cfg, gauges, shapes, m.customErrors, nil, m.custom); err != nil {
+		return err
+	}
+	m.custom.configure(cfg, gauges)
+	return nil
 }
 
 // SetBuildInfo publishes the controller's build version as the label of a

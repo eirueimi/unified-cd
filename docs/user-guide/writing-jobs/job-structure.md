@@ -51,6 +51,8 @@ spec:
 
 Labels and annotations are recorded on each run when it is created and are exposed to steps as `UNIFIED_JOB_LABELS_JSON`, `UNIFIED_JOB_ANNOTATIONS_JSON` and `.Job.Labels` / `.Job.Annotations`. See [Run Metadata](run-metadata.md).
 
+A job can also publish its own Prometheus metrics with `spec.metrics` and per-step `metrics:`. See [Custom Metrics](custom-metrics.md).
+
 ### Hierarchical grouping (annotations.path)
 
 A job's position in the Web UI tree comes from `metadata.annotations.path`.

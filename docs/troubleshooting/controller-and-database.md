@@ -609,3 +609,32 @@ GitCredential "<name>" for host "<host>": secretRef "<secret>" is the private ke
 **Cause:** a `token` or `sshKey` credential sends its secret to the git host as a password or SSH key, so it may not name the StoredSecret that holds a GitHub App private key: the key never leaves the controller. The first message appears when you save the `token`/`sshKey` credential, the second when you save the `githubApp` credential, and the third when such a pairing already exists in the store (for example from before this check).
 
 **Fix:** give each credential its own StoredSecret: store the PAT or SSH key under a different name (`unified-cli secret set <new-name>`) and point the `token`/`sshKey` credential's `secretRef` at it, or delete the credential that should not use the key.
+
+## Applying a job fails with a metric conflict
+
+**Symptom:** `unified-cd apply`, the API or a GitOps sync rejects a job with HTTP 400 and one of:
+
+```
+metric "<name>" conflicts with job "<job>": <type|labels|help|buckets|realtime> differ
+metric "<name>" conflicts with job "<job>": family differ (both expose <family>)
+metric "<name>" exposes <family>, which collides with a built-in metric
+```
+
+Inside one job, the same rules fail with `spec.metrics...: metric "<name>" is defined with a different <type|labels|help|buckets|realtime> than at <path>; the same name must have the same shape within a job` or `metric "<name>" exposes <family>, which collides with metric "<other>"`.
+
+**Cause:** job-defined [custom metrics](../user-guide/writing-jobs/custom-metrics.md) share one namespace on `/metrics`. Two definitions with the same `name` must agree on type, label keys, help, buckets and `realtime`; two different names may not expose the same family (a counter `x` and a gauge `x_total` both produce `unifiedcd_job_x_total`; a histogram `x` also owns `x_bucket`, `x_sum` and `x_count`); and nothing may collide with a built-in `unifiedcd_*` metric.
+
+**Fix:** rename the metric, or make the definitions identical. To change the shape of a metric shared by several jobs, change every job that uses it. The job named in the message is the other owner of the name.
+
+## Custom metric samples are missing (`series_cap`, `conflict`)
+
+**Symptom:** a job's `unifiedcd_job_*` series is missing or stops updating, and `unifiedcd_custom_metric_errors_total{metric="unifiedcd_job_...",reason="..."}` increases.
+
+**Cause and fix by `reason`:**
+
+- `series_cap`: the metric already has `customMetrics.maxSeriesPerMetric` series (default 1000) on that replica, so samples with a new label combination are dropped; existing series keep updating. Remove high-cardinality labels (never label with `.Run.ID`), raise the cap, or wait for old series to expire after `customMetrics.ttl`.
+- `conflict`: the definition in use disagrees with the one already exposed, or its family collides with another custom metric. It also appears for up to about 30 seconds on other replicas after a shape change is applied. If it persists, look for two jobs using the name differently.
+- `template` or `value`: a `when`, label or value template failed, or the value was not a finite number (negative for a counter). Check the definition against the [template context](../user-guide/writing-jobs/custom-metrics.md#template-context); step-level fields do not exist in `spec.metrics`.
+- `db`: the controller could not read or write gauge rows; check the controller log for `metrics: list custom gauges`, `metrics: list custom realtime gauges` and `metrics: apply custom gauge` warnings, and database health.
+
+Steps that were interrupted do not emit step-level metrics; that is not an error.

@@ -113,6 +113,20 @@ func (h *retryHarness) lastStatusFor(stepIndex int) string {
 	return status
 }
 
+// lastAttemptsFor returns the Attempts field of the last ReportStep call
+// recorded for stepIndex.
+func (h *retryHarness) lastAttemptsFor(stepIndex int) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, r := range h.reports {
+		if r.StepIndex == stepIndex {
+			n = r.Attempts
+		}
+	}
+	return n
+}
+
 // retrySeparatorCount counts how many "── retry" separator lines were shipped
 // to stepIndex's stderr stream.
 func (h *retryHarness) retrySeparatorCount(stepIndex int) int {
@@ -207,6 +221,7 @@ func TestRetry_FailsThenSucceeds(t *testing.T) {
 	assert.Equal(t, "Succeeded", h.lastStatusFor(0), "final reported status should be Succeeded")
 	assert.Equal(t, "Succeeded", h.finishStatus)
 	assert.Equal(t, 2, h.retrySeparatorCount(0), "expected a retry separator logged before attempts 2 and 3")
+	assert.Equal(t, 3, h.lastAttemptsFor(0), "the terminal report carries the last try as attempts")
 }
 
 // TestRetry_PerAttemptTimeoutThenSucceeds proves the per-attempt timeout
@@ -356,6 +371,7 @@ func TestRetry_NoRetryRunsOnce(t *testing.T) {
 	assert.Equal(t, "Failed", h.lastStatusFor(0))
 	assert.Equal(t, "Failed", h.finishStatus)
 	assert.Equal(t, 0, h.retrySeparatorCount(0))
+	assert.Equal(t, 1, h.lastAttemptsFor(0))
 }
 
 // TestRetry_CancelNotRetried: a master cancellation arriving while attempt 1

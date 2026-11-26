@@ -308,8 +308,8 @@ func runCorpusScript(t *testing.T, script string, dir string) (exitCode int, err
 // (templates/ migrated to kind: JobTemplate in the uses: JobTemplate change;
 // both kinds feed the same script-extraction walk).
 const (
-	wantFilesWithJobDocs = 57
-	wantTotalScripts     = 99
+	wantFilesWithJobDocs = 58
+	wantTotalScripts     = 100
 
 	// wantSkipped is the number of run: scripts the gate legitimately does
 	// NOT execute under interp because their step declares a non-default

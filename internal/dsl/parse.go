@@ -267,6 +267,9 @@ func (j *Job) Validate() error {
 	if err := validateStepEntries(j.Spec.Finally, "spec.finally", nameSet, false, j.Spec.Native); err != nil {
 		return err
 	}
+	if err := validateJobMetrics(j.Spec); err != nil {
+		return err
+	}
 
 	// Runs after validateStepEntries so a forbidden step target gets the
 	// spec.steps[i] (name) error form. Plain (uses-free, inline-podTemplate)

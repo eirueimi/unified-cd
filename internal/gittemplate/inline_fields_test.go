@@ -65,6 +65,9 @@ var stepEntryInlinePolicy = map[string]inlineFieldPolicy{
 	// step-level runsIn: was removed in favour of container: (2026-07-08 job
 	// isolation); a template still carrying one is an error, not a drop.
 	"RunsIn": fieldRejected,
+	// metrics: is not supported in a JobTemplate in v1 (ParseJobTemplate rejects
+	// it); expansion refuses it too rather than carry it into run specs.
+	"Metrics": fieldRejected,
 
 	// Parallel: selects the other branch of renameInnerEntry.
 	"Parallel": fieldNotApplicable,
@@ -300,6 +303,15 @@ func TestRenameInnerEntryPreservesEveryStepEntryField(t *testing.T) {
 	withRunsIn.RunsIn = &dsl.RunsIn{Image: "golang:1.22"}
 	_, err = renameInnerEntry("deploy", map[string]bool{"gate": true}, "", false, "", "", nil, "", withRunsIn)
 	require.Error(t, err, "step-level runsIn: must be rejected, not dropped")
+
+	withMetrics := fullyPopulatedTemplateStep()
+	withMetrics.Metrics = []dsl.MetricDef{{Name: "m", Help: "h", Counter: &dsl.CounterMetric{}}}
+	_, err = renameInnerEntry("deploy", map[string]bool{"gate": true}, "", false, "", "", nil, "", withMetrics)
+	require.ErrorContains(t, err, "metrics: is not supported in a JobTemplate", "step metrics must be rejected, not carried")
+
+	parWithMetrics := dsl.StepEntry{Parallel: []dsl.Step{stepFromEntry(t, withMetrics)}}
+	_, err = renameInnerEntry("deploy", map[string]bool{"gate": true}, "", false, "", "", nil, "", parWithMetrics)
+	require.ErrorContains(t, err, "metrics: is not supported in a JobTemplate")
 }
 
 // stepFromEntry copies every same-named field of a dsl.StepEntry fixture onto a

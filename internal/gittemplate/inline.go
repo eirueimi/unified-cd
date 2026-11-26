@@ -268,6 +268,9 @@ func renameInnerEntry(usesName string, innerNames map[string]bool, outerIf strin
 			if ps.RunsIn != nil {
 				return dsl.StepEntry{}, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", ps.Name)
 			}
+			if len(ps.Metrics) > 0 {
+				return dsl.StepEntry{}, fmt.Errorf("template step %q: metrics: is not supported in a JobTemplate; define metrics on the Job", ps.Name)
+			}
 			if scopeMode {
 				if err := checkScopeStepAllowed(ps.Name, ps.Container, ps.Approval != nil, ps.Call != nil); err != nil {
 					return dsl.StepEntry{}, err
@@ -298,7 +301,7 @@ func renameInnerEntry(usesName string, innerNames map[string]bool, outerIf strin
 	// Fields NOT carried verbatim, and why:
 	//   - Name/If/Env/Outputs/Run and the cache/artifact/post sub-structs are
 	//     rewritten below (prefixing, if: combination, ref rewriting).
-	//   - Uses and RunsIn are rejected outright below (both are errors).
+	//   - Uses, RunsIn and Metrics are rejected outright below (all are errors).
 	//   - ScopeID/ScopeImage are overwritten in scope mode; outside scope mode
 	//     they carry through, which is what a nested scope-mode uses inside
 	//     this template needs (the parallel: branch already behaves this way).
@@ -314,6 +317,9 @@ func renameInnerEntry(usesName string, innerNames map[string]bool, outerIf strin
 	ns.Outputs = rewriteMap(inner.Outputs, usesName, innerNames)
 	if inner.RunsIn != nil {
 		return dsl.StepEntry{}, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", inner.Name)
+	}
+	if len(inner.Metrics) > 0 {
+		return dsl.StepEntry{}, fmt.Errorf("template step %q: metrics: is not supported in a JobTemplate; define metrics on the Job", inner.Name)
 	}
 	if scopeMode {
 		if err := checkScopeStepAllowed(inner.Name, inner.Container, inner.Approval != nil, inner.Call != nil); err != nil {

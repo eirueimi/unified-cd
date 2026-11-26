@@ -57,7 +57,7 @@ func TestAPI_AgentReconcile_FailsOrphanedRunsAndCascades(t *testing.T) {
 		require.NoError(t, pg.MarkRunRunning(ctx, id))
 	}
 	// Link parent→child the same way a call: step does.
-	require.NoError(t, pg.UpsertStepReport(ctx, parent.ID, 0, 0, "call-step", "", "Running", nil, nil, nil, child.ID, "childjob"))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, parent.ID, 0, 0, "call-step", "", "Running", nil, nil, nil, child.ID, "childjob")))
 
 	agentToken := issueAgentAccessForTest(t, pg, "agent-1", nil, nil)
 	rec := reconcilePost(s, "agent-1", agentToken)

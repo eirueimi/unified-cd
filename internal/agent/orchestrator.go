@@ -805,6 +805,8 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 
 			status := "Succeeded"
 			exitCode := 0
+			// lastTry is the last attempt that ran; it is reported as the step's attempt count.
+			lastTry := 0
 			tplData := sctx.snapshot()
 			if step.MatrixValues != nil {
 				tplData.Matrix = step.MatrixValues
@@ -907,6 +909,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 						Name: step.DisplayName(), Attempt: try, MaxAttempts: attempts, LastExitCode: ec,
 					}
 					lastData = attemptData
+					lastTry = try
 					expandedRun, tplErr := dsl.ExpandStepTemplate(step.Run, attemptData, "")
 					if tplErr != nil {
 						slog.Error("template expansion failed", "step", step.Name, "error", tplErr)
@@ -1109,6 +1112,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				Variant:     step.MatrixKey,
 				Status:      status,
 				ExitCode:    exitCode,
+				Attempts:    lastTry,
 				StartedAt:   started,
 				EndedAt:     ended,
 				ChildRunID:  callChildRunID,

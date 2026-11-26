@@ -1,0 +1,68 @@
+# Demonstrates: job-defined Prometheus metrics. A run counter by status, a run
+# duration histogram, a step gauge fed from a step output, and a realtime gauge
+# that shows how long the current run has been going. See
+# docs/user-guide/writing-jobs/custom-metrics.md.
+# Usage:
+#   unified-cd apply -f examples/jobs/custom-metrics/job.yaml
+#   unified-cd run trigger custom-metrics-demo
+#   unified-cd run trigger custom-metrics-demo --param fail=true
+# Then look for unifiedcd_job_* on the controller's /metrics endpoint.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: custom-metrics-demo
+  labels:
+    team: platform
+spec:
+  params:
+    inputs:
+      - name: fail
+        type: bool
+        default: false
+      - name: coverage
+        type: string
+        default: "0.82"
+  agentSelector:
+    - kind:docker
+  metrics:
+    # Counter: one increment per finished run, split by outcome. Exposed as
+    # unifiedcd_job_demo_runs_total{status,team}.
+    - name: demo_runs
+      help: Demo runs by outcome
+      labels:
+        - key: status
+          value: "{{ .Run.Status }}"
+        - key: team
+          value: "{{ .Job.Labels.team }}"
+      counter: {}
+    # Histogram: run duration in seconds, observed when the run finishes.
+    - name: demo_duration_seconds
+      help: Demo run duration
+      histogram:
+        value: "{{ .Run.Duration }}"
+        buckets: [5, 15, 30, 60, 120, 300]
+    # Realtime gauge: the elapsed time of each running run, computed at scrape
+    # time and removed when the run finishes. The value must be exactly
+    # {{ .Run.Duration }}, and labels may only use fields known at start.
+    - name: demo_running_seconds
+      help: Elapsed time of a running demo run
+      gauge:
+        value: "{{ .Run.Duration }}"
+        realtime: true
+  steps:
+    - name: test
+      run: |
+        echo "running tests"
+        if [ "{{ .Params.fail }}" = "true" ]; then
+          echo "simulated failure" >&2
+          exit 1
+        fi
+      outputs:
+        coverage: "{{ .Params.coverage }}"
+      metrics:
+        # Gauge from a step output; emitted only when the step succeeded.
+        - name: demo_test_coverage_ratio
+          help: Test coverage reported by the last successful demo test step
+          when: '{{ eq .Step.Status "Succeeded" }}'
+          gauge:
+            value: "{{ .Outputs.coverage }}"

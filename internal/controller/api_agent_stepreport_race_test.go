@@ -23,9 +23,9 @@ type finalizeBeforeUpsertStore struct {
 	runID string
 }
 
-func (f *finalizeBeforeUpsertStore) UpsertStepReport(ctx context.Context, runID string, stepIndex, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) error {
+func (f *finalizeBeforeUpsertStore) UpsertStepReport(ctx context.Context, runID string, stepIndex, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) (bool, error) {
 	if _, err := f.Store.FinishRun(ctx, f.runID, api.RunFailed); err != nil {
-		return err
+		return false, err
 	}
 	return f.Store.UpsertStepReport(ctx, runID, stepIndex, stageIndex, stepName, variant, status, exitCode, startedAt, endedAt, childRunID, callJobName)
 }

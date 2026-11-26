@@ -70,10 +70,10 @@ func TestPostgres_UpsertStepReport(t *testing.T) {
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`), JobMeta{})
 	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "", RunOrigin{})
 
-	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "step-one", "", "Running", nil, nil, nil, "", ""))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, run.ID, 0, 0, "step-one", "", "Running", nil, nil, nil, "", "")))
 	ec := 0
 	end := time.Now().UTC()
-	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "step-one", "", "Succeeded", &ec, nil, &end, "", ""))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, run.ID, 0, 0, "step-one", "", "Succeeded", &ec, nil, &end, "", "")))
 }
 
 func TestPostgres_MarkRunStepsInterrupted(t *testing.T) {
@@ -86,9 +86,9 @@ func TestPostgres_MarkRunStepsInterrupted(t *testing.T) {
 	end := time.Now().UTC()
 	// A terminal step, the Running step executing when the agent died, and a
 	// WaitingApproval step (a distinct lifecycle left untouched).
-	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "hello", "", "Succeeded", &ec, nil, &end, "", ""))
-	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 1, 0, "long_running", "", "Running", nil, nil, nil, "", ""))
-	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 2, 0, "gate", "", "WaitingApproval", nil, nil, nil, "", ""))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, run.ID, 0, 0, "hello", "", "Succeeded", &ec, nil, &end, "", "")))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, run.ID, 1, 0, "long_running", "", "Running", nil, nil, nil, "", "")))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, run.ID, 2, 0, "gate", "", "WaitingApproval", nil, nil, nil, "", "")))
 
 	n, err := pg.MarkRunStepsInterrupted(ctx, run.ID)
 	require.NoError(t, err)
@@ -119,7 +119,7 @@ func TestPostgres_UpsertStepReport_StageIndex(t *testing.T) {
 
 	exitCode := 0
 	now := time.Now().UTC()
-	err := pg.UpsertStepReport(ctx, run.ID, 0, 1, "build", "", "Succeeded", &exitCode, &now, &now, "", "")
+	_, err := pg.UpsertStepReport(ctx, run.ID, 0, 1, "build", "", "Succeeded", &exitCode, &now, &now, "", "")
 	require.NoError(t, err)
 
 	steps, err := pg.GetRunSteps(ctx, run.ID)
@@ -137,8 +137,8 @@ func TestStepReports_MatrixVariantsDoNotClobber(t *testing.T) {
 
 	ec := 0
 	now := time.Now().UTC()
-	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "build (linux, amd64)", "linux/amd64", "Succeeded", &ec, &now, &now, "", ""))
-	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "build (linux, arm64)", "linux/arm64", "Running", nil, &now, nil, "", ""))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, run.ID, 0, 0, "build (linux, amd64)", "linux/amd64", "Succeeded", &ec, &now, &now, "", "")))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, run.ID, 0, 0, "build (linux, arm64)", "linux/arm64", "Running", nil, &now, nil, "", "")))
 
 	steps, err := pg.GetRunSteps(ctx, run.ID)
 	require.NoError(t, err)
@@ -147,7 +147,7 @@ func TestStepReports_MatrixVariantsDoNotClobber(t *testing.T) {
 	assert.Equal(t, "linux/arm64", steps[1].Variant)
 
 	// same (run, index, variant) upserts in place
-	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "build (linux, arm64)", "linux/arm64", "Succeeded", &ec, &now, &now, "", ""))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(ctx, run.ID, 0, 0, "build (linux, arm64)", "linux/arm64", "Succeeded", &ec, &now, &now, "", "")))
 	steps, err = pg.GetRunSteps(ctx, run.ID)
 	require.NoError(t, err)
 	require.Len(t, steps, 2)

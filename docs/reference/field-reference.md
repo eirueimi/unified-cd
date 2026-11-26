@@ -46,6 +46,7 @@
 | `detached` | boolean | no | Detached marks this job's runs as lightweight orchestrators: they do not consume an agent's MaxConcurrent budget and are claimed from a separate MaxDetachedConcurrent pool, and get an independent per-run workspace on host agents. Intended for jobs that mostly issue call: steps and wait. Orthogonal to Native — a native host orchestrator may be detached. The json tag matters: the store persists the spec as JSON and re-reads this. |
 | `displayName` | string | no | A human-readable label for this job's runs, e.g. "deploy {{ .Params.env }} @ {{ .Params.ref }}" -- interpolated with the run's params at creation, shown in the WebUI in place of the truncated run ID. |
 | `finally` | []StepEntry | no | Finally runs after the main DAG completes, on success, failure, or cancellation. Same structure as Steps. A finally step's `if:` defaults to always-run; use if: failure()/success() to filter. A finally step that fails marks the run Failed (after all finally steps run). |
+| `metrics` | []MetricDef | no | Metrics are custom Prometheus metrics evaluated when the run finishes. |
 | `native` | boolean | no | Native opts the whole job into host-process execution (no claim pod, no podTemplate, no container: steps). Host agents only; the default (false) is the isolated pod model on both backends. |
 | `params` | Params | no | Params is optional: a job with no declared inputs/outputs omits it entirely (the common case — see examples/jobs/*.yaml). Validate does not require it, so the generated schema must not either (schemagen derives "required" from the absence of omitempty/pointer). |
 | `podTemplate` | PodTemplate | no |  |
@@ -109,6 +110,7 @@ The two forms are mutually exclusive; Validate enforces this.
 | `foreach` | ForeachDef | no |  |
 | `if` | string | no |  |
 | `matrix` | MatrixDef | no |  |
+| `metrics` | []MetricDef | no | Metrics are custom Prometheus metrics emitted when this step finishes. |
 | `name` | string | no | Concrete step fields (identical to Step, minus Needs) |
 | `outputs` | map[string]string | no |  |
 | `parallel` | []Step | no | Parallel group (mutually exclusive with all concrete step fields above) |
@@ -179,6 +181,60 @@ declaration order; the combination key joins values with "/" in that order
 |-------|------|----------|-------------|
 | `exclude` | []map[string]string | no |  |
 
+### MetricDef
+
+MetricDef is one job-defined Prometheus metric. It is declared in a
+metrics: block on spec (evaluated when the run finishes) or on a step
+(evaluated when the step finishes). Exactly one of counter, gauge or
+histogram must be set.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `counter` | CounterMetric | no |  |
+| `gauge` | GaugeMetric | no |  |
+| `help` | string | yes | Help is the Prometheus help text. |
+| `histogram` | HistogramMetric | no |  |
+| `labels` | []MetricLabel | no | Labels are the label key/value templates attached to every sample. |
+| `name` | string | yes | Name is the metric name without the unifiedcd_job_ prefix. |
+| `when` | string | no | When is an optional condition; the metric is emitted only when it is true. |
+
+### CounterMetric
+
+CounterMetric increments a counter by Value (empty means "1").
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `value` | string | no |  |
+
+### GaugeMetric
+
+GaugeMetric sets, adds to or subtracts from a gauge.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `operation` | string | no | Operation is one of Set, Add or Sub (empty means Set). |
+| `realtime` | boolean | no | Realtime updates the gauge while the run (or step) is still running. Only valid when value is exactly {{ .Run.Duration }} (run level) or {{ .Step.Duration }} (step level). |
+| `value` | string | yes |  |
+
+### HistogramMetric
+
+HistogramMetric observes Value into a histogram. Buckets are optional
+(default Prometheus buckets) and must be strictly increasing when given.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `buckets` | []number | no |  |
+| `value` | string | yes |  |
+
+### MetricLabel
+
+MetricLabel is one label of a metric. Value is a template.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `key` | string | yes |  |
+| `value` | string | yes |  |
+
 ### Step
 
 Step is a concrete step. Used inside parallel: blocks and as the body of a StepEntry.
@@ -195,6 +251,7 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 | `foreach` | ForeachDef | no |  |
 | `if` | string | no |  |
 | `matrix` | MatrixDef | no |  |
+| `metrics` | []MetricDef | no | Metrics are custom Prometheus metrics emitted when this step finishes. |
 | `name` | string | yes |  |
 | `outputs` | map[string]string | no |  |
 | `post` | PostStep | no |  |
@@ -399,6 +456,7 @@ The two forms are mutually exclusive; Validate enforces this.
 | `foreach` | ForeachDef | no |  |
 | `if` | string | no |  |
 | `matrix` | MatrixDef | no |  |
+| `metrics` | []MetricDef | no | Metrics are custom Prometheus metrics emitted when this step finishes. |
 | `name` | string | no | Concrete step fields (identical to Step, minus Needs) |
 | `outputs` | map[string]string | no |  |
 | `parallel` | []Step | no | Parallel group (mutually exclusive with all concrete step fields above) |
@@ -478,6 +536,60 @@ declaration order; the combination key joins values with "/" in that order
 |-------|------|----------|-------------|
 | `exclude` | []map[string]string | no |  |
 
+### MetricDef
+
+MetricDef is one job-defined Prometheus metric. It is declared in a
+metrics: block on spec (evaluated when the run finishes) or on a step
+(evaluated when the step finishes). Exactly one of counter, gauge or
+histogram must be set.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `counter` | CounterMetric | no |  |
+| `gauge` | GaugeMetric | no |  |
+| `help` | string | yes | Help is the Prometheus help text. |
+| `histogram` | HistogramMetric | no |  |
+| `labels` | []MetricLabel | no | Labels are the label key/value templates attached to every sample. |
+| `name` | string | yes | Name is the metric name without the unifiedcd_job_ prefix. |
+| `when` | string | no | When is an optional condition; the metric is emitted only when it is true. |
+
+### CounterMetric
+
+CounterMetric increments a counter by Value (empty means "1").
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `value` | string | no |  |
+
+### GaugeMetric
+
+GaugeMetric sets, adds to or subtracts from a gauge.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `operation` | string | no | Operation is one of Set, Add or Sub (empty means Set). |
+| `realtime` | boolean | no | Realtime updates the gauge while the run (or step) is still running. Only valid when value is exactly {{ .Run.Duration }} (run level) or {{ .Step.Duration }} (step level). |
+| `value` | string | yes |  |
+
+### HistogramMetric
+
+HistogramMetric observes Value into a histogram. Buckets are optional
+(default Prometheus buckets) and must be strictly increasing when given.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `buckets` | []number | no |  |
+| `value` | string | yes |  |
+
+### MetricLabel
+
+MetricLabel is one label of a metric. Value is a template.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `key` | string | yes |  |
+| `value` | string | yes |  |
+
 ### Step
 
 Step is a concrete step. Used inside parallel: blocks and as the body of a StepEntry.
@@ -494,6 +606,7 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 | `foreach` | ForeachDef | no |  |
 | `if` | string | no |  |
 | `matrix` | MatrixDef | no |  |
+| `metrics` | []MetricDef | no | Metrics are custom Prometheus metrics emitted when this step finishes. |
 | `name` | string | yes |  |
 | `outputs` | map[string]string | no |  |
 | `post` | PostStep | no |  |

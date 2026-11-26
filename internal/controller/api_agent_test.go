@@ -1226,7 +1226,7 @@ func TestAgentAPI_FinishRun_FailedCancelsChildren(t *testing.T) {
 	claimRunForTest(t, pg, "a1", parent.ID)
 	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
 	// Link the parent's call step to the child run.
-	require.NoError(t, pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j"))
+	require.NoError(t, dropFirstTerminal(pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j")))
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
 	body, _ := json.Marshal(map[string]string{"status": string(api.RunFailed)})

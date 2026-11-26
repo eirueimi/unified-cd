@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -32,6 +33,43 @@ type Postgres struct {
 	listenPool     *pgxpool.Pool
 	ownsPools      bool
 	closeOnce      *sync.Once
+	// finishHook is shared with every BackgroundStore view of this Postgres.
+	finishHook *runFinishedHolder
+}
+
+// RunFinishedHook is called after a run's terminal transition has committed,
+// and only by the call that performed the transition (never for a CAS miss).
+// st is the store view that made the transition (API or background pool), so the
+// hook's own reads and writes stay on the caller's pool.
+// It must not block for long; it runs on the caller's goroutine.
+type RunFinishedHook func(ctx context.Context, st Store, runID string, status api.RunStatus)
+
+type runFinishedHolder struct {
+	fn atomic.Pointer[RunFinishedHook]
+}
+
+// SetRunFinishedHook installs the hook for every terminal transition made
+// through this Postgres (and its BackgroundStore views), including the ones
+// the store makes internally, such as a run failed while being queued. A nil
+// hook removes it.
+func (p *Postgres) SetRunFinishedHook(h RunFinishedHook) {
+	if p.finishHook == nil {
+		return
+	}
+	if h == nil {
+		p.finishHook.fn.Store(nil)
+		return
+	}
+	p.finishHook.fn.Store(&h)
+}
+
+func (p *Postgres) notifyRunFinished(ctx context.Context, runID string, status api.RunStatus) {
+	if p.finishHook == nil {
+		return
+	}
+	if h := p.finishHook.fn.Load(); h != nil {
+		(*h)(ctx, p, runID, status)
+	}
 }
 
 // PostgresPoolConfig bounds each independently reserved controller pool.
@@ -94,7 +132,7 @@ func NewPostgresWithPoolConfig(ctx context.Context, dsn string, cfg PostgresPool
 		max  int32
 		dst  **pgxpool.Pool
 	}
-	p := &Postgres{ownsPools: true, closeOnce: &sync.Once{}}
+	p := &Postgres{ownsPools: true, closeOnce: &sync.Once{}, finishHook: &runFinishedHolder{}}
 	specs := []poolSpec{
 		{name: "api", max: cfg.APIMaxConns, dst: &p.pool},
 		{name: "background", max: cfg.BackgroundMaxConns, dst: &p.backgroundPool},
@@ -143,6 +181,7 @@ func (p *Postgres) BackgroundStore() *Postgres {
 		backgroundPool: p.backgroundPool,
 		lockPool:       p.lockPool,
 		listenPool:     p.listenPool,
+		finishHook:     p.finishHook,
 	}
 }
 
@@ -504,6 +543,20 @@ func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
 		r.Params = map[string]string{}
 	}
 	return &r, nil
+}
+
+// GetRunClaimedAt returns when an agent claimed the run, or nil when it never was
+// (a run cancelled or failed while still queued). A missing run is ErrRunNotFound.
+func (p *Postgres) GetRunClaimedAt(ctx context.Context, id string) (*time.Time, error) {
+	var t *time.Time
+	err := p.pool.QueryRow(ctx, `SELECT claimed_at FROM runs WHERE id = $1`, id).Scan(&t)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, RunNotFoundError(id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get run claimed_at: %w", err)
+	}
+	return t, nil
 }
 
 func (p *Postgres) GetRunSpec(ctx context.Context, id string) ([]byte, error) {
@@ -1140,6 +1193,7 @@ WHERE id = $2 AND status NOT IN ('Succeeded', 'Failed', 'Cancelled')
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
+	p.notifyRunFinished(ctx, runID, status)
 	return updated, nil
 }
 
@@ -1160,7 +1214,7 @@ var ErrRunFinalized = errors.New("run already finalized")
 // concurrent finalization (FinishRun's CAS UPDATE) either commits first -- and the
 // guard sees it -- or waits until this write commits. Returns ErrRunFinalized when
 // the run is terminal and ErrRunNotFound when it does not exist.
-func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) error {
+func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) (bool, error) {
 	const q = `
 		INSERT INTO step_reports(run_id, step_index, variant, stage_index, step_name, status, exit_code, started_at, ended_at, child_run_id, call_job_name)
 		SELECT r.id, $2, $3, $4, $5, $6, $7, $8, $9, NULLIF($10,'')::uuid, NULLIF($11,'')
@@ -1177,18 +1231,67 @@ func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex
 		      child_run_id  = COALESCE(EXCLUDED.child_run_id, step_reports.child_run_id),
 		      call_job_name = COALESCE(EXCLUDED.call_job_name, step_reports.call_job_name);
 	`
-	tag, err := p.pool.Exec(ctx, q, runID, stepIndex, variant, stageIndex, stepName, status, exitCode, startedAt, endedAt, childRunID, callJobName)
+	args := []any{runID, stepIndex, variant, stageIndex, stepName, status, exitCode, startedAt, endedAt, childRunID, callJobName}
+	if !isTerminalStepStatus(status) {
+		// Hot path (Running reports, child-run links): a single guarded statement.
+		tag, err := p.pool.Exec(ctx, q, args...)
+		if err != nil {
+			return false, err
+		}
+		if tag.RowsAffected() == 0 {
+			if _, gerr := p.GetRun(ctx, runID); gerr != nil {
+				return false, gerr
+			}
+			return false, ErrRunFinalized
+		}
+		return false, nil
+	}
+
+	// Terminal report: a transaction-scoped advisory lock keyed on the step
+	// serializes concurrent reports of one step, so the previous status read below
+	// is exact and exactly one report observes the move into a terminal status.
+	tx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, fmt.Sprintf("step_reports/%s/%d/%s", runID, stepIndex, variant)); err != nil {
+		return false, err
+	}
+	var prev *string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM step_reports WHERE run_id = $1 AND step_index = $2 AND variant = $3`,
+		runID, stepIndex, variant).Scan(&prev); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx, q, args...)
+	if err != nil {
+		return false, err
 	}
 	if tag.RowsAffected() == 0 {
 		// The guard matched no run: it is either missing or already terminal.
-		if _, gerr := p.GetRun(ctx, runID); gerr != nil {
-			return gerr
+		// Probe on the transaction's connection so no second pooled connection is held.
+		var one int
+		if perr := tx.QueryRow(ctx, `SELECT 1 FROM runs WHERE id = $1`, runID).Scan(&one); perr != nil {
+			if errors.Is(perr, pgx.ErrNoRows) {
+				return false, RunNotFoundError(runID)
+			}
+			return false, perr
 		}
-		return ErrRunFinalized
+		return false, ErrRunFinalized
 	}
-	return nil
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return prev == nil || !isTerminalStepStatus(*prev), nil
+}
+
+func isTerminalStepStatus(s string) bool {
+	switch s {
+	case "Succeeded", "Failed", "Cancelled", "Skipped":
+		return true
+	}
+	return false
 }
 
 // MarkRunStepsInterrupted terminalizes a reaped run's Running step reports: a

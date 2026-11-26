@@ -139,3 +139,26 @@ func TestJobTemplateToSpec(t *testing.T) {
 		t.Fatal("template without podTemplate must produce a nil Spec.PodTemplate")
 	}
 }
+
+func TestParseJobTemplate_MetricsRejected(t *testing.T) {
+	const head = `apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata: {name: m-tmpl}
+spec:
+  steps:
+`
+	for name, steps := range map[string]string{
+		"step": `    - {name: build, run: make, metrics: [{name: m, help: h, counter: {}}]}
+`,
+		"parallel": `    - parallel:
+        - {name: build, run: make, metrics: [{name: m, help: h, counter: {}}]}
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseJobTemplate([]byte(head + steps))
+			if err == nil || !strings.Contains(err.Error(), "metrics: is not supported in a JobTemplate; define metrics on the Job") {
+				t.Fatalf("error = %v, want the metrics-not-supported message", err)
+			}
+		})
+	}
+}

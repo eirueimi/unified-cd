@@ -136,6 +136,7 @@ type Server struct {
 	dexProxy                      *httputil.ReverseProxy  // /dex/* returns 404 when nil.
 	uiProxy                       *httputil.ReverseProxy  // /ui/* returns 404 when nil (when WebDir is not set).
 	metrics                       *metrics.Metrics        // nil = middleware no-ops and /metrics returns 404.
+	custom                        *customMetrics          // nil = job-defined custom metrics are off (see ConfigureCustomMetrics).
 	claimedBy                     *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
 	enrollmentLimiter             *enrollmentLimiter
 	objectLimiter                 *enrollmentLimiter // Per-requester budget of the object endpoints (StoreCredentialRate*).
