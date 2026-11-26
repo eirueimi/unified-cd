@@ -6,6 +6,9 @@ Depends on: `2026-11-26-run-metadata-design.md` (the `runs.trigger`,
 `job_labels` and `job_annotations` columns, and the `dsl.RunData`,
 `dsl.JobData` and `dsl.StepFailure` types).
 
+**Build order:** the run metadata design is built and merged first. This
+design's plan starts from that branch. Nothing here re-implements it.
+
 ## Intent
 
 Users want to follow runs from their metrics: counts, durations and their
@@ -41,7 +44,10 @@ unified-cd, keeping Argo's shape so that its users recognise it.
 
 ## Anti-goals
 
-- A job that can break or flood `/metrics` for everyone. Invalid
+- A job that can break or flood `/metrics` for everyone. The controller
+  only uses the non-panicking client_golang calls (`Register`,
+  `GetMetricWithLabelValues`), never the `Must*` variants, on anything a job
+  defines. Invalid
   definitions fail at apply time. Runtime errors drop the sample and are
   counted. Nothing panics the registry.
 - Double counting in HA. Counters and histograms are counted exactly once,
@@ -128,6 +134,15 @@ spec:
 | `.Outputs.<k>` | run outputs | this step's outputs |
 | `.Step.Name`, `.Step.Status`, `.Step.ExitCode`, `.Step.Duration`, `.Step.Attempts`, `.Step.MatrixKey`, `.Step.Stage` | no | yes |
 
+Durations: `.Run.Duration` is the transition time minus `claimed_at`, in
+seconds. A run that never reached an agent, for example one cancelled while
+queued, has `.Run.Duration = 0` and gets no realtime row. `.Step.Duration`
+is `endedAt - startedAt`, or 0 if either is missing.
+
+Label values are plain strings. Invalid UTF-8 is replaced with U+FFFD. An
+empty value is exported as an empty label, which Prometheus treats as the
+label being absent.
+
 `.Step.Attempts` needs a new optional `attempts` field on
 `StepReportRequest`, set by the agent's retry loop. An old agent leaves it
 at 0. `.Run.Duration` and `.Step.Duration` are float seconds.
@@ -147,7 +162,15 @@ at 0. `.Run.Duration` and `.Step.Duration` are float seconds.
   `.Run.*` except `Status` and `Duration`, `.Job.*`, `.Params.*`, `.Step.Name`
   and `.Step.MatrixKey`.
 - `operation` is only valid on gauges.
-- **One shape per name across all jobs.** Two definitions with the same
+- **Exposed-family collisions.** The check covers every family a definition
+  exposes: `<name>_total` for counters, and `<name>_bucket`, `<name>_sum` and
+  `<name>_count` for histograms. A family that collides with any other
+  job's family, or with a built-in `unifiedcd_*` family, is rejected. This
+  stops a counter `x` and a gauge `x_total` from both producing
+  `unifiedcd_job_x_total`.
+- **One shape per name across all jobs.** The shape is type, label key set,
+  help, buckets and `realtime`, so a plain gauge and a realtime gauge cannot
+  share a name. Two definitions with the same
   `name` must agree on type, label key set, help and buckets. The check runs
   against every stored job at apply time. Apply and AppSource apply both
   fail with
@@ -166,17 +189,45 @@ at 0. `.Run.Duration` and `.Step.Duration` are float seconds.
   `TransitionPendingToQueued`'s internal `MarkRunFinished` bypasses the
   decorator today, so the builder must route it through the hook or cover
   that case explicitly.
-- **Step-level:** `handleAgentStepReport` when the reported status is
-  terminal. The agent posts step outputs before the terminal report, so
-  outputs are present.
+- **Step-level:** `handleAgentStepReport`, on the **first** terminal report
+  for a `(run, stageIndex, stepIndex, variant)`. `UpsertStepReport` gains a
+  return value that says whether this call moved the row from non-terminal
+  to terminal: a compare on the previous status in the same statement.
+  Duplicate or retried POSTs then emit nothing.
+  - Terminal statuses are `Succeeded`, `Failed`, `Cancelled` and `Skipped`.
+    All of them emit, and users filter with `when`.
+  - Steps that `MarkRunStepsInterrupted` flips to Failed do not emit step
+    metrics. The run-level metrics of that run still emit. Document this.
+  - The agent posts step outputs before the terminal report, so outputs are
+    present.
+  - A new variant-aware getter,
+    `GetStepVariantOutputs(runID, stepIndex, variant)`, supplies
+    `.Outputs`. The existing `GetStepOutputs` merges variants, so it cannot
+    be used here.
+  - The report's `(stageIndex, stepIndex)` is resolved to the spec entry by
+    a helper that walks stages, parallel sub-steps and `finally:` in the
+    same order and with the same numbering as `buildClaimResponse`. Both
+    call that one helper, so the two numberings cannot drift apart.
+    `.Step.Stage` is the report's `stageIndex`.
 - Only the replica whose transition or report succeeded emits. A
   compare-and-swap miss (`updated == false`) or a duplicate terminal report
   emits nothing, so counters are counted once.
 
 ### Counters and histograms (in memory)
 
-- Each name gets one dynamic `CounterVec` or `HistogramVec`, created on first
-  use on the controller's existing registry.
+- Each exposed name gets one dynamic `CounterVec` or `HistogramVec`,
+  created on first use on the controller's existing registry and keyed by
+  name and shape hash. When a definition's shape differs from the
+  registered vec's:
+  - if the vec has no live series (all expired by TTL), it is unregistered
+    and recreated with the new shape;
+  - otherwise the sample is dropped with `reason="conflict"`.
+  A deleted job's series therefore disappear by TTL, and the name then
+  becomes free.
+- Prometheus vecs record neither the last update time nor the series count.
+  The emitter keeps its own map from label hash to label values and last
+  update, under a mutex. The TTL sweep and the series cap use that map, and
+  removal goes through `DeleteLabelValues` with the stored values.
 - The value template must render a finite float. Counters must be ≥ 0.
 - **Series cap:** at most 1000 label combinations per name per replica. The
   operator can change it with the new controller setting
@@ -197,12 +248,21 @@ at 0. `.Run.Duration` and `.Step.Duration` are float seconds.
   - `updated_at timestamptz`
 - `Set` upserts the value. `Add` and `Sub` upsert `value = value ± $v`
   atomically.
-- The scrape-time collector, a sibling of `dbCollector`, exports every row
-  with `updated_at` newer than the TTL. The leader deletes older rows hourly.
+- The scrape-time collector is an **unchecked** collector, a sibling of
+  `dbCollector`. Its `Describe` sends nothing, because names and label sets
+  are dynamic. It exports every row with `updated_at` newer than the TTL.
+  Rows whose label keys do not match the name's current shape (stale rows
+  left by a shape change) are skipped and counted with `reason="conflict"`.
+  Rows with the same name and label values are de-duplicated in Go before
+  they are emitted, because client_golang fails a scrape that contains a
+  duplicate series. The leader deletes older rows hourly.
 - The series cap is enforced on insert: count the rows for that name, and
   refuse a new `labels_hash` when the cap is reached.
 - Every replica exports the same rows, so a series appears once per
-  replica. Docs tell users to read gauges with `max by (...)`, the same as
+  replica. Prometheus must scrape each controller replica as its own
+  target. `docs/operator-manual/operations.md` already requires this for
+  the built-in counters and gauges. A scrape through the load balancer
+  gives wrong counters, with jumps that look like resets. Docs tell users to read gauges with `max by (...)`, the same as
   the existing agent disk gauges.
 
 ### Realtime gauges (database, computed at scrape)
@@ -229,6 +289,11 @@ at 0. `.Run.Duration` and `.Step.Duration` are float seconds.
   `series_cap` or `db`. Every error is also logged at warn, with the run ID
   and the metric.
 - An error never fails the run, the step or the request.
+
+When `customMetrics.enabled` is false, existing rows stay in the tables but
+are not exported. The leader's hourly cleanup keeps running. If no leader
+runs cleanup for a while, the TTL filter at export time still hides stale
+rows.
 
 ## Configuration
 
