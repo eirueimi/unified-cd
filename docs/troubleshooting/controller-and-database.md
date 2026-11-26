@@ -635,6 +635,6 @@ Inside one job, the same rules fail with `spec.metrics...: metric "<name>" is de
 - `series_cap`: the metric already has `customMetrics.maxSeriesPerMetric` series (default 1000) on that replica, so samples with a new label combination are dropped; existing series keep updating. Remove high-cardinality labels (never label with `.Run.ID`), raise the cap, or wait for old series to expire after `customMetrics.ttl`.
 - `conflict`: the definition in use disagrees with the one already exposed, or its family collides with another custom metric. It also appears for up to about 30 seconds on other replicas after a shape change is applied. If it persists, look for two jobs using the name differently.
 - `template` or `value`: a `when`, label or value template failed, or the value was not a finite number (negative for a counter). Check the definition against the [template context](../user-guide/writing-jobs/custom-metrics.md#template-context); step-level fields do not exist in `spec.metrics`.
-- `db`: the controller could not read or write gauge rows; check the controller log for `custom gauges` warnings and database health.
+- `db`: the controller could not read or write gauge rows; check the controller log for `metrics: list custom gauges`, `metrics: list custom realtime gauges` and `metrics: apply custom gauge` warnings, and database health.
 
 Steps that were interrupted do not emit step-level metrics; that is not an error.

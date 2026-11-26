@@ -643,22 +643,22 @@ Key metrics:
 | `unifiedcd_git_credential_tokens_total{credential,purpose,result}` | counter | Git credential tokens handed out for a GitHub App credential, by credential name, `purpose` (`controller`: AppSource and `uses:` fetches; `job`: hand-out to a run) and `result` (`ok` / `denied` / `error`). For `purpose="controller"`, `denied` counts **resolution attempts**, not runs: a `uses:` fetch that `jobAccess` does not allow is counted every time the controller resolves the credential, including each retry of a run that stays Pending until its template resolves. See [GitHub App credentials](#github-app-credentials) |
 | `unifiedcd_github_app_token_requests_total{credential,result}` | counter | Installation token requests actually sent to GitHub (`ok` / `error`). Cache hits do not count, so this is the number that approaches GitHub's rate limits |
 | `unifiedcd_job_*` | counter / gauge / histogram | Job-defined [custom metrics](../user-guide/writing-jobs/custom-metrics.md) (counters end in `_total`). Names and labels come from the `metrics:` blocks of applied jobs. See [Job-defined custom metrics](#job-defined-custom-metrics) |
-| `unifiedcd_custom_metric_errors_total{metric,reason}` | counter | Custom metric samples that could not be recorded, by exposed metric name and `reason`: `template` (a `when`, label or value template failed, or the rendered labels did not match the metric), `value` (the value is not a finite number, or is negative for a counter), `conflict` (the definition clashes with another one already live, or its family collides with another custom metric), `series_cap` (a new series was dropped because the metric is at `customMetrics.maxSeriesPerMetric`), `db` (a gauge row could not be read or written; `metric` is empty for read failures). Samples are dropped, runs are not affected |
+| `unifiedcd_custom_metric_errors_total{metric,reason}` | counter | Custom metric samples that could not be recorded, by exposed metric name and `reason`: `template` (a `when`, label or value template failed, or the rendered labels did not match the metric), `value` (the value is not a finite number, or is negative for a counter), `conflict` (the definition clashes with another one already live, or its family collides with another custom metric), `series_cap` (a new series was dropped because the metric is at `customMetrics.maxSeriesPerMetric`), `db` (a gauge or realtime row could not be read or written; `metric` is empty for read failures). Samples are dropped, runs are not affected |
 | `go_*`, `process_*` | various | Standard Go runtime and process collectors (goroutines, heap, GC pause, RSS, CPU, open FDs) |
 
-### Job-defined custom metrics
-
-Jobs can declare their own metrics in `metrics:` blocks (see [Custom Metrics](../user-guide/writing-jobs/custom-metrics.md)). The controller exposes them as the `unifiedcd_job_*` family. The `customMetrics.enabled`, `customMetrics.maxSeriesPerMetric` (default 1000, per metric name per replica) and `customMetrics.ttl` (default 24h) settings are in the [Configuration reference](../reference/configuration.md); with `enabled: false` the definitions still validate at apply time, but nothing is emitted.
-
-With several controller replicas:
-
-- **Scrape every replica separately** (list each in `targets`, as in the scrape config above), not through a load balancer.
-- **Counters and histograms are per replica**: each replica counts the runs and steps it handled. Query them with `sum(rate(...))`, never a plain `sum()` of the raw counter.
-- **Gauges are duplicated across replicas**: gauge values and realtime gauges live in the database, so every replica exports the same series. A `sum()` over them multiplies the value by the replica count; use `max by (...)`.
-- A replica notices a changed metric definition within about 30 seconds of the apply. In that window it may count samples under `reason="conflict"`.
-
-Watch `unifiedcd_custom_metric_errors_total`: a steady `series_cap` rate means a label has too many values (see the cardinality advice in the user guide); `conflict` points at definitions that disagree, see [Troubleshooting](../troubleshooting/controller-and-database.md#applying-a-job-fails-with-a-metric-conflict).
-
+### Job-defined custom metrics
+
+Jobs can declare their own metrics in `metrics:` blocks (see [Custom Metrics](../user-guide/writing-jobs/custom-metrics.md)). The controller exposes them as the `unifiedcd_job_*` family. The `customMetrics.enabled`, `customMetrics.maxSeriesPerMetric` (default 1000, per metric name per replica) and `customMetrics.ttl` (default 24h) settings are in the [Configuration reference](../reference/configuration.md); with `enabled: false` the definitions still validate at apply time, but nothing is emitted.
+
+With several controller replicas:
+
+- **Scrape every replica separately** (list each in `targets`, as in the scrape config above), not through a load balancer.
+- **Counters and histograms are per replica**: each replica counts the runs and steps it handled. Query them with `sum(rate(...))`, never a plain `sum()` of the raw counter.
+- **Gauges are duplicated across replicas**: gauge values and realtime gauges live in the database, so every replica exports the same series. A `sum()` over them multiplies the value by the replica count; use `max by (...)`.
+- A replica notices a changed metric definition within about 30 seconds of the apply. In that window it may count samples under `reason="conflict"`.
+
+Watch `unifiedcd_custom_metric_errors_total`: a steady `series_cap` rate means a label has too many values (see the cardinality advice in the user guide); `conflict` points at definitions that disagree, see [Troubleshooting](../troubleshooting/controller-and-database.md#applying-a-job-fails-with-a-metric-conflict).
+
 
 ### GitHub App credentials
 

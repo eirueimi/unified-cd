@@ -127,7 +127,7 @@ spec:
 | Field | Run-level | Step-level |
 |---|---|---|
 | `.Run.ID`, `.Run.Trigger`, `.Run.TriggeredBy`, `.Run.DisplayName`, `.Run.CreatedAt`, `.Run.ScheduledAt` | yes | yes |
-| `.Run.Status` | terminal status | the run's status when the step report arrives (usually `Running`) |
+| `.Run.Status` | terminal status | empty (not populated); use `.Step.Status` |
 | `.Run.Duration` | seconds from claim to the terminal transition | seconds from claim to now |
 | `.Job.Name`, `.Job.Labels.<k>`, `.Job.Annotations.<k>` | yes | yes |
 | `.Params.<k>` | yes | yes |
@@ -159,8 +159,8 @@ at 0. `.Run.Duration` and `.Step.Duration` are float seconds.
 - `realtime: true` is only allowed on a gauge whose `value` is exactly
   `{{ .Run.Duration }}` (run-level) or `{{ .Step.Duration }}` (step-level).
   Its labels may use only fields that are known when the run or step starts:
-  `.Run.*` except `Status` and `Duration`, `.Job.*`, `.Params.*`, `.Step.Name`
-  and `.Step.MatrixKey`.
+  `.Run.*` except `Status` and `Duration`, `.Job.*`, `.Params.*`, `.Step.Name`,
+  `.Step.MatrixKey` and `.Step.Stage`.
 - `operation` is only valid on gauges.
 - **Exposed-family collisions.** The check covers every family a definition
   exposes: `<name>_total` for counters, and `<name>_bucket`, `<name>_sum` and

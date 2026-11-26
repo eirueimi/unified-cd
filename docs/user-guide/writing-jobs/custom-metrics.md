@@ -76,7 +76,7 @@ Metric templates see these fields. Run-level metrics run when the run finishes; 
 | Field | Run-level | Step-level |
 |---|---|---|
 | `.Run.ID`, `.Run.Trigger`, `.Run.TriggeredBy`, `.Run.DisplayName`, `.Run.CreatedAt`, `.Run.ScheduledAt` and the other [run metadata](run-metadata.md) fields | yes | yes |
-| `.Run.Status` | the terminal status | the run's status when the step report arrives (usually `Running`) |
+| `.Run.Status` | the terminal status | empty (not populated); use `.Step.Status` |
 | `.Run.Duration` | seconds from claim to the terminal transition | seconds from claim to now |
 | `.Job.Name`, `.Job.Labels.<k>`, `.Job.Annotations.<k>` | yes | yes |
 | `.Params.<k>` | yes | yes |
@@ -107,7 +107,7 @@ A gauge with `realtime: true` shows a value while the run or step is still going
 Realtime is restricted so that it is computable at scrape time:
 
 - The gauge `value` must be exactly `{{ .Run.Duration }}` at run level or `{{ .Step.Duration }}` at step level.
-- Labels may only use fields known when the run or step starts: `.Run.*` except `.Run.Status` and `.Run.Duration`, `.Job.*`, `.Params.*`, `.Step.Name` and `.Step.MatrixKey`. Using `.Outputs`, `.Step.Status`, `.Step.ExitCode`, `.Step.Duration` or `.Step.Attempts` in a label is rejected at apply time.
+- Labels may only use fields known when the run or step starts: `.Run.*` except `.Run.Status` and `.Run.Duration`, `.Job.*`, `.Params.*`, `.Step.Name`, `.Step.MatrixKey` and `.Step.Stage`. Using `.Outputs`, `.Step.Status`, `.Step.ExitCode`, `.Step.Duration` or `.Step.Attempts` in a label is rejected at apply time.
 - A realtime and a non-realtime gauge cannot share a name.
 
 Run-level realtime rows appear when an agent claims the run. Step-level rows appear when the step reports `Running`. Rows of runs that ended abnormally are cleaned up by a background sweep.
