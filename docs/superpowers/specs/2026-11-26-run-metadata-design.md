@@ -1,0 +1,234 @@
+# Run Metadata for Job Steps — Design
+
+Status: draft for review
+Date: 2026-11-26
+Companion: a separate design covers job-defined custom metrics. It uses the
+metadata defined here as label values.
+
+## Intent
+
+A step cannot find out which run it belongs to today. Agents put three values
+into a step's environment: `UNIFIED_AGENT_OS`, `UNIFIED_WORKSPACE` and
+`UNIFIED_VOLUME_<ALIAS>`. Templates see `.Params`, `.Vars`, `.Steps`,
+`.Secrets`, `.Foreach` and `.Matrix`, and nothing about the run.
+
+Users want two things:
+
+- build links back to the run, for example in a chat message, a PR comment or
+  a deploy record;
+- correlate their own metrics, logs and traces with a run, a job, a step and
+  an attempt.
+
+The target is parity with the runtime metadata that Argo Workflows exposes:
+the global `workflow.*` values, per-step status and timing, retry counters,
+and the exit-handler `workflow.status` and `workflow.failures`. Each item is
+mapped to unified-cd concepts. Argo concepts that unified-cd does not have,
+such as namespaces, service accounts and priority, are left out.
+
+## Goals
+
+- Every step gets run, job, step and attempt metadata as environment
+  variables. This works the same on the host agent, the Kubernetes agent,
+  native steps and container steps.
+- The same values are available to templates as `.Run`, `.Job`, `.Step`
+  and `.Agent`.
+- `.Steps.<name>` also carries status, exit code and start and end times, so
+  later steps and `finally:` can read them.
+- `finally:` steps see the run status as of the moment `finally:` began, and
+  the list of failed steps.
+- A link to the run in the Web UI, when the controller knows its own
+  browser-facing URL.
+
+## Non-goals
+
+- Job-defined custom metrics. They have their own design.
+- Template support in places evaluated by the controller, such as
+  `displayName` at trigger time and webhook mappings. Those keep their
+  current contexts.
+- A sequential per-job run number. Runs have only UUIDs today, and adding a
+  number is a separate change.
+- Per-combination status for matrix steps in `.Steps.<name>` (see Builder
+  latitude).
+
+## Anti-goals
+
+- **Silent overriding.** An existing user variable must not silently replace
+  a new built-in value, and a new built-in value must not silently replace a
+  user variable. Collisions fail loudly at apply time.
+- **Secrets in the new values.** Nothing added here may carry a secret.
+- **Breaking mixed-version fleets.** A new agent talking to an old
+  controller, or the reverse, must keep running jobs. Missing values are
+  absent, never wrong.
+
+## Approaches considered
+
+1. **Environment variables only.** This covers shell steps and third-party
+   SDKs, which read the environment. It cannot reach fields that never pass
+   through a shell, such as `uploadArtifact` paths and `call:` params.
+2. **Environment variables and templates (chosen).** Argo exposes its
+   metadata as template variables, and parity needs the same reach. Both
+   surfaces are filled from one per-step metadata value, so they cannot
+   disagree.
+3. **Templates only.** Rejected: metrics and tracing SDKs read the
+   environment, not YAML.
+
+The user picked approach 2 when they set Argo Workflows parity as the target.
+
+## Metadata catalogue
+
+All environment variable names are new. Every one of them starts with a
+reserved prefix (see Reservation). A value that is unknown is **absent**: the
+variable is not set, and the template field is the zero value. It is never
+an empty string pretending to be a value.
+
+### Run
+
+| Env var | Template | Value | Argo equivalent |
+|---|---|---|---|
+| `UNIFIED_RUN_ID` | `.Run.ID` | run UUID | `workflow.uid` |
+| `UNIFIED_RUN_URL` | `.Run.URL` | `<externalUrl>/ui/#/runs/<id>`. Absent if no external URL is configured. | (none) |
+| `UNIFIED_RUN_CREATED_AT` | `.Run.CreatedAt` | Env: RFC 3339 UTC. Template: `time.Time`, so `.Run.CreatedAt.Format "2006-01-02"` works. | `workflow.creationTimestamp` (+ format) |
+| `UNIFIED_RUN_STARTED_AT` | `.Run.StartedAt` | When the agent claimed the run. Same types as `CreatedAt`. | (none) |
+| `UNIFIED_RUN_TRIGGERED_BY` | `.Run.TriggeredBy` | The raw `triggered_by` string, for example `webhook:gh-push` | (none) |
+| `UNIFIED_RUN_TRIGGER` | `.Run.Trigger` | One of `api`, `webhook`, `schedule`, `call`, `replay` | (none) |
+| `UNIFIED_RUN_SCHEDULED_AT` | `.Run.ScheduledAt` | Schedule runs only: the cron fire time the run was created for | `workflow.scheduledTime` |
+| `UNIFIED_RUN_PARENT_ID`, `UNIFIED_RUN_PARENT_JOB`, `UNIFIED_RUN_PARENT_STEP` | `.Run.Parent.ID`, `.Job`, `.Step` | `call:` children only | `workflow.mainEntrypoint` (closest match) |
+| `UNIFIED_RUN_REPLAY_OF` | `.Run.ReplayOf` | Replays only: the original run ID | (none) |
+| `UNIFIED_RUN_DISPLAY_NAME` | `.Run.DisplayName` | The resolved display name. Absent when the job has none. | (none) |
+| `UNIFIED_RUN_PARAMS_JSON` | `.Run.ParamsJSON` | All params as a JSON object | `workflow.parameters.json` |
+| `UNIFIED_RUN_AGENT_ID` | `.Agent.ID` | The claiming agent's ID | `steps.X.hostNodeName` (closest match) |
+
+`UNIFIED_RUN_AGENT_ID` is deliberately not `UNIFIED_AGENT_ID`. That name is
+already the agent's own configuration variable, and the step-environment
+baseline filters it.
+
+### Job
+
+| Env var | Template | Value | Argo equivalent |
+|---|---|---|---|
+| `UNIFIED_JOB_NAME` | `.Job.Name` | job name | `workflow.name` (closest match) |
+| `UNIFIED_JOB_LABELS_JSON` | `.Job.Labels.<k>` | `metadata.labels` as recorded at run creation | `workflow.labels.*` / `.json` |
+| `UNIFIED_JOB_ANNOTATIONS_JSON` | `.Job.Annotations.<k>` | `metadata.annotations` as recorded at run creation | `workflow.annotations.*` / `.json` |
+
+Labels and annotations are not sent to agents today, and they are not
+persisted beyond the `path` annotation. This design records both on the run
+at creation time (see Data model), so a run reports the job metadata it
+started with, not today's.
+
+### Current step
+
+| Env var | Template | Value | Argo equivalent |
+|---|---|---|---|
+| `UNIFIED_STEP_NAME` | `.Step.Name` | step name (display name for matrix combinations) | `steps.name` / `node.name` |
+| `UNIFIED_STEP_ATTEMPT` | `.Step.Attempt` | 1-based attempt number from the `retry` loop | `retries` (Argo counts from 0; this counts from 1) |
+| `UNIFIED_STEP_MAX_ATTEMPTS` | `.Step.MaxAttempts` | `retry.attempts`, or 1 | (none) |
+| `UNIFIED_STEP_LAST_EXIT_CODE` | `.Step.LastExitCode` | From attempt 2 on: the previous attempt's exit code | `lastRetry.exitCode` |
+
+### Previous steps
+
+`.Steps.<name>` gains `Status` (`Succeeded`, `Failed`, `Skipped`,
+`Cancelled`), `ExitCode`, `StartedAt` and `EndedAt`. Today an entry exists
+only after a step succeeds. With this change an entry exists after the step
+finishes in any status, so `continueOnError` steps and `finally:` can see
+failures. Code that tests for a missing entry to mean "not succeeded" has to
+check `Status` instead. Find and fix every in-repo use.
+
+These are template-only. Putting every earlier step into the environment of
+each later step would make the environment grow with the job.
+
+### `finally:` only
+
+| Env var | Template | Value | Argo equivalent |
+|---|---|---|---|
+| `UNIFIED_RUN_STATUS` | `.Run.Status` | `Succeeded`, `Failed` or `Cancelled` as of when `finally:` began. This is the same frozen view that `failure()` reads. | `workflow.status` |
+| `UNIFIED_RUN_FAILURES_JSON` | `.Run.Failures` | JSON array of the failed main-pipeline steps, each with `name`, `stage`, `exitCode`, `startedAt`, `endedAt` and `matrixKey` if set | `workflow.failures` |
+| `UNIFIED_RUN_DURATION_SECONDS` | `.Run.Duration` | Seconds from `StartedAt` to when `finally:` began | `workflow.duration` |
+
+Outside `finally:` these are absent. `UNIFIED_RUN_FAILURES_JSON` is capped at
+32 KiB. When the list does not fit, it is cut to the entries that fit and an
+entry `{"truncated": <n omitted>}` is appended, so a long matrix cannot push
+the environment past OS limits.
+
+## Data model and protocol
+
+- **Migration 034** adds three columns to `runs`:
+  - `job_labels jsonb`, filled by `CreateRun` from the job's metadata at
+    creation time;
+  - `job_annotations jsonb`, the same;
+  - `scheduled_at timestamptz NULL`, which the scheduler sets to the cron
+    `next` time it fired for.
+
+  Every `CreateRun` call site passes the job's metadata: trigger, webhook,
+  schedule, `call:` child and replay. A replay copies the original run's
+  values. `api.Job` and job storage start persisting labels and annotations
+  for this.
+- **`ClaimResponse`** gains one `Run` object: `createdAt`, `triggeredBy`,
+  `scheduledAt`, `parent` (from `GetRunParent`), `displayName`, `url`,
+  `jobLabels` and `jobAnnotations`. `RunID`, `JobName` and `Params` are
+  already there.
+- **External URL.** Add a controller setting `externalUrl`
+  (`UNIFIED_EXTERNAL_URL`, `--external-url`). It falls back to
+  `oidc.externalUrl` and is otherwise unset. The controller never derives it
+  from request headers or from the agent-facing URL, because those are often
+  internal addresses.
+- **Version skew.**
+  - Old agent with a new controller: the new fields are ignored, and nothing
+    changes for that agent.
+  - New agent with an old controller: the `Run` object is missing, so every
+    value that depends on it is absent. Values the agent knows itself are
+    still set: run ID, job name, params, step, attempt, agent ID, status and
+    failures.
+
+## Reservation
+
+Reserve the prefixes `UNIFIED_RUN_`, `UNIFIED_JOB_` and `UNIFIED_STEP_` in
+`dsl.ReservedVarPrefixes`. Add each synthesised prefix to
+`SynthesizedStepEnvPrefixes`. The existing tests then keep apply-time and
+run-time rules in step.
+
+Step-level `env:` that sets a reserved name is rejected at apply time with a
+clear error. Today `step.Env` is not checked against reserved names. This
+design adds that check for the new prefixes only. Whether to extend it to the
+existing reserved names is left to the builder.
+
+This is a **breaking change** for any `Vars` manifest or step `env:` that
+already uses these prefixes. The release needs a migration guide in
+`docs/operator-manual/migrations/` with the exact error strings.
+
+## Where it is computed
+
+The agent builds one per-step metadata value in `makeStepRunner`
+(`internal/agent/orchestrator.go`), inside the retry loop so that `Attempt`
+is current. From it come:
+
+- the `extraEnv` entries, ahead of Vars and `step.Env`;
+- the `.Run`, `.Job`, `.Step` and `.Agent` template fields.
+
+The Kubernetes agent shares this loop through `agentlib.RunClaim`. Its scope
+pods get the values through the same caller-expanded environment that
+already overrides `imageStepEnv`. No second implementation is needed.
+
+## Docs to update in the same change
+
+- `docs/user-guide/writing-jobs/`: a new "Run metadata" page with the full
+  catalogue, linked from the job-structure and templates pages.
+- `docs/reference/configuration.md`: the `externalUrl` setting.
+- `docs/reference/field-reference.md` and the schema: regenerate.
+- `docs/operator-manual/migrations/`: the reserved prefixes, with the error
+  text.
+- `examples/`: one example that posts a link with `UNIFIED_RUN_URL` and
+  reports `UNIFIED_RUN_FAILURES_JSON` from `finally:`.
+- Fix the `UNIFIED_RUN_ID` caveats in `test/edgecase/scenarios/w1-5` and
+  `w1-6`.
+
+## Builder latitude
+
+- Matrix and foreach steps: `.Steps.<name>.Status` is the aggregate. It is
+  `Failed` if any combination failed, otherwise `Succeeded`. A per-combination
+  view is out of scope.
+- `.Run.Duration` type (seconds as a number, or `time.Duration`), as long as
+  the env var holds integer seconds.
+- Exact JSON field names in `UNIFIED_RUN_FAILURES_JSON`, if they stay
+  camelCase and include the fields listed above.
+- Whether `api.Job` exposes labels on the REST API. That is not needed here,
+  but it is cheap to add while persisting them.
