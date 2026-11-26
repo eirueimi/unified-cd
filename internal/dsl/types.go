@@ -231,6 +231,7 @@ type StepEntry struct {
 	// Shell overrides the effective interpreter argv for this step. See
 	// Step.Shell for the full resolution priority.
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
+	// Metrics are custom Prometheus metrics emitted when this step finishes.
 	Metrics []MetricDef `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 
 	// Parallel group (mutually exclusive with all concrete step fields above)
@@ -275,6 +276,7 @@ type Step struct {
 	// (job-level) > system default. Steps inside parallel: and finally:
 	// count as steps for this purpose.
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
+	// Metrics are custom Prometheus metrics emitted when this step finishes.
 	Metrics []MetricDef `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 	// Needs removed — use parallel: blocks instead
 }

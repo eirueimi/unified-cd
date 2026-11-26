@@ -110,7 +110,7 @@ The two forms are mutually exclusive; Validate enforces this.
 | `foreach` | ForeachDef | no |  |
 | `if` | string | no |  |
 | `matrix` | MatrixDef | no |  |
-| `metrics` | []MetricDef | no |  |
+| `metrics` | []MetricDef | no | Metrics are custom Prometheus metrics emitted when this step finishes. |
 | `name` | string | no | Concrete step fields (identical to Step, minus Needs) |
 | `outputs` | map[string]string | no |  |
 | `parallel` | []Step | no | Parallel group (mutually exclusive with all concrete step fields above) |
@@ -251,7 +251,7 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 | `foreach` | ForeachDef | no |  |
 | `if` | string | no |  |
 | `matrix` | MatrixDef | no |  |
-| `metrics` | []MetricDef | no |  |
+| `metrics` | []MetricDef | no | Metrics are custom Prometheus metrics emitted when this step finishes. |
 | `name` | string | yes |  |
 | `outputs` | map[string]string | no |  |
 | `post` | PostStep | no |  |
@@ -456,7 +456,7 @@ The two forms are mutually exclusive; Validate enforces this.
 | `foreach` | ForeachDef | no |  |
 | `if` | string | no |  |
 | `matrix` | MatrixDef | no |  |
-| `metrics` | []MetricDef | no |  |
+| `metrics` | []MetricDef | no | Metrics are custom Prometheus metrics emitted when this step finishes. |
 | `name` | string | no | Concrete step fields (identical to Step, minus Needs) |
 | `outputs` | map[string]string | no |  |
 | `parallel` | []Step | no | Parallel group (mutually exclusive with all concrete step fields above) |
@@ -606,7 +606,7 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 | `foreach` | ForeachDef | no |  |
 | `if` | string | no |  |
 | `matrix` | MatrixDef | no |  |
-| `metrics` | []MetricDef | no |  |
+| `metrics` | []MetricDef | no | Metrics are custom Prometheus metrics emitted when this step finishes. |
 | `name` | string | yes |  |
 | `outputs` | map[string]string | no |  |
 | `post` | PostStep | no |  |

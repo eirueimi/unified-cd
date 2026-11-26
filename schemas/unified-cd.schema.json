@@ -703,12 +703,6 @@
       ],
       "type": "object"
     },
-    "MetricShape": {
-      "additionalProperties": false,
-      "description": "MetricShape is what must agree between two definitions of the same metric\nname within one job.",
-      "properties": {},
-      "type": "object"
-    },
     "OrLock": {
       "additionalProperties": false,
       "description": "OrLock acquires exactly one candidate from In — whichever is free — instead of\nrequiring all of them like Semaphores does. The acquired candidate value is\nexposed to the Job's steps as a synthesized parameter named\nstrings.ToUpper(Name)+\"_LOCK_VALUE\" (e.g. Name \"env\" -\u003e \"ENV_LOCK_VALUE\"),\nreadable via {{ .Params.ENV_LOCK_VALUE }}.",
@@ -1091,6 +1085,7 @@
           "$ref": "#/definitions/MatrixDef"
         },
         "metrics": {
+          "description": "Metrics are custom Prometheus metrics emitted when this step finishes.",
           "items": {
             "$ref": "#/definitions/MetricDef"
           },
@@ -1188,6 +1183,7 @@
           "$ref": "#/definitions/MatrixDef"
         },
         "metrics": {
+          "description": "Metrics are custom Prometheus metrics emitted when this step finishes.",
           "items": {
             "$ref": "#/definitions/MetricDef"
           },
