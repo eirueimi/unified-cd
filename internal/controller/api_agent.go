@@ -1367,7 +1367,7 @@ func (s *Server) handleAgentCreateChildRun(w http.ResponseWriter, r *http.Reques
 	if respondRunWriteVerdict(w, v, parentRunID) {
 		return
 	}
-	var req api.TriggerRunRequest
+	var req api.CreateChildRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
 		return
@@ -1380,6 +1380,20 @@ func (s *Server) handleAgentCreateChildRun(w http.ResponseWriter, r *http.Reques
 	if status != 0 {
 		http.Error(w, msg, status)
 		return
+	}
+	// Record the parent link before replying: the child is already claimable,
+	// and an agent that claims it must find its parent (UNIFIED_RUN_PARENT_*).
+	// The agent's later Running step report re-sends the same link (the upsert
+	// is idempotent). Old agents omit the step identity and keep the old path.
+	if req.StepName != "" {
+		stepName, _ := sanitizeAgentText(req.StepName)
+		variant, _ := sanitizeAgentText(req.Variant)
+		callJobName, _ := sanitizeAgentText(req.JobName)
+		if err := s.store.UpsertStepReport(r.Context(), parentRunID, req.StepIndex, req.StageIndex, stepName, variant, "Running", nil, nil, nil, run.ID, callJobName); err != nil && !errors.Is(err, store.ErrRunFinalized) {
+			// The child exists already; do not fail the request. The agent's
+			// step report retries the link.
+			slog.Warn("create child run: record parent link", "parentRunId", parentRunID, "childRunId", run.ID, "error", err)
+		}
 	}
 	writeJSON(w, http.StatusOK, run)
 }

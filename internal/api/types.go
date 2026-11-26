@@ -63,6 +63,21 @@ type TriggerRunRequest struct {
 	Params  map[string]string `json:"params,omitempty"`
 }
 
+// CreateChildRunRequest is the agent-authenticated child-run request for a
+// call: step. It carries the parent step identity so the controller records
+// the parent link (step_reports.child_run_id) in the same request that creates
+// the child; otherwise the child could be claimed before the separate step
+// report lands and would miss UNIFIED_RUN_PARENT_*. The step fields are
+// optional: an old agent omits them and the link is then written only by its
+// later step report. StepName "" means the step identity is absent.
+type CreateChildRunRequest struct {
+	TriggerRunRequest
+	StageIndex int    `json:"stageIndex,omitempty"`
+	StepIndex  int    `json:"stepIndex,omitempty"`
+	Variant    string `json:"variant,omitempty"`
+	StepName   string `json:"stepName,omitempty"`
+}
+
 type Run struct {
 	ID          string            `json:"id"`
 	JobName     string            `json:"jobName"`

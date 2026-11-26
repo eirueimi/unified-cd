@@ -351,3 +351,58 @@ func TestExecuteRun_CallStep_BadParamTemplate_FailsStep(t *testing.T) {
 	assert.Equal(t, "Failed", finishStatus, "the run should fail when a call param template fails to expand")
 	assert.Contains(t, logBuf.String(), "broken", "the log should mention the offending param key")
 }
+
+// TestExecuteCallStep_ExpandsRunMetadataInParams verifies run metadata
+// templates (.Run, .Job, .Agent) reach call: params.
+func TestExecuteCallStep_ExpandsRunMetadataInParams(t *testing.T) {
+	const agentID = "call-meta-agent"
+	const parentRunID = "run-call-meta"
+	const childRunID = "child-meta"
+
+	var mu sync.Mutex
+	var gotParams map[string]string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+parentRunID+"/children", func(w http.ResponseWriter, r *http.Request) {
+		var req api.CreateChildRunRequest
+		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		mu.Lock()
+		gotParams = req.Params
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.Run{ID: childRunID, Status: api.RunRunning}) //nolint:errcheck
+	})
+	mux.HandleFunc("GET /api/v1/runs/"+childRunID, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.Run{ID: childRunID, Status: api.RunSucceeded}) //nolint:errcheck
+	})
+	mux.HandleFunc("GET /api/v1/runs/"+childRunID+"/outputs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.RunOutputs{Outputs: map[string]string{}}) //nolint:errcheck
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	step := api.ClaimStep{
+		Name: "call-child",
+		Call: &api.ClaimCallStep{Job: "child-job", Params: map[string]string{
+			"parent": "{{ .Run.ID }}",
+			"job":    "{{ .Job.Name }}",
+			"agent":  "{{ .Agent.ID }}",
+		}},
+	}
+	data := dsl.TemplateData{
+		Run:   dsl.RunData{ID: parentRunID},
+		Job:   dsl.JobData{Name: "parent-job"},
+		Agent: dsl.AgentData{ID: agentID},
+	}
+	_, _, err := ExecuteCallStep(context.Background(), NewClient(srv.URL, "tok"), agentID, parentRunID, step, data)
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, map[string]string{"parent": parentRunID, "job": "parent-job", "agent": agentID}, gotParams)
+}

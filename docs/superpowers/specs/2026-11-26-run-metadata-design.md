@@ -64,7 +64,7 @@ such as namespaces, service accounts and priority, are left out.
 
 1. **Environment variables only.** This covers shell steps and third-party
    SDKs, which read the environment. It cannot reach fields that never pass
-   through a shell, such as `uploadArtifact` paths and `call:` params.
+   through a shell, such as `call:` params and `downloadArtifact.runId`.
 2. **Environment variables and templates (chosen).** Argo exposes its
    metadata as template variables, and parity needs the same reach. Both
    surfaces are filled from one per-step metadata value, so they cannot
@@ -190,6 +190,12 @@ the environment past OS limits.
   `scheduledAt`, `parent` (from `GetRunParent`), `displayName`, `url`,
   `jobLabels` and `jobAnnotations`. `RunID`, `JobName` and `Params` are
   already there.
+- **Parent link.** The create-child-run request carries optional parent step
+  fields (`stageIndex`, `stepIndex`, `variant`, `stepName`). The controller
+  records the link (`step_reports.child_run_id`, the row `GetRunParent` reads)
+  before it replies, so a child claimed immediately already has its parent.
+  The agent's later step report is idempotent. An old agent omits the fields
+  and keeps the old, racy path.
 - **External URL.** Add a controller setting `externalUrl`
   (`UNIFIED_EXTERNAL_URL`, `--external-url`). It falls back to
   `oidc.externalUrl` and is otherwise unset. The controller never derives it

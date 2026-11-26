@@ -1499,6 +1499,37 @@ func TestAgentAPI_CreateChildRun_OwnedParent(t *testing.T) {
 	assert.Equal(t, "agent:a1", child.TriggeredBy, "child run must be attributed to the spawning agent")
 }
 
+// TestAgentAPI_CreateChildRun_RecordsParentLink verifies the parent link is
+// readable (GetRunParent) as soon as create-child-run returns, before any
+// separate step report, so an agent claiming the child never misses its parent.
+func TestAgentAPI_CreateChildRun_RecordsParentLink(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "parent-job", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
+	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`), store.JobMeta{})
+	parent, _ := pg.CreateRun(t.Context(), "parent-job", nil, []byte(`{}`), nil, nil, "", "", store.RunOrigin{})
+	claimRunForTest(t, pg, "a1", parent.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	body, _ := json.Marshal(api.CreateChildRunRequest{
+		TriggerRunRequest: api.TriggerRunRequest{JobName: "child-job"},
+		StageIndex:        1, StepIndex: 2, Variant: "", StepName: "call-child",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+parent.ID+"/children", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var child api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &child))
+	cb, err := pg.GetRunParent(t.Context(), child.ID)
+	require.NoError(t, err)
+	require.NotNil(t, cb)
+	assert.Equal(t, parent.ID, cb.ParentRunID)
+	assert.Equal(t, "parent-job", cb.ParentJobName)
+	assert.Equal(t, "call-child", cb.StepName)
+}
+
 func TestAgentAPI_CreateChildRunStoresResolvedSecretNameParameter(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "parent-job", "unified-cd/v1", []byte(`{}`), store.JobMeta{})

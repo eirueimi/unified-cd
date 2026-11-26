@@ -3,7 +3,7 @@
 Every step can find out which run, job, step and attempt it belongs to. The values are available in two places, both filled from the same source so they cannot disagree:
 
 - as **environment variables** (`UNIFIED_RUN_*`, `UNIFIED_JOB_*`, `UNIFIED_STEP_*`), for shell steps and for SDKs that read the environment;
-- as **template fields** (`.Run`, `.Job`, `.Step`, `.Agent`, and richer `.Steps.<name>`), for places that never pass through a shell, such as `uploadArtifact` paths and `call.with` values.
+- as **template fields** (`.Run`, `.Job`, `.Step`, `.Agent`, and richer `.Steps.<name>`), for places that never pass through a shell, such as `call:` params and `downloadArtifact.runId`.
 
 This works the same on host agents and the Kubernetes agent, for native and container steps. Nothing here carries a secret.
 

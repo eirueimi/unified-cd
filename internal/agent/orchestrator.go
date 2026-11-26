@@ -1563,7 +1563,7 @@ func executeDownloadArtifact(ctx context.Context, client *Client, agentID string
 
 	targetRunID := runID
 	if da.RunID != "" {
-		restricted := dsl.TemplateData{Params: tplData.Params, Vars: tplData.Vars, Steps: tplData.Steps, Matrix: tplData.Matrix, Foreach: tplData.Foreach}
+		restricted := dsl.TemplateData{Params: tplData.Params, Vars: tplData.Vars, Steps: tplData.Steps, Matrix: tplData.Matrix, Foreach: tplData.Foreach, Run: tplData.Run, Job: tplData.Job, Agent: tplData.Agent}
 		expanded, err := dsl.ExpandStepTemplate(da.RunID, restricted, "")
 		if err != nil {
 			return failStep(fmt.Errorf("runId template: %w", err))

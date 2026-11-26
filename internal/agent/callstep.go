@@ -39,7 +39,7 @@ func ExecuteCallStep(ctx context.Context, client *Client, agentID, runID string,
 	// child job or an external webhook. Matches the cache-step precedent.
 	// Vars is included for the same reason Params is: plain, non-secret job
 	// configuration a call param may legitimately reference. Stdout stays out.
-	callCtx := dsl.TemplateData{Params: tplData.Params, Vars: tplData.Vars, Steps: tplData.Steps}
+	callCtx := dsl.TemplateData{Params: tplData.Params, Vars: tplData.Vars, Steps: tplData.Steps, Run: tplData.Run, Job: tplData.Job, Agent: tplData.Agent}
 	expandedParams := map[string]string{}
 	for k, v := range step.Call.Params {
 		expanded, err := dsl.ExpandStepTemplate(v, callCtx, "")
@@ -49,7 +49,7 @@ func ExecuteCallStep(ctx context.Context, client *Client, agentID, runID string,
 		expandedParams[k] = expanded
 	}
 
-	childRun, err := client.CreateChildRun(ctx, agentID, runID, step.Call.Job, expandedParams)
+	childRun, err := client.CreateChildRun(ctx, agentID, runID, step.Call.Job, expandedParams, step)
 	if err != nil {
 		return nil, "", fmt.Errorf("create child run for job %q: %w", step.Call.Job, err)
 	}
