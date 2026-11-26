@@ -192,7 +192,9 @@ func (m *Metrics) ConfigureCustom(cfg CustomConfig, gauges CustomGaugeStore, sha
 	}
 	// Register first: the emitter stays disabled if the collector cannot be
 	// installed, so samples are not accepted that could never be exported.
-	if err := registerCustomCollector(m.reg, cfg, gauges, shapes, m.customErrors, nil, m.custom.exposesFamily); err != nil {
+	// The combined collector takes over exposing the vecs (see
+	// customCollector.em); the emitter's own vec collector then goes quiet.
+	if err := registerCustomCollector(m.reg, cfg, gauges, shapes, m.customErrors, nil, m.custom); err != nil {
 		return err
 	}
 	m.custom.configure(cfg, gauges)

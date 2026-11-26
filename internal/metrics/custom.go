@@ -89,6 +89,8 @@ type CustomEmitter struct {
 	// so a repeatedly emitted bad definition does not rebuild a scratch registry
 	// on every sample.
 	rejected map[string]string
+	// combined is set once the combined vec + DB collector is registered.
+	combined bool
 }
 
 // NewCustomEmitter builds an emitter. errs is the
@@ -111,17 +113,33 @@ type vecCollector CustomEmitter
 
 func (c *vecCollector) Describe(chan<- *prometheus.Desc) {}
 
+// Collect exposes the current vecs, unless ConfigureCustom installed the
+// combined collector, which then does it (and must be the only one to, so
+// that vecs and DB rows come from a single snapshot).
 func (c *vecCollector) Collect(ch chan<- prometheus.Metric) {
 	e := (*CustomEmitter)(c)
-	e.mu.Lock()
-	cols := make([]prometheus.Collector, 0, len(e.vecs))
-	for _, v := range e.vecs {
-		cols = append(cols, v.collector())
+	cols, _, combined := e.snapshot()
+	if combined {
+		return
 	}
-	e.mu.Unlock()
 	for _, col := range cols {
 		col.Collect(ch)
 	}
+}
+
+// snapshot returns, under one lock, the current vec collectors and the set of
+// family names they expose.
+func (e *CustomEmitter) snapshot() (cols []prometheus.Collector, fams map[string]struct{}, combined bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	fams = map[string]struct{}{}
+	for _, v := range e.vecs {
+		cols = append(cols, v.collector())
+		for _, f := range v.fams {
+			fams[f] = struct{}{}
+		}
+	}
+	return cols, fams, e.combined
 }
 
 // configure replaces the emitter's config and gauge store (used by
@@ -129,6 +147,8 @@ func (c *vecCollector) Collect(ch chan<- prometheus.Metric) {
 func (e *CustomEmitter) configure(cfg CustomConfig, gauges CustomGaugeStore) {
 	e.mu.Lock()
 	e.cfg, e.gauges = cfg, gauges
+	// Only the combined collector exists once configured (see ConfigureCustom).
+	e.combined = true
 	e.mu.Unlock()
 }
 
@@ -260,9 +280,12 @@ func (e *CustomEmitter) emitVec(def dsl.MetricDef, shape dsl.MetricShape, labels
 		}
 	}()
 
-	if e.rejected[name] == hash {
-		e.CountError(name, ReasonConflict)
-		return
+	if h, ok := e.rejected[name]; ok {
+		if h == hash {
+			e.CountError(name, ReasonConflict)
+			return
+		}
+		delete(e.rejected, name) // the definition changed; judge it afresh
 	}
 	v := e.vecs[name]
 	if v != nil && v.hash != hash {
@@ -403,22 +426,6 @@ func (e *CustomEmitter) Sweep(now time.Time) {
 		}
 	}
 }
-
-// exposesFamily reports whether a live vec exposes the given family name. The
-// DB collector uses it to skip rows that would collide with a vec.
-func (e *CustomEmitter) exposesFamily(family string) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, v := range e.vecs {
-		for _, f := range v.fams {
-			if f == family {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 var fqNameRe = regexp.MustCompile(`fqName: "([^"]*)"`)
 
 // BuiltinFamilyNames returns every family name New() registers, plus the

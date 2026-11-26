@@ -21,10 +21,10 @@ type customCollector struct {
 	shapes func(name string) (dsl.MetricShape, bool)
 	errs   *prometheus.CounterVec
 	now    func() time.Time
-	// taken, when set, reports whether an in-memory vec already exposes the
-	// family; such rows are skipped so the two collectors never emit the same
-	// family in one scrape.
-	taken func(family string) bool
+	// em, when set, makes this the combined collector: it also exposes the
+	// emitter's vecs, from the same snapshot used to skip DB rows whose family
+	// a vec exposes, so one scrape can never contain a family twice.
+	em *CustomEmitter
 }
 
 // RegisterCustomCollector registers the unchecked collector on reg. now may be
@@ -36,11 +36,11 @@ func RegisterCustomCollector(reg *prometheus.Registry, cfg CustomConfig, gauges 
 	return registerCustomCollector(reg, cfg, gauges, shapes, errs, now, nil)
 }
 
-func registerCustomCollector(reg *prometheus.Registry, cfg CustomConfig, gauges CustomGaugeStore, shapes func(name string) (dsl.MetricShape, bool), errs *prometheus.CounterVec, now func() time.Time, taken func(string) bool) error {
+func registerCustomCollector(reg *prometheus.Registry, cfg CustomConfig, gauges CustomGaugeStore, shapes func(name string) (dsl.MetricShape, bool), errs *prometheus.CounterVec, now func() time.Time, em *CustomEmitter) error {
 	if now == nil {
 		now = time.Now
 	}
-	return reg.Register(&customCollector{cfg: cfg, gauges: gauges, shapes: shapes, errs: errs, now: now, taken: taken})
+	return reg.Register(&customCollector{cfg: cfg, gauges: gauges, shapes: shapes, errs: errs, now: now, em: em})
 }
 
 func (c *customCollector) Describe(chan<- *prometheus.Desc) {}
@@ -70,6 +70,14 @@ type collected struct {
 }
 
 func (c *customCollector) Collect(ch chan<- prometheus.Metric) {
+	var vecFams map[string]struct{}
+	if c.em != nil {
+		var cols []prometheus.Collector
+		cols, vecFams, _ = c.em.snapshot()
+		for _, col := range cols {
+			col.Collect(ch)
+		}
+	}
 	if !c.cfg.Enabled || c.gauges == nil {
 		return
 	}
@@ -91,7 +99,8 @@ func (c *customCollector) Collect(ch chan<- prometheus.Metric) {
 		keys := sortedKeys(labels)
 		// A row whose name is now a counter or histogram would collide with that
 		// family and fail the whole /metrics response.
-		if !ok || shape.Kind != "gauge" || (c.taken != nil && c.taken(name)) || strings.Join(keys, "\x00") != strings.Join(shape.LabelKeys, "\x00") || len(keys) != len(shape.LabelKeys) {
+		_, clash := vecFams[name]
+		if !ok || shape.Kind != "gauge" || clash || strings.Join(keys, "\x00") != strings.Join(shape.LabelKeys, "\x00") || len(keys) != len(shape.LabelKeys) {
 			c.countError(name, ReasonConflict)
 			return
 		}

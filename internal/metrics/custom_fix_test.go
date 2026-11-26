@@ -144,3 +144,51 @@ func TestEmitter_ConcurrentEmitSweepGather(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+func TestCustom_ConcurrentVecFlipWithDBRowsOfSameFamily(t *testing.T) {
+	now := time.Now()
+	f := &fakeGauges{
+		gauges:   []store.MetricGauge{{Name: "unifiedcd_job_x_total", Help: "h", Labels: map[string]string{}, Value: 1, UpdatedAt: now.Add(time.Hour)}},
+		realtime: []store.MetricRealtime{{RunID: "r", Name: "unifiedcd_job_x_total", Help: "h", Labels: map[string]string{}, StartedAt: now}},
+	}
+	m := New()
+	if err := m.ConfigureCustom(CustomConfig{Enabled: true, TTL: time.Hour, MaxSeriesPerMetric: 10}, f,
+		func(string) (dsl.MetricShape, bool) { return dsl.MetricShape{Kind: "gauge", Help: "h"}, true }); err != nil {
+		t.Fatal(err)
+	}
+	e := m.Custom()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			e.Emit(context.Background(), counterDef("x"), map[string]string{}, 1)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			e.Sweep(time.Now().Add(2 * time.Hour))
+		}
+	}()
+	var failed error
+	for i := 0; i < 2000 && failed == nil; i++ {
+		_, failed = m.reg.Gather()
+	}
+	close(stop)
+	wg.Wait()
+	if failed != nil {
+		t.Fatalf("gather failed: %v", failed)
+	}
+}
