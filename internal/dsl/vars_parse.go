@@ -72,7 +72,53 @@ var reservedVarNames = map[string]bool{
 // The prefix rule is the single source. internal/agent's varDenied consults
 // IsReservedVarName rather than keeping a list of its own, and its test asserts
 // that every prefix the orchestrator synthesises is one reserved here.
-var reservedVarPrefixes = []string{VolumeEnvPrefix}
+var reservedVarPrefixes = []string{VolumeEnvPrefix, RunEnvPrefix, JobEnvPrefix, StepEnvPrefix}
+
+// Prefixes of the run metadata the agent synthesises into every step's env.
+const (
+	RunEnvPrefix  = "UNIFIED_RUN_"
+	JobEnvPrefix  = "UNIFIED_JOB_"
+	StepEnvPrefix = "UNIFIED_STEP_"
+)
+
+// metadataEnvPrefixes are the run metadata prefixes a step env: key may not use.
+var metadataEnvPrefixes = []string{RunEnvPrefix, JobEnvPrefix, StepEnvPrefix}
+
+// ValidateStepEnv rejects env keys under a run metadata prefix
+// (UNIFIED_RUN_, UNIFIED_JOB_, UNIFIED_STEP_), in any case. Keys are checked
+// in sorted order so the error is deterministic.
+func ValidateStepEnv(stepName string, env map[string]string) error {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		u := strings.ToUpper(k)
+		for _, p := range metadataEnvPrefixes {
+			if strings.HasPrefix(u, p) {
+				return fmt.Errorf("step %q: env %q uses reserved prefix %q", stepName, k, p)
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateStepEntriesEnv applies ValidateStepEnv to every step in entries,
+// including parallel sub-steps. It is for entries produced by uses: expansion.
+func ValidateStepEntriesEnv(entries []StepEntry) error {
+	for _, e := range entries {
+		if err := ValidateStepEnv(e.Name, e.Env); err != nil {
+			return err
+		}
+		for _, p := range e.Parallel {
+			if err := ValidateStepEnv(p.Name, p.Env); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 // ReservedVarPrefixes returns the name prefixes apply-time validation refuses,
 // upper-cased, as a copy. Exact names are in ReservedVarNames.
