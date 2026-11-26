@@ -22,7 +22,7 @@ The one exception is `UNIFIED_RUN_PARAMS_JSON`, which is always set (`{}` when t
 | `UNIFIED_RUN_CREATED_AT` | `.Run.CreatedAt` | Env: RFC 3339 UTC. Template: `time.Time`, so `{{ .Run.CreatedAt.Format "2006-01-02" }}` works. | `workflow.creationTimestamp` |
 | `UNIFIED_RUN_STARTED_AT` | `.Run.StartedAt` | Agent clock when the agent received the claim. Same types as `CreatedAt`. Set even with an old controller. | (none) |
 | `UNIFIED_RUN_TRIGGERED_BY` | `.Run.TriggeredBy` | The raw `triggered_by` string, for example `webhook:gh-push` | (none) |
-| `UNIFIED_RUN_TRIGGER` | `.Run.Trigger` | One of `api`, `webhook`, `schedule`, `call`, `replay` | (none) |
+| `UNIFIED_RUN_TRIGGER` | `.Run.Trigger` | One of `api`, `webhook`, `schedule`, `call`, `replay`. Absent for a run created by a controller replica that predates the feature (during a rolling upgrade). | (none) |
 | `UNIFIED_RUN_SCHEDULED_AT` | `.Run.ScheduledAt` | Schedule runs only: the cron fire time the run was created for. Absent on a replay. | `workflow.scheduledTime` |
 | `UNIFIED_RUN_PARENT_ID`, `UNIFIED_RUN_PARENT_JOB`, `UNIFIED_RUN_PARENT_STEP` | `.Run.Parent.ID`, `.Run.Parent.Job`, `.Run.Parent.Step` | `call:` children only. Absent on a replay of a child. | `workflow.mainEntrypoint` (closest match) |
 | `UNIFIED_RUN_REPLAY_OF` | `.Run.ReplayOf` | Replays only: the original run ID | (none) |
@@ -55,6 +55,18 @@ Each retry attempt expands its templates again, so `{{ .Step.Attempt }}` is curr
 
 `post:` hooks receive the run and job variables but **no** `UNIFIED_STEP_*` variables.
 
+## Template types
+
+Template fields keep their native Go types, while environment variables are always strings:
+
+| Field | Type |
+|---|---|
+| `.Run.CreatedAt`, `.Run.StartedAt`, `.Run.ScheduledAt` | `time.Time` (zero when absent) |
+| `.Steps.<name>.StartedAt`, `.Steps.<name>.EndedAt` | `time.Time` |
+| `.Run.Duration` | `int64`, whole seconds |
+| `.Run.Failures` | `[]StepFailure`, each with `StartedAt` and `EndedAt` as `time.Time` |
+| `.Step.Attempt`, `.Step.MaxAttempts`, `.Step.LastExitCode` | integers |
+
 ## Previous steps
 
 `.Steps.<name>` carries `Status`, `ExitCode`, `StartedAt` and `EndedAt` in addition to `Outputs` and `ChildRunID`. These are template-only; they are not put into the environment.
@@ -66,7 +78,7 @@ Each retry attempt expands its templates again, so `{{ .Step.Attempt }}` is curr
 | `.Steps.<name>.StartedAt` | When the first attempt started (zero for a skipped step) |
 | `.Steps.<name>.EndedAt` | When the last attempt ended (zero for a skipped step) |
 
-An entry now exists after a step finishes in **any** status, not only after it succeeds. A template that used a missing entry to mean "did not succeed" must check `Status` instead. For matrix and foreach steps the times span all combinations (earliest start, latest end) and `Status` is the aggregate: `Failed` if any combination failed, otherwise `Succeeded`.
+An entry now exists after a step finishes in **any** status, not only after it succeeds. A template that used a missing entry to mean "did not succeed" must check `Status` instead. For matrix and foreach steps the times span all combinations (earliest start, latest end) and `Status` is the aggregate, ranked `Failed` > `Cancelled` > `Succeeded` > `Skipped`: the highest-ranked status among the combinations wins.
 
 ## `finally:` only
 
@@ -80,6 +92,7 @@ These exist only in `finally:` steps and are absent everywhere else.
 
 - A step that failed under `continueOnError: true` **is** listed in the failures, because it did fail, but it does not change `UNIFIED_RUN_STATUS`.
 - Steps stopped by a run cancellation are **not** listed.
+- In templates, `.Run.Failures` is a list of `StepFailure` values (fields `Name`, `Stage`, `ExitCode`, `StartedAt`, `EndedAt`, `MatrixKey`), not a JSON string: `{{ range .Run.Failures }}{{ .Name }} {{ end }}`.
 - `UNIFIED_RUN_FAILURES_JSON` is capped at 16384 bytes. When the list does not fit, trailing entries are dropped and the last array element is a marker object `{"truncated":N}`, where `N` is the number of entries omitted.
 
 See [Approval and Finally](approval-and-finally.md) for the `finally:` block itself.

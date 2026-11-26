@@ -267,9 +267,10 @@ already overrides `imageStepEnv`. No second implementation is needed.
 
 ## Builder latitude
 
-- Matrix and foreach steps: `.Steps.<name>.Status` is the aggregate. It is
-  `Failed` if any combination failed, otherwise `Succeeded`. A per-combination
-  view is out of scope.
+- Matrix and foreach steps: `.Steps.<name>.Status` is the aggregate, ranked
+  `Failed` > `Cancelled` > `Succeeded` > `Skipped` (the highest rank among the
+  combinations wins), with the earliest start and the latest end. A
+  per-combination view is out of scope.
 - `.Run.Duration` type (seconds as a number, or `time.Duration`), as long as
   the env var holds integer seconds.
 - Exact JSON field names in `UNIFIED_RUN_FAILURES_JSON`, if they stay
