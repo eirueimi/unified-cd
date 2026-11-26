@@ -61,6 +61,8 @@ type Spec struct {
 	// scalar shorthand); the run: script is appended as the final argv
 	// element. See Step.Shell for the full resolution priority.
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
+	// Metrics are custom Prometheus metrics evaluated when the run finishes.
+	Metrics []MetricDef `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 	// Volumes mounts named volumes into the run. The job names a volume and
 	// where it appears; the volume's AgentVolume resource decides what backs
 	// it. See VolumeMount.
@@ -229,6 +231,7 @@ type StepEntry struct {
 	// Shell overrides the effective interpreter argv for this step. See
 	// Step.Shell for the full resolution priority.
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
+	Metrics []MetricDef `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 
 	// Parallel group (mutually exclusive with all concrete step fields above)
 	Parallel []Step `yaml:"parallel,omitempty"`
@@ -272,6 +275,7 @@ type Step struct {
 	// (job-level) > system default. Steps inside parallel: and finally:
 	// count as steps for this purpose.
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
+	Metrics []MetricDef `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 	// Needs removed — use parallel: blocks instead
 }
 

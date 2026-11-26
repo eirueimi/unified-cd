@@ -206,6 +206,16 @@
       },
       "type": "object"
     },
+    "CounterMetric": {
+      "additionalProperties": false,
+      "description": "CounterMetric increments a counter by Value (empty means \"1\").",
+      "properties": {
+        "value": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "DownloadArtifactStep": {
       "additionalProperties": false,
       "properties": {
@@ -256,6 +266,27 @@
           "type": "string"
         }
       ]
+    },
+    "GaugeMetric": {
+      "additionalProperties": false,
+      "description": "GaugeMetric sets, adds to or subtracts from a gauge.",
+      "properties": {
+        "operation": {
+          "description": "Operation is one of Set, Add or Sub (empty means Set).",
+          "type": "string"
+        },
+        "realtime": {
+          "description": "Realtime updates the gauge while the run (or step) is still running.\nOnly valid when value is exactly {{ .Run.Duration }} (run level) or\n{{ .Step.Duration }} (step level).",
+          "type": "boolean"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "type": "object"
     },
     "GitCredential": {
       "additionalProperties": false,
@@ -381,6 +412,25 @@
         "folders",
         "repositories",
         "permissions"
+      ],
+      "type": "object"
+    },
+    "HistogramMetric": {
+      "additionalProperties": false,
+      "description": "HistogramMetric observes Value into a histogram. Buckets are optional\n(default Prometheus buckets) and must be strictly increasing when given.",
+      "properties": {
+        "buckets": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value"
       ],
       "type": "object"
     },
@@ -595,6 +645,68 @@
       "required": [
         "name"
       ],
+      "type": "object"
+    },
+    "MetricDef": {
+      "additionalProperties": false,
+      "description": "MetricDef is one job-defined Prometheus metric. It is declared in a\nmetrics: block on spec (evaluated when the run finishes) or on a step\n(evaluated when the step finishes). Exactly one of counter, gauge or\nhistogram must be set.",
+      "properties": {
+        "counter": {
+          "$ref": "#/definitions/CounterMetric"
+        },
+        "gauge": {
+          "$ref": "#/definitions/GaugeMetric"
+        },
+        "help": {
+          "description": "Help is the Prometheus help text.",
+          "type": "string"
+        },
+        "histogram": {
+          "$ref": "#/definitions/HistogramMetric"
+        },
+        "labels": {
+          "description": "Labels are the label key/value templates attached to every sample.",
+          "items": {
+            "$ref": "#/definitions/MetricLabel"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "Name is the metric name without the unifiedcd_job_ prefix.",
+          "type": "string"
+        },
+        "when": {
+          "description": "When is an optional condition; the metric is emitted only when it is true.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "help"
+      ],
+      "type": "object"
+    },
+    "MetricLabel": {
+      "additionalProperties": false,
+      "description": "MetricLabel is one label of a metric. Value is a template.",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "type": "object"
+    },
+    "MetricShape": {
+      "additionalProperties": false,
+      "description": "MetricShape is what must agree between two definitions of the same metric\nname within one job.",
+      "properties": {},
       "type": "object"
     },
     "OrLock": {
@@ -886,6 +998,13 @@
           },
           "type": "array"
         },
+        "metrics": {
+          "description": "Metrics are custom Prometheus metrics evaluated when the run finishes.",
+          "items": {
+            "$ref": "#/definitions/MetricDef"
+          },
+          "type": "array"
+        },
         "native": {
           "description": "Native opts the whole job into host-process execution (no claim pod,\nno podTemplate, no container: steps). Host agents only; the default\n(false) is the isolated pod model on both backends.",
           "type": "boolean"
@@ -970,6 +1089,12 @@
         },
         "matrix": {
           "$ref": "#/definitions/MatrixDef"
+        },
+        "metrics": {
+          "items": {
+            "$ref": "#/definitions/MetricDef"
+          },
+          "type": "array"
         },
         "name": {
           "type": "string"
@@ -1061,6 +1186,12 @@
         },
         "matrix": {
           "$ref": "#/definitions/MatrixDef"
+        },
+        "metrics": {
+          "items": {
+            "$ref": "#/definitions/MetricDef"
+          },
+          "type": "array"
         },
         "name": {
           "description": "Concrete step fields (identical to Step, minus Needs)",

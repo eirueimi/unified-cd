@@ -78,6 +78,7 @@ var stepEntryInlinePolicy = map[string]inlineFieldPolicy{
 	"ContinueOnError": fieldPreserved,
 	"TimeoutMinutes":  fieldPreserved,
 	"Shell":           fieldPreserved, // a template-level spec.shell is stamped later, by stampShell
+	"Metrics":         fieldPreserved, // copied wholesale with the step; label/value templates are not ref-rewritten in v1
 	// Container is preserved when the step declares one; a step that declares
 	// none inherits the uses: step's container: instead (asserted separately in
 	// inline_scope_test.go). The fixture declares one.
@@ -176,6 +177,7 @@ func fullyPopulatedTemplateStep() dsl.StepEntry {
 		ScopeResourceLimits: &dsl.ResourceList{CPU: "2", Memory: "4Gi"},
 		TimeoutMinutes:      12.5,
 		Shell:               []string{"bash", "-lc"},
+		Metrics:             []dsl.MetricDef{{Name: "m", Help: "h", Counter: &dsl.CounterMetric{}}},
 	}
 }
 
