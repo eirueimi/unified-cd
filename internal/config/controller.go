@@ -195,6 +195,88 @@ type ControllerConfig struct {
 	// ObjectStore holds settings about how the controller uses its object store
 	// beyond the connection (S3*) settings.
 	ObjectStore *ControllerObjectStoreConfig `yaml:"objectStore"`
+	// CustomMetrics configures job-defined Prometheus metrics (the metrics:
+	// blocks of a Job).
+	CustomMetrics ControllerCustomMetricsConfig `yaml:"customMetrics"`
+}
+
+// Defaults of the customMetrics section.
+const (
+	DefaultCustomMetricsMaxSeries = 1000
+	DefaultCustomMetricsTTL       = 24 * time.Hour
+)
+
+// ControllerCustomMetricsConfig is the customMetrics block of the controller
+// config. A nil field means "not set"; use the accessors for effective values.
+// Env: UNIFIED_CUSTOM_METRICS_ENABLED, UNIFIED_CUSTOM_METRICS_MAX_SERIES_PER_METRIC,
+// UNIFIED_CUSTOM_METRICS_TTL.
+type ControllerCustomMetricsConfig struct {
+	// Enabled turns emission and export of job-defined metrics on (default true).
+	Enabled *bool `yaml:"enabled"`
+	// MaxSeriesPerMetric caps label combinations per exposed metric name per
+	// replica (default 1000; 0 = unlimited).
+	MaxSeriesPerMetric *int `yaml:"maxSeriesPerMetric"`
+	// TTL is how long a series may go without an update before it is dropped
+	// (default 24h; 0 disables expiry).
+	TTL *time.Duration `yaml:"ttl"`
+}
+
+// CustomMetricsEnabled returns the effective enabled flag (default true).
+func (c *ControllerConfig) CustomMetricsEnabled() bool {
+	return c.CustomMetrics.Enabled == nil || *c.CustomMetrics.Enabled
+}
+
+// CustomMetricsMaxSeries returns the effective series cap (default 1000).
+func (c *ControllerConfig) CustomMetricsMaxSeries() int {
+	if c.CustomMetrics.MaxSeriesPerMetric == nil {
+		return DefaultCustomMetricsMaxSeries
+	}
+	return *c.CustomMetrics.MaxSeriesPerMetric
+}
+
+// CustomMetricsTTL returns the effective series TTL (default 24h).
+func (c *ControllerConfig) CustomMetricsTTL() time.Duration {
+	if c.CustomMetrics.TTL == nil {
+		return DefaultCustomMetricsTTL
+	}
+	return *c.CustomMetrics.TTL
+}
+
+func (c ControllerCustomMetricsConfig) validate() error {
+	if c.MaxSeriesPerMetric != nil && *c.MaxSeriesPerMetric < 0 {
+		return fmt.Errorf("customMetrics.maxSeriesPerMetric must not be negative")
+	}
+	if c.TTL != nil && *c.TTL < 0 {
+		return fmt.Errorf("customMetrics.ttl must not be negative")
+	}
+	return nil
+}
+
+// customMetricsFromEnv reads the UNIFIED_CUSTOM_METRICS_* variables.
+func customMetricsFromEnv() (ControllerCustomMetricsConfig, error) {
+	var c ControllerCustomMetricsConfig
+	if v := strings.TrimSpace(os.Getenv("UNIFIED_CUSTOM_METRICS_ENABLED")); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return c, fmt.Errorf("UNIFIED_CUSTOM_METRICS_ENABLED must be a boolean, got %q", v)
+		}
+		c.Enabled = &b
+	}
+	if v := strings.TrimSpace(os.Getenv("UNIFIED_CUSTOM_METRICS_MAX_SERIES_PER_METRIC")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return c, fmt.Errorf("UNIFIED_CUSTOM_METRICS_MAX_SERIES_PER_METRIC must be a non-negative integer, got %q", v)
+		}
+		c.MaxSeriesPerMetric = &n
+	}
+	if v := strings.TrimSpace(os.Getenv("UNIFIED_CUSTOM_METRICS_TTL")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			return c, fmt.Errorf("UNIFIED_CUSTOM_METRICS_TTL must be a non-negative duration such as 24h, got %q", v)
+		}
+		c.TTL = &d
+	}
+	return c, nil
 }
 
 // Artifact download modes for objectStore.artifactDownload.
@@ -359,6 +441,11 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		TrustedProxies:                   SplitCSV(os.Getenv("UNIFIED_TRUSTED_PROXIES")),
 		AgentAuth:                        &ControllerAgentAuthConfig{},
 	}
+	cm, err := customMetricsFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	eff.CustomMetrics = cm
 	if v := strings.TrimSpace(os.Getenv("UNIFIED_ARTIFACT_DOWNLOAD")); v != "" {
 		eff.ObjectStore = &ControllerObjectStoreConfig{ArtifactDownload: v}
 	}
@@ -488,6 +575,18 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 			return nil, err
 		}
 		eff.ObjectStore = &ControllerObjectStoreConfig{ArtifactDownload: file.ObjectStore.ArtifactDownload}
+	}
+	if err := file.CustomMetrics.validate(); err != nil {
+		return nil, err
+	}
+	if file.CustomMetrics.Enabled != nil {
+		eff.CustomMetrics.Enabled = file.CustomMetrics.Enabled
+	}
+	if file.CustomMetrics.MaxSeriesPerMetric != nil {
+		eff.CustomMetrics.MaxSeriesPerMetric = file.CustomMetrics.MaxSeriesPerMetric
+	}
+	if file.CustomMetrics.TTL != nil {
+		eff.CustomMetrics.TTL = file.CustomMetrics.TTL
 	}
 	if file.MaxRequestBodyBytes < 0 {
 		return nil, fmt.Errorf("maxRequestBodyBytes must not be negative")

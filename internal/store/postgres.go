@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -32,6 +33,41 @@ type Postgres struct {
 	listenPool     *pgxpool.Pool
 	ownsPools      bool
 	closeOnce      *sync.Once
+	// finishHook is shared with every BackgroundStore view of this Postgres.
+	finishHook *runFinishedHolder
+}
+
+// RunFinishedHook is called after a run's terminal transition has committed,
+// and only by the call that performed the transition (never for a CAS miss).
+// It must not block for long; it runs on the caller's goroutine.
+type RunFinishedHook func(ctx context.Context, runID string, status api.RunStatus)
+
+type runFinishedHolder struct {
+	fn atomic.Pointer[RunFinishedHook]
+}
+
+// SetRunFinishedHook installs the hook for every terminal transition made
+// through this Postgres (and its BackgroundStore views), including the ones
+// the store makes internally, such as a run failed while being queued. A nil
+// hook removes it.
+func (p *Postgres) SetRunFinishedHook(h RunFinishedHook) {
+	if p.finishHook == nil {
+		return
+	}
+	if h == nil {
+		p.finishHook.fn.Store(nil)
+		return
+	}
+	p.finishHook.fn.Store(&h)
+}
+
+func (p *Postgres) notifyRunFinished(ctx context.Context, runID string, status api.RunStatus) {
+	if p.finishHook == nil {
+		return
+	}
+	if h := p.finishHook.fn.Load(); h != nil {
+		(*h)(ctx, runID, status)
+	}
 }
 
 // PostgresPoolConfig bounds each independently reserved controller pool.
@@ -94,7 +130,7 @@ func NewPostgresWithPoolConfig(ctx context.Context, dsn string, cfg PostgresPool
 		max  int32
 		dst  **pgxpool.Pool
 	}
-	p := &Postgres{ownsPools: true, closeOnce: &sync.Once{}}
+	p := &Postgres{ownsPools: true, closeOnce: &sync.Once{}, finishHook: &runFinishedHolder{}}
 	specs := []poolSpec{
 		{name: "api", max: cfg.APIMaxConns, dst: &p.pool},
 		{name: "background", max: cfg.BackgroundMaxConns, dst: &p.backgroundPool},
@@ -143,6 +179,7 @@ func (p *Postgres) BackgroundStore() *Postgres {
 		backgroundPool: p.backgroundPool,
 		lockPool:       p.lockPool,
 		listenPool:     p.listenPool,
+		finishHook:     p.finishHook,
 	}
 }
 
@@ -504,6 +541,20 @@ func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
 		r.Params = map[string]string{}
 	}
 	return &r, nil
+}
+
+// GetRunClaimedAt returns when an agent claimed the run, or nil when it never was
+// (a run cancelled or failed while still queued). A missing run is ErrRunNotFound.
+func (p *Postgres) GetRunClaimedAt(ctx context.Context, id string) (*time.Time, error) {
+	var t *time.Time
+	err := p.pool.QueryRow(ctx, `SELECT claimed_at FROM runs WHERE id = $1`, id).Scan(&t)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, RunNotFoundError(id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get run claimed_at: %w", err)
+	}
+	return t, nil
 }
 
 func (p *Postgres) GetRunSpec(ctx context.Context, id string) ([]byte, error) {
@@ -1140,6 +1191,7 @@ WHERE id = $2 AND status NOT IN ('Succeeded', 'Failed', 'Cancelled')
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
+	p.notifyRunFinished(ctx, runID, status)
 	return updated, nil
 }
 

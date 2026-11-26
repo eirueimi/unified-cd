@@ -308,6 +308,8 @@ type Store interface {
 	// RunJobName returns the job a run belongs to without requiring the job row; a malformed run ID is found=false, not an error.
 	RunJobName(ctx context.Context, runID string) (job string, found bool, err error)
 	GetRunSpec(ctx context.Context, id string) ([]byte, error)
+	// GetRunClaimedAt returns when an agent claimed the run; nil when it was never claimed.
+	GetRunClaimedAt(ctx context.Context, id string) (*time.Time, error)
 	ListRunsByJob(ctx context.Context, jobName string, limit int) ([]api.Run, error)
 	ListActiveRuns(ctx context.Context) ([]api.Run, error)
 	TransitionPendingToQueued(ctx context.Context, limit int) (int, error)
@@ -524,6 +526,8 @@ type Store interface {
 	PutMetricRealtime(ctx context.Context, r MetricRealtime) error
 	// DeleteMetricRealtime removes one step's rows; stepKey "" deletes the run-level rows only.
 	DeleteMetricRealtime(ctx context.Context, runID, stepKey string) error
+	// DeleteMetricRealtimeForRun removes every realtime row of a run, run-level and step-level.
+	DeleteMetricRealtimeForRun(ctx context.Context, runID string) error
 	ListMetricRealtime(ctx context.Context) ([]MetricRealtime, error)
 	DeleteMetricRealtimeForTerminalRuns(ctx context.Context) (int64, error)
 

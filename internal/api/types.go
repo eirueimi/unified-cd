@@ -381,6 +381,9 @@ type StepReportRequest struct {
 	StartedAt  time.Time `json:"startedAt,omitempty"`
 	EndedAt    time.Time `json:"endedAt,omitempty"`
 	Variant    string    `json:"variant,omitempty"`
+	// Attempts is the number of tries a step took (the last try's number). Optional:
+	// agents that predate it omit it, and the controller then treats it as 1.
+	Attempts int `json:"attempts,omitempty"`
 
 	ChildRunID  string `json:"childRunId,omitempty"`
 	CallJobName string `json:"callJobName,omitempty"`

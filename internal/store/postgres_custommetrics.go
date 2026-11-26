@@ -160,6 +160,12 @@ func (p *Postgres) DeleteMetricRealtime(ctx context.Context, runID, stepKey stri
 	return err
 }
 
+// DeleteMetricRealtimeForRun removes every realtime row of a run.
+func (p *Postgres) DeleteMetricRealtimeForRun(ctx context.Context, runID string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM custom_metric_realtime WHERE run_id = $1`, runID)
+	return err
+}
+
 // ListMetricRealtime returns every realtime row.
 func (p *Postgres) ListMetricRealtime(ctx context.Context) ([]MetricRealtime, error) {
 	rows, err := p.pool.Query(ctx, `
