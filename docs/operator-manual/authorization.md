@@ -37,7 +37,7 @@ There are 30 permissions, written `<resource>.<verb>`. Nine are **folder-scopabl
 | `agentvolume.read` | List `AgentVolume` manifests. | yes | yes | yes |
 | `agentvolume.write` | Apply or delete an `AgentVolume` manifest. | | | yes |
 | `account.manage` | Manage accounts (internal accounts and service accounts). | | | yes |
-| `serviceaccount.token` | Create and revoke personal access tokens of service accounts. | | | yes |
+| `serviceaccount.token` | Create, list and revoke personal access tokens of service accounts other than `admin`. A holder can mint PATs carrying any such account's grants, so this permission is effectively the union of all service-account grants. | | | yes |
 | `webhook.read` | List WebhookReceivers. | yes | yes | yes |
 | `webhook.write` | Apply or delete a WebhookReceiver. | | | yes |
 | `appsource.read` | List and get AppSources. | yes | yes | yes |
@@ -251,7 +251,7 @@ serviceAccounts:
     enabled: true
   ci-deploy:
     permissions:
-      global: [viewer]
+      global: [viewer, token.create]   # token.create lets CI rotate its own PAT
       folders:
         team-a: developer
         team-a/prod: [job.read, run.trigger]
@@ -261,7 +261,7 @@ serviceAccounts:
 - Names are DNS labels and must not start with `env:` or `system:`.
 - An entry removed from the file is disabled at the next start (the row stays for the audit log); adding it back re-enables it.
 - A service account with no `permissions` authenticates but holds nothing (`403 forbidden: no role`).
-- Issue its PAT with `unified-cli token create <name> --account <service-account>`. That needs `token.manage` or `serviceaccount.token`, and is refused for `admin`.
+- Issue its PAT with `unified-cli token create <name> --account <service-account>`. That needs `token.manage` or `serviceaccount.token`, and is refused for `admin`. For the service account to rotate its own PAT it also needs `token.create`.
 - The validation errors, so you can grep your logs: `serviceAccounts["x"]: invalid name: must be a DNS label and must not start with "env:" or "system:"`, `serviceAccounts["admin"]: only "enabled" may be set for the built-in admin account`, `serviceAccounts["x"].permissions: unknown field "y"`, `serviceAccounts["x"].permissions.global: unknown permission or role "jobs.read"`, `serviceAccounts["x"].permissions.folders["f"]: permission "secret.write" is global-only and cannot be granted on a folder`, `serviceAccounts["x"].permissions.folders["f"]: empty grant`.
 
 ### Human accounts
@@ -281,9 +281,9 @@ recomputed on every request.
 - **Account.** A PAT can never exceed its account, globally or on any folder. Removing the person from `roleMap` / `userMap` / `permissions` (or a service account from `serviceAccounts`) takes effect for all of its PATs at the next controller start with no re-issue; group changes in the IdP are picked up when the person next logs in through the browser. Disabling the account stops every PAT at once.
 - **Ceiling.** Optional: either a role (`--role`) or a list of permissions (`--permission`, repeatable). No ceiling means "everything the account has". A ceiling above what the creator holds is refused with a `400`; nothing is ever silently reduced.
 - **Lifetime.** Every new PAT expires: `--expires-in` or `tokens.defaultLifetime` (90 days by default), capped by `tokens.maxLifetime` (365 days by default; the built-in `admin` account is always capped at 720h). See [Configuration: tokens](../reference/configuration.md#tokens-pat-lifetimes).
-- **PAT created by a PAT.** A PAT may create PATs only for its own account, within its own ceiling and the lifetime limits; this is how CI rotates its token without an admin. Creating a PAT for another account needs `token.manage` or `serviceaccount.token` and never targets `admin`. A child's ceiling is the parent's ceiling intersected with the requested one.
+- **PAT created by a PAT.** A PAT may create PATs only for its own account, within its own ceiling and the lifetime limits; this is how CI rotates its token without an admin, and it needs `token.create` on the service account. Creating a PAT for another account needs `token.manage` or `serviceaccount.token` and never targets `admin`. A child's ceiling is the parent's ceiling intersected with the requested one.
 - A PAT whose ceiling leaves nothing, or whose account is gone, answers `403` on every route (`forbidden: token owner has no permissions`, `forbidden: no role` or `forbidden: account disabled`), so the failure is diagnosable.
-- `GET` and `DELETE /api/v1/tokens` act on your own PATs with `token.create`, and on everyone's with `token.manage` (admin only). `token list` labels each PAT's account: the person's email (or `sub`), or `sa:<name>` for a service account.
+- `GET` and `DELETE /api/v1/tokens` act on your own PATs with `token.create`, on everyone's with `token.manage` (admin only), and on those of service accounts other than `admin` with `serviceaccount.token`. `token list` labels each PAT's account: the person's email (or `sub`), or `sa:<name>` for a service account.
 - Creating a PAT is refused for an OIDC bearer id_token without the roles claim while the config has group-keyed grants, with the strings listed in [CLI: token create](../reference/cli.md#token-create) and in [Troubleshooting](../troubleshooting/controller-and-database.md#token-creation-is-refused-cannot-create-a-token).
 
 See [Authentication](authentication.md) for sessions, silent refresh and PAT accounts.

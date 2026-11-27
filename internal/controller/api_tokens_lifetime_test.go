@@ -82,14 +82,16 @@ func TestTokenDefaultAndMaxLifetime(t *testing.T) {
 		require.NotNil(t, exp)
 		assert.WithinDuration(t, time.Now().Add(2160*time.Hour), *exp, time.Minute)
 	})
-	t.Run("default and max zero never expire", func(t *testing.T) {
-		s, pg := newLifetimeServer(t, 0, 0)
-		code, body, resp := postTokenReq(t, s, "secret", api.CreatePATRequest{Name: "a"})
+	t.Run("max zero only removes the upper bound", func(t *testing.T) {
+		s, pg := newLifetimeServer(t, 2160*time.Hour, 0)
+		code, body, resp := postTokenReq(t, s, "secret", api.CreatePATRequest{Name: "long", ExpiresIn: "20000h"})
 		require.Equal(t, http.StatusOK, code, body)
-		assert.Nil(t, expiryOf(t, pg, resp.Token))
+		exp := expiryOf(t, pg, resp.Token)
+		require.NotNil(t, exp, "a PAT always expires")
+		assert.WithinDuration(t, time.Now().Add(20000*time.Hour), *exp, time.Minute)
 	})
 	t.Run("non-positive expiresIn is refused", func(t *testing.T) {
-		s, _ := newLifetimeServer(t, 0, 0)
+		s, _ := newLifetimeServer(t, 2160*time.Hour, 8760*time.Hour)
 		code, _, _ := postTokenReq(t, s, "secret", api.CreatePATRequest{Name: "a", ExpiresIn: "-1h"})
 		assert.Equal(t, http.StatusBadRequest, code)
 	})
@@ -122,7 +124,7 @@ func TestAdminSuccessorCapped(t *testing.T) {
 }
 
 func TestPATCannotTargetOtherAccounts(t *testing.T) {
-	s, pg := newLifetimeServer(t, 0, 0)
+	s, pg := newLifetimeServer(t, 2160*time.Hour, 8760*time.Hour)
 	addPermServicePAT(t, s, pg, "ci", "ci-token", authz.TokenCreate)
 	addPermServicePAT(t, s, pg, "deploy", "deploy-token")
 	addPermServicePAT(t, s, pg, "tm", "tm-token", authz.TokenCreate, authz.TokenManage)
@@ -146,9 +148,18 @@ func TestPATCannotTargetOtherAccounts(t *testing.T) {
 }
 
 func TestServiceAccountTokenPermission(t *testing.T) {
-	s, pg := newLifetimeServer(t, 0, 0)
+	s, pg := newLifetimeServer(t, 2160*time.Hour, 8760*time.Hour)
+	s.cfg.AdminEnabled = true
 	addPermServicePAT(t, s, pg, "deploy", "deploy-token")
-	addPermServicePAT(t, s, pg, "issuer", "issuer-token", authz.TokenCreate, authz.ServiceAccountToken)
+	// The issuer holds serviceaccount.token and nothing else (no token.create).
+	addPermServicePAT(t, s, pg, "issuer", "issuer-token", authz.ServiceAccountToken)
+
+	// A human's PAT and the built-in admin's PAT must stay out of reach.
+	human, err := pg.UpsertHumanAccount(context.Background(), "sub-1", "https://issuer.example", "h@example.com", nil)
+	require.NoError(t, err)
+	humanPAT, err := pg.CreatePAT(context.Background(), store.NewPAT{Name: "human-pat", TokenHash: HashToken("human-token"), AccountID: human.ID})
+	require.NoError(t, err)
+	adminPAT := seedServicePAT(t, pg, authz.BuiltinAdminAccount, "builtin-admin-token")
 
 	code, body, resp := postTokenReq(t, s, "issuer-token", api.CreatePATRequest{Name: "for-deploy", Account: "deploy"})
 	require.Equal(t, http.StatusOK, code, body)
@@ -157,19 +168,32 @@ func TestServiceAccountTokenPermission(t *testing.T) {
 	assert.Equal(t, serviceAccountByName(t, pg, "deploy").ID, pat.AccountID)
 	assert.Equal(t, "for-deploy", pat.Name)
 
-	// The issuer holds no token.manage: deploy's PATs stay invisible to it.
+	// The issuer lists service-account PATs, never a human's or the admin's.
 	rec := doAs(t, s, http.MethodGet, "/api/v1/tokens", "issuer-token", nil)
-	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	var list []api.PATMeta
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
+	ids := map[string]bool{}
 	for _, m := range list {
-		assert.NotEqual(t, "sa:deploy", m.Account)
-		assert.NotEqual(t, "for-deploy", m.Name)
+		ids[m.ID] = true
 	}
-	rec = doAs(t, s, http.MethodDelete, "/api/v1/tokens/"+resp.ID, "issuer-token", nil)
-	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.True(t, ids[resp.ID], "the service account's PAT is listed")
+	assert.False(t, ids[humanPAT.ID], "human PATs stay hidden")
+	assert.False(t, ids[adminPAT.ID], "built-in admin PATs stay hidden")
 
-	// An admin sees it, labelled with its account.
+	// It deletes service-account PATs, but human and admin PATs answer 404.
+	rec = doAs(t, s, http.MethodDelete, "/api/v1/tokens/"+humanPAT.ID, "issuer-token", nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	rec = doAs(t, s, http.MethodDelete, "/api/v1/tokens/"+adminPAT.ID, "issuer-token", nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	rec = doAs(t, s, http.MethodDelete, "/api/v1/tokens/"+resp.ID, "issuer-token", nil)
+	assert.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	got, err := pg.GetPATByHash(context.Background(), HashToken(resp.Token))
+	assert.True(t, err != nil || got == nil, "the PAT is deleted")
+
+	// An admin sees every PAT, labelled with its account.
+	code, body, resp = postTokenReq(t, s, "issuer-token", api.CreatePATRequest{Name: "again", Account: "deploy"})
+	require.Equal(t, http.StatusOK, code, body)
 	rec = doAs(t, s, http.MethodGet, "/api/v1/tokens", "secret", nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 	list = nil
@@ -185,7 +209,7 @@ func TestServiceAccountTokenPermission(t *testing.T) {
 }
 
 func TestCreateToken_SystemPrefixReserved(t *testing.T) {
-	s, _ := newLifetimeServer(t, 0, 0)
+	s, _ := newLifetimeServer(t, 2160*time.Hour, 8760*time.Hour)
 	code, body, _ := postTokenReq(t, s, "secret", api.CreatePATRequest{Name: "system:x"})
 	assert.Equal(t, http.StatusBadRequest, code)
 	assert.Equal(t, "token name \"system:x\" is reserved\n", body)
@@ -193,7 +217,7 @@ func TestCreateToken_SystemPrefixReserved(t *testing.T) {
 
 // A PAT never hands out more than its own ceiling, whichever account it targets.
 func TestPATFromPAT_CrossAccountBoundByCeiling(t *testing.T) {
-	s, pg := newLifetimeServer(t, 0, 0)
+	s, pg := newLifetimeServer(t, 2160*time.Hour, 8760*time.Hour)
 	addRoleServicePAT(t, s, pg, "deploy", "deploy-token", "developer")
 	issuer := addPermServicePAT(t, s, pg, "issuer", "unused", authz.TokenCreate, authz.ServiceAccountToken, authz.AgentEnroll)
 	require.NoError(t, pg.DeletePAT(context.Background(), issuer.ID))
@@ -212,7 +236,7 @@ func TestPATFromPAT_CrossAccountBoundByCeiling(t *testing.T) {
 }
 
 func TestPATFromPAT_CrossAccountInheritsEnrollLabels(t *testing.T) {
-	s, pg := newLifetimeServer(t, 0, 0)
+	s, pg := newLifetimeServer(t, 2160*time.Hour, 8760*time.Hour)
 	addRoleServicePAT(t, s, pg, "deploy", "deploy-token", "developer")
 	issuer := addPermServicePAT(t, s, pg, "issuer", "unused", authz.TokenCreate, authz.ServiceAccountToken, authz.AgentEnroll)
 	require.NoError(t, pg.DeletePAT(context.Background(), issuer.ID))

@@ -173,7 +173,7 @@ permissions come only from the config.
 serviceAccounts:
   ci-deploy:
     permissions:
-      global: [viewer]
+      global: [viewer, token.create]   # token.create lets CI rotate its own PAT
       folders:
         team-a: developer
         team-a/prod: [job.read, run.trigger]
@@ -195,7 +195,11 @@ unified-cli token create ci-deploy-token --account ci-deploy --expires-in 2160h
 
 A service account's PAT can create its own successor (a PAT may mint PATs for
 its own account, within its own ceiling), which is how CI rotates its token
-without an admin. PATs for the built-in `admin` account cannot be minted
+without an admin. The service account needs `token.create` for that, as in the
+example above. A caller who holds `serviceaccount.token` can also list and
+delete the PATs of service accounts (not `admin`, not humans), and can mint PATs
+carrying any non-admin service account's grants, so that permission is
+effectively the union of all service-account grants. PATs for the built-in `admin` account cannot be minted
 through the API (`PATs for the built-in admin account can only be obtained
 through the initial token or the recovery command`).
 

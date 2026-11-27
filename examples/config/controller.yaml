@@ -21,7 +21,7 @@ addr: :8080
 #     enabled: true
 #   ci-deploy:
 #     permissions:
-#       global: [viewer]
+#       global: [viewer, token.create]   # token.create lets CI rotate its own PAT
 #       folders:
 #         team-a: developer
 #         team-a/prod: [job.read, run.trigger]

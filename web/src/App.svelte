@@ -88,7 +88,7 @@
     </div>
   </div>
   {/if}
-  {#if allows($grants, 'token.create') || allows($grants, 'token.manage')}<a href="#/tokens">Tokens</a>{/if}
+  {#if allows($grants, 'token.create') || allows($grants, 'token.manage') || allows($grants, 'serviceaccount.token')}<a href="#/tokens">Tokens</a>{/if}
   {#if allows($grants, 'account.manage')}<a href="#/accounts">Accounts</a>{/if}
   <span class="spacer"></span>
   <button

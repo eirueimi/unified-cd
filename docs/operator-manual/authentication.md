@@ -129,7 +129,7 @@ Do not hand the admin PAT to CI. Declare a service account in the controller con
 serviceAccounts:
   ci-bot:
     permissions:
-      global: [viewer]
+      global: [viewer, token.create]   # token.create lets CI rotate its own PAT
       folders:
         team-a: developer
 ```
@@ -147,7 +147,8 @@ audit row also carries the new PAT's id in `details.patId`, so a `pat:<id>` acto
 its creation even after the PAT is deleted (see [Audit log](audit.md#actor-identity)).
 `token list` shows each PAT's account (`sa:<name>` for a service account), ceiling and expiry.
 A service-account PAT can create its own successor (`unified-cli token create ... ` with the old PAT), so CI
-rotates its token without an admin.
+rotates its token without an admin. The service account needs `token.create` for that (as in the example above);
+without it the PAT cannot create tokens at all.
 
 > **Production note**: The repo-root `docker-compose.yaml` ships a fixed `UNIFIED_INITIAL_ADMIN_TOKEN`
 > (`uci_dev000...`) so the local dev stack works with no setup. It is a published value: anyone who can reach
@@ -182,7 +183,9 @@ PAT's optional ceiling*:
   `admin` account are capped at 720h. PATs created before the upgrade keep their own expiry. The controller
   logs a daily warning for PATs expiring within 7 days and exports the gauge `unifiedcd_pats_expiring_soon`.
 - **PAT from PAT.** A PAT may create PATs only for its own account, within its own ceiling and the lifetime
-  limits. Creating one for another account needs `token.manage` or `serviceaccount.token`, and never targets `admin`.
+  limits (self-rotation needs `token.create` on the service account). Creating one for another account needs
+  `token.manage` or `serviceaccount.token`, and never targets `admin`. A holder of `serviceaccount.token` can mint PATs
+  carrying any non-admin service account's grants, so it is effectively the union of all service-account grants.
 - A PAT created from an OIDC bearer id_token that carries no roles claim while the config has
   group-keyed grants is refused with `403`. The exact strings and fixes are in
   [Troubleshooting](../troubleshooting/controller-and-database.md#token-creation-is-refused-cannot-create-a-token).

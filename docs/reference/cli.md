@@ -580,7 +580,7 @@ Generates a new PAT. The token value is shown only once. Every PAT belongs to an
 yours (a human account created at your first SSO sign-in, or the service account you authenticate
 as), or the service account named with `--account`. Every PAT expires: `--expires-in`, or
 `tokens.defaultLifetime` (2160h) when omitted. A PAT may create PATs only for its own account (this is
-how a CI token rotates itself); creating one for another account needs `token.manage` or `serviceaccount.token`.
+how a CI token rotates itself, provided its service account holds `token.create`); creating one for another account needs `token.manage` or `serviceaccount.token`.
 
 A PAT's permissions are always its account's permissions under the current config, intersected with the
 ceiling; with neither `--role` nor `--permission` there is no ceiling (the token carries everything its

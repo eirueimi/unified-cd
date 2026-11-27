@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -254,7 +255,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 const adminTokenMaxLifetime = 720 * time.Hour
 
 // patExpiry resolves a create request's expiresIn against the lifetime policy.
-// An empty value takes tokens.defaultLifetime (0 = no expiry). The built-in
+// An empty value takes tokens.defaultLifetime (always positive; the config requires it). The built-in
 // admin account is always capped at adminTokenMaxLifetime. A non-zero status
 // means the request is refused with msg.
 func (s *Server) patExpiry(expiresIn string, admin bool) (*time.Time, int, string) {
@@ -292,8 +293,26 @@ func canManageTokens(p Principal) bool {
 	return p.Grants.Can(authz.TokenManage, "")
 }
 
+// serviceAccountTokenScope returns the PAT owners a holder of
+// serviceaccount.token may list and delete besides its own account: every
+// service account except the built-in admin. Humans are never included.
+func (s *Server) serviceAccountTokenScope(ctx context.Context) (map[string]bool, error) {
+	accts, err := s.store.ListAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := map[string]bool{}
+	for _, a := range accts {
+		if a.Kind == store.AccountKindService && a.Name != authz.BuiltinAdminAccount {
+			ids[a.ID] = true
+		}
+	}
+	return ids, nil
+}
+
 // handleListTokens returns the PATs the caller may see (token hashes are not
-// included): all of them with token.manage, otherwise only the caller's own.
+// included): all of them with token.manage, otherwise the caller's own plus,
+// with serviceaccount.token, those of the service accounts.
 func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFromContext(r.Context())
 	var pats []store.PAT
@@ -301,6 +320,18 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case canManageTokens(p):
 		pats, err = s.store.ListPATs(r.Context())
+	case p.Grants.Can(authz.ServiceAccountToken, ""):
+		var scope map[string]bool
+		if scope, err = s.serviceAccountTokenScope(r.Context()); err == nil {
+			var all []store.PAT
+			if all, err = s.store.ListPATs(r.Context()); err == nil {
+				for _, pat := range all {
+					if pat.AccountID != "" && (pat.AccountID == p.AccountID || scope[pat.AccountID]) {
+						pats = append(pats, pat)
+					}
+				}
+			}
+		}
 	case p.AccountID == "":
 		// No account: it owns nothing.
 	default:
@@ -351,10 +382,33 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeleteToken revokes the PAT with the given ID: any PAT with
-// token.manage, otherwise only one the caller owns (404 for the rest).
+// token.manage, otherwise only one the caller owns or, with
+// serviceaccount.token, one of a service account (404 for the rest).
 func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	p, _ := principalFromContext(r.Context())
+	if !canManageTokens(p) && p.Grants.Can(authz.ServiceAccountToken, "") {
+		scope, err := s.serviceAccountTokenScope(r.Context())
+		if err == nil {
+			var all []store.PAT
+			if all, err = s.store.ListPATs(r.Context()); err == nil {
+				for _, pat := range all {
+					if pat.ID == id && pat.AccountID != "" && scope[pat.AccountID] {
+						if err := s.store.DeletePAT(r.Context(), id); err != nil && !errors.Is(err, store.ErrPATNotFound) {
+							http.Error(w, err.Error(), http.StatusInternalServerError)
+							return
+						}
+						w.WriteHeader(http.StatusNoContent)
+						return
+					}
+				}
+			}
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	if canManageTokens(p) {
 		if err := s.store.DeletePAT(r.Context(), id); errors.Is(err, store.ErrPATNotFound) {
 			http.Error(w, "token not found", http.StatusNotFound)

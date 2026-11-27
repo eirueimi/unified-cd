@@ -56,6 +56,7 @@ func TestRouteTableShape(t *testing.T) {
 	}
 	// The only rows with an alternative permission (spec section 7.2).
 	altPermRows := map[string]authz.Permission{
+		"POST /api/v1/tokens":            authz.ServiceAccountToken,
 		"GET /api/v1/tokens":             authz.TokenManage,
 		"DELETE /api/v1/tokens/{id}":     authz.TokenManage,
 		"POST /api/v1/agent-enrollments": authz.AgentEnroll,
@@ -105,6 +106,12 @@ func TestRouteTableShape(t *testing.T) {
 
 		alt, wantAlt := altPermRows[key]
 		require.Equalf(t, alt, row.AltPerm, "%s: AltPerm", key)
+		// serviceaccount.token is the second alternative of the token list and delete rows.
+		wantAlt2 := authz.Permission("")
+		if key == "GET /api/v1/tokens" || key == "DELETE /api/v1/tokens/{id}" {
+			wantAlt2 = authz.ServiceAccountToken
+		}
+		require.Equalf(t, wantAlt2, row.AltPerm2, "%s: AltPerm2", key)
 		if wantAlt {
 			wantPerm := authz.TokenCreate
 			if alt == authz.AgentEnroll {

@@ -33,7 +33,7 @@ type Config struct {
 	// the database can enable it temporarily.
 	AdminEnabled bool
 	// TokenDefaultLifetime and TokenMaxLifetime are the PAT lifetime policy
-	// (tokens.defaultLifetime / tokens.maxLifetime; max 0 means no limit).
+	// (tokens.defaultLifetime / tokens.maxLifetime; max 0 means no upper bound; a PAT always expires).
 	TokenDefaultLifetime, TokenMaxLifetime time.Duration
 	// AllowTokenEntry keeps the web UI's manual token form while browser SSO
 	// (OIDC with a client secret) is configured (ui.allowTokenEntry).

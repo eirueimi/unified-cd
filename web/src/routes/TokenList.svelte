@@ -19,7 +19,8 @@
   $: heldPerms = $grants
     ? [...new Set([...($grants.global || []), ...Object.values($grants.folders || {}).flat()])].sort()
     : [];
-  $: canCreate = allows($grants, 'token.create');
+  // serviceaccount.token alone may issue tokens for service accounts.
+  $: canCreate = allows($grants, 'token.create') || allows($grants, 'serviceaccount.token');
   $: canManage = $grants != null && allows($grants, 'token.manage');
   // Minting a token for a service account needs token.manage or
   // serviceaccount.token; the server enforces it.

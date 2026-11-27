@@ -236,13 +236,13 @@ type TokensConfig struct {
 	// DefaultLifetime is the lifetime of a new PAT when none is requested
 	// (default 2160h).
 	DefaultLifetime *time.Duration `yaml:"defaultLifetime"`
-	// MaxLifetime caps the lifetime of a new PAT (default 8760h; 0 = unlimited).
+	// MaxLifetime caps the lifetime of a new PAT (default 8760h; 0 removes the upper bound).
 	MaxLifetime *time.Duration `yaml:"maxLifetime"`
 }
 
 // UnmarshalYAML accepts Go duration strings and the bare integer 0 (yaml.v3
 // refuses an integer for a time.Duration, but "maxLifetime: 0" is the
-// documented way to allow non-expiring tokens).
+// documented way to remove the upper bound; a PAT always expires).
 func (t *TokensConfig) UnmarshalYAML(n *yaml.Node) error {
 	for i := 0; n.Kind == yaml.MappingNode && i+1 < len(n.Content); i += 2 {
 		if k := n.Content[i].Value; k != "defaultLifetime" && k != "maxLifetime" {

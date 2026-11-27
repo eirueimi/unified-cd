@@ -67,6 +67,13 @@ describe('TokenList — permission-aware form and listing', () => {
     expect(mgr.container.querySelector('input[placeholder^="Account"]')).not.toBeNull();
   });
 
+  it('enables Issue with serviceaccount.token alone', async () => {
+    currentUser.set({ email: 'a@example.com', role: 'viewer', permissions: { global: ['serviceaccount.token'], folders: {} } });
+    const { findByText } = render(TokenList);
+    const issue = await findByText('Issue');
+    expect(issue.disabled).toBe(false);
+  });
+
   it('shows "All tokens" and an Owner column with token.manage', async () => {
     currentUser.set({ email: 'a@example.com', role: 'admin', permissions: { global: ['token.manage'], folders: {} } });
     const { findByText } = render(TokenList);

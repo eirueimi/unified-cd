@@ -149,7 +149,7 @@ serviceAccounts:                      # service accounts for CI (see below); the
     enabled: true
   ci-deploy:
     permissions:
-      global: [viewer]
+      global: [viewer, token.create]   # token.create lets CI rotate its own PAT
       folders:
         team-a: developer
 tokens:                               # PAT lifetimes (Go durations)

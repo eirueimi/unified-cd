@@ -371,7 +371,7 @@ Every new PAT expires (see [Configuration: tokens](../reference/configuration.md
 so rotating automation tokens is a routine operator task. Alert on
 `unifiedcd_pats_expiring_soon` (personal access tokens that expire within 7 days) and
 re-issue before it reaches zero days: a service-account PAT can create its own
-successor, so CI can rotate itself without an admin.
+successor, so CI can rotate itself without an admin (the service account needs `token.create`).
 
 ### Lost admin access
 
