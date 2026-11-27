@@ -4,7 +4,7 @@ Generates the one-time initial admin token at install time, in the cluster, so
 the value never appears in a rendered manifest, a release bundle or Helm
 release metadata. A non-SSO controller exchanges it once (unified-cli
 bootstrap, or POST /api/v1/bootstrap) for a PAT of the built-in admin account;
-the Deployment reads it through an optional secretKeyRef.
+the Deployment reads it through a secretKeyRef that is required (so the pod waits for the Secret) while this Job generates it.
 
 This is a sibling of the KEK Job (kek-job.yaml) and follows the same create-once
 pattern: `kubectl create secret` (never apply) so a re-run on `helm upgrade`

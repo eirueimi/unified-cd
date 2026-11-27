@@ -41,7 +41,7 @@ controller:
   # One-time initial admin token for a non-SSO install. The create-once
   # initial-token Job generates it in the cluster ("uci_" plus 40 hex characters)
   # into the Secret below, key UNIFIED_INITIAL_ADMIN_TOKEN; the controller reads
-  # it with an optional secretKeyRef. Exchange it once with `unified-cli bootstrap`
+  # it with a secretKeyRef (required while generate is true, so the pod waits for the Secret; optional otherwise). Exchange it once with `unified-cli bootstrap`
   # (see the install notes). The Job reuses controller.kek.job.image and
   # controller.kek.job.helmHook. Set generate to false to supply the value
   # yourself or to run SSO only.
