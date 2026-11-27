@@ -368,14 +368,14 @@ func TestAuthorize_JobPathUsesHandlerNameDerivation(t *testing.T) {
 	assert.NoError(t, err, "a hidden job must not be deleted")
 }
 
-func TestAuthorize_EmptyGrantSetMessages(t *testing.T) {
+func TestAuthorize_EmptyGrantSetIsNoRole(t *testing.T) {
 	s, st := newAuthzTestServer(t, authz.Legacy{}, teamAPolicy)
-	// An owner whose claims match nothing: admitted with empty grants.
+	// An owner whose claims match nothing holds no grants: refused up front.
 	mustOwnedPAT(t, st, "nobody", "", nil, []string{"unmapped"})
 	for _, path := range []string{"/api/v1/jobs", "/api/v1/secrets"} {
 		rec := doAs(t, s, http.MethodGet, path, "nobody", nil)
 		assert.Equal(t, http.StatusForbidden, rec.Code, path)
-		assert.Equal(t, "forbidden: token owner has no permissions\n", rec.Body.String(), path)
+		assert.Equal(t, "forbidden: no role\n", rec.Body.String(), path)
 	}
 
 	// A session whose claims match nothing.
@@ -385,13 +385,12 @@ func TestAuthorize_EmptyGrantSetMessages(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusForbidden, rec.Code)
-	assert.Equal(t, "forbidden: no permissions\n", rec.Body.String())
+	assert.Equal(t, "forbidden: no role\n", rec.Body.String())
 }
 
 func TestAuthorize_GlobalOnlyMessage(t *testing.T) {
 	s, st := matrixServer(t)
-	_, err := st.CreatePAT(context.Background(), "dev", HashToken("dev-pat"), "developer", nil, "")
-	require.NoError(t, err)
+	addRoleServicePAT(t, s, st, "dev", "dev-pat", "developer")
 	rec := doAs(t, s, http.MethodPost, "/api/v1/secrets", "dev-pat", []byte(`{}`))
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 	assert.Equal(t, "forbidden: missing permission \"secret.write\"\n", rec.Body.String())

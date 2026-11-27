@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,9 +22,9 @@ import (
 // both, and stays there for as long as both streams are open.
 func TestAPI_RunEvents_SSE_TwoViewersOneRun_ShareOneListenConnection(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
+	var err error
 	require.NoError(t, err)
-	s := NewServer(Config{}, pg)
+	s := newServerWithAdminPAT(t, pg, Config{})
 	// Stops the shared log-notify listener goroutine this test's SSE streams
 	// start (see (*Server).Close). Ordered ahead of NewTestPostgres' own
 	// pg.Close() cleanup (registered earlier, inside NewTestPostgres above,
@@ -89,9 +88,9 @@ func TestAPI_RunEvents_SSE_TwoViewersOneRun_ShareOneListenConnection(t *testing.
 // which only ever checks state while both viewers are still connected.
 func TestAPI_RunEvents_SSE_DisconnectRemovesSubscriber(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
+	var err error
 	require.NoError(t, err)
-	s := NewServer(Config{}, pg)
+	s := newServerWithAdminPAT(t, pg, Config{})
 	t.Cleanup(s.Close)
 
 	_, err = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})

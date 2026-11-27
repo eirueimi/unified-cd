@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -52,17 +51,6 @@ func decodeCreated(t *testing.T, rec *httptest.ResponseRecorder) api.CreatePATRe
 	return resp
 }
 
-func TestCreateToken_PreUpgradeSessionRefused(t *testing.T) {
-	s, pg := newAuthzTestServer(t, tokenLegacy, "")
-	addSession(t, pg, "old-session", "old@example.com", "old@example.com", "developer", nil)
-	rec := doWithCookie(t, s, http.MethodPost, "/api/v1/tokens", "old-session", createTokenBody(api.CreatePATRequest{Name: "ci"}))
-	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
-	assert.Equal(t, "cannot create a token: this login predates group-aware tokens; log out and log in again, then retry\n", rec.Body.String())
-	pats, err := pg.ListPATs(t.Context())
-	require.NoError(t, err)
-	assert.Empty(t, pats)
-}
-
 func TestCreateToken_BearerWithoutGroupsRefusedWhenGroupKeyed(t *testing.T) {
 	legacy := authz.Legacy{RoleMap: map[string]string{"g-dev": "developer"}, DefaultRole: "developer"}
 	s, pg := newAuthzTestServer(t, legacy, "")
@@ -80,10 +68,10 @@ func TestCreateToken_BearerWithoutGroupsUserMapOnly(t *testing.T) {
 	resp := decodeCreated(t, rec)
 	pat, err := pg.GetPATByHash(t.Context(), HashToken(resp.Token))
 	require.NoError(t, err)
-	require.NotNil(t, pat.Owner)
-	assert.Equal(t, "u@example.com", pat.Owner.Sub)
-	assert.Equal(t, "u@example.com", pat.Owner.Email)
-	assert.Equal(t, []string{}, pat.Owner.Claims)
+	acct := accountOf(t, pg, pat)
+	assert.Equal(t, "u@example.com", acct.OIDCSub)
+	assert.Equal(t, "u@example.com", acct.Email)
+	assert.Equal(t, []string{}, acct.Claims)
 }
 
 func TestCreateToken_FolderOnlyUserRoleIs400None(t *testing.T) {
@@ -110,9 +98,9 @@ func TestCreateToken_FolderOnlyUserNoCeiling(t *testing.T) {
 	assert.Equal(t, "", resp.Role)
 	pat, err := pg.GetPATByHash(t.Context(), HashToken(resp.Token))
 	require.NoError(t, err)
-	require.NotNil(t, pat.Owner)
-	assert.Equal(t, "fo@example.com", pat.Owner.Sub)
-	assert.Equal(t, []string{"g-fo"}, pat.Owner.Claims)
+	acct := accountOf(t, pg, pat)
+	assert.Equal(t, "fo@example.com", acct.OIDCSub)
+	assert.Equal(t, []string{"g-fo"}, acct.Claims)
 	assert.Nil(t, pat.Permissions)
 
 	bodySeedJob(t, pg, "team-a/x")
@@ -136,10 +124,9 @@ func TestCreateToken_PATFromPATBoundByParent(t *testing.T) {
 	assert.Equal(t, []string{"job.read", "token.create"}, resp.Permissions)
 	child, err := pg.GetPATByHash(t.Context(), HashToken(resp.Token))
 	require.NoError(t, err)
-	require.NotNil(t, child.Owner)
-	assert.Equal(t, "sub-parent", child.Owner.Sub)
-	assert.Equal(t, []string{"g-dev"}, child.Owner.Claims)
-
+	childAcct := accountOf(t, pg, child)
+	assert.Equal(t, "sub-parent", childAcct.OIDCSub)
+	assert.Equal(t, []string{"g-dev"}, childAcct.Claims)
 	// A narrower requested ceiling is stored as a permission list.
 	resp = decodeCreated(t, doAs(t, s, http.MethodPost, "/api/v1/tokens", "parent", createTokenBody(api.CreatePATRequest{Name: "c3", Permissions: []string{"job.read"}})))
 	assert.Equal(t, []string{"job.read"}, resp.Permissions)
@@ -165,35 +152,29 @@ func TestCreateToken_PATFromRoleCeilingPAT(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestCreateToken_BreakGlassCreatesRoleOnly(t *testing.T) {
-	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	s.cfg.Token = "bg-token"
-	_, err := pg.UpsertBootstrapPAT(t.Context(), BootstrapPATName, HashToken("bg-token"))
-	require.NoError(t, err)
+func TestCreateToken_ServiceAccountCreatesPATOwnedByItself(t *testing.T) {
+	s, pg := newTestServer(t)
+	creator := serviceAccountByName(t, pg, testAdminAccount)
 
-	resp := decodeCreated(t, doAs(t, s, http.MethodPost, "/api/v1/tokens", "bg-token", createTokenBody(api.CreatePATRequest{Name: "ci"})))
+	resp := decodeCreated(t, doAs(t, s, http.MethodPost, "/api/v1/tokens", "secret", createTokenBody(api.CreatePATRequest{Name: "ci"})))
 	pat, err := pg.GetPATByHash(t.Context(), HashToken(resp.Token))
 	require.NoError(t, err)
 	assert.Nil(t, pat.Owner)
-	assert.Equal(t, "admin", pat.Role)
+	assert.Equal(t, creator.ID, pat.AccountID)
+	assert.Contains(t, pat.CreatedBy, "pat:")
 
-	rec := doAs(t, s, http.MethodPost, "/api/v1/tokens", "bg-token", createTokenBody(api.CreatePATRequest{Name: "ci2", Permissions: []string{"job.read"}}))
-	require.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Equal(t, "cannot grant permissions: this token has no owner; use --role\n", rec.Body.String())
+	resp = decodeCreated(t, doAs(t, s, http.MethodPost, "/api/v1/tokens", "secret", createTokenBody(api.CreatePATRequest{Name: "ci2", Permissions: []string{"job.read"}})))
+	assert.Equal(t, []string{"job.read"}, resp.Permissions)
 }
 
 func TestTokens_DeveloperListsAndDeletesOwnOnly(t *testing.T) {
 	s, pg := newAuthzTestServer(t, tokenLegacy, "")
 	ctx := t.Context()
 	addSession(t, pg, "dev-session", "dev@example.com", "dev@example.com", "developer", []string{"g-dev"})
-	own, err := pg.CreateOwnedPAT(ctx, store.NewOwnedPAT{Name: "own", TokenHash: "h-own", Role: "viewer",
+	own := createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "own", TokenHash: "h-own", Role: "viewer",
 		Owner: store.PATOwner{Sub: "dev@example.com", Email: "dev@example.com", Claims: []string{"g-dev"}}})
-	require.NoError(t, err)
-	adminPAT, err := pg.CreateOwnedPAT(ctx, store.NewOwnedPAT{Name: "admins", TokenHash: "h-adm",
+	adminPAT := createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "admins", TokenHash: "h-adm",
 		Owner: store.PATOwner{Sub: "adm@example.com", Claims: []string{"g-admin"}}})
-	require.NoError(t, err)
-	roleOnly, err := pg.CreatePAT(ctx, "legacy", "h-legacy", "admin", nil, "")
-	require.NoError(t, err)
 
 	rec := doWithCookie(t, s, http.MethodGet, "/api/v1/tokens", "dev-session", nil)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -203,30 +184,27 @@ func TestTokens_DeveloperListsAndDeletesOwnOnly(t *testing.T) {
 	assert.Equal(t, own.ID, list[0].ID)
 	assert.Equal(t, "dev@example.com", list[0].Owner)
 
-	for _, id := range []string{adminPAT.ID, roleOnly.ID} {
-		rec = doWithCookie(t, s, http.MethodDelete, "/api/v1/tokens/"+id, "dev-session", nil)
-		assert.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
-		assert.Equal(t, "token not found\n", rec.Body.String())
-	}
+	rec = doWithCookie(t, s, http.MethodDelete, "/api/v1/tokens/"+adminPAT.ID, "dev-session", nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	assert.Equal(t, "token not found\n", rec.Body.String())
 	all, err := pg.ListPATs(ctx)
 	require.NoError(t, err)
-	assert.Len(t, all, 3)
+	assert.Len(t, all, 2)
 
 	rec = doWithCookie(t, s, http.MethodDelete, "/api/v1/tokens/"+own.ID, "dev-session", nil)
 	assert.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 	all, err = pg.ListPATs(ctx)
 	require.NoError(t, err)
-	assert.Len(t, all, 2)
+	assert.Len(t, all, 1)
 }
 
 func TestTokens_ManageListsAndDeletesAll(t *testing.T) {
 	s, pg := newAuthzTestServer(t, tokenLegacy, "")
 	ctx := t.Context()
-	_, err := pg.CreateOwnedPAT(ctx, store.NewOwnedPAT{Name: "dev-pat", TokenHash: "h1", Role: "viewer",
+	createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "dev-pat", TokenHash: "h1", Role: "viewer",
 		Owner: store.PATOwner{Sub: "dev@example.com", Claims: []string{"g-dev"}}})
-	require.NoError(t, err)
-	roleOnly, err := pg.CreatePAT(ctx, "legacy", "h2", "developer", nil, "")
-	require.NoError(t, err)
+	second := createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "second", TokenHash: "h2", Role: "developer",
+		Owner: store.PATOwner{Sub: "second@example.com", Claims: []string{"g-dev"}}})
 
 	tok := bearer("adm@example.com", "g-admin")
 	rec := doAs(t, s, http.MethodGet, "/api/v1/tokens", tok, nil)
@@ -235,7 +213,7 @@ func TestTokens_ManageListsAndDeletesAll(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
 	require.Len(t, list, 2)
 
-	rec = doAs(t, s, http.MethodDelete, "/api/v1/tokens/"+roleOnly.ID, tok, nil)
+	rec = doAs(t, s, http.MethodDelete, "/api/v1/tokens/"+second.ID, tok, nil)
 	assert.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 	all, err := pg.ListPATs(ctx)
 	require.NoError(t, err)
@@ -245,12 +223,10 @@ func TestTokens_ManageListsAndDeletesAll(t *testing.T) {
 // A principal holding token.manage but not token.create must reach the handlers (AltPerm).
 func TestTokens_ManageOnlyPrincipal(t *testing.T) {
 	s, pg := newAuthzTestServer(t, tokenLegacy, tokenFolderPolicy)
-	ctx := t.Context()
-	victim, err := pg.CreatePAT(ctx, "legacy", "h2", "developer", nil, "")
-	require.NoError(t, err)
-	_, err = pg.CreateOwnedPAT(ctx, store.NewOwnedPAT{Name: "other", TokenHash: "h3", Role: "viewer",
+	victim := createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "victim", TokenHash: "h2", Role: "developer",
+		Owner: store.PATOwner{Sub: "victim@example.com", Claims: []string{"g-dev"}}})
+	createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "other", TokenHash: "h3", Role: "viewer",
 		Owner: store.PATOwner{Sub: "x@example.com", Claims: []string{"g-dev"}}})
-	require.NoError(t, err)
 
 	tok := bearer("tm@example.com", "g-tm")
 	rec := doAs(t, s, http.MethodGet, "/api/v1/tokens", tok, nil)
@@ -267,15 +243,14 @@ func TestTokens_ManageOnlyPrincipal(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 }
 
-// An owner identity with an empty sub can neither create, list nor delete owner PATs.
-func TestTokens_EmptySubIsRefused(t *testing.T) {
+// An identity without an account can neither create, list nor delete PATs.
+func TestTokens_NoAccountIsRefused(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
 	ctx := t.Context()
-	other, err := pg.CreateOwnedPAT(ctx, store.NewOwnedPAT{Name: "other", TokenHash: "h1", Role: "viewer",
+	other := createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "other", TokenHash: "h1", Role: "viewer",
 		Owner: store.PATOwner{Sub: "x@example.com"}})
-	require.NoError(t, err)
 
-	p := Principal{Name: "nosub", Kind: "oidc", Role: "developer", ClaimsKnown: true, Claims: []string{},
+	p := Principal{Name: "noaccount", Kind: "oidc", Role: "developer", ClaimsKnown: true, Claims: []string{},
 		Grants: authz.RoleGrants("developer", "test")}
 	call := func(h http.HandlerFunc, method, path, id string, body []byte) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, bytes.NewReader(body))
@@ -303,40 +278,6 @@ func TestTokens_EmptySubIsRefused(t *testing.T) {
 	deleted, err := pg.DeleteOwnedPAT(ctx, other.ID, "")
 	require.NoError(t, err)
 	assert.False(t, deleted)
-}
-
-func TestWarnRoleOnlyPATs(t *testing.T) {
-	ctx := context.Background()
-	newLog := func() (*slog.Logger, *bytes.Buffer) {
-		var buf bytes.Buffer
-		return slog.New(slog.NewTextHandler(&buf, nil)), &buf
-	}
-	s, pg := newAuthzTestServer(t, tokenLegacy, tokenFolderPolicy)
-	for _, c := range []struct{ name, role string }{
-		{"a", "developer"}, {"b", "admin"}, {"v", "viewer"}, {BootstrapPATName, "admin"},
-	} {
-		_, err := pg.CreatePAT(ctx, c.name, HashToken("h-"+c.name), c.role, nil, "")
-		require.NoError(t, err)
-	}
-	_, err := pg.CreateOwnedPAT(ctx, store.NewOwnedPAT{Name: "owned", TokenHash: "ho", Role: "admin", Owner: store.PATOwner{Sub: "s"}})
-	require.NoError(t, err)
-
-	log, buf := newLog()
-	require.NoError(t, WarnRoleOnlyPATs(ctx, pg, s.oidcCfg.Policy, log))
-	assert.Contains(t, buf.String(), `msg="role-only personal access tokens with a role above viewer bypass folder grants until revoked"`)
-	assert.Contains(t, buf.String(), "count=2")
-	assert.Contains(t, buf.String(), "level=WARN")
-
-	// Without folder grants nothing is logged.
-	s2, pg2 := newAuthzTestServer(t, tokenLegacy, "")
-	_, err = pg2.CreatePAT(ctx, "a", HashToken("h-a"), "admin", nil, "")
-	require.NoError(t, err)
-	log, buf = newLog()
-	require.NoError(t, WarnRoleOnlyPATs(ctx, pg2, s2.oidcCfg.Policy, log))
-	assert.Empty(t, buf.String())
-	log, buf = newLog()
-	require.NoError(t, WarnRoleOnlyPATs(ctx, pg2, nil, log))
-	assert.Empty(t, buf.String())
 }
 
 // A token id that is not a UUID is a missing token, not a server error.

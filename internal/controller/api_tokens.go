@@ -138,7 +138,6 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msg, status)
 		return
 	}
-	roleOnlyCreator := creator.BreakGlass || (creator.Kind == "pat" && creator.OwnerPATID == "")
 
 	token, err := generatePAT()
 	if err != nil {
@@ -148,97 +147,63 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	hash := HashToken(token)
 
 	var pat *store.PAT
-	if roleOnlyCreator {
-		// Break-glass and role-only PATs have no owner to record: the new PAT is
-		// role-only too, bounded by the creator's role.
-		if req.Permissions != nil && !(req.Role == "" && slices.Equal(req.Permissions, []string{string(authz.AgentEnroll)})) {
-			http.Error(w, "cannot grant permissions: this token has no owner; use --role", http.StatusBadRequest)
-			return
-		}
-		if req.Permissions != nil {
-			// Enrollment-only PAT: the one permission list a role-only creator may grant.
-			if status, msg := validateCeiling(creator, "", req.Permissions); status != 0 {
-				http.Error(w, msg, status)
-				return
-			}
-			labels := req.EnrollLabels
-			if len(labels) == 0 {
-				labels = creator.EnrollLabels
-			}
-			pat, err = s.store.CreateEnrollPAT(r.Context(), store.NewEnrollPAT{
-				Name: req.Name, TokenHash: hash, EnrollLabels: labels, ExpiresAt: expiresAt, CreatedBy: creator.AuditActorID(),
-			})
+	if !creator.ClaimsKnown {
+		if creator.Kind == "session" {
+			http.Error(w, "cannot create a token: this login predates group-aware tokens; log out and log in again, then retry", http.StatusForbidden)
 		} else {
-			role := req.Role
-			if role == "" {
-				role = creator.Role
-			}
-			if status, msg := validateCeiling(creator, role, nil); status != 0 {
-				http.Error(w, msg, status)
-				return
-			}
-			pat, err = s.store.CreatePAT(r.Context(), req.Name, hash, role, expiresAt, creator.AuditActorID())
+			http.Error(w, fmt.Sprintf("cannot create a token: your OIDC token carries no %q claim; log in again so the token includes it, then retry", s.rolesClaimName()), http.StatusForbidden)
 		}
-	} else {
-		if !creator.ClaimsKnown {
-			if creator.Kind == "session" {
-				http.Error(w, "cannot create a token: this login predates group-aware tokens; log out and log in again, then retry", http.StatusForbidden)
-			} else {
-				http.Error(w, fmt.Sprintf("cannot create a token: your OIDC token carries no %q claim; log in again so the token includes it, then retry", s.rolesClaimName()), http.StatusForbidden)
-			}
-			return
-		}
-		if creator.Sub == "" {
-			// No owner PAT may be stored with an empty owner_sub.
-			http.Error(w, "cannot create a token: your identity has no subject (sub); log in again, then retry", http.StatusForbidden)
-			return
-		}
-		if req.Role != "" && req.Permissions != nil {
-			http.Error(w, "role and permissions are mutually exclusive", http.StatusBadRequest)
-			return
-		}
-		if req.Permissions != nil && len(req.Permissions) == 0 {
-			http.Error(w, "permissions must not be empty", http.StatusBadRequest)
-			return
-		}
-		if status, msg := validateCeiling(creator, req.Role, req.Permissions); status != 0 {
-			http.Error(w, msg, status)
-			return
-		}
-		role, perms := req.Role, req.Permissions
-		if creator.OwnerPATID != "" {
-			// PAT-from-PAT: the child is bounded by the parent's ceiling.
-			switch {
-			case req.Role == "" && req.Permissions == nil:
-				role, perms = creator.CeilingRole, creator.CeilingPerms
-			case creator.Ceiling != nil:
-				var want authz.Set
-				if req.Role != "" {
-					want, _ = authz.Bundle(req.Role)
-				} else {
-					want = *ceilingSet("", req.Permissions)
-				}
-				parent := *creator.Ceiling
-				if parent.Has(authz.AgentManage) {
-					// agent.manage implies agent.enroll, as for the owner's own grants.
-					parent = parent.With(authz.AgentEnroll)
-				}
-				role, perms = "", want.Intersect(parent).Names()
-			}
-		}
-		var labels []string
-		if slices.Contains(perms, string(authz.AgentEnroll)) {
-			labels = req.EnrollLabels
-			if len(labels) == 0 {
-				// A bounded parent never yields an unbounded child.
-				labels = creator.EnrollLabels
-			}
-		}
-		pat, err = s.store.CreateOwnedPAT(r.Context(), store.NewOwnedPAT{
-			Name: req.Name, TokenHash: hash, Role: role, Permissions: perms, EnrollLabels: labels, ExpiresAt: expiresAt, CreatedBy: creator.AuditActorID(),
-			Owner: store.PATOwner{Sub: creator.Sub, Email: creator.Email, Claims: creator.Claims},
-		})
+		return
 	}
+	if creator.AccountID == "" {
+		// Every PAT belongs to an account.
+		http.Error(w, "cannot create a token: your identity has no account; log in again, then retry", http.StatusForbidden)
+		return
+	}
+	if req.Role != "" && req.Permissions != nil {
+		http.Error(w, "role and permissions are mutually exclusive", http.StatusBadRequest)
+		return
+	}
+	if req.Permissions != nil && len(req.Permissions) == 0 {
+		http.Error(w, "permissions must not be empty", http.StatusBadRequest)
+		return
+	}
+	if status, msg := validateCeiling(creator, req.Role, req.Permissions); status != 0 {
+		http.Error(w, msg, status)
+		return
+	}
+	role, perms := req.Role, req.Permissions
+	if creator.OwnerPATID != "" {
+		// PAT-from-PAT: the child is bounded by the parent's ceiling.
+		switch {
+		case req.Role == "" && req.Permissions == nil:
+			role, perms = creator.CeilingRole, creator.CeilingPerms
+		case creator.Ceiling != nil:
+			var want authz.Set
+			if req.Role != "" {
+				want, _ = authz.Bundle(req.Role)
+			} else {
+				want = *ceilingSet("", req.Permissions)
+			}
+			parent := *creator.Ceiling
+			if parent.Has(authz.AgentManage) {
+				// agent.manage implies agent.enroll, as for the owner's own grants.
+				parent = parent.With(authz.AgentEnroll)
+			}
+			role, perms = "", want.Intersect(parent).Names()
+		}
+	}
+	var labels []string
+	if slices.Contains(perms, string(authz.AgentEnroll)) {
+		labels = req.EnrollLabels
+		if len(labels) == 0 {
+			// A bounded parent never yields an unbounded child.
+			labels = creator.EnrollLabels
+		}
+	}
+	pat, err = s.store.CreateAccountPAT(r.Context(), store.NewPAT{
+		Name: req.Name, TokenHash: hash, AccountID: creator.AccountID, Role: role, Permissions: perms, EnrollLabels: labels, ExpiresAt: expiresAt, CreatedBy: creator.AuditActorID(),
+	})
 	if err != nil {
 		http.Error(w, "store error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -271,14 +236,34 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case canManageTokens(p):
 		pats, err = s.store.ListPATs(r.Context())
-	case p.Sub == "":
-		// No owner identity (role-only PAT): it owns nothing.
+	case p.AccountID == "":
+		// No account: it owns nothing.
 	default:
-		pats, err = s.store.ListPATsByOwner(r.Context(), p.Sub)
+		pats, err = s.store.ListPATsByAccount(r.Context(), p.AccountID)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// Label each PAT with its account: a human's email (else sub), a service
+	// account's name.
+	owners := map[string]string{}
+	if len(pats) > 0 {
+		accts, err := s.store.ListAccounts(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, a := range accts {
+			label := a.Name
+			if a.Kind == store.AccountKindHuman {
+				label = a.Email
+				if label == "" {
+					label = a.OIDCSub
+				}
+			}
+			owners[a.ID] = label
+		}
 	}
 	result := make([]api.PATMeta, 0, len(pats))
 	for _, pat := range pats {
@@ -298,6 +283,8 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 			if m.Owner == "" {
 				m.Owner = pat.Owner.Sub
 			}
+		} else if label, ok := owners[pat.AccountID]; ok {
+			m.Owner = label
 		}
 		result = append(result, m)
 	}
@@ -321,9 +308,9 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deleted := false
-	if p.Sub != "" {
+	if p.AccountID != "" {
 		var err error
-		deleted, err = s.store.DeleteOwnedPAT(r.Context(), id, p.Sub)
+		deleted, err = s.store.DeleteAccountPAT(r.Context(), id, p.AccountID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

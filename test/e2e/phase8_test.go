@@ -102,8 +102,8 @@ func mockIdP(t *testing.T, privateKey *rsa.PrivateKey, sub, email string) *httpt
 
 func TestPhase8_OIDCConfig_NotConfigured(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 
@@ -115,8 +115,8 @@ func TestPhase8_OIDCConfig_NotConfigured(t *testing.T) {
 
 func TestPhase8_OIDCConfig_WithoutSecret(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	srv.SetOIDCConfig(&controller.OIDCConfig{Issuer: "https://example.com", ClientID: "cid"})
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -132,8 +132,8 @@ func TestPhase8_OIDCConfig_WithoutSecret(t *testing.T) {
 
 func TestPhase8_OIDCConfig_WithSecret(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	srv.SetOIDCConfig(&controller.OIDCConfig{Issuer: "https://example.com", ClientID: "cid", ClientSecret: "secret"})
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -155,8 +155,8 @@ func TestPhase8_FullOIDCFlow(t *testing.T) {
 	defer idpSrv.Close()
 
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	km := newTestKeyManager(t)
 	srv.SetKeyManager(km)
 	srv.SetOIDCConfig(&controller.OIDCConfig{
@@ -214,8 +214,8 @@ func TestPhase8_FullOIDCFlow(t *testing.T) {
 
 func TestPhase8_PATAndSessionCoexist(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "static-token"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "static-token"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "static-token"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 

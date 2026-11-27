@@ -23,7 +23,21 @@ import (
 
 // Config holds the configuration for the master server.
 type Config struct {
-	Token         string
+	// ServiceAccountGrants are the compiled permissions of each service
+	// account declared in the config (config.ControllerConfig), keyed by name;
+	// the built-in "admin" account is not in the map.
+	ServiceAccountGrants map[string]authz.Grants
+	// AdminEnabled is true when the built-in admin account may authenticate
+	// (serviceAccounts.admin.enabled, default true). A recovery lease stored in
+	// the database can enable it temporarily.
+	AdminEnabled bool
+	// TokenDefaultLifetime and TokenMaxLifetime are the PAT lifetime policy
+	// (tokens.defaultLifetime / tokens.maxLifetime; max 0 means no limit).
+	TokenDefaultLifetime, TokenMaxLifetime time.Duration
+	// AllowTokenEntry keeps the web UI's manual token form while SSO is
+	// configured (ui.allowTokenEntry).
+	AllowTokenEntry bool
+
 	ListenAddr    string
 	WebDir        string // Directory for static web files. When empty, /ui/* returns 404.
 	UIProxyTarget string // URL of the Vite dev server to proxy /ui/* to when WebDir is not set (e.g. http://vite:5173). When empty, /ui/* returns 404.
@@ -147,6 +161,12 @@ type Server struct {
 	cloudEnrollmentVerifiers      map[string]CloudEnrollmentVerifier
 	storeCredentialClusters       []StoreCredentialCluster
 	storeCredentialS3             *objectstore.S3Config
+
+	// clock is the time source of the account caches; nil means time.Now.
+	// Tests replace it to expire the caches without sleeping.
+	clock      func() time.Time
+	idAccounts idTokenAccounts // Human accounts of bearer id_tokens, per sub.
+	adminLease adminLease      // Cached admin_enabled_until.
 
 	// Cached provider for OIDC Bearer token verification (lazily initialized).
 	// Used to verify id_tokens obtained via the CLI device flow for API authentication.

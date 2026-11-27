@@ -33,8 +33,8 @@ func writeSPAFixture(t *testing.T) string {
 
 func TestPhase7_UIServed(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", WebDir: writeSPAFixture(t)}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{WebDir: writeSPAFixture(t)}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 	resp, err := http.Get(httpSrv.URL + "/ui/")
@@ -46,8 +46,8 @@ func TestPhase7_UIServed(t *testing.T) {
 
 func TestPhase7_RootRedirectsToUI(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", WebDir: writeSPAFixture(t)}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{WebDir: writeSPAFixture(t)}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -65,8 +65,8 @@ func TestPhase7_RootRedirectsToUI(t *testing.T) {
 // (it appears only in the bundled JS); a string check for "vue" would therefore always have been wrong.
 func TestPhase7_UIServesSPAShell(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", WebDir: writeSPAFixture(t)}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{WebDir: writeSPAFixture(t)}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 	resp, err := http.Get(httpSrv.URL + "/ui/")
@@ -81,8 +81,8 @@ func TestPhase7_UIServesSPAShell(t *testing.T) {
 
 func TestPhase7_AgentsAPI(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 	require.NoError(t, pg.UpsertAgent(t.Context(), "a1", "host1", "linux", "dev", []string{"kind:linux"}, nil, nil, nil))
@@ -99,8 +99,8 @@ func TestPhase7_AgentsAPI(t *testing.T) {
 
 func TestPhase7_RunsByJobAPI(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), store.JobMeta{})
@@ -119,8 +119,8 @@ func TestPhase7_RunsByJobAPI(t *testing.T) {
 
 func TestPhase7_CancelRun(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})
@@ -147,8 +147,8 @@ func TestPhase7_CancelRun(t *testing.T) {
 // This test exists as a regression guard to prevent accidental future implementation.
 func TestPhase7_SSE_RejectsTokenQuery(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`), store.JobMeta{})

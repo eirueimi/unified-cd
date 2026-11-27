@@ -504,11 +504,12 @@ type PATMeta struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
-	// Owner is the owner's email, else its sub; empty for a role-only token.
+	// Owner labels the owning account: a person's email (else sub), or a service
+	// account's name.
 	Owner        string   `json:"owner,omitempty"`
 	Permissions  []string `json:"permissions,omitempty"`
 	EnrollLabels []string `json:"enrollLabels,omitempty"`
-	// CreatedBy is the audit actor id of the creator ("break-glass", "pat:<id>",
+	// CreatedBy is the audit actor id of the creator ("pat:<id>",
 	// "oidc:<sub>"); empty for tokens created before it was recorded.
 	CreatedBy string `json:"createdBy,omitempty"`
 }
@@ -768,7 +769,7 @@ type AuditLog struct {
 	Scope      string    `json:"scope,omitempty"`
 	GrantedBy  string    `json:"grantedBy,omitempty"`
 	// ActorID is the stable identity of the caller ("pat:<id>", "oidc:<sub>",
-	// "break-glass", "agent:<id>"). Actor is only a display name and is not
+	// "agent:<id>"; old rows may carry "break-glass"). Actor is only a display name and is not
 	// unique; empty for rows written before ActorID was recorded.
 	ActorID string `json:"actorId,omitempty"`
 	// ActorSub is the OIDC subject behind the actor, when there is one.

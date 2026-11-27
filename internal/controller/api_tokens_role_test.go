@@ -50,11 +50,10 @@ func TestCreateToken_UnknownRoleAndPermission(t *testing.T) {
 	assert.Equal(t, "permissions must not be empty\n", rec.Body.String())
 }
 
-// A role-only PAT creating a PAT stays role-only and is bounded by its own role.
-func TestCreateToken_RoleOnlyPATCreatorIsRoleOnly(t *testing.T) {
+// A service-account PAT is bounded by its account's global role.
+func TestCreateToken_ServiceAccountPATBoundedByRole(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	_, err := pg.CreatePAT(t.Context(), "dev", HashToken("exc_dev"), "developer", nil, "")
-	require.NoError(t, err)
+	addRoleServicePAT(t, s, pg, "dev", "exc_dev", "developer")
 
 	body, _ := json.Marshal(api.CreatePATRequest{Name: "ci", Role: "admin"})
 	rec := doAs(t, s, http.MethodPost, "/api/v1/tokens", "exc_dev", body)
@@ -69,5 +68,5 @@ func TestCreateToken_RoleOnlyPATCreatorIsRoleOnly(t *testing.T) {
 	pat, err := pg.GetPATByHash(t.Context(), HashToken(resp.Token))
 	require.NoError(t, err)
 	assert.Equal(t, "viewer", pat.Role)
-	assert.Nil(t, pat.Owner)
+	assert.NotEmpty(t, pat.AccountID)
 }

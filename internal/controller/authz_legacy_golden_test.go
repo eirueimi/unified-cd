@@ -162,7 +162,7 @@ func TestLegacyEquivalence_HTTP(t *testing.T) {
 	s, pg := newTestServer(t)
 	roles := []string{"viewer", "developer", "admin"}
 	for _, role := range roles {
-		makeRolePAT(t, pg, "golden_"+role, role)
+		makeRolePAT(t, s, pg, "golden_"+role, role)
 	}
 
 	for key, min := range legacyMinRole {

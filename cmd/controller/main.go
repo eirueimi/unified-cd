@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -336,6 +337,17 @@ func main() {
 		slog.Warn("removed credentials embedded in AppSource repoURL; create a GitCredential for each repository host so these AppSources can authenticate again",
 			"appSources", names)
 	}
+	// Make the service-account rows match the config: new names are created,
+	// removed names are disabled (re-adding one re-enables it).
+	serviceAccountNames := make([]string, 0, len(eff.ServiceAccountGrants))
+	for name := range eff.ServiceAccountGrants {
+		serviceAccountNames = append(serviceAccountNames, name)
+	}
+	sort.Strings(serviceAccountNames)
+	if err := pg.SyncServiceAccounts(ctx, serviceAccountNames); err != nil {
+		slog.Error("sync service accounts", "error", err)
+		os.Exit(1)
+	}
 	if err := bootstrapKubernetesEnrollmentPolicies(ctx, pg, eff.AgentAuth); err != nil {
 		slog.Error("bootstrap kubernetes enrollment policies", "error", err)
 		os.Exit(1)
@@ -469,7 +481,7 @@ func main() {
 		}
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StoreCredentialRateBurst: *storeCredBurst, StoreCredentialRatePerSecond: *storeCredPerSecond, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, ArtifactDownload: *artifactDownload, ExternalURL: *externalURL}, st)
+	srv := controller.NewServer(controller.Config{ServiceAccountGrants: eff.ServiceAccountGrants, AdminEnabled: eff.AdminAccountEnabled(), TokenDefaultLifetime: eff.TokenDefaultLifetime(), TokenMaxLifetime: eff.TokenMaxLifetime(), AllowTokenEntry: eff.UI.AllowTokenEntry, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StoreCredentialRateBurst: *storeCredBurst, StoreCredentialRatePerSecond: *storeCredPerSecond, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, ArtifactDownload: *artifactDownload, ExternalURL: *externalURL}, st)
 	// Stops the shared log-notify listener goroutine (started lazily on the
 	// first SSE viewer — see (*controller.Server).subscribeLogNotify) if it
 	// was ever started. A no-op otherwise. Deferred here rather than left to
@@ -533,9 +545,6 @@ func main() {
 			Policy:             eff.OIDC.Policy,
 		})
 		oidcConfigured = true
-		if err := controller.WarnRoleOnlyPATs(ctx, st, eff.OIDC.Policy, slog.Default()); err != nil {
-			slog.Error("role-only PAT check failed", "error", err)
-		}
 		slog.Info("OIDC configured", "issuer", eff.OIDC.Issuer, "issuerInternal", eff.OIDC.IssuerInternal, "browserSSO", eff.OIDC.ClientSecret != "")
 		if eff.OIDC.IssuerInternal == "" {
 			slog.Warn("UNIFIED_OIDC_ISSUER_INTERNAL not set: /dex/* proxy is disabled. CLI device flow will fail. Use docker-compose.sso.yml")

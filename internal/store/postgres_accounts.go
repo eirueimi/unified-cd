@@ -74,8 +74,8 @@ func (p *Postgres) UpsertHumanAccount(ctx context.Context, sub, issuer, email st
 
 // GetAccount returns the account with the given id, or nil, nil when missing.
 func (p *Postgres) GetAccount(ctx context.Context, id string) (*Account, error) {
-	a, err := scanAccount(p.pool.QueryRow(ctx, `SELECT `+accountColumns+` FROM accounts WHERE id::text = $1`, id))
-	if errors.Is(err, pgx.ErrNoRows) {
+	a, err := scanAccount(p.pool.QueryRow(ctx, `SELECT `+accountColumns+` FROM accounts WHERE id = $1::uuid`, id))
+	if errors.Is(err, pgx.ErrNoRows) || isInvalidTextRepresentation(err) {
 		return nil, nil
 	}
 	if err != nil {
@@ -153,11 +153,11 @@ func (p *Postgres) ListAccounts(ctx context.Context) ([]Account, error) {
 func (p *Postgres) SetAccountDisabled(ctx context.Context, id string, disabled bool) error {
 	var q string
 	if disabled {
-		q = `UPDATE accounts SET disabled_at = COALESCE(disabled_at, now()) WHERE id::text = $1`
+		q = `UPDATE accounts SET disabled_at = COALESCE(disabled_at, now()) WHERE id = $1::uuid`
 	} else {
-		q = `UPDATE accounts SET disabled_at = NULL WHERE id::text = $1`
+		q = `UPDATE accounts SET disabled_at = NULL WHERE id = $1::uuid`
 	}
-	if _, err := p.pool.Exec(ctx, q, id); err != nil {
+	if _, err := p.pool.Exec(ctx, q, id); err != nil && !isInvalidTextRepresentation(err) {
 		return fmt.Errorf("set account disabled: %w", err)
 	}
 	return nil
@@ -178,13 +178,20 @@ func (p *Postgres) CreateAccountPAT(ctx context.Context, in NewPAT) (*PAT, error
 
 // ListPATsByAccount returns the PATs owned by an account, oldest first.
 func (p *Postgres) ListPATsByAccount(ctx context.Context, accountID string) ([]PAT, error) {
-	return p.queryPATs(ctx, `SELECT `+patColumns+` FROM pats WHERE account_id::text = $1 ORDER BY created_at, id`, accountID)
+	pats, err := p.queryPATs(ctx, `SELECT `+patColumns+` FROM pats WHERE account_id = $1::uuid ORDER BY created_at, id`, accountID)
+	if isInvalidTextRepresentation(err) {
+		return nil, nil
+	}
+	return pats, err
 }
 
 // DeleteAccountPAT deletes a PAT only when it belongs to accountID; it reports
 // whether a row was deleted.
 func (p *Postgres) DeleteAccountPAT(ctx context.Context, id, accountID string) (bool, error) {
-	tag, err := p.pool.Exec(ctx, `DELETE FROM pats WHERE id::text = $1 AND account_id::text = $2`, id, accountID)
+	tag, err := p.pool.Exec(ctx, `DELETE FROM pats WHERE id = $1::uuid AND account_id = $2::uuid`, id, accountID)
+	if isInvalidTextRepresentation(err) {
+		return false, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("delete account pat: %w", err)
 	}

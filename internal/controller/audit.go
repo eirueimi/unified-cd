@@ -208,6 +208,16 @@ func auditLogMiddleware(st interface {
 			}
 			e.ActorID = p.AuditActorID()
 			e.ActorSub = p.Sub
+			if p.AccountKind == store.AccountKindService && p.AccountName != "" {
+				// Name the service account behind the PAT; the PAT id alone
+				// does not say whose it is. Copy so the handler's map is untouched.
+				d := make(map[string]any, len(e.Details)+1)
+				for k, v := range e.Details {
+					d[k] = v
+				}
+				d["account"] = "sa:" + p.AccountName
+				e.Details = d
+			}
 		}
 		e.Method = r.Method
 		e.Path = r.URL.Path

@@ -53,8 +53,8 @@ func TestPhase3_LogArchival(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
 	obj := objectstore.NewLocalObjectStore(t.TempDir())
 
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	srv.SetObjectStore(obj)
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -129,8 +129,8 @@ func TestPhase3_SSE(t *testing.T) {
 		t.Skip("phase 3 is linux/mac only")
 	}
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 
@@ -200,8 +200,8 @@ func TestPhase3_BulkLogPush(t *testing.T) {
 		t.Skip("phase 3 is linux/mac only")
 	}
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 

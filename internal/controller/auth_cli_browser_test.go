@@ -64,7 +64,7 @@ func newBrowserFixture(t *testing.T, withKM bool) *browserFixture {
 		return 200, map[string]any{"id_token": f.idp.Sign(claims), "refresh_token": "rt-browser", "access_token": "at"}
 	}
 	f.st = &codeCountingStore{Store: storetest.NewTestPostgres(t)}
-	f.s = NewServer(Config{Token: "t"}, f.st)
+	f.s = NewServer(Config{}, f.st)
 	t.Cleanup(f.s.Close)
 	if withKM {
 		f.s.SetKeyManager(testKeyManager(t))

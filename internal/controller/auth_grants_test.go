@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -35,28 +34,30 @@ folders:
 
 func mustOwnedPAT(t *testing.T, st store.Store, token, role string, perms []string, claims []string) *store.PAT {
 	t.Helper()
-	pat, err := st.CreateOwnedPAT(context.Background(), store.NewOwnedPAT{
+	return createOwnedPATForTest(t, st, store.NewOwnedPAT{
 		Name: "owned-" + token, TokenHash: HashToken(token), Role: role, Permissions: perms,
 		Owner: store.PATOwner{Sub: "sub-" + token, Email: token + "@example.com", Claims: claims},
 	})
-	require.NoError(t, err)
-	return pat
 }
 
-func TestServerAuth_BreakGlassHoldsAll28(t *testing.T) {
+func TestServerAuth_AdminAccountHoldsAllPermissions(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	s.cfg.Token = "bg-token" // break-glass requires the configured bootstrap token
-	_, err := pg.UpsertBootstrapPAT(context.Background(), BootstrapPATName, HashToken("bg-token"))
+	s.cfg.AdminEnabled = true
+	require.NoError(t, pg.SyncServiceAccounts(context.Background(), nil))
+	admin := serviceAccountByName(t, pg, authz.BuiltinAdminAccount)
+	pat, err := pg.CreateAccountPAT(context.Background(), store.NewPAT{Name: "bootstrap", TokenHash: HashToken("adm-tok"), AccountID: admin.ID})
 	require.NoError(t, err)
 
-	p, rec := authenticate(t, s, "bg-token", "")
+	p, rec := authenticate(t, s, "adm-tok", "")
 	require.Equal(t, http.StatusOK, rec.Code)
-	assert.True(t, p.BreakGlass)
 	assert.Equal(t, "admin", p.Role)
 	assert.Equal(t, "pat", p.Kind)
+	assert.Equal(t, store.AccountKindService, p.AccountKind)
+	assert.Equal(t, authz.BuiltinAdminAccount, p.AccountName)
+	assert.Equal(t, admin.ID, p.AccountID)
 	assert.Nil(t, p.Ceiling)
-	assert.Empty(t, p.OwnerPATID)
-	assert.False(t, p.ClaimsKnown)
+	assert.Equal(t, pat.ID, p.OwnerPATID)
+	assert.Equal(t, "pat:"+pat.ID, p.AuditActorID())
 	all := authz.All()
 	require.Len(t, all, 30)
 	for _, perm := range all {
@@ -65,31 +66,21 @@ func TestServerAuth_BreakGlassHoldsAll28(t *testing.T) {
 	}
 }
 
-func TestServerAuth_RoleOnlyPATEmptyRoleIsNoRole(t *testing.T) {
+func TestServerAuth_ServiceAccountPATGrants(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	_, err := pg.CreatePAT(context.Background(), "empty", HashToken("empty-tok"), "", nil, "")
-	require.NoError(t, err)
-
-	_, rec := authenticate(t, s, "empty-tok", "")
-	assert.Equal(t, http.StatusForbidden, rec.Code)
-	assert.Equal(t, "forbidden: no role\n", rec.Body.String())
-}
-
-func TestServerAuth_RoleOnlyPATGrants(t *testing.T) {
-	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	_, err := pg.CreatePAT(context.Background(), "v", HashToken("v-tok"), "viewer", nil, "")
-	require.NoError(t, err)
+	addRoleServicePAT(t, s, pg, "v", "v-tok", "viewer")
 
 	p, rec := authenticate(t, s, "v-tok", "")
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "viewer", p.Role)
-	assert.False(t, p.ClaimsKnown)
 	assert.Empty(t, p.Sub)
+	assert.Equal(t, "v", p.AccountName)
 	assert.True(t, p.Grants.Can(authz.JobRead, "any/job"))
 	assert.False(t, p.Grants.Can(authz.RunTrigger, "any/job"))
 	_, by := p.Grants.Decide(authz.JobRead, "")
-	assert.Equal(t, "role:viewer (pat)", by)
+	assert.Equal(t, "role:viewer", by)
 }
+
 
 func TestServerAuth_OwnerPATEmptyRoleAdmitted(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, teamAPolicy)
@@ -107,7 +98,6 @@ func TestServerAuth_OwnerPATEmptyRoleAdmitted(t *testing.T) {
 	assert.Equal(t, []string{"g-a"}, p.Claims)
 	assert.True(t, p.ClaimsKnown)
 	assert.Equal(t, pat.ID, p.OwnerPATID)
-	assert.False(t, p.BreakGlass)
 	assert.Nil(t, p.Ceiling)
 	assert.Equal(t, "", p.CeilingRole)
 	assert.Nil(t, p.CeilingPerms)
@@ -160,10 +150,9 @@ func TestServerAuth_OwnerPATFollowsCurrentConfig(t *testing.T) {
 	assert.True(t, p.Grants.Can(authz.RunTrigger, "x"))
 
 	without := newAuthzTestServerOn(t, pg, authz.Legacy{}, "")
-	p, rec = authenticate(t, without, "follow", "")
-	require.Equal(t, http.StatusOK, rec.Code, "an owner PAT is admitted even when nothing matches")
-	assert.True(t, p.Grants.IsEmpty())
-	assert.Equal(t, "", p.Role)
+	_, rec = authenticate(t, without, "follow", "")
+	assert.Equal(t, http.StatusForbidden, rec.Code, "an owner PAT whose account nothing matches any more is refused")
+	assert.Equal(t, "forbidden: no role\n", rec.Body.String())
 }
 
 func TestServerAuth_SessionWithClaimsEmptyRoleAdmitted(t *testing.T) {
@@ -189,19 +178,6 @@ func TestServerAuth_SessionWithoutClaimsEmptyRoleIsNoRole(t *testing.T) {
 	_, rec := authenticate(t, s, "", "sess-old")
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 	assert.Equal(t, "forbidden: no role\n", rec.Body.String())
-}
-
-func TestServerAuth_SessionWithoutClaimsIsRoleOnly(t *testing.T) {
-	s, pg := newAuthzTestServer(t, authz.Legacy{}, teamAPolicy)
-	addSession(t, pg, "sess-viewer", "sub-3", "u3@example.com", "viewer", nil)
-
-	p, rec := authenticate(t, s, "", "sess-viewer")
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "viewer", p.Role)
-	assert.False(t, p.ClaimsKnown)
-	assert.True(t, p.Grants.Can(authz.JobRead, "x"))
-	_, by := p.Grants.Decide(authz.JobRead, "x")
-	assert.Equal(t, "role:viewer (session)", by)
 }
 
 func TestServerAuth_BearerDeniedByLegacyButMatchedByFolderIsAdmitted(t *testing.T) {
@@ -312,14 +288,13 @@ func TestCeilingSet(t *testing.T) {
 	assert.True(t, got.IsEmpty())
 }
 
-func TestCompleteOIDCLogin_StoresClaimsAndRefreshesPATOwners(t *testing.T) {
+func TestCompleteOIDCLogin_StoresClaimsAndRefreshesAccount(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{RoleMap: map[string]string{"g1": "developer"}}, "")
 	ctx := context.Background()
-	_, err := pg.CreateOwnedPAT(ctx, store.NewOwnedPAT{
+	createOwnedPATForTest(t, pg, store.NewOwnedPAT{
 		Name: "o", TokenHash: HashToken("o-tok"), Role: "developer",
 		Owner: store.PATOwner{Sub: "sub-x", Email: "old@example.com", Claims: []string{"stale"}},
 	})
-	require.NoError(t, err)
 
 	token, expires, status, msg := s.completeOIDCLogin(ctx, map[string]any{
 		"sub": "sub-x", "email": "x@example.com", "groups": []any{"g1"},
@@ -334,11 +309,16 @@ func TestCompleteOIDCLogin_StoresClaimsAndRefreshesPATOwners(t *testing.T) {
 	assert.Equal(t, "developer", sess.Role)
 	assert.Equal(t, "x@example.com", sess.Email)
 
+	acct, err := pg.GetHumanAccountBySub(ctx, "sub-x")
+	require.NoError(t, err)
+	require.NotNil(t, acct)
+	assert.Equal(t, sess.AccountID, acct.ID, "the session belongs to the account")
+	assert.Equal(t, []string{"g1"}, acct.Claims)
+	assert.Equal(t, "x@example.com", acct.Email)
+
 	pat, err := pg.GetPATByHash(ctx, HashToken("o-tok"))
 	require.NoError(t, err)
-	require.NotNil(t, pat.Owner)
-	assert.Equal(t, []string{"g1"}, pat.Owner.Claims)
-	assert.Equal(t, "x@example.com", pat.Owner.Email)
+	assert.Equal(t, acct.ID, pat.AccountID, "the existing PAT stays attached to the refreshed account")
 }
 
 func TestCompleteOIDCLogin_AbsentClaimStoresEmptyNotNull(t *testing.T) {
@@ -421,10 +401,9 @@ func TestHandleMe_ReturnsCallerGrantsOnly(t *testing.T) {
 	assert.NotContains(t, folders, "team-b")
 }
 
-func TestHandleMe_LegacyPATShape(t *testing.T) {
+func TestHandleMe_ServiceAccountPATShape(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	_, err := pg.CreatePAT(context.Background(), "v", HashToken("v-tok"), "viewer", nil, "")
-	require.NoError(t, err)
+	addRoleServicePAT(t, s, pg, "v", "v-tok", "viewer")
 
 	rec := doAs(t, s, http.MethodGet, "/api/v1/auth/me", "v-tok", nil)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -450,58 +429,9 @@ func TestHandleMe_Unauthenticated(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
-func TestServerAuth_NameAloneIsNotBreakGlass(t *testing.T) {
-	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	s.cfg.Token = "real-bootstrap"
-	ctx := context.Background()
-	// An attacker-created developer PAT that merely carries the reserved name.
-	_, err := pg.CreatePAT(ctx, BootstrapPATName, HashToken("attacker-tok"), "developer", nil, "")
-	require.NoError(t, err)
-
-	p, rec := authenticate(t, s, "attacker-tok", "")
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.False(t, p.BreakGlass)
-	assert.Equal(t, "developer", p.Role)
-	assert.True(t, p.Grants.Can(authz.RunTrigger, "x"))
-	assert.False(t, p.Grants.Can(authz.AuthzRead, ""))
-	assert.False(t, p.Grants.Can(authz.SecretWrite, ""))
-
-	// The real bootstrap token is break-glass.
-	_, err = pg.UpsertBootstrapPAT(ctx, "other-row", HashToken("real-bootstrap"))
-	require.NoError(t, err)
-	p, rec = authenticate(t, s, "real-bootstrap", "")
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.True(t, p.BreakGlass)
-	assert.Equal(t, "admin", p.Role)
-	assert.True(t, p.Grants.Can(authz.AuthzRead, ""))
-}
-
-func TestServerAuth_NoServerOrNoTokenMeansNoBreakGlass(t *testing.T) {
-	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	_, err := pg.UpsertBootstrapPAT(context.Background(), BootstrapPATName, HashToken("bg-token"))
-	require.NoError(t, err)
-
-	// No configured bootstrap token: the row is an ordinary PAT (role admin
-	// from the row, but not BreakGlass).
-	p, rec := authenticate(t, s, "bg-token", "")
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.False(t, p.BreakGlass)
-
-	// ServerAuth(st, nil): no break-glass at all.
-	var got Principal
-	h := ServerAuth(pg, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got, _ = principalFromContext(r.Context())
-	}))
-	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set("Authorization", bearerPrefix+"bg-token")
-	h.ServeHTTP(httptest.NewRecorder(), req)
-	assert.False(t, got.BreakGlass)
-}
-
 func TestCreateToken_ReservedNamesRefused(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	_, err := pg.CreatePAT(context.Background(), "dev", HashToken("dev-tok"), "developer", nil, "")
-	require.NoError(t, err)
+	addRoleServicePAT(t, s, pg, "dev", "dev-tok", "developer")
 	for _, name := range []string{"env:UNIFIED_TOKEN", "env:x"} {
 		body, _ := json.Marshal(map[string]string{"name": name})
 		rec := doAs(t, s, http.MethodPost, "/api/v1/tokens", "dev-tok", body)
@@ -510,7 +440,9 @@ func TestCreateToken_ReservedNamesRefused(t *testing.T) {
 	}
 }
 
-func TestCompleteOIDCLogin_DeniedLoginStillRefreshesPATOwnerSnapshot(t *testing.T) {
+// A login the policy refuses writes no account row and leaves the accounts of
+// other people (and their PATs' claims) untouched.
+func TestCompleteOIDCLogin_DeniedLoginLeavesAccountsUntouched(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{RoleMap: map[string]string{"g1": "developer"}}, "")
 	ctx := context.Background()
 	mustOwnedPAT(t, pg, "stale", "developer", nil, []string{"g1"})
@@ -525,7 +457,12 @@ func TestCompleteOIDCLogin_DeniedLoginStillRefreshesPATOwnerSnapshot(t *testing.
 	assert.Equal(t, http.StatusForbidden, status)
 	assert.Equal(t, "forbidden: no role assigned", msg)
 
+	// The refused attempt refreshed nothing: the account keeps its claims.
+	acct, err := pg.GetHumanAccountBySub(ctx, "sub-stale")
+	require.NoError(t, err)
+	require.NotNil(t, acct)
+	assert.Equal(t, []string{"g1"}, acct.Claims)
 	p, rec = authenticate(t, s, "stale", "")
 	require.Equal(t, http.StatusOK, rec.Code)
-	assert.True(t, p.Grants.IsEmpty(), "PAT must resolve against the refreshed claims")
+	assert.True(t, p.Grants.Can(authz.RunTrigger, "x"))
 }
