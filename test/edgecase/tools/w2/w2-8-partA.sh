@@ -4,12 +4,15 @@
 # cluster (grid phase = (epoch mod 60) ~= 5.10s), wait for run=Failed +
 # approval=Pending, then fire ONE decision.
 set -u
+# The rig has no standing admin token: exchange the initial one once (see ../lib/admin-token.sh).
+. "$(dirname "$0")/../lib/admin-token.sh"
+ADMIN_PAT="${UNIFIED_TOKEN:-$(bootstrap_admin_token)}"
 export MSYS_NO_PATHCONV=1
 # Run from test/ha (this script does not cd for you).
 [ -f docker-compose.ha.yaml ] || { echo "run me from test/ha" >&2; exit 1; }
 SCRATCH="$1"; TRIAL="$2"; DECIDE_MODE="$3"   # DECIDE_MODE = api | cli | none
 DC="docker compose ${COMPOSE_FILES:--f docker-compose.ha.yaml}"
-TOK="Authorization: Bearer ha-admin-token"
+TOK="Authorization: Bearer $ADMIN_PAT"
 BASE=http://localhost:18080
 psq(){ $DC exec -T postgres psql -U unified -tAc "$1"; }
 
@@ -42,7 +45,7 @@ for i in $(seq 1 90); do
       D1=$(date -u +%s.%N)
       echo "DECIDE_API host_before=$D0 host_after=$D1 code_time=$CODE body=$(cat "$SCRATCH/$TRIAL-decide-body.txt")"
     elif [ "$DECIDE_MODE" = "cli" ]; then
-      OUT=$(UNIFIED_SERVER=http://localhost:18080 UNIFIED_TOKEN=ha-admin-token "${UNIFIED_CLI:?set UNIFIED_CLI to a built unified-cli binary for DECIDE_MODE=cli}" approve "$RID" 1 --comment "w2-8 cli" 2>&1; echo "rc=$?")
+      OUT=$(UNIFIED_SERVER=http://localhost:18080 UNIFIED_TOKEN="$ADMIN_PAT" "${UNIFIED_CLI:?set UNIFIED_CLI to a built unified-cli binary for DECIDE_MODE=cli}" approve "$RID" 1 --comment "w2-8 cli" 2>&1; echo "rc=$?")
       D1=$(date -u +%s.%N)
       echo "DECIDE_CLI host_before=$D0 host_after=$D1 out<<<$OUT>>>"
     else

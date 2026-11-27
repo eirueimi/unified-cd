@@ -35,6 +35,17 @@ spec:
           env:
             - name: UNIFIED_CONTROLLER_KEY_FILE
               value: /etc/unified-cd/kek
+            {{- /*
+            optional: true, so an install that skips the initial-token Job
+            (SSO only, or controller.initialAdminToken.generate=false) starts
+            without the Secret.
+            */}}
+            - name: UNIFIED_INITIAL_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controller.initialAdminToken.secretName }}
+                  key: UNIFIED_INITIAL_ADMIN_TOKEN
+                  optional: true
           envFrom:
             - secretRef:
                 name: {{ include "unified-cd.controllerSecretName" . }}

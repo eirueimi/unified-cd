@@ -9,9 +9,9 @@ Reach the controller from your machine:
 
   kubectl -n {{ .Release.Namespace }} port-forward svc/unified-cd-controller 8080:{{ .Values.controller.service.port }}
 
-Then open http://localhost:8080 and sign in with the admin token:
+Then exchange the one-time initial admin token for an admin PAT (valid 30 days):
 
-  dev-token-change-me
+{{ include "unified-cd.bootstrapSteps" . }}
 
 To move to production, set bundledStores.enabled=false, create your own
 Secret and pass controller.existingSecret (see the chart README), put HTTPS in
@@ -41,6 +41,15 @@ and open http://localhost:8080. Put HTTPS in front before exposing it
 (set ingress.enabled=true or use your own TLS terminator).
 {{- end }}
 
+{{- if include "unified-cd.initialTokenGenerate" . }}
+
+Initial admin access: exchange the one-time initial admin token for an admin
+PAT (valid 30 days) with unified-cli. The exchange works once; the token is
+useless afterwards. If you sign in with SSO instead, ignore this.
+
+{{ include "unified-cd.bootstrapSteps" . }}
+{{- end }}
+
 {{- if and .Values.agent.enabled (not .Values.agent.server) (not .Values.bundledStores.enabled) }}
 
 WARNING: agent.server is empty, so the bundled Kubernetes agent connects to
@@ -50,8 +59,11 @@ agent.server to the controller's public https:// URL.
 {{- end }}
 
 The controller expects these Secrets in namespace {{ .Release.Namespace }}:
-  {{ include "unified-cd.controllerSecretName" . }}  keys UNIFIED_DB_DSN, UNIFIED_TOKEN, UNIFIED_S3_ENDPOINT,
+  {{ include "unified-cd.controllerSecretName" . }}  keys UNIFIED_DB_DSN, UNIFIED_S3_ENDPOINT,
     UNIFIED_S3_BUCKET, UNIFIED_S3_KEY, UNIFIED_S3_SECRET
+{{- if include "unified-cd.initialTokenGenerate" . }}
+  {{ .Values.controller.initialAdminToken.secretName }}  key UNIFIED_INITIAL_ADMIN_TOKEN (generated once by the initial-token Job)
+{{- end }}
 {{- if include "unified-cd.kekGenerate" . }}
   {{ .Values.controller.kek.secretName }}  key kek (generated once by the kek-init Job)
 {{- else }}

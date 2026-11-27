@@ -4,12 +4,15 @@
 # instant S from the cluster one period earlier (drift ~12 ms/min).
 # usage (from test/ha): w2-8-partC2.sh <scratch> <label> <offset_ms>
 set -u
+# The rig has no standing admin token: exchange the initial one once (see ../lib/admin-token.sh).
+. "$(dirname "$0")/../lib/admin-token.sh"
+ADMIN_PAT="${UNIFIED_TOKEN:-$(bootstrap_admin_token)}"
 export MSYS_NO_PATHCONV=1
 # Run from test/ha (this script does not cd for you).
 [ -f docker-compose.ha.yaml ] || { echo "run me from test/ha" >&2; exit 1; }
 SCRATCH="$1"; LBL="$2"; OFF_MS="$3"
 DC="docker compose ${COMPOSE_FILES:--f docker-compose.ha.yaml}"
-TOK="Authorization: Bearer ha-admin-token"; BASE=http://localhost:18080
+TOK="Authorization: Bearer $ADMIN_PAT"; BASE=http://localhost:18080
 PERIOD=60.012; LEAD=50.25
 
 lastcluster(){ $DC logs --no-log-prefix postgres --since "$1" 2>/dev/null > "$SCRATCH/.c2.log"

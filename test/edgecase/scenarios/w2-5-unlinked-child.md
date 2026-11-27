@@ -242,11 +242,11 @@ docker compose $COMPOSE_FILES up -d --build
 
 curl -s -o /dev/null -w 'readyz=%{http_code}\n' localhost:18080/readyz
 docker compose $COMPOSE_FILES ps --format '{{.Service}} {{.State}}'
-curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token" | tee "$SCRATCH/agents.json"
+curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer $ADMIN_PAT" | tee "$SCRATCH/agents.json"
 
 for f in call-parent call-child; do
   curl -fsS -X POST localhost:18080/api/v1/jobs \
-    -H "Authorization: Bearer ha-admin-token" -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $ADMIN_PAT" -H 'Content-Type: application/json' \
     --data-binary @../edgecase/workloads/$f.payload.json -o /dev/null -w "$f=%{http_code}\n"
 done                                                            # expect 200 x2
 ```
@@ -295,7 +295,7 @@ ambiguous between a missing link and a cascade that never worked.
 
 ```bash
 # A1. Trigger the parent and note which agent claims it.
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-call-parent"}' | tee "$SCRATCH/armA-trigger.json"
 PARENT_A=<id>
 psql "SELECT id, status, claimed_by, claimed_at, created_at FROM runs WHERE id='$PARENT_A';"
@@ -304,13 +304,13 @@ psql "SELECT id, status, claimed_by, claimed_at, created_at FROM runs WHERE id='
 psql "SELECT run_id, step_index, step_name, status, child_run_id FROM step_reports WHERE run_id='$PARENT_A' ORDER BY step_index;" \
   | tee "$SCRATCH/armA-link.txt"
 CHILD_A=<child_run_id>
-curl -fsS "localhost:18080/api/v1/runs/$CHILD_A" -H "Authorization: Bearer ha-admin-token" \
+curl -fsS "localhost:18080/api/v1/runs/$CHILD_A" -H "Authorization: Bearer $ADMIN_PAT" \
   | tee "$SCRATCH/armA-child-get.json"        # expect a populated "calledBy"
 
 # A3. Cancel the parent and time the cascade.
 date -u +%FT%T.%3NZ
 curl -s -o /dev/null -w 'cancel=%{http_code}\n' -X POST "localhost:18080/api/v1/runs/$PARENT_A/cancel" \
-  -H "Authorization: Bearer ha-admin-token"
+  -H "Authorization: Bearer $ADMIN_PAT"
 psql "SELECT id, job_name, status, updated_at FROM runs WHERE id IN ('$PARENT_A','$CHILD_A');" \
   | tee "$SCRATCH/armA-cascade.txt"
 ```
@@ -323,7 +323,7 @@ read; both runs' `updated_at` (the cascade latency, DB clock); and the last
 
 ```bash
 # B1. Trigger the parent; capture created_at and the claiming agent.
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-call-parent"}' | tee "$SCRATCH/armB-trigger.json"
 PARENT=<id>
 psql "SELECT NOW(), id, status, claimed_by, claimed_at FROM runs WHERE id='$PARENT';" | tee "$SCRATCH/armB-claim.txt"
@@ -362,9 +362,9 @@ psql "SELECT child_run_id FROM step_reports WHERE run_id='$PARENT' AND child_run
   | tee "$SCRATCH/armB-nolink.txt"          # expect ZERO rows == ListChildRunIDs' exact query
 psql "SELECT id, job_name, status, triggered_by, created_at FROM runs ORDER BY created_at;" \
   | tee "$SCRATCH/armB-runs.txt"
-curl -fsS "localhost:18080/api/v1/runs?jobName=edge-call-child" -H "Authorization: Bearer ha-admin-token" \
+curl -fsS "localhost:18080/api/v1/runs?jobName=edge-call-child" -H "Authorization: Bearer $ADMIN_PAT" \
   | tee "$SCRATCH/armB-childlist.json"      # the child IS listed: it exists, it is just unattributed
-curl -fsS "localhost:18080/api/v1/runs/$CHILD" -H "Authorization: Bearer ha-admin-token" \
+curl -fsS "localhost:18080/api/v1/runs/$CHILD" -H "Authorization: Bearer $ADMIN_PAT" \
   | tee "$SCRATCH/armB-child-get.json"      # expect NO "calledBy"
 
 # B5. Which reports were actually lost (be precise; do not infer).
@@ -388,7 +388,7 @@ arm; and therefore whether the field is *ever* populated and from where.
 # B7. Cascade-cancel the parent through the public endpoint (call site
 #     api_runs.go:382) and record the parent's terminal timestamp.
 curl -s -o /dev/null -w 'cancel=%{http_code}\n' -X POST "localhost:18080/api/v1/runs/$PARENT/cancel" \
-  -H "Authorization: Bearer ha-admin-token" | tee "$SCRATCH/armB-cancel.txt"
+  -H "Authorization: Bearer $ADMIN_PAT" | tee "$SCRATCH/armB-cancel.txt"
 psql "SELECT NOW(), id, job_name, status, updated_at FROM runs WHERE id IN ('$PARENT','$CHILD');" \
   | tee -a "$SCRATCH/armB-cancel.txt"
 docker compose $COMPOSE_FILES logs controller1 controller2 controller3 | grep -i "cascade cancel" \

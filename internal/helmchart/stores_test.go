@@ -59,13 +59,11 @@ func TestTrialSecretValues(t *testing.T) {
 	require.NotNil(t, sec)
 	assert.Equal(t, "unified-cd", sec.Namespace())
 	assert.Equal(t, map[string]any{
-		"UNIFIED_DB_DSN":              "postgres://unified:unified@postgres.unified-cd.svc.cluster.local:5432/unified?sslmode=disable",
-		"UNIFIED_TOKEN":               "dev-token-change-me",
-		"UNIFIED_ALLOW_DEFAULT_TOKEN": "1",
-		"UNIFIED_S3_ENDPOINT":         "garage.unified-cd.svc.cluster.local:3900",
-		"UNIFIED_S3_BUCKET":           "unified-cd-logs",
-		"UNIFIED_S3_KEY":              "garageadmin",
-		"UNIFIED_S3_SECRET":           "garageadmin12345",
+		"UNIFIED_DB_DSN":      "postgres://unified:unified@postgres.unified-cd.svc.cluster.local:5432/unified?sslmode=disable",
+		"UNIFIED_S3_ENDPOINT": "garage.unified-cd.svc.cluster.local:3900",
+		"UNIFIED_S3_BUCKET":   "unified-cd-logs",
+		"UNIFIED_S3_KEY":      "garageadmin",
+		"UNIFIED_S3_SECRET":   "garageadmin12345",
 	}, dig(t, map[string]any(sec), "stringData"))
 
 	prov, _ := dig(t, map[string]any(sec), "metadata", "annotations", "unified-cd.io/kek-provenance").(string)
@@ -429,4 +427,66 @@ func TestStoresRecreateAndStablePodLabels(t *testing.T) {
 		assert.Equal(t, map[string]any{"app": n}, dig(t, dep, "spec", "template", "metadata", "labels"), n)
 	}
 	assert.NotEmpty(t, podChecksum(t, objs, "garage"))
+}
+
+func TestInitialAdminTokenJob(t *testing.T) {
+	for _, set := range [][]string{nil, {"bundledStores.enabled=false", "controller.existingSecret=prod", "agent.server=https://cd.example.com"}} {
+		objs := Render(t, "cd-system", set...)
+		names := []struct{ kind, weight string }{
+			{"ServiceAccount", "-1"}, {"Role", "-1"}, {"RoleBinding", "-1"}, {"Job", "0"},
+		}
+		for _, n := range names {
+			o := Find(objs, n.kind, "unified-cd-initial-token-init")
+			require.NotNilf(t, o, "%s set=%v", n.kind, set)
+			assert.Equal(t, "cd-system", o.Namespace(), n.kind)
+			a := hookAnnotations(o)
+			assert.Equal(t, "pre-install,pre-upgrade", a["helm.sh/hook"], n.kind)
+			assert.Equal(t, n.weight, a["helm.sh/hook-weight"], n.kind)
+		}
+		role := map[string]any(Find(objs, "Role", "unified-cd-initial-token-init"))
+		assert.Equal(t, []any{
+			map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"}, "verbs": []any{"create"}},
+			map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"},
+				"resourceNames": []any{"unified-cd-initial-admin-token"}, "verbs": []any{"get"}},
+		}, role["rules"])
+		job := map[string]any(Find(objs, "Job", "unified-cd-initial-token-init"))
+		assert.Equal(t, map[string]any{"app": "unified-cd-initial-token-init"},
+			dig(t, job, "spec", "template", "metadata", "labels"))
+		script := dig(t, job, "spec", "template", "spec", "containers", 0, "command", 2).(string)
+		assert.Contains(t, script, "kubectl -n cd-system create secret generic unified-cd-initial-admin-token")
+		assert.Contains(t, script, "--from-literal=UNIFIED_INITIAL_ADMIN_TOKEN=")
+		assert.Contains(t, script, "uci_")
+		assert.Contains(t, script, "kubectl -n cd-system get secret unified-cd-initial-admin-token")
+		assert.NotContains(t, script, "apply")
+
+		// The value is generated in the cluster: no Secret object carries it.
+		assert.Nil(t, Find(objs, "Secret", "unified-cd-initial-admin-token"))
+
+		dep := map[string]any(Find(objs, "Deployment", "unified-cd-controller"))
+		env := dig(t, dep, "spec", "template", "spec", "containers", 0, "env").([]any)
+		var found map[string]any
+		for _, e := range env {
+			if m := e.(map[string]any); m["name"] == "UNIFIED_INITIAL_ADMIN_TOKEN" {
+				found = m
+			}
+		}
+		require.NotNil(t, found, "set=%v", set)
+		ref := dig(t, found, "valueFrom", "secretKeyRef")
+		assert.Equal(t, map[string]any{"name": "unified-cd-initial-admin-token", "key": "UNIFIED_INITIAL_ADMIN_TOKEN", "optional": true}, ref)
+	}
+
+	// generate=false removes the Job; the Deployment still reads the Secret (optional).
+	objs := Render(t, "cd-system", "controller.initialAdminToken.generate=false")
+	assert.Nil(t, Find(objs, "Job", "unified-cd-initial-token-init"))
+	assert.Nil(t, Find(objs, "Role", "unified-cd-initial-token-init"))
+}
+
+func TestTrialRenderHasNoPublishedToken(t *testing.T) {
+	objs := Render(t, "unified-cd")
+	for _, o := range objs {
+		b, err := yaml.Marshal(map[string]any(o))
+		require.NoError(t, err)
+		assert.NotContains(t, string(b), "dev-token-change-me", "%s/%s", o.Kind(), o.Name())
+		assert.NotContains(t, string(b), "UNIFIED_ALLOW_DEFAULT_TOKEN", "%s/%s", o.Kind(), o.Name())
+	}
 }

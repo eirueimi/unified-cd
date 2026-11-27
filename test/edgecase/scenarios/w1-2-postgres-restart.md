@@ -58,11 +58,11 @@ Apply the job and trigger a run:
 
 ```bash
 curl -fsS -X POST localhost:18080/api/v1/jobs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   --data-binary @../edgecase/workloads/longrun.payload.json
 
 curl -fsS -X POST localhost:18080/api/v1/runs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   -d '{"jobName":"edge-longrun"}'
 # capture .id from the JSON response as RUN_ID
 ```
@@ -72,10 +72,10 @@ confirm live delivery before injecting:
 
 ```bash
 for i in $(seq 1 4); do
-  date; curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer ha-admin-token"
+  date; curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer $ADMIN_PAT"
   sleep 10
 done
-curl -N --max-time 15 "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer ha-admin-token"
+curl -N --max-time 15 "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer $ADMIN_PAT"
 ```
 
 Record the pre-injection `"scheduler became leader"` counts per controller
@@ -140,7 +140,7 @@ LISTEN/NOTIFY resubscribed — attach SSE *after* `/readyz` is back to 200 and
 confirm live `tick` lines arrive (not just a backlog replay):
 
 ```bash
-curl -N --max-time 15 "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer ha-admin-token"
+curl -N --max-time 15 "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer $ADMIN_PAT"
 ```
 
 Wait for the run to finish, then apply the same line-accounting check as
@@ -148,15 +148,15 @@ W1-1 (I4, shared approach):
 
 ```bash
 for i in $(seq 1 10); do
-  date; curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer ha-admin-token"
+  date; curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer $ADMIN_PAT"
   sleep 15
 done
 
 curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/logs?after=0" \
-  -H "Authorization: Bearer ha-admin-token" > /path/to/scratchpad/w1/w1-2/run-a-logs.json
+  -H "Authorization: Bearer $ADMIN_PAT" > /path/to/scratchpad/w1/w1-2/run-a-logs.json
 
 curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/logs/stats" \
-  -H "Authorization: Bearer ha-admin-token"
+  -H "Authorization: Bearer $ADMIN_PAT"
 
 # small python counter in scratchpad is fine here too, mirroring W1-1:
 # count total tick lines, check for duplicates, check seq is contiguous 1..300

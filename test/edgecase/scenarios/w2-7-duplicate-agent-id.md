@@ -371,7 +371,7 @@ docker compose $COMPOSE_FILES --profile dup ps --format '{{.Service}} {{.State}}
 curl -s -o /dev/null -w 'readyz=%{http_code}\n' localhost:18080/readyz
 # Exactly ONE agent row, id agent1, and confirm its advertised capabilities
 # (W2-4: these agents advertise ["native","container"], not ["native"]).
-curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token" | tee "$SCRATCH/gate-agents.json"
+curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer $ADMIN_PAT" | tee "$SCRATCH/gate-agents.json"
 
 # G2. Statement logging on. log_parameter_max_length is -1 on postgres:16-alpine
 #     (W2-1), so DETAIL parameter lines come free.
@@ -397,7 +397,7 @@ psql "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=17023885
 # G4. Apply the three jobs.
 for f in longrun sideeffect mutex-successor; do
   curl -fsS -X POST localhost:18080/api/v1/jobs \
-    -H "Authorization: Bearer ha-admin-token" -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $ADMIN_PAT" -H 'Content-Type: application/json' \
     --data-binary @../edgecase/workloads/$f.payload.json -o /dev/null -w "$f=%{http_code}\n"
 done | tee "$SCRATCH/gate-jobs.txt"    # expect 200 x3
 
@@ -422,7 +422,7 @@ thing that terminated it.
 ### A1 — twin introduced against a mature run
 
 ```bash
-RID=$(curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+RID=$(curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-longrun"}' | tr ',' '\n' | grep -o '"id":"[^"]*"')
 date -u +%FT%T.%3NZ | tee "$SCRATCH/partA1.txt"
 # Wait for Running, and record claimed_at from the DB (never from readyz — W2-3).
@@ -567,7 +567,7 @@ curl -sS -w '\nsteps=%{http_code}\n' -X POST \
   -H 'Content-Type: application/json' \
   -d '{"runId":"<RID>","stepIndex":0,"stageIndex":0,"stepName":"tick","status":"Running"}'
 # C2e. Proof it landed in the victim's own stream, interleaved with real output.
-curl -fsS "localhost:18080/api/v1/runs/<RID>/logs" -H "Authorization: Bearer ha-admin-token" \
+curl -fsS "localhost:18080/api/v1/runs/<RID>/logs" -H "Authorization: Bearer $ADMIN_PAT" \
   | grep -n -B2 -A2 'w2-7-third-process-marker' | tee "$SCRATCH/partC-marker.txt"
 ```
 

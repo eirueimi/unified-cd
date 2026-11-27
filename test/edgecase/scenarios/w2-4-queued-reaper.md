@@ -171,11 +171,11 @@ docker compose $COMPOSE_FILES up -d --build
 
 curl -s -o /dev/null -w 'readyz=%{http_code}\n' localhost:18080/readyz
 docker compose $COMPOSE_FILES ps --format '{{.Service}} {{.State}}'
-curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token"
+curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer $ADMIN_PAT"
 
 for f in tick mutex-hog sideeffect podcap-job; do
   curl -fsS -X POST localhost:18080/api/v1/jobs \
-    -H "Authorization: Bearer ha-admin-token" -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $ADMIN_PAT" -H 'Content-Type: application/json' \
     --data-binary @../edgecase/workloads/$f.payload.json -o /dev/null -w "$f=%{http_code}\n"
 done                                                            # expect 200 x4
 ```
@@ -201,7 +201,7 @@ psql "SELECT NOW();" ; date -u +%FT%T.%3NZ
 #     schedulable here and the fixture has to require `pod`. An earlier draft of
 #     this gate expected `native` only; treating that as the pass condition
 #     stops the scenario on a correct stack.
-curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token" \
+curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer $ADMIN_PAT" \
   | tee "$SCRATCH/agents-caps.json"
 # PASS = no agent advertises `pod`. FAIL (STOP) = any agent advertises `pod`,
 # because then `edge-podcap-job` is claimable and Part D has no premise.
@@ -248,7 +248,7 @@ docker compose $COMPOSE_FILES stop agent1 agent2 | tee -a "$SCRATCH/armA-stop.tx
 psql "SELECT NOW(), id, last_seen_at FROM agents;" | tee -a "$SCRATCH/armA-stop.txt"   # expect no rows
 
 # A2. Trigger. The scheduler still queues it — queueing consults no agent.
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-tick"}' \
   | tee "$SCRATCH/armA-trigger.json"
 RUN=<id>
@@ -261,7 +261,7 @@ sample_loop "$RUN" 600 0.2 | tee "$SCRATCH/armA-poll.txt"
 # A4. The reason line. This is the arm's payload: queuedrun_reaper.go:70 appends
 #     a system log row at step index -1 BEFORE failing the run, with the
 #     agentSelector spelled out. Confirm it reaches the read API.
-curl -fsS "localhost:18080/api/v1/runs/$RUN/logs" -H "Authorization: Bearer ha-admin-token" \
+curl -fsS "localhost:18080/api/v1/runs/$RUN/logs" -H "Authorization: Bearer $ADMIN_PAT" \
   | tee "$SCRATCH/armA-run-logs.json"
 psql "SELECT step_index, stream, ts, line FROM logs WHERE run_id='$RUN' ORDER BY ts;" \
   | tee "$SCRATCH/armA-logs-db.txt"
@@ -395,13 +395,13 @@ state with **no DB mutation** — every transition is the product's own.
 ```bash
 # C1. Both agents up. The hog claims edge-mutex.
 docker compose $COMPOSE_FILES start agent1 agent2
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-mutex-hog"}' | tee "$SCRATCH/armC-hog.json"
 psql "SELECT * FROM mutex_holders;" | tee "$SCRATCH/armC-mutex.txt"
 
 # C2. The victim: same mutex, so it stays Pending (tryQueueRun rolls back on
 #     the mutex_holders unique violation, postgres.go:546-555).
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-sideeffect"}' | tee "$SCRATCH/armC-victim.json"
 VICTIM=<id>
 # confirm it is Pending and let it age well past minAge (30s)
@@ -431,7 +431,7 @@ the victim is `Queued` with `age ≫ 30 s` and both `agents` rows now stale past
 sample_loop "$VICTIM" 2400 0.2 | tee "$SCRATCH/armC-poll.txt"
 psql "SELECT id, job_name, status, created_at, updated_at FROM runs ORDER BY created_at;" \
   | tee "$SCRATCH/armC-runs.txt"
-curl -fsS "localhost:18080/api/v1/runs/$VICTIM/logs" -H "Authorization: Bearer ha-admin-token" \
+curl -fsS "localhost:18080/api/v1/runs/$VICTIM/logs" -H "Authorization: Bearer $ADMIN_PAT" \
   | tee "$SCRATCH/armC-victim-logs.json"
 ```
 
@@ -456,8 +456,8 @@ Both agents up and healthy for the whole arm.
 ```bash
 docker compose $COMPOSE_FILES start agent1 agent2   # confirm 2 rows in agents
 curl -fsS localhost:18080/api/v1/jobs/edge-podcap-job/schedulability \
-  -H "Authorization: Bearer ha-admin-token" | tee "$SCRATCH/armD-schedulability.json"
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+  -H "Authorization: Bearer $ADMIN_PAT" | tee "$SCRATCH/armD-schedulability.json"
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-podcap-job"}' \
   | tee "$SCRATCH/armD-trigger.json"
 DRUN=<id>
@@ -471,9 +471,9 @@ with no reap; the queued-reaper log grep still empty for this run id.
 surface and record present/absent:
 
 ```bash
-curl -fsS "localhost:18080/api/v1/runs/$DRUN" -H "Authorization: Bearer ha-admin-token"
-curl -fsS "localhost:18080/api/v1/runs/$DRUN/logs" -H "Authorization: Bearer ha-admin-token"
-curl -fsS "localhost:18080/api/v1/jobs/edge-podcap-job/schedulability" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/runs/$DRUN" -H "Authorization: Bearer $ADMIN_PAT"
+curl -fsS "localhost:18080/api/v1/runs/$DRUN/logs" -H "Authorization: Bearer $ADMIN_PAT"
+curl -fsS "localhost:18080/api/v1/jobs/edge-podcap-job/schedulability" -H "Authorization: Bearer $ADMIN_PAT"
 curl -fsS localhost:18080/metrics | grep -E "unifiedcd_runs_current|unifiedcd_agents"
 docker compose $COMPOSE_FILES logs controller1 controller2 controller3 | grep -i "$DRUN"
 ```

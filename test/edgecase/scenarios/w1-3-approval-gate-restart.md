@@ -85,17 +85,17 @@ Apply the job and trigger a run, then confirm the gate is reachable
 
 ```bash
 curl -fsS -X POST localhost:18080/api/v1/jobs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   --data-binary @../edgecase/workloads/approval.payload.json
 
 curl -fsS -X POST localhost:18080/api/v1/runs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   -d '{"jobName":"edge-approval"}'
 # capture .id as RUN_ID
 
 for i in $(seq 1 10); do
   date
-  curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/approvals" -H "Authorization: Bearer ha-admin-token"
+  curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/approvals" -H "Authorization: Bearer $ADMIN_PAT"
   echo
   sleep 3
 done
@@ -113,7 +113,7 @@ Using the baseline run's `RUN_ID` (or a fresh trigger), poll until the gate
 shows `Pending` and record `stepIndex` and `timeoutAt` verbatim:
 
 ```bash
-curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/approvals" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/approvals" -H "Authorization: Bearer $ADMIN_PAT"
 # record: .[0].stepIndex, .[0].timeoutAt, .[0].status (expect "Pending")
 ```
 
@@ -150,7 +150,7 @@ for i in $(seq 1 8); do
   sleep 5
 done
 
-curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/approvals" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/approvals" -H "Authorization: Bearer $ADMIN_PAT"
 # compare .[0].stepIndex and .[0].timeoutAt against the pre-outage values;
 # status should still be "Pending" (outage was well under timeoutMinutes)
 ```
@@ -160,13 +160,13 @@ Approve, and time the resume:
 ```bash
 date
 curl -fsS -X POST "localhost:18080/api/v1/runs/<RUN_ID>/approvals/<STEP_INDEX>" \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   -d '{"decision":"approve"}'
 # expect 204
 
 for i in $(seq 1 10); do
   date
-  curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer ha-admin-token"
+  curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer $ADMIN_PAT"
   echo
   sleep 3
 done
@@ -178,10 +178,10 @@ Verify final state — run `Succeeded`, `after-gate` present in the log, and
 the approval row settled `Approved`:
 
 ```bash
-curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/logs?after=0" -H "Authorization: Bearer ha-admin-token" \
+curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/logs?after=0" -H "Authorization: Bearer $ADMIN_PAT" \
   | grep -o '"line":"after-gate"'
 
-curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/approvals" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/approvals" -H "Authorization: Bearer $ADMIN_PAT"
 # expect status:"Approved", decidedBy set
 ```
 
@@ -193,11 +193,11 @@ Re-trigger a fresh run of the same job and record `T0` (trigger time),
 ```bash
 date   # T0
 curl -fsS -X POST localhost:18080/api/v1/runs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   -d '{"jobName":"edge-approval"}'
 # capture .id as RUN_ID2
 
-curl -fsS "localhost:18080/api/v1/runs/<RUN_ID2>/approvals" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/runs/<RUN_ID2>/approvals" -H "Authorization: Bearer $ADMIN_PAT"
 # record .[0].stepIndex and .[0].timeoutAt (should read ~T0 + 10min)
 ```
 
@@ -207,7 +207,7 @@ progress, no long idle sleep) until it is close to T+8min:
 ```bash
 for i in $(seq 1 16); do
   date
-  curl -fsS "localhost:18080/api/v1/runs/<RUN_ID2>/approvals" -H "Authorization: Bearer ha-admin-token"
+  curl -fsS "localhost:18080/api/v1/runs/<RUN_ID2>/approvals" -H "Authorization: Bearer $ADMIN_PAT"
   echo
   sleep 30
 done
@@ -277,9 +277,9 @@ then record the final values of both:
 ```bash
 for i in $(seq 1 12); do
   date
-  curl -fsS "localhost:18080/api/v1/runs/<RUN_ID2>/approvals" -H "Authorization: Bearer ha-admin-token"
+  curl -fsS "localhost:18080/api/v1/runs/<RUN_ID2>/approvals" -H "Authorization: Bearer $ADMIN_PAT"
   echo
-  curl -fsS "localhost:18080/api/v1/runs/<RUN_ID2>" -H "Authorization: Bearer ha-admin-token"
+  curl -fsS "localhost:18080/api/v1/runs/<RUN_ID2>" -H "Authorization: Bearer $ADMIN_PAT"
   echo
   sleep 15
 done

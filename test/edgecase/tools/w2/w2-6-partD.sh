@@ -4,11 +4,14 @@
 # trigger, armed for a single schedule check), (iii) observe the duplicate fire on
 # the next check and then whether the schedule ever fires again.
 set -u
+# The rig has no standing admin token: exchange the initial one once (see ../lib/admin-token.sh).
+. "$(dirname "$0")/../lib/admin-token.sh"
+ADMIN_PAT="${UNIFIED_TOKEN:-$(bootstrap_admin_token)}"
 # Run from test/ha (this script does not cd for you).
 [ -f docker-compose.ha.yaml ] || { echo "run me from test/ha" >&2; exit 1; }
 export MSYS_NO_PATHCONV=1
 DC="docker compose ${COMPOSE_FILES:--f docker-compose.ha.yaml}"
-TOK="Authorization: Bearer ha-admin-token"
+TOK="Authorization: Bearer $ADMIN_PAT"
 
 psql()  { $DC exec -T postgres psql -U unified -tA -c "$1" 2>&1 | tr -d '\r'; }
 psqlt() { $DC exec -T postgres psql -U unified -c "$1" 2>&1 | tr -d '\r'; }

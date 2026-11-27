@@ -60,7 +60,7 @@ func TestIngressWithTrialFails(t *testing.T) {
 	}
 	_, stderr, err := RenderErr("unified-cd", "ingress.enabled=true")
 	require.Error(t, err)
-	assert.Contains(t, stderr, "ingress.enabled with the bundled trial credentials would expose dev-token-change-me")
+	assert.Contains(t, stderr, "ingress.enabled with the bundled trial credentials would expose the trial database password; use the production values")
 }
 
 func TestIngressWithoutHostsFails(t *testing.T) {
@@ -118,11 +118,14 @@ func TestNotesTrialWarning(t *testing.T) {
 	out := install(t, "x")
 	assert.Contains(t, out, "TRIAL ONLY")
 	assert.Contains(t, out, "kubectl -n x port-forward svc/unified-cd-controller 8080:80")
-	assert.Contains(t, out, "dev-token-change-me")
+	assert.Contains(t, out, "unified-cd-initial-admin-token")
+	assert.Contains(t, out, "unified-cli bootstrap")
+	assert.NotContains(t, out, "dev-token-change-me")
 
 	prod := install(t, "x", "bundledStores.enabled=false", "controller.existingSecret=prod")
 	assert.NotContains(t, prod, "TRIAL ONLY")
 	assert.NotContains(t, prod, "dev-token-change-me")
+	assert.Contains(t, prod, "unified-cd-initial-admin-token")
 	assert.Contains(t, prod, "port-forward")
 
 	// Plain in-cluster agent HTTP outside trial mode warns; an https agent.server does not.

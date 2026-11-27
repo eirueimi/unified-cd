@@ -69,7 +69,7 @@
   docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "<sql>"
   ```
 
-  and `API` means `curl -sS -H "Authorization: Bearer ha-admin-token"` against
+  and `API` means `curl -sS -H "Authorization: Bearer $ADMIN_PAT"` against
   `http://localhost:18080`.
 
 - **Both agents stay up.** Unlike W2-7, attribution is free here: the agent's

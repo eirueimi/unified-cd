@@ -43,7 +43,6 @@ import (
 const (
 	composeFile = "docker-compose.ha.yaml"
 	baseURL     = "http://localhost:18080"
-	adminToken  = "ha-admin-token"
 )
 
 // controllers is the full set of controller service names in the compose stack.
@@ -68,6 +67,50 @@ func compose(t *testing.T, args ...string) []byte {
 func composeRaw(args ...string) ([]byte, error) {
 	full := append([]string{"compose", "-f", composeFile}, args...)
 	return exec.Command("docker", full...).CombinedOutput()
+}
+
+// ----------------------------------------------------------------------------
+// Admin credential
+// ----------------------------------------------------------------------------
+
+// The stack has no standing admin token. Its controllers are started with a
+// fixed one-time initial admin token (UNIFIED_INITIAL_ADMIN_TOKEN in
+// docker-compose.ha.yaml) that the agent-enroll one-shot exchanges once for an
+// admin PAT and publishes at /state/admin-token in the admin-state volume. The
+// exchange works only once, so the tests read that PAT instead of exchanging the
+// token again. It is cached for the life of the stack and dropped on cleanup.
+var (
+	adminMu  sync.Mutex
+	adminPAT string
+)
+
+// haAdminPAT returns the admin PAT for the running HA stack, polling until
+// agent-enroll has published it.
+func haAdminPAT(t *testing.T) string {
+	t.Helper()
+	adminMu.Lock()
+	defer adminMu.Unlock()
+	if adminPAT != "" {
+		return adminPAT
+	}
+	deadline := time.Now().Add(300 * time.Second)
+	for {
+		out, err := exec.Command("docker", "compose", "-f", composeFile, "run", "--rm", "--no-deps",
+			"--entrypoint", "cat", "agent-enroll", "/state/admin-token").Output()
+		if tok := strings.TrimSpace(string(out)); err == nil && tok != "" {
+			adminPAT = tok
+			t.Cleanup(func() {
+				adminMu.Lock()
+				adminPAT = ""
+				adminMu.Unlock()
+			})
+			return adminPAT
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("admin PAT never appeared in the admin-state volume (agent-enroll did not bootstrap): %v", err)
+		}
+		time.Sleep(3 * time.Second)
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -102,7 +145,9 @@ func apiDo(t *testing.T, method, path string, body io.Reader) (int, []byte) {
 	if err != nil {
 		t.Fatalf("new request %s %s: %v", method, path, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+adminToken)
+	if path != "/readyz" {
+		req.Header.Set("Authorization", "Bearer "+haAdminPAT(t))
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -575,6 +620,9 @@ func TestHA_ControllerFailover(t *testing.T) {
 	})
 
 	waitReady(t, 180*time.Second)
+	// Fetch the admin PAT now, from the test goroutine, so that goroutines
+	// started later (the error poller) only ever read the cached value.
+	haAdminPAT(t)
 
 	// allIDs accumulates every run submitted so the no-double-exec invariant can be
 	// checked across the entire test at the end.

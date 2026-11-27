@@ -3,12 +3,15 @@
 # Usage: bulk-submit.sh <job-name> <count>
 # Prints one run id per line on stdout (so the caller can `tee ids.txt`);
 # progress and errors go to stderr. The job must already be applied.
-#   UNIFIED_SERVER=http://localhost:18080 UNIFIED_TOKEN=ha-admin-token \
+#   UNIFIED_SERVER=http://localhost:18080 \
 #     ./bulk-submit.sh edge-mutex-hog 55 | tee /tmp/hog-ids.txt
+# UNIFIED_TOKEN overrides the admin PAT; by default it comes from
+# bootstrap_admin_token (lib/admin-token.sh).
 set -eu
 
 SERVER="${UNIFIED_SERVER:-http://localhost:18080}"
-TOKEN="${UNIFIED_TOKEN:-ha-admin-token}"
+. "$(dirname "$0")/lib/admin-token.sh"
+TOKEN="${UNIFIED_TOKEN:-$(bootstrap_admin_token "$SERVER")}"
 
 job="${1:?usage: bulk-submit.sh <job-name> <count>}"
 count="${2:?usage: bulk-submit.sh <job-name> <count>}"

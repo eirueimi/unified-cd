@@ -356,7 +356,7 @@ docker compose $COMPOSE_FILES up -d --build
 
 Throughout, `psql` means
 `docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "<sql>"`,
-and `API` means `curl -sS -H "Authorization: Bearer ha-admin-token"` against
+and `API` means `curl -sS -H "Authorization: Bearer $ADMIN_PAT"` against
 `http://localhost:18080`.
 
 **Workload — one new fixture.** `workloads/logburst.payload.json`, job
@@ -655,7 +655,7 @@ duplicate is not merely stored, it is **served**.
 
   ```bash
   docker compose $COMPOSE_FILES exec -T nginx curl -sSN -m 90 \
-    -H "Authorization: Bearer ha-admin-token" \
+    -H "Authorization: Bearer $ADMIN_PAT" \
     "http://controller1:8080/api/v1/runs/$RID/events" > "$SCRATCH/partD3-sse-live.txt" &
   ```
 

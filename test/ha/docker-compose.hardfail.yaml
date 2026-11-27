@@ -30,7 +30,7 @@ services:
       dockerfile: docker/controller.Dockerfile
     environment:
       UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
-      UNIFIED_TOKEN: ha-admin-token
+      UNIFIED_INITIAL_ADMIN_TOKEN: uci_ha00000000000000000000000000000000000000
       # All replicas must share the same key file; see docs/operator-manual/high-availability.md.
       UNIFIED_CONTROLLER_KEY_FILE: /run/secrets/kek
     volumes:

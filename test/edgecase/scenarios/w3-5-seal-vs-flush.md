@@ -323,7 +323,7 @@ docker compose $COMPOSE_FILES up -d --build
 
 Throughout: `psql` means
 `docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "<sql>"`,
-`API` means `curl -sS -H "Authorization: Bearer ha-admin-token"` against
+`API` means `curl -sS -H "Authorization: Bearer $ADMIN_PAT"` against
 `http://localhost:18080`, and `mc` means
 `docker compose $COMPOSE_FILES exec -T mc mc`, which talks to `garage:3900`
 directly and is the out-of-band surface for every object claim.

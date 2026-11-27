@@ -79,11 +79,12 @@ services:
     volumes:
       - ../..:/app
       - agent-credentials:/var/lib/unified-cd-agent
+      # The admin PAT the base file's agent-enroll publishes (initial-token exchange).
+      - admin-state:/state
     depends_on:
       - nginx
     environment:
       UNIFIED_SERVER: http://nginx:8080
-      UNIFIED_TOKEN: ha-admin-token
     command:
       - sh
       - -c
@@ -92,6 +93,13 @@ services:
         AGENTID=agentold
         DIR=/var/lib/unified-cd-agent/$$AGENTID
         mkdir -p "$$DIR"
+        # Wait for the base file's agent-enroll to publish the admin PAT.
+        for i in $$(seq 1 150); do
+          [ -s /state/admin-token ] && break
+          sleep 2
+        done
+        [ -s /state/admin-token ] || { echo "agentold-enroll: no admin PAT in /state/admin-token" >&2; exit 1; }
+        export UNIFIED_TOKEN="$$(cat /state/admin-token)"
         if [ -f "$$DIR/credentials.json" ]; then
           echo "agentold-enroll: $$AGENTID already has a credential file, skipping"
           exit 0

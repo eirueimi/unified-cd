@@ -6,6 +6,9 @@
 # (partB-calibration2.txt); the trial reports the MEASURED registration offset,
 # not the intended one.
 set -eu
+# The rig has no standing admin token: exchange the initial one once (see ../lib/admin-token.sh).
+. "$(dirname "$0")/../lib/admin-token.sh"
+ADMIN_PAT="${UNIFIED_TOKEN:-$(bootstrap_admin_token)}"
 OFFSET="$1"; TAG="$2"
 LEAD=0.400
 GRACE=30
@@ -18,7 +21,7 @@ dcpsql() { docker compose $CF exec -T postgres psql -U unified -tAF'|' -c "$1"; 
 echo "### trial=$TAG offset=${OFFSET}s"
 echo "agents_before=$(dcpsql 'SELECT count(*) FROM agents;')"
 
-RESP=$(curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+RESP=$(curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-tick"}')
 RUN=$(printf '%s' "$RESP" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 echo "run=$RUN"

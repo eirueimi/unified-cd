@@ -3,12 +3,15 @@
 # the CLAIMING agent, clear it as soon as a child row NEWER than the parent
 # appears. v1 broke because the child-row poll matched a previous trial's child.
 set -eu
+# The rig has no standing admin token: exchange the initial one once (see ../lib/admin-token.sh).
+. "$(dirname "$0")/../lib/admin-token.sh"
+ADMIN_PAT="${UNIFIED_TOKEN:-$(bootstrap_admin_token)}"
 SCRATCH="${SCRATCH:?run from test/ha with SCRATCH exported, e.g. export SCRATCH=<scratchpad>/w2-5}"
 COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.ha.yaml -f ../edgecase/compose/oneway.override.yaml -f ../edgecase/compose/steplink.override.yaml}"
 psql() { docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "$1"; }
 
 echo "=== B1 trigger $(date -u +%FT%T.%3NZ)"
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-call-parent"}'
 echo
 sleep 2

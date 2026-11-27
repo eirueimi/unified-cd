@@ -9,7 +9,8 @@ forward, and fires cancel + approve at a computed instant.
 import json, subprocess, sys, time, urllib.request, urllib.error, re, os
 
 API = "http://localhost:18080"
-TOK = "ha-admin-token"
+# Admin PAT: UNIFIED_TOKEN, else the cache written by bootstrap_admin_token (lib/admin-token.sh).
+TOK = os.environ.get("UNIFIED_TOKEN") or open(os.path.join(os.environ.get("TMPDIR", "/tmp"), "unified-ha-admin-token")).read().strip()
 # Run from test/ha, or point HA_DIR at it. COMPOSE_FILES overrides CF.
 HA = os.environ.get("HA_DIR", os.getcwd())
 CF = os.environ.get("COMPOSE_FILES", "-f docker-compose.ha.yaml").split()

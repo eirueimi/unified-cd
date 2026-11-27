@@ -38,6 +38,27 @@ controller:
       # is immutable, and CI checks the template still matches v0.11.0's.
       # The Job only runs `kubectl create secret` once, briefly, at install.
       image: alpine/k8s:1.31.2
+  # One-time initial admin token for a non-SSO install. The create-once
+  # initial-token Job generates it in the cluster ("uci_" plus 40 hex characters)
+  # into the Secret below, key UNIFIED_INITIAL_ADMIN_TOKEN; the controller reads
+  # it with an optional secretKeyRef. Exchange it once with `unified-cli bootstrap`
+  # (see the install notes). The Job reuses controller.kek.job.image and
+  # controller.kek.job.helmHook. Set generate to false to supply the value
+  # yourself or to run SSO only.
+  initialAdminToken:
+    secretName: unified-cd-initial-admin-token
+    generate: true
+  # Service accounts for automation, by name (rendered into the controller
+  # config as serviceAccounts). The built-in "admin" account accepts only
+  # "enabled". Empty renders nothing.
+  serviceAccounts: {}
+  # PAT lifetime limits (rendered as the controller config's tokens block), for
+  # example defaultLifetime: 2160h and maxLifetime: 8760h. Empty uses the
+  # controller defaults.
+  tokens: {}
+  # Web UI behaviour (rendered as the controller config's ui block), for
+  # example allowTokenEntry: true to keep the manual token form under SSO.
+  ui: {}
   # Deep-merged over the chart-computed controller config (agentAuth defaults:
   # an in-cluster Kubernetes enrollment policy for the release namespace, plus
   # kubernetesStoreCredentialPolicies for the job namespace: the policy that

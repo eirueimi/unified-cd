@@ -56,7 +56,7 @@ See the [Installation guide](https://eirueimi.github.io/unified-cd/getting-start
 ### 1. Start services
 
 ```bash
-cp .env.example .env        # edit UNIFIED_TOKEN if needed
+cp .env.example .env        # sets the one-time initial admin token (dev only)
 docker compose up -d
 ```
 
@@ -64,7 +64,7 @@ docker compose up -d
 
 ### 2. Log in to the Web UI
 
-Open http://localhost:8080/ui/ in your browser. The Connection card will appear on the dashboard — enter the token you set in `.env` (default: `dev-token-change-me`) and click **Save**. The card disappears once authenticated.
+The dev stack has no standing admin token. On first start the `agent-enroll` service exchanges the one-time initial admin token (`UNIFIED_INITIAL_ADMIN_TOKEN` in `.env`) for an admin PAT (valid 30 days) and keeps it in the `admin-state` volume. Print it with `docker compose run --rm --no-deps --entrypoint cat agent-enroll /state/admin-token`, then enter it on the Connection card and click **Save**. The card disappears once authenticated.
 
 > Alternatively, use OIDC SSO by starting with `docker compose -f docker-compose.yaml -f docker-compose.sso.yml up -d` and clicking **SSO Login**.
 
@@ -89,13 +89,13 @@ unified-cli login --server http://localhost:8080
 
 # b) Environment variables (handy for CI/scripts):
 export UNIFIED_SERVER=http://localhost:8080
-export UNIFIED_TOKEN=dev-token-change-me
+export UNIFIED_TOKEN=<the admin PAT from step 2>
 
 # c) Config file:
 mkdir -p ~/.config/unified-cd
 cat > ~/.config/unified-cd/config.yaml <<EOF
 server: http://localhost:8080
-token: dev-token-change-me
+token: <the admin PAT from step 2>
 EOF
 ```
 

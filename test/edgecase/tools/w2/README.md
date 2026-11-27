@@ -25,8 +25,13 @@ whose round-trip is itself being measured — going through `docker compose` wou
 add a second layer of latency to the number under test. Those read a
 `COMPOSE_PROJECT` prefix, default `unified-cd-ha`.
 
-The only credential any of these use is `ha-admin-token`, the `test/ha` fixture
-token already in `docker-compose.ha.yaml`. **Do not add real agent credentials
+The only credential any of these use is the admin PAT of the `test/ha` rig. The
+rig has no standing admin token: the scripts call `bootstrap_admin_token`
+(`../lib/admin-token.sh`), which reads the PAT the `agent-enroll` one-shot got by
+exchanging the fixture's one-time initial admin token (`UNIFIED_INITIAL_ADMIN_TOKEN`
+in `docker-compose.ha.yaml`) and caches it in `${TMPDIR:-/tmp}/unified-ha-admin-token`.
+The Python scripts read that cache (or `UNIFIED_TOKEN`), so run any shell script,
+or `bootstrap_admin_token` itself, first. **Do not add real agent credentials
 here** — W2-7 kept its enrollment tokens in uncommitted scratch files and that is
 the standing rule.
 

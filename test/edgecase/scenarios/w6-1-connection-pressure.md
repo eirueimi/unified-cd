@@ -405,7 +405,7 @@ in its FINDINGS Repro line; B1-B4's were not in this runbook, in `B-B*.txt` or i
 The driver that produced the published arms is now archived as
 **`B-arm.sh`** in the live evidence directory. From it, every B arm is
 `tools/w6/bin/loadgen -url "http://localhost:18081/api/v1/runs?jobName=edge-tick"
--H "Authorization: Bearer ha-admin-token" -c <N> -mode sustained -duration <D>
+-H "Authorization: Bearer $ADMIN_PAT" -c <N> -mode sustained -duration <D>
 [-delay <d>] -label <name> -out B-<name>-req.csv -error-bodies
 B-<name>-errbodies.txt`, paired with `w6-pgsample.sh -i 2 -d <D+10> -p
 18081,18082,18083` started 3 s ahead of it. `ha-admin-token` is `test/ha`'s

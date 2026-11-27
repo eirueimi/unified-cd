@@ -18,7 +18,7 @@
 #
 # Usage:  test/edgecase/tools/w4/w4-up.sh
 # Env:    UNIFIED_SERVER (default http://localhost:18080)
-#         UNIFIED_TOKEN  (default ha-admin-token)
+#         UNIFIED_TOKEN  (default: the admin PAT from ../lib/admin-token.sh)
 #         W4_AGENT_ID    (default k8s-agent-w4)
 #         W4_LABEL       (default kind:kubernetes)
 #         W4_LISTEN      (default 127.0.0.1:18099)

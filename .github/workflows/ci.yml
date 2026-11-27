@@ -407,6 +407,28 @@ jobs:
             echo $! > pf.pid
           }
           start_pf
+          # The chart creates a one-time initial admin token in a Secret (the
+          # initial-token Job). Exchange it once for an admin PAT, retrying
+          # until the port-forward is up. The value is never echoed.
+          init_before=$(kubectl -n "$NS" get secret unified-cd-initial-admin-token -o jsonpath='{.data.UNIFIED_INITIAL_ADMIN_TOKEN}')
+          [ -n "$init_before" ] || { echo "initial admin token secret is empty"; exit 1; }
+          init_token=$(printf '%s' "$init_before" | base64 -d)
+          echo "::add-mask::$init_token"
+          admin_pat=""
+          for i in $(seq 1 60); do
+            kill -0 "$(cat pf.pid)" 2>/dev/null || { sleep 1; start_pf; sleep 2; }
+            if curl -fsS --connect-timeout 3 --max-time 5 -X POST \
+                 -H 'Content-Type: application/json' \
+                 -d "{\"initialToken\":\"$init_token\"}" \
+                 -o bootstrap.json http://127.0.0.1:18080/api/v1/bootstrap 2>/dev/null; then
+              admin_pat=$(jq -r '.token' bootstrap.json)
+              break
+            fi
+            sleep 2
+          done
+          [ -n "$admin_pat" ] && [ "$admin_pat" != "null" ] || { echo "bootstrap exchange failed"; exit 1; }
+          echo "::add-mask::$admin_pat"
+          rm -f bootstrap.json
           # GET /api/v1/agents returns a bare JSON array of agents, each with a
           # "labels" string array; the Kubernetes agent carries kind:kubernetes.
           # Every call is time-bounded so a half-open port-forward cannot hang
@@ -415,7 +437,7 @@ jobs:
           for i in $(seq 1 100); do
             kill -0 "$(cat pf.pid)" 2>/dev/null || { sleep 1; start_pf; sleep 2; }
             if curl -fsS --connect-timeout 3 --max-time 5 \
-                 -H 'Authorization: Bearer dev-token-change-me' \
+                 -H "Authorization: Bearer $admin_pat" \
                  -o agents.json http://127.0.0.1:18080/api/v1/agents 2>/dev/null \
                && jq -e 'any(.[]; (.labels // []) | any(. == "kind:kubernetes"))' agents.json >/dev/null 2>&1; then
               enrolled=1; break
@@ -432,6 +454,8 @@ jobs:
             --set agent.config.maxConcurrent=3 --wait --timeout 10m
           kek_after=$(kubectl -n "$NS" get secret unified-cd-controller-kek -o jsonpath='{.data.kek}')
           [ "$kek_before" = "$kek_after" ] || { echo "KEK changed across helm upgrade"; exit 1; }
+          init_after=$(kubectl -n "$NS" get secret unified-cd-initial-admin-token -o jsonpath='{.data.UNIFIED_INITIAL_ADMIN_TOKEN}')
+          [ "$init_before" = "$init_after" ] || { echo "initial admin token changed across helm upgrade"; exit 1; }
 
           # Uninstall keeps the KEK (it is not a Helm-managed object, so losing
           # it would orphan every encrypted credential) and the job namespace.
@@ -446,6 +470,7 @@ jobs:
           kubectl get all -A || true
           kubectl -n "$NS" describe pods || true
           kubectl -n "$NS" describe job unified-cd-kek-init || true
+          kubectl -n "$NS" describe job unified-cd-initial-token-init || true
           kubectl -n "$NS" logs deployment/unified-cd-controller --tail=200 || true
           kubectl -n "$NS" logs deployment/unified-cd-k8s-agent --tail=200 || true
           cat pf.log || true

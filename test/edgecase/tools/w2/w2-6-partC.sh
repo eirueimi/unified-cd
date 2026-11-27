@@ -3,6 +3,9 @@
 # the schedules row, then SIGKILL the blocked leader so its successor re-fires the
 # SAME occurrence. Deterministic version of Arm A.
 set -u
+# The rig has no standing admin token: exchange the initial one once (see ../lib/admin-token.sh).
+. "$(dirname "$0")/../lib/admin-token.sh"
+ADMIN_PAT="${UNIFIED_TOKEN:-$(bootstrap_admin_token)}"
 # Run from test/ha (this script does not cd for you).
 [ -f docker-compose.ha.yaml ] || { echo "run me from test/ha" >&2; exit 1; }
 export MSYS_NO_PATHCONV=1
@@ -66,7 +69,7 @@ psqlt "SELECT id, status, to_char(created_at,'HH24:MI:SS.MS') AS created FROM ru
 # --- scheduler-stall probe: a manually triggered run must stay Pending
 echo "--- stall probe: manual trigger while the scheduler is blocked ---"
 date -u +%FT%T.%3NZ
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-tick"}' | tr -d '\r'; echo
 
 # --- kill the blocked leader

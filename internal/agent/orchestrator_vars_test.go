@@ -25,13 +25,15 @@ import (
 // can still carry one, and this is the backstop for it.
 func TestVarsExtraEnv_DropsDeniedNames(t *testing.T) {
 	got := varsExtraEnv(map[string]string{
-		"REGISTRY":          "ghcr.io/myorg",
-		"UNIFIED_TOKEN":     "stolen",
-		"UNIFIED_CACHE_KEY": "stolen",
+		"REGISTRY":                    "ghcr.io/myorg",
+		"UNIFIED_TOKEN":               "stolen",
+		"UNIFIED_INITIAL_ADMIN_TOKEN": "stolen",
+		"UNIFIED_CACHE_KEY":           "stolen",
 	})
 	assert.Contains(t, got, "REGISTRY=ghcr.io/myorg")
 	for _, e := range got {
 		assert.NotContains(t, e, "UNIFIED_TOKEN=")
+		assert.NotContains(t, e, "UNIFIED_INITIAL_ADMIN_TOKEN=")
 		assert.NotContains(t, e, "UNIFIED_CACHE_KEY=")
 	}
 }

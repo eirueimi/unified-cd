@@ -223,7 +223,7 @@ Throughout, `psql` means:
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "<sql>"
 ```
 
-and `API` means `curl -sS -H "Authorization: Bearer ha-admin-token"` against
+and `API` means `curl -sS -H "Authorization: Bearer $ADMIN_PAT"` against
 `http://localhost:18080`.
 
 **Exclusive use of `edge-mutex`.** `mutex-hog.payload.json` and
@@ -383,7 +383,7 @@ agent.
   ```bash
   for i in $(seq 1 36); do
     printf '%s ' "$(date -u +%H:%M:%S.%3N)"
-    curl -sS -H "Authorization: Bearer ha-admin-token" \
+    curl -sS -H "Authorization: Bearer $ADMIN_PAT" \
       "http://localhost:18080/api/v1/runs/$runID_probe" \
       | tr ',' '\n' | grep -E '"(id|status)"' | tr '\n' ' '
     echo
