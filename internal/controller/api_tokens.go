@@ -116,24 +116,63 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
 	}
-	if req.Name == BootstrapPATName || strings.HasPrefix(req.Name, "env:") {
+	if req.Name == BootstrapPATName || strings.HasPrefix(req.Name, "env:") || strings.HasPrefix(req.Name, "system:") {
 		http.Error(w, fmt.Sprintf("token name %q is reserved", req.Name), http.StatusBadRequest)
 		return
 	}
 
-	// If expiresIn is provided, parse it and calculate the expiry time.
-	var expiresAt *time.Time
-	if req.ExpiresIn != "" {
-		d, err := time.ParseDuration(req.ExpiresIn)
-		if err != nil {
-			http.Error(w, "invalid expiresIn: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		t := time.Now().Add(d)
-		expiresAt = &t
+	creator, _ := principalFromContext(r.Context())
+	if !creator.ClaimsKnown {
+		// Sessions always set ClaimsKnown, so only a bearer id_token without
+		// the configured claim reaches this.
+		http.Error(w, fmt.Sprintf("cannot create a token: your OIDC token carries no %q claim; log in again so the token includes it, then retry", s.rolesClaimName()), http.StatusForbidden)
+		return
+	}
+	if creator.AccountID == "" {
+		// Every PAT belongs to an account.
+		http.Error(w, "cannot create a token: your identity has no account; log in again, then retry", http.StatusForbidden)
+		return
 	}
 
-	creator, _ := principalFromContext(r.Context())
+	// Resolve the target account: the caller's own unless a service account is
+	// named. Naming the caller's own service account is not "another account".
+	targetID, targetName := creator.AccountID, creator.AccountName
+	targetIsService := creator.AccountKind == store.AccountKindService
+	own := true
+	if req.Account != "" && !(targetIsService && req.Account == creator.AccountName) {
+		own = false
+		if !creator.Grants.Can(authz.TokenManage, "") && !creator.Grants.Can(authz.ServiceAccountToken, "") {
+			http.Error(w, "creating a token for another account requires the token.manage or serviceaccount.token permission", http.StatusForbidden)
+			return
+		}
+		if req.Account == authz.BuiltinAdminAccount {
+			http.Error(w, "PATs for the built-in admin account can only be obtained through the initial token or the recovery command", http.StatusBadRequest)
+			return
+		}
+		accts, err := s.store.ListAccounts(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		found := false
+		for _, a := range accts {
+			if a.Kind == store.AccountKindService && a.Name == req.Account && a.DisabledAt == nil {
+				targetID, targetName, targetIsService, found = a.ID, a.Name, true, true
+				break
+			}
+		}
+		if !found {
+			http.Error(w, fmt.Sprintf("unknown service account %q", req.Account), http.StatusBadRequest)
+			return
+		}
+	}
+
+	expiresAt, status, msg := s.patExpiry(req.ExpiresIn, targetIsService && targetName == authz.BuiltinAdminAccount)
+	if status != 0 {
+		http.Error(w, msg, status)
+		return
+	}
+
 	if status, msg := validateEnrollLabels(creator, req); status != 0 {
 		http.Error(w, msg, status)
 		return
@@ -147,19 +186,6 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	hash := HashToken(token)
 
 	var pat *store.PAT
-	if !creator.ClaimsKnown {
-		if creator.Kind == "session" {
-			http.Error(w, "cannot create a token: this login predates group-aware tokens; log out and log in again, then retry", http.StatusForbidden)
-		} else {
-			http.Error(w, fmt.Sprintf("cannot create a token: your OIDC token carries no %q claim; log in again so the token includes it, then retry", s.rolesClaimName()), http.StatusForbidden)
-		}
-		return
-	}
-	if creator.AccountID == "" {
-		// Every PAT belongs to an account.
-		http.Error(w, "cannot create a token: your identity has no account; log in again, then retry", http.StatusForbidden)
-		return
-	}
 	if req.Role != "" && req.Permissions != nil {
 		http.Error(w, "role and permissions are mutually exclusive", http.StatusBadRequest)
 		return
@@ -173,8 +199,8 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role, perms := req.Role, req.Permissions
-	if creator.OwnerPATID != "" {
-		// PAT-from-PAT: the child is bounded by the parent's ceiling.
+	if creator.OwnerPATID != "" && own {
+		// PAT-from-PAT (own account): the child is bounded by the parent's ceiling.
 		switch {
 		case req.Role == "" && req.Permissions == nil:
 			role, perms = creator.CeilingRole, creator.CeilingPerms
@@ -196,13 +222,13 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	var labels []string
 	if slices.Contains(perms, string(authz.AgentEnroll)) {
 		labels = req.EnrollLabels
-		if len(labels) == 0 {
+		if len(labels) == 0 && own {
 			// A bounded parent never yields an unbounded child.
 			labels = creator.EnrollLabels
 		}
 	}
 	pat, err = s.store.CreateAccountPAT(r.Context(), store.NewPAT{
-		Name: req.Name, TokenHash: hash, AccountID: creator.AccountID, Role: role, Permissions: perms, EnrollLabels: labels, ExpiresAt: expiresAt, CreatedBy: creator.AuditActorID(),
+		Name: req.Name, TokenHash: hash, AccountID: targetID, Role: role, Permissions: perms, EnrollLabels: labels, ExpiresAt: expiresAt, CreatedBy: creator.AuditActorID(),
 	})
 	if err != nil {
 		http.Error(w, "store error: "+err.Error(), http.StatusInternalServerError)
@@ -220,6 +246,43 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		Permissions:  pat.Permissions,
 		EnrollLabels: pat.EnrollLabels,
 	})
+}
+
+// adminTokenMaxLifetime caps the lifetime of PATs of the built-in admin account.
+const adminTokenMaxLifetime = 720 * time.Hour
+
+// patExpiry resolves a create request's expiresIn against the lifetime policy.
+// An empty value takes tokens.defaultLifetime (0 = no expiry). The built-in
+// admin account is always capped at adminTokenMaxLifetime. A non-zero status
+// means the request is refused with msg.
+func (s *Server) patExpiry(expiresIn string, admin bool) (*time.Time, int, string) {
+	var d time.Duration
+	if expiresIn != "" {
+		var err error
+		d, err = time.ParseDuration(expiresIn)
+		if err != nil {
+			return nil, http.StatusBadRequest, "invalid expiresIn: " + err.Error()
+		}
+		if d <= 0 {
+			return nil, http.StatusBadRequest, "invalid expiresIn: must be positive"
+		}
+		if admin && d > adminTokenMaxLifetime {
+			return nil, http.StatusBadRequest, "expiresIn exceeds the 720h limit for the built-in admin account"
+		}
+		if max := s.cfg.TokenMaxLifetime; max != 0 && d > max {
+			return nil, http.StatusBadRequest, fmt.Sprintf("expiresIn exceeds tokens.maxLifetime (%s)", max)
+		}
+	} else {
+		d = s.cfg.TokenDefaultLifetime
+		if admin && (d == 0 || d > adminTokenMaxLifetime) {
+			d = adminTokenMaxLifetime
+		}
+	}
+	if d == 0 {
+		return nil, 0, ""
+	}
+	t := time.Now().Add(d)
+	return &t, 0, ""
 }
 
 // canManageTokens reports whether the caller may list and delete every PAT.
@@ -248,6 +311,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	// Label each PAT with its account: a human's email (else sub), a service
 	// account's name.
 	owners := map[string]string{}
+	accountLabels := map[string]string{}
 	if len(pats) > 0 {
 		accts, err := s.store.ListAccounts(r.Context())
 		if err != nil {
@@ -256,13 +320,16 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, a := range accts {
 			label := a.Name
+			accountLabel := "sa:" + a.Name
 			if a.Kind == store.AccountKindHuman {
 				label = a.Email
 				if label == "" {
 					label = a.OIDCSub
 				}
+				accountLabel = label
 			}
 			owners[a.ID] = label
+			accountLabels[a.ID] = accountLabel
 		}
 	}
 	result := make([]api.PATMeta, 0, len(pats))
@@ -286,6 +353,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 		} else if label, ok := owners[pat.AccountID]; ok {
 			m.Owner = label
 		}
+		m.Account = accountLabels[pat.AccountID]
 		result = append(result, m)
 	}
 	writeJSON(w, http.StatusOK, result)

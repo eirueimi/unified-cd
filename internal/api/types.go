@@ -477,8 +477,11 @@ type AgentFetchSecretsResponse struct {
 
 // CreatePATRequest is the request for creating a PAT.
 type CreatePATRequest struct {
-	Name        string   `json:"name"`
-	ExpiresIn   string   `json:"expiresIn,omitempty"`
+	Name      string `json:"name"`
+	ExpiresIn string `json:"expiresIn,omitempty"`
+	// Account names the service account the PAT is created for. Empty means
+	// the caller's own account.
+	Account     string   `json:"account,omitempty"`
 	Role        string   `json:"role,omitempty"`
 	Permissions []string `json:"permissions,omitempty"`
 	// EnrollLabels bounds the labels of the enrollment tokens an agent.enroll
@@ -506,7 +509,10 @@ type PATMeta struct {
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
 	// Owner labels the owning account: a person's email (else sub), or a service
 	// account's name.
-	Owner        string   `json:"owner,omitempty"`
+	Owner string `json:"owner,omitempty"`
+	// Account labels the owning account: "sa:<name>" for a service account,
+	// a person's email (else sub) for a human.
+	Account      string   `json:"account"`
 	Permissions  []string `json:"permissions,omitempty"`
 	EnrollLabels []string `json:"enrollLabels,omitempty"`
 	// CreatedBy is the audit actor id of the creator ("pat:<id>",

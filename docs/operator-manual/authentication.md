@@ -102,7 +102,7 @@ If you don't want to distribute the shared token, issue individual PATs.
 ```bash
 unified-cli token create ci-bot --server http://localhost:8080 --token <UNIFIED_TOKEN>
 # => displays exc_xxxxxxxx... once. Use this as the Bearer token going forward.
-# To set an expiry: --expires-in 720h
+# Expires after tokens.defaultLifetime (2160h) unless set: --expires-in 720h
 ```
 
 PATs are stored as SHA-256 hashes in the DB and managed via `token list` / `token delete`.

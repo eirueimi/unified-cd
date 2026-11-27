@@ -562,7 +562,7 @@ Manage Personal Access Tokens (PATs) for authentication.
 ```
 unified-cli token create <name> [--expires-in duration] [--role role] [--permission name]... [--enroll-label label]...
 
-  --expires-in  string   Token expiry duration (e.g. "720h", "8760h"). No expiry if omitted.
+  --expires-in  string   Token expiry duration (e.g. "720h", "8760h"). Defaults to tokens.defaultLifetime (2160h); refused above tokens.maxLifetime (8760h); PATs of the built-in admin account are capped at 720h.
   --role        string   Role ceiling for the token: admin, developer, or viewer.
                          Must not exceed your own global role; it is refused, never reduced.
   --permission  string   Permission ceiling, e.g. job.read. Repeatable. You must hold each one
