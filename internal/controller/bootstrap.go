@@ -15,7 +15,6 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/store"
-	"golang.org/x/time/rate"
 )
 
 const (
@@ -33,10 +32,13 @@ const (
 	// bootstrap exchange (the built-in admin account's maximum).
 	bootstrapPATLifetime = adminTokenMaxLifetime
 
-	bootstrapRateLimit = 5 // requests per minute per controller process
+	bootstrapRateLimit = 5 // requests per minute per client address
 
 	errBootstrapInvalid     = "invalid or already used initial token"
 	errBootstrapRateLimited = "too many bootstrap attempts"
+	// errBootstrapAdminDisabled is the 409 body while the built-in admin is
+	// disabled (config) and no recovery lease is running; the token is kept.
+	errBootstrapAdminDisabled = "the built-in admin account is disabled; enable it or use the recovery command"
 )
 
 // GenerateInitialToken returns a new initial admin token: "uci_" followed by
@@ -71,15 +73,17 @@ func RemoveInitialTokenFiles(dirs []string) []string {
 	return removed
 }
 
-func newBootstrapLimiter() *rate.Limiter {
-	return rate.NewLimiter(rate.Every(time.Minute/bootstrapRateLimit), bootstrapRateLimit)
+// newBootstrapLimiter is the per-client-address budget of the bootstrap route
+// (bounded LRU, like the enrollment limiter).
+func newBootstrapLimiter() *enrollmentLimiter {
+	return newRateLimiter(nil, time.Minute/bootstrapRateLimit, bootstrapRateLimit)
 }
 
 // handleBootstrap exchanges the one-time initial token for a PAT of the
 // built-in admin account. The route is unauthenticated; the initial token is
 // the credential. Every failure to match answers the same 401.
 func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
-	if !s.bootstrapLimiter.Allow() {
+	if !s.bootstrapLimiter.allowKey(normalizedRemoteIP(r.RemoteAddr)) {
 		http.Error(w, errBootstrapRateLimited, http.StatusTooManyRequests)
 		return
 	}
@@ -101,6 +105,13 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(name, "env:") || strings.HasPrefix(name, "system:") {
 		http.Error(w, fmt.Sprintf("token name %q is reserved", name), http.StatusBadRequest)
+		return
+	}
+
+	// A PAT of a disabled built-in admin would be useless, so refuse before the
+	// one-time token is spent.
+	if !s.adminEnabled(r.Context()) {
+		http.Error(w, errBootstrapAdminDisabled, http.StatusConflict)
 		return
 	}
 
@@ -148,7 +159,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		// The initial token is consumed; the operator can use the recovery command.
-		slog.Error("bootstrap: create PAT (the initial token is already consumed; use 'unified-controller admin recover')", "error", err)
+		slog.Error("bootstrap: create PAT (the initial token is already consumed; use '<controller binary> admin recover')", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

@@ -153,8 +153,13 @@ Secret name and key as an optional reference, so create
 `unified-cd-initial-admin-token` yourself before the first start if you want a
 non-SSO admin (`kubectl create secret generic unified-cd-initial-admin-token --from-literal=UNIFIED_INITIAL_ADMIN_TOKEN="uci_$(openssl rand -hex 20)"`).
 With SSO configured no initial token is needed: the first admin comes from
-`oidc.userMap` / `roleMap`; disable the built-in `admin` account afterwards with
-`controller.serviceAccounts.admin.enabled=false`. Use a different Secret name with
+`oidc.userMap` / `roleMap`. The chart still generates a token by default, and the
+secret it creates (or one you provide with `UNIFIED_INITIAL_ADMIN_TOKEN`) is honoured
+even under SSO, so under SSO either set `controller.initialAdminToken.generate=false`,
+or exchange the token once and then set `controller.serviceAccounts.admin.enabled=false`.
+While the built-in `admin` account is disabled, `unified-cli bootstrap` answers 409
+(`the built-in admin account is disabled; enable it or use the recovery command`) and
+does not consume the token. Use a different Secret name with
 `controller.initialAdminToken.secretName`.
 
 Upgrading from a release that used `UNIFIED_TOKEN`: see

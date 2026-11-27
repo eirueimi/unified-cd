@@ -9,9 +9,19 @@ Reach the controller from your machine:
 
   kubectl -n {{ .Release.Namespace }} port-forward svc/unified-cd-controller 8080:{{ .Values.controller.service.port }}
 
+{{- if include "unified-cd.initialTokenGenerate" . }}
+
 Then exchange the one-time initial admin token for an admin PAT (valid 30 days):
 
 {{ include "unified-cd.bootstrapSteps" . }}
+
+Under SSO, either set controller.initialAdminToken.generate=false, or exchange
+the token once and then set serviceAccounts.admin.enabled: false.
+{{- else }}
+
+controller.initialAdminToken.generate is false, so the chart created no initial
+admin token: provide UNIFIED_INITIAL_ADMIN_TOKEN yourself or sign in with SSO.
+{{- end }}
 
 To move to production, set bundledStores.enabled=false, create your own
 Secret and pass controller.existingSecret (see the chart README), put HTTPS in
@@ -45,7 +55,9 @@ and open http://localhost:8080. Put HTTPS in front before exposing it
 
 Initial admin access: exchange the one-time initial admin token for an admin
 PAT (valid 30 days) with unified-cli. The exchange works once; the token is
-useless afterwards. If you sign in with SSO instead, ignore this.
+useless afterwards. Under SSO, either set controller.initialAdminToken.generate=false,
+or exchange the token once and then set serviceAccounts.admin.enabled: false
+(the token is generated and stays valid until it is exchanged).
 
 {{ include "unified-cd.bootstrapSteps" . }}
 {{- end }}

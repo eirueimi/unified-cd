@@ -17,6 +17,34 @@ import (
 // accepts one.
 var errNoWritableDir = errors.New("no writable config or data directory")
 
+const (
+	// devInitialAdminToken is the value the repo-root docker-compose.yaml
+	// publishes for its local dev stack. Anyone can read it, so it is only
+	// accepted in dev mode.
+	devInitialAdminToken = "uci_dev0000000000000000000000000000000000000"
+
+	// minProvidedInitialTokenLen is the shortest UNIFIED_INITIAL_ADMIN_TOKEN
+	// accepted.
+	minProvidedInitialTokenLen = 24
+)
+
+// validateProvidedInitialToken checks a UNIFIED_INITIAL_ADMIN_TOKEN value
+// before it is stored. An empty value is fine (nothing is provided). The
+// published dev value is refused unless dev mode (UNIFIED_DEV_MODE) is set, and
+// every provided value needs at least 24 characters.
+func validateProvidedInitialToken(provided string, devMode bool) error {
+	if provided == "" {
+		return nil
+	}
+	if len(provided) < minProvidedInitialTokenLen {
+		return fmt.Errorf("UNIFIED_INITIAL_ADMIN_TOKEN is too short: use at least %d characters", minProvidedInitialTokenLen)
+	}
+	if provided == devInitialAdminToken && !devMode {
+		return errors.New("UNIFIED_INITIAL_ADMIN_TOKEN is the published development value; set your own value or UNIFIED_DEV_MODE=1 for a throwaway setup")
+	}
+	return nil
+}
+
 // initialTokenDirs returns the directories the initial admin token file may be
 // written to, in order: the config file directory (only when a config file is
 // used), then the data directory (only when set).

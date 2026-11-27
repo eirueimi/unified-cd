@@ -140,3 +140,16 @@ func TestNotesTrialWarning(t *testing.T) {
 	withIngress := install(t, "x", prodIngressSet...)
 	assert.Contains(t, withIngress, "https://cd.example.com/")
 }
+
+// With controller.initialAdminToken.generate=false the chart creates no
+// Secret, so the trial notes must not tell the reader to read one.
+func TestNotesTrialWithoutGeneratedInitialToken(t *testing.T) {
+	out := install(t, "x", "controller.initialAdminToken.generate=false")
+	assert.Contains(t, out, "TRIAL ONLY")
+	assert.NotContains(t, out, "unified-cli bootstrap")
+	assert.NotContains(t, out, "kubectl -n x get secret unified-cd-initial-admin-token")
+
+	generated := install(t, "x")
+	assert.Contains(t, generated, "controller.initialAdminToken.generate=false")
+	assert.Contains(t, generated, "serviceAccounts.admin.enabled: false")
+}

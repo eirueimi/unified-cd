@@ -16,7 +16,6 @@ import (
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/time/rate"
 )
 
 func bootstrapPost(t testing.TB, s *Server, initial, name string) *httptest.ResponseRecorder {
@@ -46,7 +45,8 @@ func newBootstrapServer(t *testing.T, cfg Config, initial string) (*Server, stor
 }
 
 func TestBootstrapExchangeOnce(t *testing.T) {
-	s, pg := newBootstrapServer(t, Config{BootstrapLimiter: rate.NewLimiter(rate.Inf, 1)}, "uci_testvalue")
+	s, pg := newBootstrapServer(t, Config{}, "uci_testvalue")
+	s.bootstrapLimiter = newRateLimiter(nil, time.Nanosecond, 1000)
 
 	const n = 20
 	recs := make([]*httptest.ResponseRecorder, n)
@@ -158,4 +158,47 @@ func TestBootstrapRejectsReservedName(t *testing.T) {
 	st, err := pg.GetBootstrapState(t.Context())
 	require.NoError(t, err)
 	assert.False(t, st.Done)
+}
+
+func bootstrapPostFrom(t testing.TB, s *Server, remoteAddr, initial string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"initialToken": initial})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/bootstrap", bytes.NewReader(body))
+	req.RemoteAddr = remoteAddr
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestBootstrapRateLimitIsPerIP(t *testing.T) {
+	s, _ := newBootstrapServer(t, Config{}, "uci_right")
+	for i := 0; i < 5; i++ {
+		rec := bootstrapPostFrom(t, s, "198.51.100.1:4000", "uci_wrong")
+		require.Equal(t, http.StatusUnauthorized, rec.Code)
+	}
+	rec := bootstrapPostFrom(t, s, "198.51.100.1:4001", "uci_wrong")
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
+
+	// Another client address has its own budget.
+	rec = bootstrapPostFrom(t, s, "198.51.100.2:4000", "uci_right")
+	assert.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+}
+
+func TestBootstrapRefusedWhileAdminDisabled(t *testing.T) {
+	s, pg := newBootstrapServer(t, Config{}, "uci_right")
+	s.cfg.AdminEnabled = false
+
+	rec := bootstrapPost(t, s, "uci_right", "")
+	assert.Equal(t, http.StatusConflict, rec.Code)
+	assert.Equal(t, "the built-in admin account is disabled; enable it or use the recovery command\n", rec.Body.String())
+	// The token was not consumed.
+	st, err := pg.GetBootstrapState(t.Context())
+	require.NoError(t, err)
+	assert.False(t, st.Done)
+
+	// A running recovery lease counts as enabled (drop the cached lease read).
+	s.adminLease.valid = false
+	require.NoError(t, pg.SetAdminEnabledUntil(t.Context(), time.Now().Add(time.Hour)))
+	rec = bootstrapPost(t, s, "uci_right", "")
+	assert.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 }

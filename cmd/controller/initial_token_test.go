@@ -73,21 +73,21 @@ func TestPrepareInitialTokenSkipsWithSSO(t *testing.T) {
 func TestPrepareInitialTokenProvided(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
 	dir := t.TempDir()
-	path, err := prepareInitialToken(t.Context(), pg, true, "uci_provided", []string{dir})
+	path, err := prepareInitialToken(t.Context(), pg, true, "uci_provided_value_0123456789", []string{dir})
 	require.NoError(t, err)
 	assert.Empty(t, path)
 	_, statErr := os.Stat(filepath.Join(dir, controller.InitialTokenFileName))
 	assert.True(t, os.IsNotExist(statErr))
 	state, err := pg.GetBootstrapState(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, controller.HashToken("uci_provided"), state.InitialTokenHash)
+	assert.Equal(t, controller.HashToken("uci_provided_value_0123456789"), state.InitialTokenHash)
 
 	// A second, different value does not replace the stored hash.
-	_, err = prepareInitialToken(t.Context(), pg, true, "uci_other", []string{dir})
+	_, err = prepareInitialToken(t.Context(), pg, true, "uci_other_value_0123456789ab", []string{dir})
 	require.NoError(t, err)
 	state, err = pg.GetBootstrapState(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, controller.HashToken("uci_provided"), state.InitialTokenHash)
+	assert.Equal(t, controller.HashToken("uci_provided_value_0123456789"), state.InitialTokenHash)
 }
 
 func TestPrepareInitialTokenNoDir(t *testing.T) {
@@ -141,4 +141,29 @@ func TestWriteSecretFileReplacesStaleFile(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 	}
+}
+
+func TestValidateProvidedInitialToken(t *testing.T) {
+	strong := "uci_" + strings.Repeat("a1b2c3d4", 5)
+
+	assert.NoError(t, validateProvidedInitialToken("", false), "an unset value is fine")
+	assert.NoError(t, validateProvidedInitialToken(strong, false))
+
+	err := validateProvidedInitialToken("uci_short", false)
+	require.Error(t, err)
+	assert.Equal(t, "UNIFIED_INITIAL_ADMIN_TOKEN is too short: use at least 24 characters", err.Error())
+	assert.Error(t, validateProvidedInitialToken("uci_short", true), "dev mode does not relax the length rule")
+
+	// The value published in the repo-root docker-compose.yaml.
+	err = validateProvidedInitialToken(devInitialAdminToken, false)
+	require.Error(t, err)
+	assert.Equal(t, "UNIFIED_INITIAL_ADMIN_TOKEN is the published development value; set your own value or UNIFIED_DEV_MODE=1 for a throwaway setup", err.Error())
+	assert.NoError(t, validateProvidedInitialToken(devInitialAdminToken, true))
+}
+
+// The constant must match the default in the repo-root docker-compose.yaml.
+func TestDevInitialAdminTokenMatchesCompose(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docker-compose.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "UNIFIED_INITIAL_ADMIN_TOKEN:-"+devInitialAdminToken+"}")
 }

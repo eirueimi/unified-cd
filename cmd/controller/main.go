@@ -425,6 +425,10 @@ func main() {
 	// controller starts when SSO is configured, the bootstrap is done, or the
 	// initial token could be generated or was provided.
 	initialDirs := initialTokenDirs(*f, *dataDir)
+	if err := validateProvidedInitialToken(os.Getenv("UNIFIED_INITIAL_ADMIN_TOKEN"), eff.KeySource.DevMode); err != nil {
+		slog.Error("initial admin token", "error", err)
+		os.Exit(1)
+	}
 	if _, err := prepareInitialToken(ctx, pg, ssoConfigured, os.Getenv("UNIFIED_INITIAL_ADMIN_TOKEN"), initialDirs); err != nil {
 		state, stateErr := pg.GetBootstrapState(ctx)
 		if !ssoConfigured && (stateErr != nil || !state.Done) {
