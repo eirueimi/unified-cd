@@ -640,6 +640,7 @@ func oidcIdentityQuiet(s *Server, claims map[string]any) (sub, email string, val
 	}
 	return sub, email, nonNilClaims(extractRoleValues(claims, s.oidcCfg.RolesClaim))
 }
+
 // admitOIDCClaims decides whether verified id_token claims may log in, for both
 // the web login and the CLI browser login. The admission check runs first; only
 // an admitted identity is written to the accounts table (a refused person
