@@ -69,7 +69,7 @@ run `docker compose up -d postgres` instead.
 ## 3. Start the Controller
 
 ```bash
-export UNIFIED_INITIAL_ADMIN_TOKEN="uci_$(openssl rand -hex 20)"   # one-time token, used in step 3a
+export UNIFIED_INITIAL_ADMIN_TOKEN="uci_$(openssl rand -hex 20)"   # one-time token; step 3a needs this value
 
 UNIFIED_DB_DSN="postgres://unified:unified@localhost:5432/unified?sslmode=disable" \
 UNIFIED_DEV_MODE="1" \
@@ -104,12 +104,13 @@ INFO  server listening  addr=:8080
 
 ### 3a. Get an admin PAT
 
-In a second terminal (the same shell, so `UNIFIED_INITIAL_ADMIN_TOKEN` is still set), exchange the
-initial token for an admin PAT. It works once and the PAT is valid for 30 days:
+The controller runs in the foreground, so open a second terminal (a different shell). Print the initial
+token in the first terminal with `echo "$UNIFIED_INITIAL_ADMIN_TOKEN"`, then exchange it for an admin PAT in the
+second one (replace `<value>` with the printed token). It works once and the PAT is valid for 30 days:
 
 ```bash
 export UNIFIED_SERVER="http://localhost:8080"
-export UNIFIED_TOKEN="$(./bin/unified-cli bootstrap)"
+export UNIFIED_TOKEN="$(./bin/unified-cli bootstrap --initial-token <value>)"
 ```
 
 `UNIFIED_TOKEN` here is the CLI's own variable: the PAT the CLI sends. The commands below use it.

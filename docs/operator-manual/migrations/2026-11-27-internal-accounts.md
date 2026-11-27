@@ -79,6 +79,17 @@ replicas, upgrade, then start.
 
   If Helm leaves the Deployment at zero replicas, scale it back to `controller.replicas`.
 
+- **Kubernetes (release bundle, `kubectl apply`):** scale to zero, wait, apply the new bundle, then check the replicas:
+
+  ```bash
+  kubectl -n unified-cd scale deployment/unified-cd-controller --replicas=0
+  kubectl -n unified-cd wait --for=delete pod -l app=unified-cd-controller --timeout=120s   # "no matching resources found" is fine: no Pods are left
+  kubectl apply -f https://github.com/eirueimi/unified-cd/releases/download/<new-version>/install.yaml
+  kubectl -n unified-cd get deployment unified-cd-controller
+  ```
+
+  `kubectl apply` merges against the last applied manifest, which declared the same replica count as the new one, so the live count of 0 can survive. If the Deployment stays at zero, run `kubectl -n unified-cd scale deployment/unified-cd-controller --replicas=<n>`. The same applies to `core-install.yaml`.
+
 Agents are not affected and reconnect on their own.
 
 ## 4. Re-bootstrap a non-SSO install
