@@ -181,6 +181,8 @@ var routeTable = []routeRule{
 	unauthenticated(mGet, "/api/v1/auth/oidc-login"),
 	unauthenticated(mGet, "/api/v1/auth/oidc-callback"),
 	unauthenticated(mPost, "/api/v1/auth/logout"),
+	// The handler checks the one-time initial token and writes its own audit row.
+	unauthenticated(mPost, "/api/v1/bootstrap"),
 	unauthenticated(mPost, "/api/v1/auth/cli/device/start"),
 	unauthenticated(mPost, "/api/v1/auth/cli/device/token"),
 	unauthenticated(mPost, "/api/v1/auth/cli/refresh"),

@@ -72,6 +72,7 @@ var requestConstructors = map[string]int{
 	"artifact.go":         2,
 	"audit.go":            1,
 	"authz.go":            1,
+	"bootstrap.go":        1,
 	"export.go":           1,
 	"gitcredential.go":    2,
 	"jobs.go":             4,
@@ -243,6 +244,11 @@ func contractRows(t *testing.T) []contractRow {
 		{name: "appsource list", leaf: "appsource list", args: []string{"appsource", "list"}, want: []string{get + " /api/v1/appsources"}},
 		{name: "appsource get", leaf: "appsource get", args: []string{"appsource", "get", "a1"}, want: []string{get + " /api/v1/appsources/a1"}},
 		{name: "appsource delete", leaf: "appsource delete", args: []string{"appsource", "delete", "a1"}, want: []string{del + " /api/v1/appsources/a1"}},
+
+		// bootstrap
+		{name: "bootstrap", leaf: "bootstrap", args: []string{"bootstrap", "--initial-token", "uci_x"},
+			resp: map[string]string{"POST /api/v1/bootstrap": `{"id":"id1","name":"bootstrap","token":"exc_x"}`}, status: map[string]int{"POST /api/v1/bootstrap": http.StatusCreated},
+			want: []string{post + " /api/v1/bootstrap"}},
 
 		// tokens
 		{name: "token create", leaf: "token create", args: []string{"token", "create", "t1"},

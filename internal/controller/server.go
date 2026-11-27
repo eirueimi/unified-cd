@@ -19,6 +19,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"golang.org/x/time/rate"
 )
 
 // Config holds the configuration for the master server.
@@ -105,6 +106,15 @@ type Config struct {
 	// ExternalURL is the controller's public base URL, used to build the run
 	// URL sent to agents on claim. Empty means no run URL is sent.
 	ExternalURL string
+
+	// InitialTokenDirs are the directories this replica may have written the
+	// initial-admin-token file to; a successful bootstrap exchange deletes
+	// the file from them.
+	InitialTokenDirs []string
+
+	// BootstrapLimiter bounds POST /api/v1/bootstrap per controller process.
+	// nil means the default of 5 requests per minute. Tests replace it.
+	BootstrapLimiter *rate.Limiter
 }
 
 // OIDCConfig holds the OIDC provider configuration.
@@ -156,6 +166,7 @@ type Server struct {
 	objectLimiter                 *enrollmentLimiter // Per-requester budget of the object endpoints (StoreCredentialRate*).
 	objectNow                     func() time.Time   // Test clock for cancelledRunObjectGrace; nil means time.Now.
 	cliRelay                      *cliRelayLimiters  // Per-IP limiters for the CLI relay routes.
+	bootstrapLimiter              *rate.Limiter      // POST /api/v1/bootstrap budget (per process).
 	credentialTouches             *credentialTouchLimiter
 	kubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
 	cloudEnrollmentVerifiers      map[string]CloudEnrollmentVerifier
@@ -199,6 +210,10 @@ type Server struct {
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
 	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), shutdownCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), objectLimiter: newStoreCredentialLimiter(cfg), cliRelay: newCLIRelayLimiters(), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters}
+	s.bootstrapLimiter = cfg.BootstrapLimiter
+	if s.bootstrapLimiter == nil {
+		s.bootstrapLimiter = newBootstrapLimiter()
+	}
 	s.cloudEnrollmentVerifiers = defaultCloudEnrollmentVerifiers()
 	for provider, verifier := range cfg.CloudEnrollmentVerifiers {
 		s.cloudEnrollmentVerifiers[provider] = verifier
@@ -649,6 +664,9 @@ func (s *Server) routes() {
 	s.r.Get("/api/v1/auth/oidc-login", s.handleOIDCLogin)
 	s.r.Get("/api/v1/auth/oidc-callback", s.handleOIDCCallback)
 	s.r.Post("/api/v1/auth/logout", s.handleLogout)
+
+	// Initial-token exchange (no auth: the one-time initial token is the credential; rate limited).
+	s.r.Post("/api/v1/bootstrap", s.handleBootstrap)
 
 	// CLI token relay (no auth; rate limited; the controller adds the client secret).
 	s.r.Post("/api/v1/auth/cli/device/start", s.handleCLIDeviceStart)

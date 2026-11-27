@@ -147,11 +147,14 @@ type ControllerConfig struct {
 	// It is used to build run links handed to agents (UNIFIED_RUN_URL). When unset,
 	// ControllerEffective falls back to oidc.externalUrl.
 	ExternalURL string `yaml:"externalUrl"`
-	Token       string `yaml:"token"`
-	S3Endpoint  string `yaml:"s3Endpoint"`
-	S3Bucket    string `yaml:"s3Bucket"`
-	S3Key       string `yaml:"s3Key"`
-	S3Secret    string `yaml:"s3Secret"`
+	// Token is a legacy key (env: UNIFIED_TOKEN). The controller no longer
+	// authenticates with it; the value is only kept so startup can log that it
+	// is ignored.
+	Token      string `yaml:"token"`
+	S3Endpoint string `yaml:"s3Endpoint"`
+	S3Bucket   string `yaml:"s3Bucket"`
+	S3Key      string `yaml:"s3Key"`
+	S3Secret   string `yaml:"s3Secret"`
 	// S3UseSSL makes the controller reach the store over https (env: UNIFIED_S3_USE_SSL).
 	// Presigned URLs travel to clients, so S3 and GCS need it.
 	S3UseSSL bool `yaml:"s3UseSSL"`
@@ -176,8 +179,9 @@ type ControllerConfig struct {
 	// Warnings are startup notices produced while resolving the effective
 	// config (deprecated settings); not read from YAML.
 	Warnings []string `yaml:"-"`
-	// AllowDefaultToken lets the controller start with the publicly documented
-	// default admin token (env: UNIFIED_ALLOW_DEFAULT_TOKEN). See CheckAdminToken.
+	// AllowDefaultToken is a legacy key, accepted and ignored so that an
+	// existing config file keeps loading (env: UNIFIED_ALLOW_DEFAULT_TOKEN).
+	// The controller no longer has a default admin token.
 	AllowDefaultToken bool `yaml:"allowDefaultToken"`
 	// TrustedProxies lists the CIDRs (or bare IPs) of reverse proxies whose
 	// X-Forwarded-For / X-Real-IP headers the controller believes. Empty (the

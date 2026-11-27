@@ -105,6 +105,7 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newArtifactCmd(resolve))
 	root.AddCommand(newAuditCmd(resolve))
 	root.AddCommand(newAuthzCmd(resolve))
+	root.AddCommand(newBootstrapCmd(resolve))
 	root.AddCommand(newLoginCmd())
 	root.AddCommand(newLogoutCmd())
 	root.AddCommand(newKeygenCmd())

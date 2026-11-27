@@ -205,7 +205,9 @@ func main() {
 		return ":8080"
 	}(), "listen address")
 	externalURL := flag.String("external-url", eff.ExternalURL, "controller public base URL, used for run links (UNIFIED_RUN_URL); falls back to oidc.externalUrl (env: UNIFIED_EXTERNAL_URL)")
-	token := flag.String("token", eff.Token, "static bearer token (env: UNIFIED_TOKEN)")
+	// Deprecated and ignored: kept registered so an existing deployment that
+	// passes --token / --allow-default-token still starts (spec 6.8).
+	token := flag.String("token", "", "deprecated and ignored: the controller no longer authenticates with a static token")
 	s3Endpoint := flag.String("s3-endpoint", eff.S3Endpoint, "S3-compatible endpoint (env: UNIFIED_S3_ENDPOINT)")
 	s3Bucket := flag.String("s3-bucket", eff.S3Bucket, "S3 bucket name (env: UNIFIED_S3_BUCKET)")
 	s3Key := flag.String("s3-key", eff.S3Key, "S3 access key (env: UNIFIED_S3_KEY)")
@@ -219,7 +221,7 @@ func main() {
 	stderrPlain := flag.Bool("log-stderr-plain", eff.StderrPlain, "render step stderr in the run log the same color as stdout instead of red (env: UNIFIED_LOG_STDERR_PLAIN)")
 	insecureCookies := flag.Bool("insecure-cookies", eff.InsecureCookies, "do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)")
 	storeCredentialRequireRunBinding := flag.Bool("store-credential-require-run-binding", eff.StoreCredentialRequireRunBinding, "deprecated and ignored: run binding is always required for presigned object access (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING)")
-	allowDefaultToken := flag.Bool("allow-default-token", eff.AllowDefaultToken, "allow starting with the publicly documented default admin token; trial use only (env: UNIFIED_ALLOW_DEFAULT_TOKEN)")
+	_ = flag.Bool("allow-default-token", false, "deprecated and ignored: the controller no longer has a default admin token")
 	trustedProxies := flag.String("trusted-proxies", strings.Join(eff.TrustedProxies, ","), "comma-separated CIDRs/IPs of reverse proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the client IP; empty ignores those headers (env: UNIFIED_TRUSTED_PROXIES)")
 	maxRequestBodyBytes := flag.Int64("max-request-body-bytes", func() int64 {
 		if eff.MaxRequestBodyBytes > 0 {
@@ -287,13 +289,8 @@ func main() {
 		os.Exit(1)
 	}
 	ssoConfigured := config.OIDCConfigured(eff.OIDC)
-	if *token == "" && !ssoConfigured {
-		slog.Error("token is required when SSO is not configured (--token, UNIFIED_TOKEN, config file, or UNIFIED_OIDC_ISSUER/UNIFIED_OIDC_CLIENT_ID)")
-		os.Exit(1)
-	}
-	if err := config.CheckAdminToken(*token, eff.KeySource.DevMode, *allowDefaultToken); err != nil {
-		slog.Error("refusing to start", "error", err)
-		os.Exit(1)
+	if *token != "" || eff.Token != "" {
+		slog.Error("UNIFIED_TOKEN is no longer used by the controller and is ignored; see docs/operator-manual/migrations/2026-11-27-internal-accounts.md")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -360,30 +357,24 @@ func main() {
 	backgroundPG := pg.BackgroundStore()
 	backgroundSt := metrics.NewInstrumentedStore(backgroundPG, m)
 
-	// UNIFIED_TOKEN is synced to the DB as a PAT. This allows it to be listed
-	// and deleted (revoked) via /api/v1/tokens just like regular PATs. If the
-	// token is later unset, the previously synced row is removed.
-	if *token != "" {
-		// One transaction: drop every other row carrying the reserved name (a stale
-		// row after rotation, or a user-created one) and upsert the real bootstrap row.
-		removed, err := pg.SyncBootstrapPAT(ctx, controller.BootstrapPATName, controller.HashToken(*token))
-		if err != nil {
-			slog.Error("sync UNIFIED_TOKEN as bootstrap PAT", "error", err)
+	// The one-time initial admin token (spec 6.4). Startup rule (spec 6.8): the
+	// controller starts when SSO is configured, the bootstrap is done, or the
+	// initial token could be generated or was provided.
+	initialDirs := initialTokenDirs(*f, *dataDir)
+	if _, err := prepareInitialToken(ctx, pg, ssoConfigured, os.Getenv("UNIFIED_INITIAL_ADMIN_TOKEN"), initialDirs); err != nil {
+		state, stateErr := pg.GetBootstrapState(ctx)
+		if !ssoConfigured && (stateErr != nil || !state.Done) {
+			if errors.Is(err, errNoWritableDir) {
+				slog.Error("cannot write the initial admin token: no writable config or data directory; set UNIFIED_INITIAL_ADMIN_TOKEN")
+			} else {
+				slog.Error("initial admin token", "error", err)
+			}
 			os.Exit(1)
 		}
-		if len(removed) > 0 {
-			ids := make([]string, 0, len(removed))
-			roles := make([]string, 0, len(removed))
-			for _, r := range removed {
-				ids = append(ids, r.ID)
-				roles = append(roles, r.Role)
-			}
-			slog.Warn(`removed personal access tokens named "env:UNIFIED_TOKEN" that do not match the configured UNIFIED_TOKEN (a stale row after token rotation, or a user-created token)`,
-				"count", len(removed), "ids", ids, "roles", roles)
-		}
-	} else if err := pg.DeleteBootstrapPATByName(ctx, controller.BootstrapPATName); err != nil {
-		slog.Error("remove stale bootstrap PAT", "error", err)
-		os.Exit(1)
+		slog.Warn("initial admin token", "error", err)
+	}
+	if ssoConfigured && eff.AdminAccountEnabled() {
+		slog.Warn("the built-in admin service account is enabled while SSO is configured; set serviceAccounts.admin.enabled: false once SSO works")
 	}
 
 	resolved, err := eff.KeySource.Resolve(ctx)
@@ -481,7 +472,7 @@ func main() {
 		}
 	}
 
-	srv := controller.NewServer(controller.Config{ServiceAccountGrants: eff.ServiceAccountGrants, AdminEnabled: eff.AdminAccountEnabled(), TokenDefaultLifetime: eff.TokenDefaultLifetime(), TokenMaxLifetime: eff.TokenMaxLifetime(), AllowTokenEntry: eff.UI.AllowTokenEntry, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StoreCredentialRateBurst: *storeCredBurst, StoreCredentialRatePerSecond: *storeCredPerSecond, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, ArtifactDownload: *artifactDownload, ExternalURL: *externalURL}, st)
+	srv := controller.NewServer(controller.Config{ServiceAccountGrants: eff.ServiceAccountGrants, AdminEnabled: eff.AdminAccountEnabled(), TokenDefaultLifetime: eff.TokenDefaultLifetime(), TokenMaxLifetime: eff.TokenMaxLifetime(), AllowTokenEntry: eff.UI.AllowTokenEntry, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StoreCredentialRateBurst: *storeCredBurst, StoreCredentialRatePerSecond: *storeCredPerSecond, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, ArtifactDownload: *artifactDownload, ExternalURL: *externalURL, InitialTokenDirs: initialDirs}, st)
 	// Stops the shared log-notify listener goroutine (started lazily on the
 	// first SSE viewer — see (*controller.Server).subscribeLogNotify) if it
 	// was ever started. A no-op otherwise. Deferred here rather than left to
@@ -556,9 +547,6 @@ func main() {
 		}
 		if eff.OIDC.Policy.Configured() && eff.OIDC.ClientID == "" {
 			slog.Warn("oidc.permissions is set but oidc.clientId is not; no OIDC caller can authenticate")
-		}
-		if w := bootstrapTokenWarning(eff.OIDC.Issuer, *token); w != "" {
-			slog.Warn(w)
 		}
 	}
 
@@ -766,14 +754,4 @@ func envIntOr(name string, def int, warning *string) int {
 		}
 	}
 	return def
-}
-
-// bootstrapTokenWarning returns the break-glass warning logged when SSO is
-// configured while the bootstrap token (--token, UNIFIED_TOKEN or config
-// token) is also set, or "" otherwise.
-func bootstrapTokenWarning(issuer, token string) string {
-	if issuer == "" || token == "" {
-		return ""
-	}
-	return "UNIFIED_TOKEN is set while SSO is configured: the env:UNIFIED_TOKEN token is always admin and bypasses oidc.permissions; unset it once SSO works and keep it only as a break-glass credential"
 }
