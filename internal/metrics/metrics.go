@@ -34,7 +34,7 @@ type Metrics struct {
 	buildInfo              *prometheus.GaugeVec
 	patsExpiringSoon       prometheus.Gauge
 
-	bgRuns    *prometheus.CounterVec
+	bgRuns     *prometheus.CounterVec
 	bgDuration *prometheus.HistogramVec
 	bgItems    *prometheus.CounterVec
 	logLines   *prometheus.CounterVec
