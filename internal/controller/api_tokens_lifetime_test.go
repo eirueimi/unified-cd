@@ -190,3 +190,39 @@ func TestCreateToken_SystemPrefixReserved(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, code)
 	assert.Equal(t, "token name \"system:x\" is reserved\n", body)
 }
+
+// A PAT never hands out more than its own ceiling, whichever account it targets.
+func TestPATFromPAT_CrossAccountBoundByCeiling(t *testing.T) {
+	s, pg := newLifetimeServer(t, 0, 0)
+	addRoleServicePAT(t, s, pg, "deploy", "deploy-token", "developer")
+	issuer := addPermServicePAT(t, s, pg, "issuer", "unused", authz.TokenCreate, authz.ServiceAccountToken, authz.AgentEnroll)
+	require.NoError(t, pg.DeletePAT(context.Background(), issuer.ID))
+	narrow, err := pg.CreateAccountPAT(context.Background(), store.NewPAT{
+		Name: "narrow", TokenHash: HashToken("narrow-token"), AccountID: issuer.AccountID,
+		Permissions: []string{"job.read", "token.create", "serviceaccount.token"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, narrow)
+
+	code, body, resp := postTokenReq(t, s, "narrow-token", api.CreatePATRequest{Name: "for-deploy", Account: "deploy"})
+	require.Equal(t, http.StatusOK, code, body)
+	assert.Equal(t, http.StatusOK, doAs(t, s, http.MethodGet, "/api/v1/jobs", resp.Token, nil).Code)
+	trigger := createTokenBody(api.CreatePATRequest{Name: "x"}) // any body: the permission check comes first
+	assert.Equal(t, http.StatusForbidden, doAs(t, s, http.MethodPost, "/api/v1/runs", resp.Token, trigger).Code)
+}
+
+func TestPATFromPAT_CrossAccountInheritsEnrollLabels(t *testing.T) {
+	s, pg := newLifetimeServer(t, 0, 0)
+	addRoleServicePAT(t, s, pg, "deploy", "deploy-token", "developer")
+	issuer := addPermServicePAT(t, s, pg, "issuer", "unused", authz.TokenCreate, authz.ServiceAccountToken, authz.AgentEnroll)
+	require.NoError(t, pg.DeletePAT(context.Background(), issuer.ID))
+	_, err := pg.CreateAccountPAT(context.Background(), store.NewPAT{
+		Name: "bounded", TokenHash: HashToken("bounded-token"), AccountID: issuer.AccountID,
+		Permissions: []string{"agent.enroll", "token.create", "serviceaccount.token"}, EnrollLabels: []string{"pool:a"},
+	})
+	require.NoError(t, err)
+
+	code, body, resp := postTokenReq(t, s, "bounded-token", api.CreatePATRequest{Name: "e", Account: "deploy", Permissions: []string{"agent.enroll"}})
+	require.Equal(t, http.StatusOK, code, body)
+	assert.Equal(t, []string{"pool:a"}, resp.EnrollLabels)
+}

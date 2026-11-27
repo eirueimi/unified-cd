@@ -138,9 +138,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	// named. Naming the caller's own service account is not "another account".
 	targetID, targetName := creator.AccountID, creator.AccountName
 	targetIsService := creator.AccountKind == store.AccountKindService
-	own := true
 	if req.Account != "" && !(targetIsService && req.Account == creator.AccountName) {
-		own = false
 		if !creator.Grants.Can(authz.TokenManage, "") && !creator.Grants.Can(authz.ServiceAccountToken, "") {
 			http.Error(w, "creating a token for another account requires the token.manage or serviceaccount.token permission", http.StatusForbidden)
 			return
@@ -199,8 +197,8 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role, perms := req.Role, req.Permissions
-	if creator.OwnerPATID != "" && own {
-		// PAT-from-PAT (own account): the child is bounded by the parent's ceiling.
+	if creator.OwnerPATID != "" {
+		// PAT-from-PAT (any target account): the child is bounded by the parent's ceiling.
 		switch {
 		case req.Role == "" && req.Permissions == nil:
 			role, perms = creator.CeilingRole, creator.CeilingPerms
@@ -222,7 +220,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	var labels []string
 	if slices.Contains(perms, string(authz.AgentEnroll)) {
 		labels = req.EnrollLabels
-		if len(labels) == 0 && own {
+		if len(labels) == 0 {
 			// A bounded parent never yields an unbounded child.
 			labels = creator.EnrollLabels
 		}
