@@ -60,7 +60,6 @@ func TestCreateToken_ServiceAccountMintsEnrollPAT(t *testing.T) {
 	require.Equal(t, http.StatusOK, code, body)
 }
 
-
 func TestCreateToken_EnrollLabelValidation(t *testing.T) {
 	s, _ := newTestServer(t)
 	cases := []struct {

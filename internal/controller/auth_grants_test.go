@@ -81,7 +81,6 @@ func TestServerAuth_ServiceAccountPATGrants(t *testing.T) {
 	assert.Equal(t, "role:viewer", by)
 }
 
-
 func TestServerAuth_OwnerPATEmptyRoleAdmitted(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, teamAPolicy)
 	pat := mustOwnedPAT(t, pg, "own1", "", nil, []string{"g-a"})
