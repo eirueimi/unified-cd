@@ -195,15 +195,20 @@ If you add an endpoint that an agent needs, ask whether an agent that has been
 handed a malicious job should be able to call it. If the answer is no, it does
 not belong on `agentAuth`.
 
-## The bootstrap token
+## Accounts and the initial token
 
-`UNIFIED_TOKEN` is synced at startup as a PAT under the fixed name
-`env:UNIFIED_TOKEN` (`BootstrapPATName`), so changing the value updates the
-hash rather than accumulating rows. The name is **not** what grants break-glass:
-`patPrincipal` compares the presented token's hash with `HashToken(Config.Token)`
-(`Server.isBreakGlass`, constant-time) and requires that the PAT has no owner, and `handleCreateToken` rejects the
-reserved `env:` prefix. At startup `SyncBootstrapPAT` deletes, in one
-transaction, any other row with the reserved name and upserts the real one.
+Every principal is a row in `accounts` (a person keyed by OIDC `sub`, or a
+service account keyed by name). `pats.account_id` and `sessions.account_id` are
+`NOT NULL` (migration 037), so a PAT or session can never exist without an
+account, and the former `owner_*` columns on `pats` no longer exist: the owner
+shown in the token list comes from the account (email, else `sub`, else
+`sa:<name>`).
+
+There is no static controller token. A fresh install is bootstrapped with the
+one-time initial token (`initial-admin-token`, or `UNIFIED_INITIAL_ADMIN_TOKEN`),
+which `handleBootstrap` exchanges for the first PAT of the built-in `admin`
+service account. `handleCreateToken` rejects the reserved `env:` and `system:`
+name prefixes.
 
 ## Adding an endpoint
 

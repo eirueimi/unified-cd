@@ -2752,20 +2752,18 @@ func (p *Postgres) RunJobName(ctx context.Context, runID string) (string, bool, 
 }
 
 // patColumns is the column list every PAT read returns, in patScan order.
-const patColumns = `id, name, role, created_at, expires_at, last_used_at, owner_sub, owner_email, owner_claims, permissions, enroll_labels, created_by, account_id::text`
+const patColumns = `id, name, role, created_at, expires_at, last_used_at, permissions, enroll_labels, created_by, account_id::text`
 
 type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-// scanPAT scans a patColumns row. owner_sub IS NULL means a role-only PAT, so
-// Owner stays nil; permissions NULL stays a nil slice.
+// scanPAT scans a patColumns row; permissions NULL stays a nil slice.
 func scanPAT(row rowScanner) (PAT, error) {
 	var pat PAT
-	var ownerSub, ownerEmail, createdBy, accountID *string
-	var ownerClaims []string
+	var createdBy, accountID *string
 	if err := row.Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt,
-		&ownerSub, &ownerEmail, &ownerClaims, &pat.Permissions, &pat.EnrollLabels, &createdBy, &accountID); err != nil {
+		&pat.Permissions, &pat.EnrollLabels, &createdBy, &accountID); err != nil {
 		return PAT{}, err
 	}
 	if accountID != nil {
@@ -2773,16 +2771,6 @@ func scanPAT(row rowScanner) (PAT, error) {
 	}
 	if createdBy != nil {
 		pat.CreatedBy = *createdBy
-	}
-	if ownerSub != nil {
-		o := &PATOwner{Sub: *ownerSub, Claims: ownerClaims}
-		if ownerEmail != nil {
-			o.Email = *ownerEmail
-		}
-		if o.Claims == nil {
-			o.Claims = []string{}
-		}
-		pat.Owner = o
 	}
 	return pat, nil
 }
@@ -2793,122 +2781,6 @@ func nullIfEmpty(s string) any {
 		return nil
 	}
 	return s
-}
-
-// CreatePAT creates a role-only Personal Access Token (no owner) and returns its metadata.
-func (p *Postgres) CreatePAT(ctx context.Context, name, tokenHash, role string, expiresAt *time.Time, createdBy string) (*PAT, error) {
-	const q = `INSERT INTO pats(name, token_hash, role, expires_at, created_by) VALUES ($1, $2, $3, $4, $5)
-		RETURNING ` + patColumns
-	pat, err := scanPAT(p.pool.QueryRow(ctx, q, name, tokenHash, role, expiresAt, nullIfEmpty(createdBy)))
-	if err != nil {
-		return nil, fmt.Errorf("create pat: %w", err)
-	}
-	return &pat, nil
-}
-
-// CreateOwnedPAT creates a PAT bound to the OIDC identity that minted it. A nil
-// Owner.Claims is stored as the empty array, never NULL, because a NULL
-// owner_claims would be indistinguishable from "no snapshot taken".
-func (p *Postgres) CreateOwnedPAT(ctx context.Context, in NewOwnedPAT) (*PAT, error) {
-	claims := in.Owner.Claims
-	if claims == nil {
-		claims = []string{}
-	}
-	const q = `INSERT INTO pats(name, token_hash, role, expires_at, owner_sub, owner_email, owner_claims, permissions, enroll_labels, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING ` + patColumns
-	pat, err := scanPAT(p.pool.QueryRow(ctx, q, in.Name, in.TokenHash, in.Role, in.ExpiresAt,
-		in.Owner.Sub, in.Owner.Email, claims, in.Permissions, in.EnrollLabels, nullIfEmpty(in.CreatedBy)))
-	if err != nil {
-		return nil, fmt.Errorf("create owned pat: %w", err)
-	}
-	return &pat, nil
-}
-
-// CreateEnrollPAT creates an enrollment-only PAT: no owner, role "" and the
-// single permission agent.enroll, optionally bounded to EnrollLabels.
-func (p *Postgres) CreateEnrollPAT(ctx context.Context, in NewEnrollPAT) (*PAT, error) {
-	const q = `INSERT INTO pats(name, token_hash, role, expires_at, permissions, enroll_labels, created_by)
-		VALUES ($1, $2, '', $3, $4, $5, $6)
-		RETURNING ` + patColumns
-	pat, err := scanPAT(p.pool.QueryRow(ctx, q, in.Name, in.TokenHash, in.ExpiresAt,
-		[]string{"agent.enroll"}, in.EnrollLabels, nullIfEmpty(in.CreatedBy)))
-	if err != nil {
-		return nil, fmt.Errorf("create enroll pat: %w", err)
-	}
-	return &pat, nil
-}
-
-// UpsertBootstrapPAT updates the hash of an existing row identified by name, or creates a new one.
-// It is used to sync the UNIFIED_TOKEN value into the PAT table on each startup, ensuring
-// that at most one row exists per name (since token_hash changes every time the value changes,
-// the row must be identified uniquely by name).
-func (p *Postgres) UpsertBootstrapPAT(ctx context.Context, name, tokenHash string) (*PAT, error) {
-	const updateQ = `UPDATE pats SET token_hash = $2, role = 'admin' WHERE name = $1
-		RETURNING ` + patColumns
-	pat, err := scanPAT(p.pool.QueryRow(ctx, updateQ, name, tokenHash))
-	if err == nil {
-		return &pat, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("rotate bootstrap pat: %w", err)
-	}
-
-	const insertQ = `INSERT INTO pats(name, token_hash, role) VALUES ($1, $2, 'admin')
-		RETURNING ` + patColumns
-	pat, err = scanPAT(p.pool.QueryRow(ctx, insertQ, name, tokenHash))
-	if err != nil {
-		return nil, fmt.Errorf("create bootstrap pat: %w", err)
-	}
-	return &pat, nil
-}
-
-// SyncBootstrapPAT deletes every row named name whose token_hash is not tokenHash and then
-// upserts the bootstrap row, in one transaction (no window without a bootstrap row).
-func (p *Postgres) SyncBootstrapPAT(ctx context.Context, name, tokenHash string) ([]PAT, error) {
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("sync bootstrap pat: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	rows, err := tx.Query(ctx, `DELETE FROM pats WHERE name = $1 AND token_hash <> $2 RETURNING id, name, role, created_at`, name, tokenHash)
-	if err != nil {
-		return nil, fmt.Errorf("remove mismatched bootstrap pats: %w", err)
-	}
-	var removed []PAT
-	for rows.Next() {
-		var r PAT
-		if err := rows.Scan(&r.ID, &r.Name, &r.Role, &r.CreatedAt); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("scan removed bootstrap pat: %w", err)
-		}
-		removed = append(removed, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("remove mismatched bootstrap pats: %w", err)
-	}
-
-	tag, err := tx.Exec(ctx, `UPDATE pats SET token_hash = $2, role = 'admin' WHERE name = $1`, name, tokenHash)
-	if err != nil {
-		return nil, fmt.Errorf("rotate bootstrap pat: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		if _, err := tx.Exec(ctx, `INSERT INTO pats(name, token_hash, role) VALUES ($1, $2, 'admin')`, name, tokenHash); err != nil {
-			return nil, fmt.Errorf("create bootstrap pat: %w", err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("sync bootstrap pat: %w", err)
-	}
-	return removed, nil
-}
-
-// DeleteBootstrapPATByName deletes the PAT row identified by name (no-op if it does not exist).
-func (p *Postgres) DeleteBootstrapPATByName(ctx context.Context, name string) error {
-	_, err := p.pool.Exec(ctx, `DELETE FROM pats WHERE name = $1`, name)
-	return err
 }
 
 // GetPATByHash retrieves a PAT by token_hash (expired tokens are excluded).
@@ -2944,11 +2816,6 @@ func (p *Postgres) ListPATs(ctx context.Context) ([]PAT, error) {
 	return p.queryPATs(ctx, `SELECT `+patColumns+` FROM pats ORDER BY created_at, id`)
 }
 
-// ListPATsByOwner returns the PATs owned by ownerSub, oldest first.
-func (p *Postgres) ListPATsByOwner(ctx context.Context, ownerSub string) ([]PAT, error) {
-	return p.queryPATs(ctx, `SELECT `+patColumns+` FROM pats WHERE owner_sub = $1 ORDER BY created_at, id`, ownerSub)
-}
-
 // DeletePAT deletes a PAT by ID.
 //
 // An id that is not a valid UUID (SQLSTATE 22P02) yields ErrPATNotFound.
@@ -2968,45 +2835,6 @@ var ErrPATNotFound = errors.New("token not found")
 func isInvalidTextRepresentation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "22P02"
-}
-
-// DeleteOwnedPAT deletes a PAT by ID only if it is owned by ownerSub. It
-// reports whether a row was deleted. Role-only PATs (owner_sub IS NULL) never
-// match, whatever ownerSub is.
-func (p *Postgres) DeleteOwnedPAT(ctx context.Context, id, ownerSub string) (bool, error) {
-	tag, err := p.pool.Exec(ctx, `DELETE FROM pats WHERE id = $1 AND owner_sub = $2`, id, ownerSub)
-	if isInvalidTextRepresentation(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
-}
-
-// UpdatePATOwnerSnapshot refreshes the email and claim snapshot of every PAT
-// owned by ownerSub and returns the number of rows updated. A nil claims is
-// stored as the empty array.
-func (p *Postgres) UpdatePATOwnerSnapshot(ctx context.Context, ownerSub, email string, claims []string) (int64, error) {
-	if claims == nil {
-		claims = []string{}
-	}
-	tag, err := p.pool.Exec(ctx,
-		`UPDATE pats SET owner_email = $2, owner_claims = $3 WHERE owner_sub = $1`, ownerSub, email, claims)
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
-}
-
-// CountRoleOnlyPATsAboveViewer counts role-only PATs (owner_sub IS NULL) whose
-// role is anything other than viewer, ignoring the row named excludeName
-// (the UNIFIED_TOKEN bootstrap PAT).
-func (p *Postgres) CountRoleOnlyPATsAboveViewer(ctx context.Context, excludeName string) (int, error) {
-	var n int
-	err := p.pool.QueryRow(ctx,
-		`SELECT count(*) FROM pats WHERE owner_sub IS NULL AND role <> 'viewer' AND name <> $1`, excludeName).Scan(&n)
-	return n, err
 }
 
 // TouchPAT updates the last_used_at of a PAT to the current time.
@@ -3270,21 +3098,6 @@ func (p *Postgres) ConsumeCLILoginCode(ctx context.Context, codeHash string) (*C
 func (p *Postgres) DeleteExpiredOIDCStates(ctx context.Context) error {
 	_, err := p.pool.Exec(ctx, `DELETE FROM oidc_states WHERE expires_at <= NOW()`)
 	return err
-}
-
-// CreateSession saves a browser session to the database. A nil claims is
-// stored as NULL (a role-only session); an empty non-nil slice as '{}'.
-func (p *Postgres) CreateSession(ctx context.Context, tokenHash, sub, email, role string, claims []string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error) {
-	const q = `INSERT INTO sessions(token_hash, sub, email, role, claims, refresh_token_dek, refresh_token_ct, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, token_hash, sub, email, role, claims, refresh_token_dek, refresh_token_ct, expires_at, last_used_at, created_at`
-	var s Session
-	err := p.pool.QueryRow(ctx, q, tokenHash, sub, email, role, claims, refreshDEK, refreshCT, expiresAt).
-		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.Claims, &s.RefreshTokenDEK, &s.RefreshTokenCT, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("create session: %w", err)
-	}
-	return &s, nil
 }
 
 // GetSessionByHash retrieves a session by token_hash.

@@ -59,7 +59,7 @@ func serviceAccountByName(t testing.TB, st store.Store, name string) *store.Acco
 func seedServicePAT(t testing.TB, st store.Store, account, token string) *store.PAT {
 	t.Helper()
 	acct := serviceAccountByName(t, st, account)
-	pat, err := st.CreateAccountPAT(context.Background(), store.NewPAT{
+	pat, err := st.CreatePAT(context.Background(), store.NewPAT{
 		Name: account, TokenHash: HashToken(token), AccountID: acct.ID,
 	})
 	require.NoError(t, err)
@@ -87,10 +87,10 @@ func addHumanAccount(t testing.TB, st store.Store, sub, email string, claims []s
 
 // createOwnedPATForTest stores a PAT owned by the human account of in.Owner
 // (created on demand), the shape every PAT minted by a person now has.
-func createOwnedPATForTest(t testing.TB, st store.Store, in store.NewOwnedPAT) *store.PAT {
+func createOwnedPATForTest(t testing.TB, st store.Store, in ownedPATInput) *store.PAT {
 	t.Helper()
 	acct := addHumanAccount(t, st, in.Owner.Sub, in.Owner.Email, in.Owner.Claims)
-	pat, err := st.CreateAccountPAT(context.Background(), store.NewPAT{
+	pat, err := st.CreatePAT(context.Background(), store.NewPAT{
 		Name: in.Name, TokenHash: in.TokenHash, AccountID: acct.ID, Role: in.Role,
 		Permissions: in.Permissions, EnrollLabels: in.EnrollLabels, ExpiresAt: in.ExpiresAt, CreatedBy: in.CreatedBy,
 	})
@@ -118,7 +118,7 @@ func addRoleServicePAT(t testing.TB, s *Server, st store.Store, account, token, 
 	s.cfg = cfg
 	syncTestServiceAccounts(t, st, cfg)
 	acct := serviceAccountByName(t, st, account)
-	pat, err := st.CreateAccountPAT(context.Background(), store.NewPAT{
+	pat, err := st.CreatePAT(context.Background(), store.NewPAT{
 		Name: account, TokenHash: HashToken(token), AccountID: acct.ID,
 	})
 	require.NoError(t, err)
@@ -133,4 +133,21 @@ func accountOf(t testing.TB, st store.Store, pat *store.PAT) *store.Account {
 	require.NoError(t, err)
 	require.NotNil(t, acct)
 	return acct
+}
+
+// ownerIdentity is the OIDC identity behind a test PAT.
+type ownerIdentity struct {
+	Sub    string
+	Email  string
+	Claims []string
+}
+
+// ownedPATInput describes a PAT minted by a person for createOwnedPATForTest.
+type ownedPATInput struct {
+	Name, TokenHash, Role string
+	Owner                 ownerIdentity
+	Permissions           []string
+	EnrollLabels          []string
+	ExpiresAt             *time.Time
+	CreatedBy             string
 }

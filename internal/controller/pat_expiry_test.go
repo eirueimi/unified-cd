@@ -22,7 +22,7 @@ func TestPATExpiryWarning(t *testing.T) {
 	acct := serviceAccountByName(t, pg, testAdminAccount)
 	now := time.Now()
 	mk := func(name string, exp *time.Time) {
-		_, err := pg.CreateAccountPAT(t.Context(), store.NewPAT{Name: name, TokenHash: HashToken(name), AccountID: acct.ID, ExpiresAt: exp})
+		_, err := pg.CreatePAT(t.Context(), store.NewPAT{Name: name, TokenHash: HashToken(name), AccountID: acct.ID, ExpiresAt: exp})
 		require.NoError(t, err)
 	}
 	soon, later := now.Add(3*24*time.Hour), now.Add(10*24*time.Hour)

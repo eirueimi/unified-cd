@@ -710,7 +710,7 @@ func (s *Server) completeOIDCLogin(ctx context.Context, claims map[string]any, r
 func (s *Server) createSessionWithRefreshToken(ctx context.Context, accountID, tokenHash, sub, email, role string, claims []string, refreshToken string, expiresAt time.Time) (*store.Session, error) {
 	// Empty slices, not nil: pgx encodes a nil []byte as SQL NULL, and both
 	// refresh-token columns are NOT NULL. `''::bytea` is a valid non-null value.
-	sess, err := s.store.CreateAccountSession(ctx, accountID, tokenHash, sub, email, role, claims, []byte{}, []byte{}, expiresAt)
+	sess, err := s.store.CreateSession(ctx, accountID, tokenHash, sub, email, role, claims, []byte{}, []byte{}, expiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}

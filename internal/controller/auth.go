@@ -87,11 +87,6 @@ func principalFromContext(ctx context.Context) (Principal, bool) {
 	return p, ok
 }
 
-// BootstrapPATName is the name of the legacy UNIFIED_TOKEN row. It no longer
-// grants anything; cmd/controller still syncs and removes the row until the
-// startup logic drops UNIFIED_TOKEN entirely.
-const BootstrapPATName = "env:UNIFIED_TOKEN"
-
 // BearerAuth returns the existing static-token authentication middleware (for agent auth).
 func BearerAuth(expected string) func(http.Handler) http.Handler {
 	expectedBytes := []byte(expected)

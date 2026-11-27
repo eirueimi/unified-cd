@@ -104,7 +104,7 @@ func TestUIActionInventoryIsEnforced(t *testing.T) {
 		_ = st.CreatePendingApproval(ctx, run.ID, 0, "gate", "", nil) // best effort: the gate may need a step
 		_, err = st.UpsertAppSource(ctx, "apps", []byte(`{"repoURL":"https://github.com/org/repo","targetRevision":"main","path":"jobs/"}`))
 		require.NoError(t, err)
-		pat := createOwnedPATForTest(t, st, store.NewOwnedPAT{Name: "seed", TokenHash: HashToken("seed-token-" + strconv.Itoa(seq)), Role: "viewer", Owner: store.PATOwner{Sub: "seed-user"}})
+		pat := createOwnedPATForTest(t, st, ownedPATInput{Name: "seed", TokenHash: HashToken("seed-token-" + strconv.Itoa(seq)), Role: "viewer", Owner: ownerIdentity{Sub: "seed-user"}})
 
 		path := strings.NewReplacer("{id}", run.ID, "{runID}", run.ID, "{name}", "apps", "{stepIndex}", "0").Replace(c.action.Route)
 		if strings.HasPrefix(c.action.Route, "/api/v1/tokens/") {

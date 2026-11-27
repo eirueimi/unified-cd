@@ -58,7 +58,7 @@ func TestCreateToken_AuditDetailsCarryPATID(t *testing.T) {
 func TestCreateToken_AuditNoDetailsOnFailure(t *testing.T) {
 	s, pg := newTestServer(t)
 
-	rec := doAs(t, s, http.MethodPost, "/api/v1/tokens", "secret", createTokenBody(api.CreatePATRequest{Name: BootstrapPATName}))
+	rec := doAs(t, s, http.MethodPost, "/api/v1/tokens", "secret", createTokenBody(api.CreatePATRequest{Name: "env:UNIFIED_TOKEN"}))
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	logs, err := pg.ListAuditLogs(t.Context(), 1, 0)
 	require.NoError(t, err)

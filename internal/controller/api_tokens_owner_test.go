@@ -10,7 +10,6 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/authz"
-	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -159,7 +158,6 @@ func TestCreateToken_ServiceAccountCreatesPATOwnedByItself(t *testing.T) {
 	resp := decodeCreated(t, doAs(t, s, http.MethodPost, "/api/v1/tokens", "secret", createTokenBody(api.CreatePATRequest{Name: "ci"})))
 	pat, err := pg.GetPATByHash(t.Context(), HashToken(resp.Token))
 	require.NoError(t, err)
-	assert.Nil(t, pat.Owner)
 	assert.Equal(t, creator.ID, pat.AccountID)
 	assert.Contains(t, pat.CreatedBy, "pat:")
 
@@ -171,10 +169,10 @@ func TestTokens_DeveloperListsAndDeletesOwnOnly(t *testing.T) {
 	s, pg := newAuthzTestServer(t, tokenLegacy, "")
 	ctx := t.Context()
 	addSession(t, pg, "dev-session", "dev@example.com", "dev@example.com", "developer", []string{"g-dev"})
-	own := createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "own", TokenHash: "h-own", Role: "viewer",
-		Owner: store.PATOwner{Sub: "dev@example.com", Email: "dev@example.com", Claims: []string{"g-dev"}}})
-	adminPAT := createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "admins", TokenHash: "h-adm",
-		Owner: store.PATOwner{Sub: "adm@example.com", Claims: []string{"g-admin"}}})
+	own := createOwnedPATForTest(t, pg, ownedPATInput{Name: "own", TokenHash: "h-own", Role: "viewer",
+		Owner: ownerIdentity{Sub: "dev@example.com", Email: "dev@example.com", Claims: []string{"g-dev"}}})
+	adminPAT := createOwnedPATForTest(t, pg, ownedPATInput{Name: "admins", TokenHash: "h-adm",
+		Owner: ownerIdentity{Sub: "adm@example.com", Claims: []string{"g-admin"}}})
 
 	rec := doWithCookie(t, s, http.MethodGet, "/api/v1/tokens", "dev-session", nil)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -201,10 +199,10 @@ func TestTokens_DeveloperListsAndDeletesOwnOnly(t *testing.T) {
 func TestTokens_ManageListsAndDeletesAll(t *testing.T) {
 	s, pg := newAuthzTestServer(t, tokenLegacy, "")
 	ctx := t.Context()
-	createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "dev-pat", TokenHash: "h1", Role: "viewer",
-		Owner: store.PATOwner{Sub: "dev@example.com", Claims: []string{"g-dev"}}})
-	second := createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "second", TokenHash: "h2", Role: "developer",
-		Owner: store.PATOwner{Sub: "second@example.com", Claims: []string{"g-dev"}}})
+	createOwnedPATForTest(t, pg, ownedPATInput{Name: "dev-pat", TokenHash: "h1", Role: "viewer",
+		Owner: ownerIdentity{Sub: "dev@example.com", Claims: []string{"g-dev"}}})
+	second := createOwnedPATForTest(t, pg, ownedPATInput{Name: "second", TokenHash: "h2", Role: "developer",
+		Owner: ownerIdentity{Sub: "second@example.com", Claims: []string{"g-dev"}}})
 
 	tok := bearer("adm@example.com", "g-admin")
 	rec := doAs(t, s, http.MethodGet, "/api/v1/tokens", tok, nil)
@@ -223,10 +221,10 @@ func TestTokens_ManageListsAndDeletesAll(t *testing.T) {
 // A principal holding token.manage but not token.create must reach the handlers (AltPerm).
 func TestTokens_ManageOnlyPrincipal(t *testing.T) {
 	s, pg := newAuthzTestServer(t, tokenLegacy, tokenFolderPolicy)
-	victim := createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "victim", TokenHash: "h2", Role: "developer",
-		Owner: store.PATOwner{Sub: "victim@example.com", Claims: []string{"g-dev"}}})
-	createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "other", TokenHash: "h3", Role: "viewer",
-		Owner: store.PATOwner{Sub: "x@example.com", Claims: []string{"g-dev"}}})
+	victim := createOwnedPATForTest(t, pg, ownedPATInput{Name: "victim", TokenHash: "h2", Role: "developer",
+		Owner: ownerIdentity{Sub: "victim@example.com", Claims: []string{"g-dev"}}})
+	createOwnedPATForTest(t, pg, ownedPATInput{Name: "other", TokenHash: "h3", Role: "viewer",
+		Owner: ownerIdentity{Sub: "x@example.com", Claims: []string{"g-dev"}}})
 
 	tok := bearer("tm@example.com", "g-tm")
 	rec := doAs(t, s, http.MethodGet, "/api/v1/tokens", tok, nil)
@@ -247,8 +245,8 @@ func TestTokens_ManageOnlyPrincipal(t *testing.T) {
 func TestTokens_NoAccountIsRefused(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
 	ctx := t.Context()
-	other := createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "other", TokenHash: "h1", Role: "viewer",
-		Owner: store.PATOwner{Sub: "x@example.com"}})
+	other := createOwnedPATForTest(t, pg, ownedPATInput{Name: "other", TokenHash: "h1", Role: "viewer",
+		Owner: ownerIdentity{Sub: "x@example.com"}})
 
 	p := Principal{Name: "noaccount", Kind: "oidc", Role: "developer", ClaimsKnown: true, Claims: []string{},
 		Grants: authz.RoleGrants("developer", "test")}
@@ -274,8 +272,8 @@ func TestTokens_NoAccountIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, all, 1)
 	assert.Equal(t, other.ID, all[0].ID)
-	// The store never matches an empty owner either.
-	deleted, err := pg.DeleteOwnedPAT(ctx, other.ID, "")
+	// The store never matches an empty account id either.
+	deleted, err := pg.DeleteAccountPAT(ctx, other.ID, "")
 	require.NoError(t, err)
 	assert.False(t, deleted)
 }

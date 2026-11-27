@@ -121,7 +121,7 @@ func authenticate(t *testing.T, s *Server, token, sessionToken string) (Principa
 func addSession(t *testing.T, st store.Store, sessionToken, sub, email, role string, claims []string) {
 	t.Helper()
 	acct := addHumanAccount(t, st, sub, email, claims)
-	_, err := st.CreateAccountSession(context.Background(), acct.ID, HashToken(sessionToken), sub, email, role, claims,
+	_, err := st.CreateSession(context.Background(), acct.ID, HashToken(sessionToken), sub, email, role, claims,
 		[]byte("dek"), []byte("ct"), time.Now().Add(time.Hour))
 	require.NoError(t, err)
 }

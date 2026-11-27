@@ -34,9 +34,9 @@ folders:
 
 func mustOwnedPAT(t *testing.T, st store.Store, token, role string, perms []string, claims []string) *store.PAT {
 	t.Helper()
-	return createOwnedPATForTest(t, st, store.NewOwnedPAT{
+	return createOwnedPATForTest(t, st, ownedPATInput{
 		Name: "owned-" + token, TokenHash: HashToken(token), Role: role, Permissions: perms,
-		Owner: store.PATOwner{Sub: "sub-" + token, Email: token + "@example.com", Claims: claims},
+		Owner: ownerIdentity{Sub: "sub-" + token, Email: token + "@example.com", Claims: claims},
 	})
 }
 
@@ -45,7 +45,7 @@ func TestServerAuth_AdminAccountHoldsAllPermissions(t *testing.T) {
 	s.cfg.AdminEnabled = true
 	require.NoError(t, pg.SyncServiceAccounts(context.Background(), nil))
 	admin := serviceAccountByName(t, pg, authz.BuiltinAdminAccount)
-	pat, err := pg.CreateAccountPAT(context.Background(), store.NewPAT{Name: "bootstrap", TokenHash: HashToken("adm-tok"), AccountID: admin.ID})
+	pat, err := pg.CreatePAT(context.Background(), store.NewPAT{Name: "bootstrap", TokenHash: HashToken("adm-tok"), AccountID: admin.ID})
 	require.NoError(t, err)
 
 	p, rec := authenticate(t, s, "adm-tok", "")
@@ -291,9 +291,9 @@ func TestCeilingSet(t *testing.T) {
 func TestCompleteOIDCLogin_StoresClaimsAndRefreshesAccount(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{RoleMap: map[string]string{"g1": "developer"}}, "")
 	ctx := context.Background()
-	createOwnedPATForTest(t, pg, store.NewOwnedPAT{
+	createOwnedPATForTest(t, pg, ownedPATInput{
 		Name: "o", TokenHash: HashToken("o-tok"), Role: "developer",
-		Owner: store.PATOwner{Sub: "sub-x", Email: "old@example.com", Claims: []string{"stale"}},
+		Owner: ownerIdentity{Sub: "sub-x", Email: "old@example.com", Claims: []string{"stale"}},
 	})
 
 	token, expires, status, msg := s.completeOIDCLogin(ctx, map[string]any{

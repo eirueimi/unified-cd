@@ -120,7 +120,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
 	}
-	if req.Name == BootstrapPATName || strings.HasPrefix(req.Name, "env:") || strings.HasPrefix(req.Name, "system:") {
+	if strings.HasPrefix(req.Name, "env:") || strings.HasPrefix(req.Name, "system:") {
 		http.Error(w, fmt.Sprintf("token name %q is reserved", req.Name), http.StatusBadRequest)
 		return
 	}
@@ -229,7 +229,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 			labels = creator.EnrollLabels
 		}
 	}
-	pat, err = s.store.CreateAccountPAT(r.Context(), store.NewPAT{
+	pat, err = s.store.CreatePAT(r.Context(), store.NewPAT{
 		Name: req.Name, TokenHash: hash, AccountID: targetID, Role: role, Permissions: perms, EnrollLabels: labels, ExpiresAt: expiresAt, CreatedBy: creator.AuditActorID(),
 	})
 	if err != nil {
@@ -310,9 +310,8 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Label each PAT with its account: a human's email (else sub), a service
-	// account's name.
-	owners := map[string]string{}
+	// Label each PAT with its account: a human's email (else sub), "sa:<name>" for
+	// a service account. PATMeta.Owner carries the same label for the web UI.
 	accountLabels := map[string]string{}
 	if len(pats) > 0 {
 		accts, err := s.store.ListAccounts(r.Context())
@@ -321,16 +320,13 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, a := range accts {
-			label := a.Name
 			accountLabel := "sa:" + a.Name
 			if a.Kind == store.AccountKindHuman {
-				label = a.Email
-				if label == "" {
-					label = a.OIDCSub
+				accountLabel = a.Email
+				if accountLabel == "" {
+					accountLabel = a.OIDCSub
 				}
-				accountLabel = label
 			}
-			owners[a.ID] = label
 			accountLabels[a.ID] = accountLabel
 		}
 	}
@@ -347,15 +343,8 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 			EnrollLabels: pat.EnrollLabels,
 			CreatedBy:    pat.CreatedBy,
 		}
-		if pat.Owner != nil {
-			m.Owner = pat.Owner.Email
-			if m.Owner == "" {
-				m.Owner = pat.Owner.Sub
-			}
-		} else if label, ok := owners[pat.AccountID]; ok {
-			m.Owner = label
-		}
 		m.Account = accountLabels[pat.AccountID]
+		m.Owner = m.Account
 		result = append(result, m)
 	}
 	writeJSON(w, http.StatusOK, result)

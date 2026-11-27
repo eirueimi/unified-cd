@@ -28,7 +28,7 @@ type Account struct {
 	LastSeenAt *time.Time
 }
 
-// NewPAT is the input of CreateAccountPAT. Role may be empty when Permissions
+// NewPAT is the input of CreatePAT. Role may be empty when Permissions
 // is set.
 type NewPAT struct {
 	Name, TokenHash, AccountID, Role string
@@ -163,15 +163,15 @@ func (p *Postgres) SetAccountDisabled(ctx context.Context, id string, disabled b
 	return nil
 }
 
-// CreateAccountPAT creates a PAT owned by an account.
-func (p *Postgres) CreateAccountPAT(ctx context.Context, in NewPAT) (*PAT, error) {
+// CreatePAT creates a PAT owned by an account.
+func (p *Postgres) CreatePAT(ctx context.Context, in NewPAT) (*PAT, error) {
 	const q = `INSERT INTO pats(name, token_hash, role, expires_at, permissions, enroll_labels, created_by, account_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid)
 		RETURNING ` + patColumns
 	pat, err := scanPAT(p.pool.QueryRow(ctx, q, in.Name, in.TokenHash, in.Role, in.ExpiresAt,
 		in.Permissions, in.EnrollLabels, nullIfEmpty(in.CreatedBy), in.AccountID))
 	if err != nil {
-		return nil, fmt.Errorf("create account pat: %w", err)
+		return nil, fmt.Errorf("create pat: %w", err)
 	}
 	return &pat, nil
 }
@@ -218,8 +218,8 @@ func (p *Postgres) DeleteAccountPAT(ctx context.Context, id, accountID string) (
 	return tag.RowsAffected() > 0, nil
 }
 
-// CreateAccountSession is CreateSession for a session owned by an account.
-func (p *Postgres) CreateAccountSession(ctx context.Context, accountID, tokenHash, sub, email, role string, claims []string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error) {
+// CreateSession saves a browser session owned by an account.
+func (p *Postgres) CreateSession(ctx context.Context, accountID, tokenHash, sub, email, role string, claims []string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error) {
 	const q = `INSERT INTO sessions(token_hash, sub, email, role, claims, refresh_token_dek, refresh_token_ct, expires_at, account_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::uuid)
 		RETURNING id, token_hash, sub, email, role, claims, refresh_token_dek, refresh_token_ct, expires_at, last_used_at, created_at`
@@ -227,7 +227,7 @@ func (p *Postgres) CreateAccountSession(ctx context.Context, accountID, tokenHas
 	err := p.pool.QueryRow(ctx, q, tokenHash, sub, email, role, claims, refreshDEK, refreshCT, expiresAt, accountID).
 		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.Claims, &s.RefreshTokenDEK, &s.RefreshTokenCT, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("create account session: %w", err)
+		return nil, fmt.Errorf("create session: %w", err)
 	}
 	s.AccountID = accountID
 	return &s, nil

@@ -40,7 +40,7 @@ func mustSeedAdminPAT(t *testing.T, pg *store.Postgres, token string) error {
 	}
 	for _, a := range accts {
 		if a.Kind == store.AccountKindService && a.Name == testAdminAccount {
-			_, err := pg.CreateAccountPAT(ctx, store.NewPAT{Name: testAdminAccount, TokenHash: controller.HashToken(token), AccountID: a.ID})
+			_, err := pg.CreatePAT(ctx, store.NewPAT{Name: testAdminAccount, TokenHash: controller.HashToken(token), AccountID: a.ID})
 			return err
 		}
 	}

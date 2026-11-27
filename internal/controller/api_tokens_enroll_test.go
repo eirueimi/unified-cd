@@ -7,7 +7,6 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/authz"
-	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -188,9 +187,9 @@ func TestCreateToken_EnrollChildOfManageCeilingParent(t *testing.T) {
 // from a PAT, even one whose ceiling lists it.
 func TestPatPrincipal_OwnerWithoutManageOrEnrollGetsNoEnroll(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, enrollAdminPolicy)
-	createOwnedPATForTest(t, pg, store.NewOwnedPAT{
+	createOwnedPATForTest(t, pg, ownedPATInput{
 		Name: "weak", TokenHash: HashToken("exc_weak"),
-		Owner:       store.PATOwner{Sub: "n@example.com", Email: "n@example.com", Claims: []string{"g-none"}},
+		Owner:       ownerIdentity{Sub: "n@example.com", Email: "n@example.com", Claims: []string{"g-none"}},
 		Permissions: []string{"agent.enroll", "job.read"},
 	})
 	pat, err := pg.GetPATByHash(t.Context(), HashToken("exc_weak"))

@@ -144,7 +144,7 @@ func TestAccountPATsAndSessions(t *testing.T) {
 	acc, err := pg.UpsertHumanAccount(ctx, "sub1", "", "a@example.com", nil)
 	require.NoError(t, err)
 
-	pat, err := pg.CreateAccountPAT(ctx, NewPAT{Name: "p", TokenHash: "h", AccountID: acc.ID, Permissions: []string{"job.read"}, CreatedBy: "oidc:sub1"})
+	pat, err := pg.CreatePAT(ctx, NewPAT{Name: "p", TokenHash: "h", AccountID: acc.ID, Permissions: []string{"job.read"}, CreatedBy: "oidc:sub1"})
 	require.NoError(t, err)
 	assert.Equal(t, acc.ID, pat.AccountID)
 	list, err := pg.ListPATsByAccount(ctx, acc.ID)
@@ -158,7 +158,7 @@ func TestAccountPATsAndSessions(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok)
 
-	s, err := pg.CreateAccountSession(ctx, acc.ID, "th", "sub1", "a@example.com", "", []string{"g"}, []byte("d"), []byte("c"), time.Now().Add(time.Hour))
+	s, err := pg.CreateSession(ctx, acc.ID, "th", "sub1", "a@example.com", "", []string{"g"}, []byte("d"), []byte("c"), time.Now().Add(time.Hour))
 	require.NoError(t, err)
 	assert.Equal(t, acc.ID, s.AccountID)
 	got, err := pg.GetSessionByHash(ctx, "th")

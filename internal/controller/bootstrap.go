@@ -143,7 +143,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expires := time.Now().Add(bootstrapPATLifetime)
-	pat, err := s.store.CreateAccountPAT(r.Context(), store.NewPAT{
+	pat, err := s.store.CreatePAT(r.Context(), store.NewPAT{
 		Name: name, TokenHash: HashToken(token), AccountID: adminID, ExpiresAt: &expires, CreatedBy: bootstrapPATName,
 	})
 	if err != nil {

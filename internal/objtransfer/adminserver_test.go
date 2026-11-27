@@ -20,7 +20,7 @@ func newAdminServer(t *testing.T, pg *store.Postgres) *controller.Server {
 	require.NoError(t, err)
 	for _, a := range accts {
 		if a.Kind == store.AccountKindService && a.Name == "test-admin" {
-			_, err := pg.CreateAccountPAT(ctx, store.NewPAT{Name: "test-admin", TokenHash: controller.HashToken("secret"), AccountID: a.ID})
+			_, err := pg.CreatePAT(ctx, store.NewPAT{Name: "test-admin", TokenHash: controller.HashToken("secret"), AccountID: a.ID})
 			require.NoError(t, err)
 		}
 	}

@@ -8,7 +8,6 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/authz"
-	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,8 +25,8 @@ func TestAccountsListAndDisable(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{UserMap: map[string]string{"h@example.com": "viewer"}}, "")
 	addRoleServicePAT(t, s, pg, testAdminAccount, "secret", "admin")
 	addRoleServicePAT(t, s, pg, "dev", "dev-token", "developer")
-	human := createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "h-pat", TokenHash: HashToken("h-pat-tok"),
-		Owner: store.PATOwner{Sub: "h@example.com", Email: "h@example.com", Claims: []string{}}, Role: "viewer"})
+	human := createOwnedPATForTest(t, pg, ownedPATInput{Name: "h-pat", TokenHash: HashToken("h-pat-tok"),
+		Owner: ownerIdentity{Sub: "h@example.com", Email: "h@example.com", Claims: []string{}}, Role: "viewer"})
 	humanAcct := accountOf(t, pg, human)
 
 	// An admin sees every account with its PAT count.

@@ -53,13 +53,13 @@ func TestAudit_SamePATNameDistinguishable(t *testing.T) {
 	s, pg := newTestServer(t)
 	admin := serviceAccountByName(t, pg, testAdminAccount)
 	mk := func(name, tok string) *store.PAT {
-		pat, err := pg.CreateAccountPAT(t.Context(), store.NewPAT{Name: name, TokenHash: HashToken(tok), AccountID: admin.ID})
+		pat, err := pg.CreatePAT(t.Context(), store.NewPAT{Name: name, TokenHash: HashToken(tok), AccountID: admin.ID})
 		require.NoError(t, err)
 		return pat
 	}
 	a := mk("ci", "tok-a")
 	b := mk("ci", "tok-b")
-	imposter := mk(BootstrapPATName, "tok-c")
+	imposter := mk("env:UNIFIED_TOKEN", "tok-c")
 
 	rowA := auditedDelete(t, s, pg, bearerAuth("tok-a"))
 	rowB := auditedDelete(t, s, pg, bearerAuth("tok-b"))
@@ -71,16 +71,16 @@ func TestAudit_SamePATNameDistinguishable(t *testing.T) {
 	assert.Equal(t, "pat:"+b.ID, rowB.ActorID)
 	assert.NotEqual(t, rowA.ActorID, rowB.ActorID)
 
-	assert.Equal(t, BootstrapPATName, rowC.Actor)
+	assert.Equal(t, "env:UNIFIED_TOKEN", rowC.Actor)
 	assert.Equal(t, "pat:"+imposter.ID, rowC.ActorID)
 }
 
 func TestAudit_ActorIDOwnerPATAndSession(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{UserMap: map[string]string{"u@example.com": "admin", "v@example.com": "admin"}}, "")
 
-	pat := createOwnedPATForTest(t, pg, store.NewOwnedPAT{
+	pat := createOwnedPATForTest(t, pg, ownedPATInput{
 		Name: "mine", TokenHash: HashToken("tok-owned"), Role: "admin",
-		Owner: store.PATOwner{Sub: "sub-1", Email: "u@example.com"},
+		Owner: ownerIdentity{Sub: "sub-1", Email: "u@example.com"},
 	})
 	row := auditedDelete(t, s, pg, bearerAuth("tok-owned"))
 	assert.Equal(t, "pat:"+pat.ID, row.ActorID)

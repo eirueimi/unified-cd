@@ -139,7 +139,7 @@ func recoverAdminPAT(ctx context.Context, st store.Store, now time.Time, ttl tim
 	}
 	expires := now.Add(ttl)
 	name := "recovery-" + now.Format("20060102T150405Z")
-	pat, err := st.CreateAccountPAT(ctx, store.NewPAT{
+	pat, err := st.CreatePAT(ctx, store.NewPAT{
 		Name: name, TokenHash: controller.HashToken(token), AccountID: adminID,
 		ExpiresAt: &expires, CreatedBy: recoveryActor,
 	})

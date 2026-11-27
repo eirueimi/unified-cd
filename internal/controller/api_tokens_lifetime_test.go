@@ -197,7 +197,7 @@ func TestPATFromPAT_CrossAccountBoundByCeiling(t *testing.T) {
 	addRoleServicePAT(t, s, pg, "deploy", "deploy-token", "developer")
 	issuer := addPermServicePAT(t, s, pg, "issuer", "unused", authz.TokenCreate, authz.ServiceAccountToken, authz.AgentEnroll)
 	require.NoError(t, pg.DeletePAT(context.Background(), issuer.ID))
-	narrow, err := pg.CreateAccountPAT(context.Background(), store.NewPAT{
+	narrow, err := pg.CreatePAT(context.Background(), store.NewPAT{
 		Name: "narrow", TokenHash: HashToken("narrow-token"), AccountID: issuer.AccountID,
 		Permissions: []string{"job.read", "token.create", "serviceaccount.token"},
 	})
@@ -216,7 +216,7 @@ func TestPATFromPAT_CrossAccountInheritsEnrollLabels(t *testing.T) {
 	addRoleServicePAT(t, s, pg, "deploy", "deploy-token", "developer")
 	issuer := addPermServicePAT(t, s, pg, "issuer", "unused", authz.TokenCreate, authz.ServiceAccountToken, authz.AgentEnroll)
 	require.NoError(t, pg.DeletePAT(context.Background(), issuer.ID))
-	_, err := pg.CreateAccountPAT(context.Background(), store.NewPAT{
+	_, err := pg.CreatePAT(context.Background(), store.NewPAT{
 		Name: "bounded", TokenHash: HashToken("bounded-token"), AccountID: issuer.AccountID,
 		Permissions: []string{"agent.enroll", "token.create", "serviceaccount.token"}, EnrollLabels: []string{"pool:a"},
 	})

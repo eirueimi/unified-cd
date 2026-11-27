@@ -25,8 +25,8 @@ func TestDisabledHumanRefusedEverywhere(t *testing.T) {
 
 	acct := addHumanAccount(t, pg, "h@example.com", "h@example.com", []string{})
 	addSession(t, pg, "sess-h", "h@example.com", "h@example.com", "admin", []string{})
-	createOwnedPATForTest(t, pg, store.NewOwnedPAT{Name: "h-pat", TokenHash: HashToken("h-pat-tok"),
-		Owner: store.PATOwner{Sub: "h@example.com", Email: "h@example.com", Claims: []string{}}})
+	createOwnedPATForTest(t, pg, ownedPATInput{Name: "h-pat", TokenHash: HashToken("h-pat-tok"),
+		Owner: ownerIdentity{Sub: "h@example.com", Email: "h@example.com", Claims: []string{}}})
 	idToken := bearer("h@example.com")
 
 	// Everything works while the account is enabled; the id_token request
@@ -118,7 +118,7 @@ func TestAdminAccountDisabled(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
 	require.NoError(t, pg.SyncServiceAccounts(t.Context(), nil))
 	admin := serviceAccountByName(t, pg, authz.BuiltinAdminAccount)
-	_, err := pg.CreateAccountPAT(t.Context(), store.NewPAT{Name: "adm", TokenHash: HashToken("adm-token"), AccountID: admin.ID})
+	_, err := pg.CreatePAT(t.Context(), store.NewPAT{Name: "adm", TokenHash: HashToken("adm-token"), AccountID: admin.ID})
 	require.NoError(t, err)
 
 	enabled := NewServer(Config{AdminEnabled: true}, pg)
@@ -144,19 +144,6 @@ func TestAdminAccountDisabled(t *testing.T) {
 	require.NoError(t, pg.SetAdminEnabledUntil(t.Context(), now.Add(time.Minute)))
 	now = now.Add(2 * time.Minute)
 	assert.Equal(t, http.StatusForbidden, doAs(t, leased, http.MethodGet, "/api/v1/jobs", "adm-token", nil).Code)
-}
-
-// A PAT row with no account (a pre-accounts row) is refused.
-func TestOwnerlessPATRefused(t *testing.T) {
-	pg := storetest.NewTestPostgres(t)
-	require.NoError(t, storetest.Exec(t.Context(), pg,
-		`INSERT INTO pats (name, token_hash, role, account_id) VALUES ('legacy', $1, 'admin', NULL)`, HashToken("legacy-token")))
-	s := NewServer(Config{AdminEnabled: true}, pg)
-	t.Cleanup(s.Close)
-
-	rec := doAs(t, s, http.MethodGet, "/api/v1/jobs", "legacy-token", nil)
-	assert.Equal(t, http.StatusForbidden, rec.Code)
-	assert.Equal(t, forbiddenAccountDisabled, rec.Body.String())
 }
 
 // A person the policy refuses leaves no account row behind.
@@ -249,7 +236,7 @@ func TestServiceAccountPATCeiling(t *testing.T) {
 	s, pg := newTestServer(t)
 	addRoleServicePAT(t, s, pg, "dev", "dev-token", "developer")
 	acct := serviceAccountByName(t, pg, "dev")
-	_, err := pg.CreateAccountPAT(t.Context(), store.NewPAT{Name: "ro", TokenHash: HashToken("ro-token"), AccountID: acct.ID,
+	_, err := pg.CreatePAT(t.Context(), store.NewPAT{Name: "ro", TokenHash: HashToken("ro-token"), AccountID: acct.ID,
 		Permissions: []string{"job.read", "secret.write"}})
 	require.NoError(t, err)
 
