@@ -19,7 +19,7 @@ const (
 	ScheduleConfigure Permission = "schedule.configure"
 )
 
-// Global-only permissions (catalogue positions 9-27).
+// Global-only permissions (catalogue positions 9-27; 28-29 are below).
 const (
 	SecretList         Permission = "secret.list"
 	SecretWrite        Permission = "secret.write"
@@ -42,6 +42,12 @@ const (
 	AgentVolumeWrite   Permission = "agentvolume.write"
 )
 
+// Account permissions (catalogue positions 28-29, global-only, admin bundle only).
+const (
+	AccountManage       Permission = "account.manage"
+	ServiceAccountToken Permission = "serviceaccount.token"
+)
+
 // folderScopableCount is the number of leading catalogue entries that may be
 // granted on a folder.
 const folderScopableCount = 9
@@ -60,6 +66,7 @@ var catalogue = []Permission{
 	AuditRead, AuthzRead,
 	AgentEnroll,
 	AgentVolumeRead, AgentVolumeWrite,
+	AccountManage, ServiceAccountToken,
 }
 
 // bitOf returns the Set bit index of p, or -1 when p is not in the catalogue.

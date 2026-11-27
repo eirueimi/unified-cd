@@ -279,27 +279,38 @@ func compileGrants(folder, path string, entries []GrantEntry) ([]policyGrant, er
 		if len(e.Grants) == 0 {
 			return nil, fmt.Errorf("%s: empty grant", p)
 		}
-		var set Set
-		for _, name := range e.Grants {
-			if bundle, ok := Bundle(name); ok {
-				if folder != "" {
-					bundle = bundle.FolderPart()
-				}
-				set = set.Union(bundle)
-				continue
-			}
-			perm, ok := Parse(name)
-			if !ok {
-				return nil, fmt.Errorf("%s: unknown permission or role %q", p, name)
-			}
-			if folder != "" && !FolderScopable(perm) {
-				return nil, fmt.Errorf("%s: permission %q is global-only and cannot be granted on a folder", p, name)
-			}
-			set = set.With(perm)
+		set, err := grantSet(folder, p, e.Grants)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, policyGrant{key: e.Key, grant: e.Grants, set: set})
 	}
 	return out, nil
+}
+
+// grantSet resolves role and permission names into a Set. folder == "" is the
+// global scope; on a folder, roles are reduced to their folder part and
+// global-only permissions are rejected. Errors are prefixed with path.
+func grantSet(folder, path string, names []string) (Set, error) {
+	var set Set
+	for _, name := range names {
+		if bundle, ok := Bundle(name); ok {
+			if folder != "" {
+				bundle = bundle.FolderPart()
+			}
+			set = set.Union(bundle)
+			continue
+		}
+		perm, ok := Parse(name)
+		if !ok {
+			return 0, fmt.Errorf("%s: unknown permission or role %q", path, name)
+		}
+		if folder != "" && !FolderScopable(perm) {
+			return 0, fmt.Errorf("%s: permission %q is global-only and cannot be granted on a folder", path, name)
+		}
+		set = set.With(perm)
+	}
+	return set, nil
 }
 
 // legacyRoleLines reports roleMap values that are not a built-in role. userMap

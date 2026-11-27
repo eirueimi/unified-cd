@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -198,6 +200,184 @@ type ControllerConfig struct {
 	// CustomMetrics configures job-defined Prometheus metrics (the metrics:
 	// blocks of a Job).
 	CustomMetrics ControllerCustomMetricsConfig `yaml:"customMetrics"`
+	// ServiceAccounts configures service accounts by name; the built-in
+	// "admin" account accepts only "enabled".
+	ServiceAccounts map[string]ServiceAccountConfig `yaml:"serviceAccounts"`
+	// ServiceAccountGrants is ServiceAccounts compiled at startup, without the
+	// built-in admin account. Not read from YAML.
+	ServiceAccountGrants map[string]authz.Grants `yaml:"-"`
+	// Tokens configures personal access token lifetimes.
+	Tokens TokensConfig `yaml:"tokens"`
+	// UI configures web UI behaviour.
+	UI UIConfig `yaml:"ui"`
+}
+
+// ServiceAccountConfig is one entry of serviceAccounts.
+type ServiceAccountConfig struct {
+	// Enabled defaults to true.
+	Enabled     *bool                            `yaml:"enabled"`
+	Permissions *authz.ServiceAccountPermissions `yaml:"permissions"`
+}
+
+// Defaults of the tokens section.
+const (
+	DefaultTokenLifetime    = 2160 * time.Hour // 90 days
+	DefaultTokenMaxLifetime = 8760 * time.Hour // 365 days
+)
+
+// TokensConfig is the tokens block. A nil field means "not set"; use the
+// accessors for effective values.
+// Env: UNIFIED_TOKENS_DEFAULT_LIFETIME, UNIFIED_TOKENS_MAX_LIFETIME.
+type TokensConfig struct {
+	// DefaultLifetime is the lifetime of a new PAT when none is requested
+	// (default 2160h).
+	DefaultLifetime *time.Duration `yaml:"defaultLifetime"`
+	// MaxLifetime caps the lifetime of a new PAT (default 8760h; 0 = unlimited).
+	MaxLifetime *time.Duration `yaml:"maxLifetime"`
+}
+
+// UnmarshalYAML accepts Go duration strings and the bare integer 0 (yaml.v3
+// refuses an integer for a time.Duration, but "maxLifetime: 0" is the
+// documented way to allow non-expiring tokens).
+func (t *TokensConfig) UnmarshalYAML(n *yaml.Node) error {
+	for i := 0; n.Kind == yaml.MappingNode && i+1 < len(n.Content); i += 2 {
+		if k := n.Content[i].Value; k != "defaultLifetime" && k != "maxLifetime" {
+			return fmt.Errorf("tokens: unknown field %q", k)
+		}
+	}
+	var raw struct {
+		DefaultLifetime yaml.Node `yaml:"defaultLifetime"`
+		MaxLifetime     yaml.Node `yaml:"maxLifetime"`
+	}
+	if err := n.Decode(&raw); err != nil {
+		return err
+	}
+	parse := func(field string, node *yaml.Node) (*time.Duration, error) {
+		if node.IsZero() || (node.Kind == yaml.ScalarNode && node.Tag == "!!null") {
+			return nil, nil
+		}
+		var d time.Duration
+		if node.Kind == yaml.ScalarNode && node.Tag == "!!int" && node.Value == "0" {
+			return &d, nil
+		}
+		if err := node.Decode(&d); err != nil {
+			return nil, fmt.Errorf("tokens.%s must be a duration such as 2160h (or 0): %w", field, err)
+		}
+		return &d, nil
+	}
+	var err error
+	if t.DefaultLifetime, err = parse("defaultLifetime", &raw.DefaultLifetime); err != nil {
+		return err
+	}
+	t.MaxLifetime, err = parse("maxLifetime", &raw.MaxLifetime)
+	return err
+}
+
+// UIConfig is the ui block. Env: UNIFIED_UI_ALLOW_TOKEN_ENTRY.
+type UIConfig struct {
+	// AllowTokenEntry keeps the manual token form in the web UI while SSO is
+	// configured.
+	AllowTokenEntry bool `yaml:"allowTokenEntry"`
+}
+
+// TokenDefaultLifetime returns the effective default PAT lifetime (2160h).
+func (c *ControllerConfig) TokenDefaultLifetime() time.Duration {
+	if c.Tokens.DefaultLifetime == nil {
+		return DefaultTokenLifetime
+	}
+	return *c.Tokens.DefaultLifetime
+}
+
+// TokenMaxLifetime returns the effective maximum PAT lifetime (8760h; 0 means
+// unlimited).
+func (c *ControllerConfig) TokenMaxLifetime() time.Duration {
+	if c.Tokens.MaxLifetime == nil {
+		return DefaultTokenMaxLifetime
+	}
+	return *c.Tokens.MaxLifetime
+}
+
+// AdminAccountEnabled reports whether the built-in admin account is enabled
+// (default true).
+func (c *ControllerConfig) AdminAccountEnabled() bool {
+	a, ok := c.ServiceAccounts[authz.BuiltinAdminAccount]
+	return !ok || a.Enabled == nil || *a.Enabled
+}
+
+func (c TokensConfig) validate() error {
+	if c.DefaultLifetime != nil && *c.DefaultLifetime <= 0 {
+		return fmt.Errorf("tokens.defaultLifetime must be positive")
+	}
+	if c.MaxLifetime != nil && *c.MaxLifetime < 0 {
+		return fmt.Errorf("tokens.maxLifetime must not be negative")
+	}
+	return nil
+}
+
+// tokensFromEnv reads the UNIFIED_TOKENS_* variables.
+func tokensFromEnv() (TokensConfig, error) {
+	var t TokensConfig
+	for _, e := range []struct {
+		name string
+		dst  **time.Duration
+	}{
+		{"UNIFIED_TOKENS_DEFAULT_LIFETIME", &t.DefaultLifetime},
+		{"UNIFIED_TOKENS_MAX_LIFETIME", &t.MaxLifetime},
+	} {
+		v := strings.TrimSpace(os.Getenv(e.name))
+		if v == "" {
+			continue
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return t, fmt.Errorf("%s must be a duration such as 2160h, got %q", e.name, v)
+		}
+		*e.dst = &d
+	}
+	return t, nil
+}
+
+var serviceAccountNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// compileServiceAccounts validates the serviceAccounts block and compiles the
+// grants of every account except the built-in admin.
+func (c *ControllerConfig) compileServiceAccounts() error {
+	c.ServiceAccountGrants = map[string]authz.Grants{}
+	names := make([]string, 0, len(c.ServiceAccounts))
+	for name := range c.ServiceAccounts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		sa := c.ServiceAccounts[name]
+		path := "serviceAccounts[" + strconv.Quote(name) + "]"
+		if name == authz.BuiltinAdminAccount {
+			if sa.Permissions != nil {
+				return fmt.Errorf(`%s: only "enabled" may be set for the built-in admin account`, path)
+			}
+			continue
+		}
+		if !serviceAccountNameRE.MatchString(name) || strings.HasPrefix(name, "env:") || strings.HasPrefix(name, "system:") {
+			return fmt.Errorf(`%s: invalid name: must be a DNS label and must not start with "env:" or "system:"`, path)
+		}
+		g, err := authz.CompileServiceAccount(name, sa.Permissions)
+		if err != nil {
+			return err
+		}
+		c.ServiceAccountGrants[name] = g
+	}
+	return nil
+}
+
+// validateAccounts checks the tokens block and compiles service accounts.
+func (c *ControllerConfig) validateAccounts() error {
+	if err := c.Tokens.validate(); err != nil {
+		return err
+	}
+	if max := c.TokenMaxLifetime(); max != 0 && c.TokenDefaultLifetime() > max {
+		return fmt.Errorf("tokens.defaultLifetime must not exceed tokens.maxLifetime")
+	}
+	return c.compileServiceAccounts()
 }
 
 // Defaults of the customMetrics section.
@@ -446,6 +626,12 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		return nil, err
 	}
 	eff.CustomMetrics = cm
+	tk, err := tokensFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	eff.Tokens = tk
+	eff.UI.AllowTokenEntry = envBool("UNIFIED_UI_ALLOW_TOKEN_ENTRY")
 	if v := strings.TrimSpace(os.Getenv("UNIFIED_ARTIFACT_DOWNLOAD")); v != "" {
 		eff.ObjectStore = &ControllerObjectStoreConfig{ArtifactDownload: v}
 	}
@@ -499,6 +685,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if filePath == "" {
 		if err := validateOIDCDevice(eff.OIDC); err != nil {
+			return nil, err
+		}
+		if err := eff.validateAccounts(); err != nil {
 			return nil, err
 		}
 		eff.applyExternalURLFallback()
@@ -587,6 +776,19 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.CustomMetrics.TTL != nil {
 		eff.CustomMetrics.TTL = file.CustomMetrics.TTL
+	}
+	if file.Tokens.DefaultLifetime != nil {
+		eff.Tokens.DefaultLifetime = file.Tokens.DefaultLifetime
+	}
+	if file.Tokens.MaxLifetime != nil {
+		eff.Tokens.MaxLifetime = file.Tokens.MaxLifetime
+	}
+	if file.UI.AllowTokenEntry {
+		eff.UI.AllowTokenEntry = true
+	}
+	eff.ServiceAccounts = file.ServiceAccounts
+	if err := eff.validateAccounts(); err != nil {
+		return nil, err
 	}
 	if file.MaxRequestBodyBytes < 0 {
 		return nil, fmt.Errorf("maxRequestBodyBytes must not be negative")

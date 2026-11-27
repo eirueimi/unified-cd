@@ -26,7 +26,7 @@ The controller exits at startup and logs `config file` with one of these errors 
 
 | Error | Cause |
 |---|---|
-| `oidc.permissions.folders["team-a"].groups["my-org:team-a"]: unknown permission or role "jobs.read"` | A grant names something that is not one of the 28 permissions or `viewer` / `developer` / `admin` (a typo) |
+| `oidc.permissions.folders["team-a"].groups["my-org:team-a"]: unknown permission or role "jobs.read"` | A grant names something that is not one of the 30 permissions or `viewer` / `developer` / `admin` (a typo) |
 | `oidc.permissions.folders["team-a"].groups["my-org:team-a"]: permission "secret.write" is global-only and cannot be granted on a folder` | A global-only permission appears in a folder entry |
 | `oidc.permissions.folders["team-a//x"]: invalid folder: segments must be non-empty and must not be "." or ".."` | An empty, `.` or `..` segment in a folder key |
 | `oidc.permissions.folders["team-*"]: invalid folder: folders are literal job-name prefixes, "*", "?", "[" are not allowed` | A wildcard in a folder key |

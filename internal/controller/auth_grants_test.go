@@ -58,7 +58,7 @@ func TestServerAuth_BreakGlassHoldsAll28(t *testing.T) {
 	assert.Empty(t, p.OwnerPATID)
 	assert.False(t, p.ClaimsKnown)
 	all := authz.All()
-	require.Len(t, all, 28)
+	require.Len(t, all, 30)
 	for _, perm := range all {
 		assert.True(t, p.Grants.Can(perm, ""), string(perm))
 		assert.True(t, p.Grants.HeldAnywhere(perm), string(perm))
