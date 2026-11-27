@@ -15,47 +15,55 @@ which tries the following **3 methods** in order. The first successful method gr
 
 | # | Method | Credential | Primary users |
 |---|--------|-----------|---------------|
-| 1 | PAT (Personal Access Token) | `Authorization: Bearer exc_...` | Long-lived scripts / CI / `UNIFIED_TOKEN` |
+| 1 | PAT (Personal Access Token) | `Authorization: Bearer exc_...` | Scripts / CI (service-account PATs), CLI after the bootstrap |
 | 2 | OIDC id_token | `Authorization: Bearer <JWT>` | CLI after `unified-cli login` (SSO setup) |
 | 3 | Session Cookie | `ucd_session` Cookie | Browser SSO login via Web UI |
 
 > The agent API (`/api/v1/agents/*`) uses a separate per-agent credential path.
-> Human PATs, OIDC tokens, and `UNIFIED_TOKEN` cannot authorize a new agent.
+> PATs and OIDC tokens cannot authorize a new agent.
 > Agents authenticate with an enrolled `uca_...` access token obtained via
 > agent enrollment (see [Agents](agents.md)); it is not subject to SSO.
 
-`ServerAuth` has no name-based branch for static tokens; break-glass admin comes only from matching the configured token's hash. **`UNIFIED_TOKEN` is automatically synced to the DB
-as a PAT named `env:UNIFIED_TOKEN` at startup and is treated as one of the method-1 PATs.**
-This means it appears in `token list` / `token delete` like any other PAT (for a caller who may manage every token).
-Its break-glass status requires the presented token's hash to match the configured `UNIFIED_TOKEN` value (constant-time) **and** the PAT to have no owner; the name alone grants nothing.
-The `env:` name prefix is reserved and cannot be used for new PATs, and at startup any other PAT
-named `env:UNIFIED_TOKEN` (different hash, e.g. a stale row after rotation) is removed with a warning in the controller log.
-See [Authorization: Break-glass](authorization.md#break-glass) for the reserved-name error, the startup purge warning and the warning logged when `UNIFIED_TOKEN` stays set alongside SSO.
-(Note: deleting it via `token delete` while `UNIFIED_TOKEN` is still set in the environment
-will cause it to be re-synced on the next restart. To fully disable it, remove or change
-the environment variable.)
+**Every credential belongs to an account.** There is no static, always-admin token: the controller's
+`UNIFIED_TOKEN` was removed (it is ignored with an error log; see
+[Migrating: internal accounts](migrations/2026-11-27-internal-accounts.md)). Two kinds of account exist:
+
+| Account | Created | Permissions | Signs in with |
+|---|---|---|---|
+| **Human** | The first time a person signs in with SSO (and passes the admission check) | `oidc.roleMap` / `userMap` / `defaultRole` / `permissions`, evaluated against the account's email, `sub` and groups | SSO (browser, CLI device flow), or a PAT they created |
+| **Service** | Declared in the controller config (`serviceAccounts`) | The `permissions` of its entry; the built-in `admin` always holds the admin bundle | A PAT only |
 
 Whether SSO is active is determined by whether OIDC configuration (`UNIFIED_OIDC_*`) is passed to the controller.
 
-- **No OIDC config** → Only method 1 is active (`/api/v1/auth/oidc-*` returns 404). In this case
-  `UNIFIED_TOKEN` is the only login method, so **the controller refuses to start if it is unset**
-  (`token is required when SSO is not configured` error).
-- **OIDC configured** → All three methods are active. `UNIFIED_TOKEN` is not required to start
-  (the first admin login and PAT creation can be done via SSO).
-- When both are configured, they are not mutually exclusive. `UNIFIED_TOKEN` (as a PAT) and SSO
-  can always be used together — e.g. CI uses `UNIFIED_TOKEN` while humans use SSO.
+- **No OIDC config** → Only method 1 is active (`/api/v1/auth/oidc-*` returns 404). The first admin gets in
+  with the one-time **initial admin token** (see [Non-SSO setup](#non-sso-setup-initial-admin-token-and-service-accounts)).
+  The controller starts when the bootstrap is done or when it can generate (or was given) that token;
+  otherwise it exits with an error such as `cannot write the initial admin token: no writable config or data directory; set UNIFIED_INITIAL_ADMIN_TOKEN`.
+- **OIDC configured** → All three methods are active. No initial token is generated: the first admin comes
+  from `oidc.userMap` / `roleMap`, and `unified-controller admin recover` remains as the emergency way in.
+- When both are in use they are not mutually exclusive: e.g. CI uses a service-account PAT while humans use SSO.
+
+An admin can disable a human account (`unified-cli account disable <id>`, permission `account.manage`), which
+refuses all of its PATs and sessions at once. See [Authorization](authorization.md#service-accounts) for service accounts.
 
 ---
 
-## Non-SSO Setup (Static Token)
+## Non-SSO Setup (initial admin token and service accounts)
 
-Minimal setup. All authentication uses a single shared `UNIFIED_TOKEN`
-(internally it is synced as a PAT, but usage is unchanged from the caller's perspective).
+Minimal setup. The first admin gets in once with the **initial admin token**, then daily use is
+**service-account PATs**. Nothing is a standing admin token.
 
 ### Starting the controller
 
+On the first start where the bootstrap has not been done and SSO is not configured, the controller
+generates the initial admin token (`uci_` plus 40 hex characters) and writes it to a file, mode `0600`:
+`initial-admin-token` in the config file's directory when you pass `-f`, otherwise in the data
+directory (`--data-dir`). The log states the path, never the value. To choose the value yourself, set
+`UNIFIED_INITIAL_ADMIN_TOKEN` on the controller (as the Compose files and the Helm chart do).
+Only one replica generates it; the others log that another replica did.
+
 ```bash
-cp .env.example .env          # set UNIFIED_TOKEN (defaults to dev-token-change-me)
+cp .env.example .env          # sets a fixed UNIFIED_INITIAL_ADMIN_TOKEN for the local dev stack
 docker compose up -d
 ```
 
@@ -63,27 +71,44 @@ The controller in `docker-compose.yaml` starts with (excerpt):
 
 ```yaml
 environment:
-  UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
+  UNIFIED_INITIAL_ADMIN_TOKEN: ${UNIFIED_INITIAL_ADMIN_TOKEN:-uci_dev0000000000000000000000000000000000000}
   # UNIFIED_OIDC_* not set → SSO disabled
 ```
 
+### Bootstrap: exchange the initial token for an admin PAT
+
+```bash
+export UNIFIED_SERVER=http://localhost:8080
+unified-cli bootstrap --initial-token-file ./initial-admin-token   # or: --initial-token <value>, or UNIFIED_INITIAL_ADMIN_TOKEN
+# => prints the admin PAT on stdout
+```
+
+`POST /api/v1/bootstrap` needs no credentials. It returns a PAT of the built-in `admin` account, valid for 30 days.
+After the exchange the stored hash is erased, the file is deleted when the controller can delete it, and the value is
+useless. The endpoint is rate limited and answers `invalid or already used initial token` (401) for both a wrong and a
+used value, and `too many bootstrap attempts` (429). The Docker Compose stacks do this step for you in the
+`agent-enroll` one-shot and keep the PAT in the `admin-state` volume (see [Installation](../getting-started/installation.md#docker-recommended-for-production)).
+If the exchange consumed the token but failed to create the PAT, or you lost the admin PAT, use
+`unified-controller admin recover` (see [Authorization: Built-in admin account and recovery](authorization.md#built-in-admin-account-and-recovery)).
+
 ### CLI access
 
-Pass the token via environment variable, flag, or config file.
+Pass the PAT via environment variable, flag, or config file (`UNIFIED_TOKEN` here is the CLI's own
+variable: the PAT the CLI sends. The controller does not read it).
 
 ```bash
 # Environment variable
 export UNIFIED_SERVER=http://localhost:8080
-export UNIFIED_TOKEN=dev-token-change-me
+export UNIFIED_TOKEN=<the admin PAT>
 unified-cli apply -f examples/hello.yaml
 
 # Or via flags
 unified-cli apply -f examples/hello.yaml \
-  --server http://localhost:8080 --token dev-token-change-me
+  --server http://localhost:8080 --token <the admin PAT>
 
 # Or via config file ~/.config/unified-cd/config.yaml
 #   server: http://localhost:8080
-#   token: dev-token-change-me
+#   token: <the admin PAT>
 unified-cli apply -f examples/hello.yaml
 ```
 
@@ -93,60 +118,88 @@ unified-cli apply -f examples/hello.yaml
 - Controller directly: `http://localhost:8080/ui/`
 
 With SSO disabled, "Login with SSO" does not work (`/api/v1/auth/oidc-login` returns 404).
-Use the static token when calling protected APIs from the UI.
+Paste a PAT into the token form on the Connection card. With SSO configured the form is hidden and the
+controller refuses PATs from the browser (see [Web UI under SSO](#web-ui-token-form-under-sso)).
 
-### Issuing PATs (optional)
+### Service accounts and PATs for automation
 
-If you don't want to distribute the shared token, issue individual PATs.
+Do not hand the admin PAT to CI. Declare a service account in the controller config and issue its PAT:
+
+```yaml
+serviceAccounts:
+  ci-bot:
+    permissions:
+      global: [viewer]
+      folders:
+        team-a: developer
+```
 
 ```bash
-unified-cli token create ci-bot --server http://localhost:8080 --token <UNIFIED_TOKEN>
+unified-cli token create ci-bot-token --account ci-bot --server http://localhost:8080 --token <the admin PAT>
 # => displays exc_xxxxxxxx... once. Use this as the Bearer token going forward.
 # Expires after tokens.defaultLifetime (2160h) unless set: --expires-in 720h
 ```
 
 PATs are stored as SHA-256 hashes in the DB and managed via `token list` / `token delete`.
 Each PAT created through the API records who created it (`created_by`, shown as `createdBy` by `token list`):
-`break-glass`, `pat:<id>` or `oidc:<sub>`, the same ids the audit log uses as `actorId`. The `token.create`
+`pat:<id>`, `oidc:<sub>`, or `bootstrap` / `recovery` for the two admin entry points, the same ids the audit log uses as `actorId`. The `token.create`
 audit row also carries the new PAT's id in `details.patId`, so a `pat:<id>` actor in later rows can be traced to
 its creation even after the PAT is deleted (see [Audit log](audit.md#actor-identity)).
-`token list` also shows `env:UNIFIED_TOKEN`, the PAT derived from `UNIFIED_TOKEN`, to a caller
-who holds `token.manage` (as noted above, deleting it is ineffective while the environment variable is still set).
-A token created with `UNIFIED_TOKEN` has no owner: it is role-only, `--role` defaults to `admin`
-and `--permission` is not available (see [PAT owners and ceilings](#pat-owners-and-ceilings)).
+`token list` shows each PAT's account (`sa:<name>` for a service account), ceiling and expiry.
+A service-account PAT can create its own successor (`unified-cli token create ... ` with the old PAT), so CI
+rotates its token without an admin.
 
-> **Production note**: The default value `dev-token-change-me` in the repo-root `docker-compose.yaml`
-> is committed in plaintext. The controller refuses to start with that value unless
-> `UNIFIED_DEV_MODE=1` or `UNIFIED_ALLOW_DEFAULT_TOKEN=1` is set (the dev compose sets both).
-> Use a long random `UNIFIED_TOKEN` (`openssl rand -hex 32`) for any non-local deployment;
-> the production compose in `deployments/docker/` has no default and requires you to set it.
+> **Production note**: The repo-root `docker-compose.yaml` ships a fixed `UNIFIED_INITIAL_ADMIN_TOKEN`
+> (`uci_dev000...`) so the local dev stack works with no setup. It is a published value: anyone who can reach
+> that controller before you exchange it can take the admin account. Never use it anywhere reachable from a
+> network. The production compose in `deployments/docker/` has no default and requires you to set it
+> (`echo "uci_$(openssl rand -hex 20)"`); the Helm chart generates one in the cluster.
 
-## PAT owners and ceilings
+## PAT accounts and ceilings
 
-A PAT created by an SSO user (a browser session or a CLI device-flow login) records its **owner**:
-that user's `sub`, `email` and the group claim values (`oidc.rolesClaim`) they presented. At use,
-the PAT's permissions are recomputed on every request as *the owner's permissions under the
-current config, intersected with the PAT's optional ceiling*:
+Every PAT belongs to an **account**: the human account of the SSO user who created it (a browser session or
+a CLI device-flow login), or a service account named with `--account`. At use, the PAT's permissions are
+recomputed on every request as *the account's permissions under the current config, intersected with the
+PAT's optional ceiling*:
 
 - **Ceiling.** `--role <role>` bounds the token to that bundle; `--permission <name>` (repeatable)
-  bounds it to a list. With neither, the PAT carries everything its owner has. A ceiling above what
+  bounds it to a list. With neither, the PAT carries everything its account has. A ceiling above what
   the creator holds is refused with a `400`, never silently weakened (for example
   `cannot grant role "developer": it exceeds your global role "viewer"; use --permission to grant folder permissions you hold`).
-- **A PAT never exceeds its owner**, globally or on any folder. Removing the owner from `roleMap` /
-  `userMap` / `permissions` takes effect for all their PATs at the next controller start, with no re-issue.
-- **Group changes at the IdP** reach a PAT when its owner next logs in through the browser: every
-  browser login refreshes the group snapshot on all PATs of that `sub`, even when the login itself is refused.
-  Silent session refresh does not refresh PAT owners.
-- **If OIDC is removed from the config**, every owner PAT fails closed with
-  `forbidden: token owner has no permissions`. Role-only PATs and the break-glass `UNIFIED_TOKEN` keep working.
-- **Role-only PATs** have no owner: every PAT created before this feature, and any PAT created with
-  the break-glass token or another role-only PAT. They are evaluated as before, as the global bundle
-  of their stored role, and they bypass folder grants until revoked; re-issue them when you introduce folders.
-- A PAT created from an identity whose groups are unknown is refused with `403` (a session from
-  before the upgrade, or a CLI login whose id_token carries no roles claim while the config has
-  group-keyed grants). The exact strings and fixes are in
+- **A PAT never exceeds its account**, globally or on any folder. Removing the person from `roleMap` /
+  `userMap` / `permissions`, or a service account from `serviceAccounts`, takes effect for all of its PATs at the
+  next controller start, with no re-issue.
+- **Disabling an account** (`unified-cli account disable <id>` for a human; removing the entry from
+  `serviceAccounts` for a service account, or `serviceAccounts.admin.enabled: false`) refuses all of its PATs
+  and sessions with `forbidden: account disabled`.
+- **Group changes at the IdP** reach a PAT when its person next logs in through the browser: every
+  browser login refreshes the account's email and group snapshot, even when the login itself is refused.
+  Silent session refresh does not refresh the account. The CLI id_token path refreshes it at most once a minute per person.
+- **If OIDC is removed from the config**, a human's PATs fail closed (`forbidden: no role`). Service-account
+  PATs keep working: they do not depend on SSO.
+- **Lifetime.** Every new PAT expires: `tokens.defaultLifetime` (default 2160h, 90 days) when `--expires-in` is
+  omitted, at most `tokens.maxLifetime` (default 8760h, 365 days; `0` removes the cap). PATs of the built-in
+  `admin` account are capped at 720h. PATs created before the upgrade keep their own expiry. The controller
+  logs a daily warning for PATs expiring within 7 days and exports the gauge `unifiedcd_pats_expiring_soon`.
+- **PAT from PAT.** A PAT may create PATs only for its own account, within its own ceiling and the lifetime
+  limits. Creating one for another account needs `token.manage` or `serviceaccount.token`, and never targets `admin`.
+- A PAT created from an OIDC bearer id_token that carries no roles claim while the config has
+  group-keyed grants is refused with `403`. The exact strings and fixes are in
   [Troubleshooting](../troubleshooting/controller-and-database.md#token-creation-is-refused-cannot-create-a-token).
 - Each user lists and revokes only their own PATs (`token.create`); `token.manage` (admin) sees and revokes everyone's.
+- **Changing the IdP.** Accounts are matched by `sub`. An IdP with different subjects creates new human accounts at first
+  sign-in; the old accounts keep their PATs until an admin disables them.
+
+### Web UI token form under SSO
+
+When SSO is configured, the web UI hides the "enter token manually" form, and the controller refuses a PAT on
+requests that carry browser fetch metadata (`Sec-Fetch-Mode`) with
+`personal access tokens are not accepted from the browser while SSO is configured; sign in with SSO` (401).
+CLI and API clients keep using PATs, and session cookies and OIDC id_tokens are unaffected. This is a policy for
+the web UI, not a security boundary: someone holding a service-account PAT can still call the API with `curl`;
+expiry, `last_used_at` and the audit log are the controls for that. Set `ui.allowTokenEntry: true`
+(`UNIFIED_UI_ALLOW_TOKEN_ENTRY=1`) to bring the form back while SSO is configured, for example during an IdP
+outage. Without SSO the form always stays.
 
 ## Agent authentication and enrollment
 
@@ -268,8 +321,7 @@ Permissions are recomputed from those stored claims and the **current** config o
 so editing `roleMap` / `userMap` / `permissions` affects live sessions after a controller restart
 without a re-login. The stored claims are updated on silent refresh when the refreshed id_token
 carries the roles claim. Group changes at the IdP therefore appear at the next login or refresh.
-A session created before the upgrade has no stored claims; it is evaluated as role-only from its
-stored role and cannot create PATs until the user logs in again (at most 24 hours).
+The session belongs to the person's human account; a disabled account is refused with `forbidden: account disabled`.
 
 The Web UI reads the caller's effective permissions from `GET /api/v1/auth/me`, which answers
 for any authenticated principal (PAT, OIDC bearer or session) and returns `name`, `kind`, `role`
@@ -300,7 +352,7 @@ The saved id_token expires on the IdP's schedule (Dex default about 24 hours; Go
 - Before every command that talks to the controller, the CLI checks `tokenExpiry`. If the token expires within 60 seconds, it refreshes first and runs the command with the new token. The expiry is the `exp` claim of the id_token.
 - Concurrent commands take an exclusive lock file next to the config (`<config>.lock`), re-read the config and use the token another process already refreshed. A refresh gives up after 15 seconds.
 - A device-flow login against a controller **without** `deviceClientSecret` refreshes directly at the IdP's token endpoint as a public client. Logins that went through the relay (`deviceClientSecret` set) and `--browser` logins refresh through the controller (`POST /api/v1/auth/cli/refresh`).
-- Refresh is **skipped** when the token comes from `--token` or `UNIFIED_TOKEN`, and when the effective server (`--server` / `UNIFIED_SERVER`) differs from the `server` stored in the config file. The stored refresh token belongs to the stored server and is never sent anywhere else.
+- Refresh is **skipped** when the token comes from `--token` or the CLI's `UNIFIED_TOKEN` variable, and when the effective server (`--server` / `UNIFIED_SERVER`) differs from the `server` stored in the config file. The stored refresh token belongs to the stored server and is never sent anywhere else.
 - If a refresh fails, the CLI keeps the old token, prints `token refresh failed: <reason>; run "unified-cli login" again` to stderr once, and still runs the command. The server's `401` is the final word.
 - If the IdP issued no refresh token, `login` prints `the identity provider issued no refresh token; you will need to log in again when the token expires` and the behavior is the old one: run `login` again after expiry. See [Identity providers](identity-providers.md) for the settings that are expected to make each IdP issue one (`offline_access`, Google `authParams`); the vendor behavior is [unverified](identity-providers.md#unverified-idp-behavior).
 
@@ -398,7 +450,7 @@ For IdPs other than Dex (Auth0, Keycloak, Okta, etc.), see [Identity provider se
 `server` and `token` are resolved in the following priority order (higher overrides lower):
 
 1. Config file `~/.config/unified-cd/config.yaml` (override with `--config`)
-2. Environment variables `UNIFIED_SERVER` / `UNIFIED_TOKEN` (applied only when config file field is empty)
+2. Environment variables `UNIFIED_SERVER` / `UNIFIED_TOKEN` (the PAT the CLI sends; applied only when config file field is empty)
 3. Flags `--server` / `--token` (highest priority)
 
 The token obtained via `unified-cli login` is written to the config file (the path given by `--config`, if any), so after login
@@ -410,7 +462,7 @@ you only need `--server` (or `server` in the config file) without specifying a t
 
 | Symptom | Cause and fix |
 |---------|---------------|
-| `server: unauthorized` (apply etc.) | Token not set or expired. For non-SSO: check `UNIFIED_TOKEN`. For SSO: re-run `unified-cli login`. id_tokens expire on the IdP's schedule (Dex ~24h) and are refreshed automatically only when the IdP issued a refresh token; see [CLI login](#cli-login-device-flow) and [Troubleshooting: CLI login](../troubleshooting/controller-and-database.md#cli-login-and-token-refresh-problems). |
+| `server: unauthorized` (apply etc.) | PAT not set, expired or revoked. For non-SSO: check the CLI's `UNIFIED_TOKEN` and `unified-cli token list` for its expiry (every PAT expires). For SSO: re-run `unified-cli login`. id_tokens expire on the IdP's schedule (Dex ~24h) and are refreshed automatically only when the IdP issued a refresh token; see [CLI login](#cli-login-device-flow) and [Troubleshooting: CLI login](../troubleshooting/controller-and-database.md#cli-login-and-token-refresh-problems). |
 | `OIDC provider discovery error: HTTP 404` | Controller is old or OIDC is not configured. Verify SSO compose is running and `/api/v1/auth/oidc-config` returns JSON. |
 | `Unregistered redirect_uri ("/device/callback")` | Dex is running with old config. Run `docker compose ... restart dex`. Check that `/device/callback` is registered in `dex-config.sso.yaml`. |
 | `invalid_client / Invalid client credentials` (device callback) | CLI is using the confidential client. Verify `UNIFIED_OIDC_DEVICE_CLIENT_ID=unified-cd-cli` (public, no secret) is set and that client exists in Dex. |

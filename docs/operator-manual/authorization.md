@@ -24,7 +24,7 @@ There are 30 permissions, written `<resource>.<verb>`. Nine are **folder-scopabl
 | `run.approve` | Approve or reject a waiting `approval` step. | | yes | yes |
 | `schedule.configure` | Create, re-target or delete a Schedule that targets the job. | | yes | yes |
 
-### Global-only (19)
+### Global-only (21)
 
 | Permission | Meaning | viewer | developer | admin |
 |---|---|:--:|:--:|:--:|
@@ -62,7 +62,7 @@ A role used anywhere a permission can be named expands to its bundle:
 | `developer` | `viewer` plus `job.configure`, `job.delete`, `run.trigger`, `run.replay`, `run.cancel`, `run.delete`, `run.approve`, `schedule.configure`, `secret.list`, `token.create` |
 | `admin` | all 30 (`authz.read` is only in this bundle) |
 
-A role resolved by `roleMap` / `userMap` / `defaultRole`, a role-only PAT's role and a pre-upgrade session's role are *global* grants of these bundles. A bundle granted on a **folder** contributes only its folder-scopable members: `admin` on `team-a` means "every one of the nine folder-scopable permissions under `team-a/`", never `secret.write`.
+A role resolved by `roleMap` / `userMap` / `defaultRole`, a PAT's `--role` ceiling and a role named in a service account's `permissions` are bundles; a role in `roleMap` / `userMap` / `defaultRole` is a *global* grant of its bundle. A bundle granted on a **folder** contributes only its folder-scopable members: `admin` on `team-a` means "every one of the nine folder-scopable permissions under `team-a/`", never `secret.write`.
 
 ### Route to permission
 
@@ -117,8 +117,9 @@ Authorization never needs the job row: a job's folder is a pure function of its 
 | The caller cannot read the job (no `job.read` on it) and asks for it, or for one of its runs by ID | The same `404` a missing job or run gets. The API does not confirm that a hidden job exists. |
 | The caller can read the job but lacks the action | `403 forbidden: missing permission "run.trigger" on job "team-a/build"` (the permission and job names vary) |
 | A global-only route | `403 forbidden: missing permission "secret.write"` |
-| The caller holds no grant at all | `403 forbidden: no permissions` (session or OIDC bearer), `403 forbidden: token owner has no permissions` (owner PAT) |
-| A role-only PAT or pre-upgrade session whose role is empty | `403 forbidden: no role` |
+| The caller holds no grant at all | `403 forbidden: no permissions` (session or OIDC bearer), `403 forbidden: token owner has no permissions` (a PAT whose ceiling leaves nothing) |
+| The caller's account holds no grants: a human the OIDC policy no longer admits, or a service account with no `permissions` | `403 forbidden: no role` |
+| The caller's account is disabled (or is a service account missing from `serviceAccounts`, or the built-in `admin` while it is disabled) | `403 forbidden: account disabled` |
 
 Hidden jobs and runs are also absent from lists (`GET /jobs`, `GET /runs/active`, an agent's recent runs, `GET /schedules`), and the SSE stream `GET /runs/{id}/events` refuses at connect. Two routes answer a hidden resource in their own idiom, indistinguishable from a missing one: `POST /schedules` for a hidden target job answers `400 job not found: <name>`, and `DELETE /schedules/{name}` for a hidden schedule answers `204` without deleting anything (exactly what deleting a missing schedule does).
 
@@ -236,27 +237,56 @@ For an OIDC caller (browser session or CLI bearer token):
 
 **The login rule.** A login is refused only when the legacy resolution denies **and** no `permissions` entry matches the identity: browser login answers `403 forbidden: no role assigned`, a bearer token `403 forbidden: no role`. A user who matches only a folder grant can log in; they hold no global role and see only that folder's jobs. With no `permissions` block this is exactly the old rule. To keep folders private, set `defaultRole: deny` (or `viewer` only if everyone may read everything).
 
-A browser session stores the caller's claim values (not a role) and recomputes the permissions from them and the **current** config on every request, so editing `roleMap` takes effect for live sessions at the next restart without a re-login. Claim values are refreshed at login and on silent refresh. A session created before the upgrade has no stored claims and is treated as role-only until it expires (at most 24 hours).
+A browser session stores the caller's claim values (not a role) and recomputes the permissions from them and the **current** config on every request, so editing `roleMap` takes effect for live sessions at the next restart without a re-login. Claim values are refreshed at login and on silent refresh.
 
-**The break-glass `UNIFIED_TOKEN`** holds all 28 permissions globally and is checked before any of this; see [Break-glass](#break-glass).
+There is no credential that skips this resolution: even the built-in `admin` account is a service account whose PATs expire and can be disabled; see [Built-in admin account and recovery](#built-in-admin-account-and-recovery).
+
+### Service accounts
+
+A **service account** is a non-human account for CI and other automation. It is declared in the controller config (top-level `serviceAccounts`, independent of `oidc:`), so it works the same with or without SSO, and its permissions come only from the config file, read at startup.
+
+```yaml
+serviceAccounts:
+  admin:                 # built-in: only `enabled` may be set
+    enabled: true
+  ci-deploy:
+    permissions:
+      global: [viewer]
+      folders:
+        team-a: developer
+        team-a/prod: [job.read, run.trigger]
+```
+
+- The grant syntax and validation are those of one `users:` entry of `oidc.permissions`: role names, permission names or lists of them; a global-only permission on a folder is an error.
+- Names are DNS labels and must not start with `env:` or `system:`.
+- An entry removed from the file is disabled at the next start (the row stays for the audit log); adding it back re-enables it.
+- A service account with no `permissions` authenticates but holds nothing (`403 forbidden: no role`).
+- Issue its PAT with `unified-cli token create <name> --account <service-account>`. That needs `token.manage` or `serviceaccount.token`, and is refused for `admin`.
+- The validation errors, so you can grep your logs: `serviceAccounts["x"]: invalid name: must be a DNS label and must not start with "env:" or "system:"`, `serviceAccounts["admin"]: only "enabled" may be set for the built-in admin account`, `serviceAccounts["x"].permissions: unknown field "y"`, `serviceAccounts["x"].permissions.global: unknown permission or role "jobs.read"`, `serviceAccounts["x"].permissions.folders["f"]: permission "secret.write" is global-only and cannot be granted on a folder`, `serviceAccounts["x"].permissions.folders["f"]: empty grant`.
+
+### Human accounts
+
+A **human account** is created the first time a person signs in through SSO (browser login, CLI device flow or a bearer id_token) **and** passes the admission check above; a person refused with `forbidden: no role assigned` / `forbidden: no role` leaves no row. Accounts are matched by the IdP's `sub`, and each login refreshes the stored email and group snapshot. An admin with `account.manage` can disable and re-enable a human account (`unified-cli account disable <id>`, or the Accounts page of the web UI). Disabling refuses all of its PATs and sessions at once, and refuses a new SSO sign-in with `forbidden: account disabled`. The person's CLI id_token is refused immediately on the controller replica that handled the disable and within 1 minute on the others; sessions and PATs are refused immediately everywhere.
+
+If you switch to an IdP with different subjects, the people sign in as new human accounts; the old accounts keep their PATs until you disable them.
 
 ### Personal access tokens
 
-A PAT's effective permissions are
+Every PAT belongs to an account: a human's, or a service account's. A PAT's effective permissions are
 
-    matrix(owner snapshot, current config)  ∩  ceiling
+    matrix(account, current config)  ∩  ceiling
 
 recomputed on every request.
 
-- **Owner.** A PAT created by an OIDC user records that user's `sub`, `email` and the group claim values presented at creation. So a PAT can never exceed its owner, globally or on any folder. Removing the owner from the config takes effect for all their PATs at the next controller start with no re-issue; group changes in the IdP are picked up when the owner next logs in through the browser (a login refreshes the snapshot on every PAT of that `sub`, even when the login itself is then refused).
-- **Ceiling.** Optional: either a role (`--role`) or a list of permissions (`--permission`, repeatable). No ceiling means "everything the owner has". A ceiling above what the creator holds is refused with a `400`; nothing is ever silently reduced.
-- **PAT created by a PAT** inherits the parent's owner; its ceiling is the parent's ceiling intersected with the requested one.
-- **Role-only PATs** (created before this feature, or by the break-glass token or another role-only PAT) have no owner and keep today's semantics: the global bundle of their stored role. They bypass folder grants until revoked, which is why you should re-issue team PATs when you introduce folders.
-- A PAT whose owner now resolves to nothing authenticates but answers `403 forbidden: token owner has no permissions` on every route, so the failure is diagnosable.
-- `GET` and `DELETE /api/v1/tokens` act on your own PATs with `token.create`, and on everyone's with `token.manage` (admin only).
-- Creating a PAT is refused for identities whose groups are unknown (a pre-upgrade session, or an OIDC bearer without the roles claim while the config has group-keyed grants), with the strings listed in [CLI: token create](../reference/cli.md#token-create) and in [Troubleshooting](../troubleshooting/controller-and-database.md#token-creation-is-refused-cannot-create-a-token).
+- **Account.** A PAT can never exceed its account, globally or on any folder. Removing the person from `roleMap` / `userMap` / `permissions` (or a service account from `serviceAccounts`) takes effect for all of its PATs at the next controller start with no re-issue; group changes in the IdP are picked up when the person next logs in through the browser. Disabling the account stops every PAT at once.
+- **Ceiling.** Optional: either a role (`--role`) or a list of permissions (`--permission`, repeatable). No ceiling means "everything the account has". A ceiling above what the creator holds is refused with a `400`; nothing is ever silently reduced.
+- **Lifetime.** Every new PAT expires: `--expires-in` or `tokens.defaultLifetime` (90 days by default), capped by `tokens.maxLifetime` (365 days by default; the built-in `admin` account is always capped at 720h). See [Configuration: tokens](../reference/configuration.md#tokens-pat-lifetimes).
+- **PAT created by a PAT.** A PAT may create PATs only for its own account, within its own ceiling and the lifetime limits; this is how CI rotates its token without an admin. Creating a PAT for another account needs `token.manage` or `serviceaccount.token` and never targets `admin`. A child's ceiling is the parent's ceiling intersected with the requested one.
+- A PAT whose ceiling leaves nothing, or whose account is gone, answers `403` on every route (`forbidden: token owner has no permissions`, `forbidden: no role` or `forbidden: account disabled`), so the failure is diagnosable.
+- `GET` and `DELETE /api/v1/tokens` act on your own PATs with `token.create`, and on everyone's with `token.manage` (admin only). `token list` labels each PAT's account: the person's email (or `sub`), or `sa:<name>` for a service account.
+- Creating a PAT is refused for an OIDC bearer id_token without the roles claim while the config has group-keyed grants, with the strings listed in [CLI: token create](../reference/cli.md#token-create) and in [Troubleshooting](../troubleshooting/controller-and-database.md#token-creation-is-refused-cannot-create-a-token).
 
-See [Authentication](authentication.md) for sessions, silent refresh and PAT owners.
+See [Authentication](authentication.md) for sessions, silent refresh and PAT accounts.
 
 ### Enrollment-only PATs
 
@@ -270,8 +300,7 @@ unified-cli token create provisioner \
 
 - **Label bound.** `--enroll-label` (repeatable; API field `enrollLabels`) restricts the labels of the enrollment tokens the PAT may create. It is valid only together with `agent.enroll`, entries must be non-empty and unique, and a PAT created without it has no bound. The bound is stored with the PAT, shown by `token list`, and echoed by `token create`. The controller enforces it when an enrollment token is created with such a PAT: every requested label must exactly match a bound entry (an unbounded PAT can request no labels), and the agent ID cannot be chosen, it is generated. See [Provisioning many VMs](agents.md#provisioning-many-vms-an-enrollment-only-pat).
 - **Who may mint one.** A creator must hold `agent.enroll` or `agent.manage`. Unless the creator holds `agent.manage`, it can only grant labels within its own enrollment-label bound: the requested `enrollLabels` must be a subset of the creating token's (`enrollLabels must be a subset of the creating token's enrollLabels`, 403), and a creator with no bound, such as a session whose role grants `agent.enroll` or a PAT minted without `--enroll-label`, can grant no labels at all. When a bounded parent asks for none it inherits the parent's bound rather than becoming unbounded. A creator that holds `agent.manage` is not restricted.
-- **Creators without an owner.** The break-glass `UNIFIED_TOKEN` and role-only PATs normally cannot grant `--permission` (`cannot grant permissions: this token has no owner; use --role`). The one exception is a permission list that is exactly `["agent.enroll"]` (with no `--role`, and optional `--enroll-label`): they may create an ownerless enrollment-only PAT. Such a PAT holds exactly `agent.enroll` globally, whatever else the creator holds. Any other permission list from these creators keeps the `400`.
-- **Owner-bound PATs.** When an SSO user creates one, the PAT is the usual owner PAT: its permissions are the owner's intersected with the ceiling `[agent.enroll]`. An owner who holds `agent.manage` but not `agent.enroll` is treated as holding `agent.enroll` for this purpose.
+- **Account-bound.** An enrollment-only PAT belongs to an account like every PAT (there are no ownerless PATs): its permissions are the account's intersected with the ceiling `[agent.enroll]`. A service account that should provision hosts therefore needs `agent.enroll` (or `agent.manage`) in its `permissions`, and the PAT is created with `--account <service-account>`. An account that holds `agent.manage` but not `agent.enroll` is treated as holding `agent.enroll` for this purpose.
 
 The refusals are listed in [CLI: token create](../reference/cli.md#token-create) and in [Troubleshooting](../troubleshooting/controller-and-database.md#token-creation-is-refused-cannot-create-a-token).
 
@@ -281,7 +310,7 @@ The refusals are listed in [CLI: token create](../reference/cli.md#token-create)
 2. Add one folder entry per team; give each team the `developer` bundle on its folder.
 3. Grant the global-only permissions the teams still need in `permissions.global`: typically `agent.read`, `webhook.read`, `appsource.read`, `vars.read` and `token.create` (without `token.create` a folder-only user cannot create PATs).
 4. Restart the controller. Users log in again so their sessions store their groups.
-5. **Re-issue team PATs.** PATs created before the switch are role-only and keep their global role.
+5. **Re-issue team PATs.** A PAT is bounded by its account's current permissions, so PATs of people moved to folder grants lose their global role at the next restart. Give automation a [service account](#service-accounts) with folder grants instead of a person's PAT.
 6. Check the result with `unified-cli authz explain`.
 
 Because grants are unions, a team cannot be kept out of a *nested* folder it already covers. To keep a team out of its own production approvals, use **sibling folders** rather than nesting:
@@ -409,24 +438,38 @@ Point `oidc.issuer` straight at the IdP; `roleMap` and enforcement are identical
 | Entra ID | Entra itself (App Roles or groups claim) | `roles` / `groups` | app-role value / group GUID |
 | Auth0 | Auth0 (Post-Login Action) | namespaced claim | Auth0 role name |
 
-## Break-glass
+## Built-in admin account and recovery
 
-The static `UNIFIED_TOKEN` PAT holds all 28 permissions globally, checked before any role, owner or ceiling logic. The controller recognizes it only when **both** hold: the presented token's hash matches the hash of the token the controller was started with (compared in constant time), **and** the PAT row has no owner. The PAT's *name* grants nothing: a PAT that merely is named `env:UNIFIED_TOKEN` is an ordinary PAT with its own stored role. With no `UNIFIED_TOKEN` configured there is no break-glass at all.
+There is no standing admin token. The strongest identity is the built-in service account `admin`, which always exists, holds the admin bundle globally and cannot be given other permissions. Its only configurable setting is `enabled`:
 
-The `env:` name prefix is reserved: `token create` (and `POST /api/v1/tokens`) rejects a name equal to `env:UNIFIED_TOKEN` or starting with `env:` with `400 token name "..." is reserved`. At startup the controller also deletes any pre-existing PAT named `env:UNIFIED_TOKEN` whose hash is not the configured token's, and logs a warning with the count, ids and roles (see [Troubleshooting](../troubleshooting/controller-and-database.md#token-name-env-is-reserved-startup-warning-about-impersonating-tokens)).
-
-When an OIDC issuer is configured **and** `UNIFIED_TOKEN` is also set, the controller keeps booting but logs this warning at startup:
-
-```
-UNIFIED_TOKEN is set while SSO is configured: the env:UNIFIED_TOKEN token is always admin and bypasses oidc.permissions; unset it once SSO works and keep it only as a break-glass credential
+```yaml
+serviceAccounts:
+  admin:
+    enabled: false   # default true
 ```
 
-Treat the token as emergency-only: store it securely, do not use it for daily work, rotate it periodically. It is the way back in if the IdP is unavailable or misconfigured, and it bypasses every folder grant. A PAT created with the break-glass token has no owner and is role-only (bounded by `--role`, default `admin`).
+How you get an `admin` PAT:
+
+- **Initial token (non-SSO installs).** On the first start where the bootstrap is not done and SSO is not configured, the controller generates a one-time initial admin token (`uci_` plus 40 hex characters) and writes it to `initial-admin-token` (mode `0600`) in the config file's directory, or the data directory when there is no config file. It logs the path, never the value. Exchange it once with `unified-cli bootstrap`; the response is an `admin` PAT valid for 30 days. The token is useless afterwards, the file is deleted, and the endpoint is rate limited (5 attempts per minute) and answers `invalid or already used initial token` for both a wrong and a used value. To choose the value yourself (automated installs), set `UNIFIED_INITIAL_ADMIN_TOKEN` on the controller; the same one-time rules apply. With SSO configured no initial token is generated: the first admin comes from `oidc.userMap` / `roleMap`.
+- **Recovery command.** `unified-controller admin recover [--ttl 1h] [--enable-admin]` prints an `admin` PAT straight from the database. It needs database access with the controller's configuration, which is the gate (as with Jenkins' `$JENKINS_HOME` or GitLab's rake tasks); run it with `docker compose exec` or `kubectl exec` where the controller runs. The default lifetime is 1 hour and the maximum 24 hours. If the config disables `admin`, pass `--enable-admin`: `admin` is then enabled until the PAT expires (a lease that replaces any earlier one), and the config remains the long-term authority. It writes an audit row with actor `recovery`.
+- **Nobody can mint an `admin` PAT through the token API** (`PATs for the built-in admin account can only be obtained through the initial token or the recovery command`), except an `admin` PAT creating its own successor, which is still capped at 30 days.
+
+`admin` PATs always expire (at most 720h, whatever `tokens.maxLifetime` says), so use the account to set up SSO or service accounts and then stop using it.
+
+When an OIDC issuer is configured and `admin` is still enabled, the controller keeps booting but logs this warning at startup:
+
+```
+the built-in admin service account is enabled while SSO is configured; set serviceAccounts.admin.enabled: false once SSO works
+```
+
+Disable `admin` once an SSO admin can sign in; `admin recover --enable-admin` is the way back if the IdP is unavailable or misconfigured. The `env:` and `system:` name prefixes are reserved: `token create` (and `POST /api/v1/tokens`) rejects a PAT name starting with either with `400 token name "..." is reserved`, and service-account names may not start with them.
+
+See [Migrating: internal accounts](migrations/2026-11-27-internal-accounts.md) for the upgrade from `UNIFIED_TOKEN`.
 
 ## Migration / backward compatibility
 
-- A config with only `roleMap` / `userMap` / `defaultRole`, or no OIDC at all, needs no edit and behaves as before. No existing PAT, session or user gains a permission until you write `oidc.permissions`.
-- Existing PATs and sessions are role-only: their stored role is their whole authority. Afterward, re-issue least-privilege PATs.
-- The few deliberate differences (token list and delete narrowing, over-high `--role` refused instead of silently weakened, pre-upgrade sessions asked to log in again) are listed with exact strings in [Migrating: matrix authorization](migrations/2026-10-28-matrix-authorization.md).
-- The controller still boots without OIDC (bootstrap admin only). "SSO required" is an operational policy plus always-on authorization, not a hard boot gate.
+- A config with only `roleMap` / `userMap` / `defaultRole` keeps resolving people's permissions as before. No existing user gains a permission until you write `oidc.permissions`.
+- PATs without an owner (role-only PATs, `UNIFIED_TOKEN`) no longer exist: the internal-accounts upgrade deletes them, and the controller ignores `UNIFIED_TOKEN`. See [Migrating: internal accounts](migrations/2026-11-27-internal-accounts.md).
+- The deliberate differences of the matrix-authorization release (token list and delete narrowing, over-high `--role` refused instead of silently weakened) are listed with exact strings in [Migrating: matrix authorization](migrations/2026-10-28-matrix-authorization.md).
+- The controller boots without OIDC when the initial admin token can be generated (or was provided) or the bootstrap is already done. "SSO required" is an operational policy plus always-on authorization, not a hard boot gate.
 - When first enabling OIDC, start with `defaultRole: viewer`, populate `roleMap`/`userMap`, then tighten to `defaultRole: deny`.

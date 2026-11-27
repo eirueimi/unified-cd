@@ -69,11 +69,17 @@ run `docker compose up -d postgres` instead.
 ## 3. Start the Controller
 
 ```bash
+export UNIFIED_INITIAL_ADMIN_TOKEN="uci_$(openssl rand -hex 20)"   # one-time token, used in step 3a
+
 UNIFIED_DB_DSN="postgres://unified:unified@localhost:5432/unified?sslmode=disable" \
-UNIFIED_TOKEN="dev-secret" \
 UNIFIED_DEV_MODE="1" \
 ./bin/unified-cd-controller --addr :8080
 ```
+
+The controller has no built-in admin credential. On the first start of a non-SSO install it
+accepts a **one-time initial admin token** (here the value you exported; if you do not set
+`UNIFIED_INITIAL_ADMIN_TOKEN` the controller generates one and writes it to
+`initial-admin-token` in its config or data directory instead).
 
 `UNIFIED_DEV_MODE=1` generates an ephemeral, in-memory secret-encryption key —
 fine for this walkthrough, but any secret you register becomes unreadable
@@ -92,9 +98,25 @@ INFO  server listening  addr=:8080
 | Environment variable | Description | Required |
 |---|---|---|
 | `UNIFIED_DB_DSN` | PostgreSQL connection string | Yes |
-| `UNIFIED_TOKEN` | Static bearer token for the admin CLI | Yes (when SSO is not configured) |
+| `UNIFIED_INITIAL_ADMIN_TOKEN` | One-time token you exchange for the first admin PAT (`unified-cli bootstrap`). If unset, the controller generates one into a file | Optional (non-SSO installs) |
 | `UNIFIED_CONTROLLER_KEY_FILE` | Path to a file holding 64 hex chars for secret encryption (`unified-cli keygen --out`) | Required unless `UNIFIED_DEV_MODE=1` |
 | `UNIFIED_S3_ENDPOINT` | S3/Garage endpoint for log archival and artifacts | Optional |
+
+### 3a. Get an admin PAT
+
+In a second terminal (the same shell, so `UNIFIED_INITIAL_ADMIN_TOKEN` is still set), exchange the
+initial token for an admin PAT. It works once and the PAT is valid for 30 days:
+
+```bash
+export UNIFIED_SERVER="http://localhost:8080"
+export UNIFIED_TOKEN="$(./bin/unified-cli bootstrap)"
+```
+
+`UNIFIED_TOKEN` here is the CLI's own variable: the PAT the CLI sends. The commands below use it.
+If you lose the PAT, run `./bin/unified-cd-controller admin recover` (with the same database settings)
+to get a short-lived replacement. For CI, do not reuse this admin PAT: declare a service account in
+the controller config and issue it a PAT (see
+[Authentication](../operator-manual/authentication.md#non-sso-setup-initial-admin-token-and-service-accounts)).
 
 ---
 
@@ -106,8 +128,6 @@ Open a second terminal:
 agent_state_dir="$HOME/.local/state/unified-cd-agent"
 install -d -m 0700 "$agent_state_dir"
 
-UNIFIED_SERVER="http://localhost:8080" \
-UNIFIED_TOKEN="dev-secret" \
 ./bin/unified-cli agent enrollment create \
   --agent-id agent-1 \
   --label kind:linux \
@@ -120,10 +140,10 @@ UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="$agent_state_dir/enrollment.token" \
 ./bin/unified-cd-agent
 ```
 
-The enrollment command uses the controller's **administrator CLI credential**
-only to create a one-time VM enrollment file. It does not configure that token
-on the agent. For a non-local deployment, use an HTTPS controller URL and a
-securely supplied admin PAT instead of the development value shown here.
+The enrollment command uses the **admin PAT** from step 3a (`UNIFIED_SERVER` and
+`UNIFIED_TOKEN` are already exported) only to create a one-time VM enrollment file.
+It does not configure that token on the agent. For a non-local deployment, use an
+HTTPS controller URL and a securely stored PAT.
 `install -d -m 0700` creates the private parent directory required by the
 enrollment writer; it is safe to rerun and keeps the credential out of process
 arguments.
@@ -152,9 +172,14 @@ The agent registers itself with the controller and starts polling for jobs.
 mkdir -p ~/.config/unified-cd
 cat > ~/.config/unified-cd/config.yaml <<EOF
 server: http://localhost:8080
-token: dev-secret
+token: $UNIFIED_TOKEN
 EOF
 ```
+
+The unquoted `EOF` makes the shell write the admin PAT from step 3a (`$UNIFIED_TOKEN`) into the file. The
+PAT expires in 30 days; run `unified-cli token list` to see when. If you started the stack with Docker Compose
+(step 2), the `agent-enroll` service already exchanged the initial token; read the PAT from the `admin-state`
+volume with `docker compose run --rm --no-deps --entrypoint cat agent-enroll /state/admin-token`.
 
 Verify the connection:
 
@@ -269,8 +294,6 @@ Start a second agent with different labels:
 agent_state_dir="$HOME/.local/state/unified-cd-agent-docker"
 install -d -m 0700 "$agent_state_dir"
 
-UNIFIED_SERVER="http://localhost:8080" \
-UNIFIED_TOKEN="dev-secret" \
 ./bin/unified-cli agent enrollment create \
   --agent-id docker-agent \
   --label kind:docker --label env:ci \

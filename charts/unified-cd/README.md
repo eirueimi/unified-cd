@@ -20,16 +20,22 @@ helm install unified-cd oci://ghcr.io/eirueimi/charts/unified-cd \
 kubectl -n unified-cd port-forward svc/unified-cd-controller 8080:80
 ```
 
-Open http://localhost:8080 and sign in with the token `dev-token-change-me`.
+There is no default password. Exchange the one-time initial admin token for an
+admin PAT (valid 30 days) and sign in with that PAT at http://localhost:8080
+(see [Initial admin token](#initial-admin-token) below; `helm install` prints the commands):
+
+```bash
+export UNIFIED_SERVER=http://localhost:8080
+export UNIFIED_INITIAL_ADMIN_TOKEN="$(kubectl -n unified-cd get secret unified-cd-initial-admin-token -o jsonpath='{.data.UNIFIED_INITIAL_ADMIN_TOKEN}' | base64 -d)"
+unified-cli bootstrap
+```
 
 **The trial is not for production.** It runs a single PostgreSQL and a single
 Garage on PersistentVolumeClaims with fixed development credentials. The chart
 refuses to render an Ingress while these credentials are in use
-(`ingress.enabled with the bundled trial credentials would expose
-dev-token-change-me ...`). A Secret you create by hand with development values
-cannot be detected, so do not expose one either. The trial Secret also sets
-`UNIFIED_ALLOW_DEFAULT_TOKEN=1`, because the controller otherwise refuses to
-start with the published default admin token; your own Secret must not set it.
+(`ingress.enabled with the bundled trial credentials would expose the trial
+database password; use the production values`). A Secret you create by hand with
+development values cannot be detected, so do not expose one either.
 
 ### Production
 
@@ -44,7 +50,6 @@ Secrets, and HTTPS in front of the controller.
 
    kubectl create secret generic unified-cd-controller -n unified-cd \
      --from-literal=UNIFIED_DB_DSN='postgres://...' \
-     --from-literal=UNIFIED_TOKEN='...' \
      --from-literal=UNIFIED_S3_ENDPOINT='...' \
      --from-literal=UNIFIED_S3_BUCKET='...' \
      --from-literal=UNIFIED_S3_KEY='...' \
@@ -112,6 +117,49 @@ Secrets, and HTTPS in front of the controller.
 
    The Ingress does not create certificates. For cert-manager, add its
    annotation through `ingress.annotations`.
+
+### Initial admin token
+
+There is no static admin token. For a non-SSO install the chart runs a
+create-once Job (`unified-cd-initial-token-init`, a sibling of the KEK Job, with
+its own ServiceAccount and Role; it follows `controller.kek.job.helmHook`) that
+generates a one-time token (`uci_` plus 40 hex characters) inside the cluster
+into the Secret `unified-cd-initial-admin-token`, key
+`UNIFIED_INITIAL_ADMIN_TOKEN`. The value never appears in a rendered manifest or
+in Helm release metadata. It is created once and never replaced by a reinstall or
+`helm upgrade`. While the chart generates it, the controller Pod waits for the
+Secret (the reference is required), so a Pod that starts early shows
+`CreateContainerConfigError` until the Job has run.
+
+After the install, exchange the token once for an admin PAT (it works once, the PAT
+lasts 30 days):
+
+```bash
+kubectl -n unified-cd port-forward svc/unified-cd-controller 8080:80 &
+export UNIFIED_SERVER=http://localhost:8080
+export UNIFIED_INITIAL_ADMIN_TOKEN="$(kubectl -n unified-cd get secret unified-cd-initial-admin-token -o jsonpath='{.data.UNIFIED_INITIAL_ADMIN_TOKEN}' | base64 -d)"
+unified-cli bootstrap     # prints the admin PAT
+```
+
+Then create service accounts for automation with `controller.serviceAccounts` and
+issue their PATs (`unified-cli token create <name> --account <service-account>`);
+see [Authorization](../../docs/operator-manual/authorization.md#service-accounts).
+If you lose the admin PAT, mint a short-lived one with
+`kubectl -n unified-cd exec deploy/unified-cd-controller -- /controller admin recover -f /etc/unified-cd/controller-config.yaml`.
+
+To supply the value yourself, or when you only use SSO, set
+`controller.initialAdminToken.generate=false`. The Deployment then reads the same
+Secret name and key as an optional reference, so create
+`unified-cd-initial-admin-token` yourself before the first start if you want a
+non-SSO admin (`kubectl create secret generic unified-cd-initial-admin-token --from-literal=UNIFIED_INITIAL_ADMIN_TOKEN="uci_$(openssl rand -hex 20)"`).
+With SSO configured no initial token is needed: the first admin comes from
+`oidc.userMap` / `roleMap`; disable the built-in `admin` account afterwards with
+`controller.serviceAccounts.admin.enabled=false`. Use a different Secret name with
+`controller.initialAdminToken.secretName`.
+
+Upgrading from a release that used `UNIFIED_TOKEN`: see
+[Migrating: internal accounts](../../docs/operator-manual/migrations/2026-11-27-internal-accounts.md)
+(stop every controller replica first, and remove `UNIFIED_TOKEN` from the controller Secret).
 
 ### Agent only
 
@@ -199,6 +247,11 @@ first; see `docs/operator-manual/kubernetes-integration.md`.
 | `controller.kek.generate` | `null` | Run the KEK Job. `null` follows `bundledStores.enabled`; `true` or `false` overrides. |
 | `controller.kek.job.helmHook` | `true` | Run the KEK Job as a `pre-install,pre-upgrade` hook. |
 | `controller.kek.job.image` | `alpine/k8s:1.31.2` | Image providing `kubectl` for the KEK Job. |
+| `controller.initialAdminToken.secretName` | `unified-cd-initial-admin-token` | Secret holding the one-time initial admin token (key `UNIFIED_INITIAL_ADMIN_TOKEN`). |
+| `controller.initialAdminToken.generate` | `true` | Run the create-once Job that generates that Secret. `false` to supply it yourself or to run SSO only. |
+| `controller.serviceAccounts` | `{}` | Service accounts, rendered into the controller config as `serviceAccounts` (the built-in `admin` accepts only `enabled`). |
+| `controller.tokens` | `{}` | PAT lifetimes, rendered as `tokens` (`defaultLifetime`, `maxLifetime`). Empty uses the controller defaults (2160h and 8760h). |
+| `controller.ui` | `{}` | Web UI settings, rendered as `ui` (for example `allowTokenEntry: true`). |
 | `controller.config` | `{}` | Deep-merged over the computed controller config (see above). |
 | `controller.service.type` | `ClusterIP` | Controller Service type. HTTP only; terminate TLS at an Ingress. |
 | `controller.service.port` | `80` | Controller Service port. |

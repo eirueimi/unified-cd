@@ -21,12 +21,24 @@ func TestNoStaleControllerKeyReferences(t *testing.T) {
 	// controller token. The guard is written with the removal (Task 9); Tasks
 	// 10 and 11 update the config loader, docs and deploy files so it can pass.
 	t.Run("internal accounts", func(t *testing.T) {
-		t.Skip("enabled in Task 11")
 		assertNoStaleRefs(t,
 			[]string{"UNIFIED_ALLOW_DEFAULT_TOKEN", "allowDefaultToken", "BootstrapPATName", "dev-token-change-me"},
 			[]string{
 				// The migration guide names the removed settings on purpose.
 				filepath.Join("docs", "operator-manual", "migrations"),
+				// The controller config loader still accepts the legacy
+				// allowDefaultToken key and UNIFIED_ALLOW_DEFAULT_TOKEN so an
+				// existing config file or environment keeps loading; both are
+				// ignored. Dropping them would make the strict config parser
+				// reject the old key and turn the upgrade into an outage.
+				filepath.Join("internal", "config", "controller.go"),
+				// Asserts that a config file still carrying the legacy
+				// allowDefaultToken key (and token) still loads; startup then logs that it is ignored.
+				filepath.Join("cmd", "controller", "initial_token_test.go"),
+				// Negative assertions: the rendered chart must contain neither
+				// the old default token nor the opt-in variable.
+				filepath.Join("internal", "helmchart", "ingress_test.go"),
+				filepath.Join("internal", "helmchart", "stores_test.go"),
 			})
 	})
 }

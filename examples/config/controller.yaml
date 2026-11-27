@@ -6,7 +6,34 @@
 
 dsn: postgres://unified:password@postgres:5432/unified_cd?sslmode=disable
 addr: :8080
-token: your-static-token
+
+# There is no static admin token. Without SSO the first admin exchanges a one-time
+# initial token (written to initial-admin-token next to this file, or provided as
+# UNIFIED_INITIAL_ADMIN_TOKEN) with `unified-cli bootstrap`. A leftover `token:` key or
+# UNIFIED_TOKEN is ignored with an error log. See
+# docs/operator-manual/migrations/2026-11-27-internal-accounts.md
+
+# Service accounts for CI and other automation (work with or without SSO).
+# The built-in "admin" account accepts only `enabled`; set it to false once SSO works.
+# Create a PAT for one with: unified-cli token create <name> --account ci-deploy
+# serviceAccounts:
+#   admin:
+#     enabled: true
+#   ci-deploy:
+#     permissions:
+#       global: [viewer]
+#       folders:
+#         team-a: developer
+#         team-a/prod: [job.read, run.trigger]
+
+# PAT lifetimes (Go durations). Every new PAT expires; 0 for maxLifetime removes the cap.
+# tokens:
+#   defaultLifetime: 2160h   # 90 days
+#   maxLifetime: 8760h       # 365 days
+
+# Under SSO the web UI hides the manual token form; true brings it back.
+# ui:
+#   allowTokenEntry: false
 
 # The encryption key is supplied outside this file:
 #   UNIFIED_CONTROLLER_KEY_FILE=/etc/unified-cd/kek   (generate with `unified-cli keygen --out`)

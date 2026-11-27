@@ -342,7 +342,7 @@ Ciphertext (stored in DB)
 
 | Actor | Access |
 |-------|--------|
-| Admin (static token / PAT / OIDC) | Create, delete ✓ (**cannot retrieve values**) |
+| Admin (PAT / OIDC) | Create, delete ✓ (**cannot retrieve values**) |
 | Developer or Admin | List names ✓ (values never shown) |
 | Agent (agent token) | Fetch only the secrets the run's own spec declares ✓ (enforced server-side — a request for any other name is rejected with `403`, whether or not the agent owns the run) |
 | External API / browser | Retrieve values ✗ (no endpoint exists) |

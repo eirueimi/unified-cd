@@ -29,6 +29,8 @@ recorded, allowed or denied, for the following actions. A **denied read** is rec
 | `gitcredential.delete` | `DELETE /api/v1/gitcredentials/{name}` |
 | `token.create` | `POST /api/v1/tokens` |
 | `token.delete` | `DELETE /api/v1/tokens/{id}` |
+| `account.disable` | `POST /api/v1/accounts/{id}/disable` |
+| `account.enable` | `POST /api/v1/accounts/{id}/enable` |
 | `webhook.apply` | `POST /api/v1/webhooks` |
 | `webhook.delete` | `DELETE /api/v1/webhooks/{name}` |
 | `vars.apply` | `POST /api/v1/vars` |
@@ -57,7 +59,7 @@ Each recorded entry contains:
 | `occurredAt` | Timestamp of the request |
 | `actor` | Display name of the authenticated caller: PAT name, OIDC email/subject, or session identity — whatever `ServerAuth` resolved as the `Principal` for the request (the same identity source used for `run_approvals.decided_by`). **Not unique and not trustworthy on its own**: a PAT name is chosen by whoever creates the token, so two PATs can share a name, or imitate another user's PAT or the bootstrap token. Use `actorId` to tell callers apart |
 | `actorId` | Stable identity of the caller; see [Actor identity](#actor-identity). Empty for rows written before the field existed |
-| `actorSub` | OIDC subject (`sub`) of the user behind the caller, when there is one (owner PATs, OIDC bearer tokens, sessions); empty for role-only PATs, the bootstrap token and agents |
+| `actorSub` | OIDC subject (`sub`) of the user behind the caller, when there is one (PATs of a human account, OIDC bearer tokens, sessions); empty for service-account PATs and agents |
 | `method` | HTTP method (`POST`/`PUT`/`DELETE`) |
 | `path` | Request path |
 | `action` | Short classification from the table above |
@@ -75,8 +77,10 @@ from anything the caller can choose:
 
 | `actorId` | Caller |
 |---|---|
-| `break-glass` | The `UNIFIED_TOKEN` bootstrap credential. A PAT that merely carries the bootstrap token's name gets its own `pat:<id>` instead |
-| `pat:<pat id>` | Any other PAT (role-only, owner or enrollment). `<pat id>` is the PAT's primary key; unlike the name it is unique |
+| `bootstrap` | The initial admin token exchange (`POST /api/v1/bootstrap`, action `bootstrap.exchange`); `details.patId` is the PAT it created |
+| `recovery` | The `unified-controller admin recover` command (action `admin.recover`); `details` carries `patId`, `ttl` and `enableAdmin` |
+| `migration` | The internal-accounts migration, one `token.delete` row per ownerless PAT it deleted (see [Migrating: internal accounts](migrations/2026-11-27-internal-accounts.md#2-find-the-deleted-pats)) |
+| `pat:<pat id>` | Any PAT, of a human or a service account. `<pat id>` is the PAT's primary key; unlike the name it is unique. For a service-account PAT the row's `details` also carry `account: sa:<name>` |
 | `oidc:<sub>` | An OIDC bearer token or a browser session; `<sub>` is the subject claim (also in `actorSub`) |
 | `agent:<agent id>` | An agent credential exchange or refresh (`agent.enrollment.exchange`, `agent.refresh`) or a GitHub App job token hand-out (`gitcredential.token_issue`); other agent rows carry no `actorId` |
 
@@ -90,8 +94,8 @@ and its `occurredAt` is the creation time. This works after the PAT has been del
 PATs share a name, because the `resource` alone (the name) is not unique. The token value is never
 recorded. Only a successful create (2xx) carries `details`; a rejected request has no PAT to name.
 The same creator id is stored on the PAT itself as `createdBy` (`GET /api/v1/tokens`, `unified-cli token list`)
-for as long as the PAT exists. It is empty for PATs created before migration `030_pat_created_by`
-and for the `env:UNIFIED_TOKEN` row, and `token.create` rows from before this change have no `details`
+for as long as the PAT exists. It is empty for PATs created before migration `030_pat_created_by`,
+and `token.create` rows from before this change have no `details`
 (match those by `resource` and time instead).
 
 ### Permission, scope and grantedBy
@@ -105,10 +109,8 @@ shallower folders before deeper ones). The forms are:
 | `role:developer (roleMap["my-org:devs"])` | The global role came from a `roleMap` entry (also `userMap["alice@example.com"]`, `userMap["<sub>"]` or `defaultRole`) |
 | `global (groups["my-org:engineering"])` / `global (users["alice@example.com"])` | An `oidc.permissions.global` entry |
 | `folder:team-a (groups["my-org:team-a"])` / `folder:team-a (users["contractor@example.com"])` | An `oidc.permissions.folders` entry |
-| `role:developer (pat)` | A role-only PAT (no owner) with that stored role |
-| `role:developer (session)` | A session created before the upgrade (no stored claims) |
-| `... & pat-ceiling` | The grant above, as narrowed by an owner PAT's ceiling |
-| `break-glass` | The `UNIFIED_TOKEN` token |
+| `sa:ci-deploy` / `sa:admin` | A service account's grant (global or folder), including the built-in `admin` account |
+| `... & pat-ceiling` | The grant above, as narrowed by a PAT's ceiling |
 
 `unified-cli authz explain` prints the same strings, so you can ask why a call was allowed.
 `scope` is empty for global decisions (secrets, tokens, agents, ...) and also when a request is
@@ -280,8 +282,8 @@ Migration `029_github_app_credentials` adds the nullable `details jsonb` column,
 `details` field of the API. It is `NULL` (and the field absent) for every row that has no details.
 
 Migration `030_pat_created_by` adds the nullable `created_by text` column to the `pats` table (not to
-`audit_logs`): the `actorId` of the caller that created the PAT through the API (`break-glass`,
-`pat:<id>`, `oidc:<sub>`). It is `NULL` for earlier rows and for the `env:UNIFIED_TOKEN` row.
+`audit_logs`): the `actorId` of the caller that created the PAT through the API (`pat:<id>`,
+`oidc:<sub>`, `bootstrap`, `recovery`; earlier rows may carry `break-glass`, which is no longer written). It is `NULL` for earlier rows.
 
 ## API
 

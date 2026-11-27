@@ -14,7 +14,7 @@ An open-source CI/CD tool (Jenkins alternative) written in Go.
 
 **GitHub:** https://github.com/eirueimi/unified-cd
 
-**Key features:** YAML-defined jobs · DAG step execution · Multi-platform agents (Linux, macOS, Windows, Kubernetes) · Ephemeral workspaces with controller-declared named volumes (`AgentVolume`) for data that must survive between runs · Secrets management · Webhook and cron triggers · High availability · Web UI · OIDC SSO with fine-grained, per-folder permissions · Run metadata (run link, status, failures, attempt) exposed to steps as `UNIFIED_RUN_*` env vars and `.Run` templates · Job-defined Prometheus metrics (`metrics:` counters, gauges and histograms served as `unifiedcd_job_*`)
+**Key features:** YAML-defined jobs · DAG step execution · Multi-platform agents (Linux, macOS, Windows, Kubernetes) · Ephemeral workspaces with controller-declared named volumes (`AgentVolume`) for data that must survive between runs · Secrets management · Webhook and cron triggers · High availability · Web UI · OIDC SSO with fine-grained, per-folder permissions · Internal accounts (human and service accounts, one-time initial admin token, bounded PAT lifetimes, offline admin recovery) · Run metadata (run link, status, failures, attempt) exposed to steps as `UNIFIED_RUN_*` env vars and `.Run` templates · Job-defined Prometheus metrics (`metrics:` counters, gauges and histograms served as `unifiedcd_job_*`)
 
 ---
 
@@ -182,7 +182,7 @@ The full documentation is published at **https://eirueimi.github.io/unified-cd/*
 - **[Field Reference](https://eirueimi.github.io/unified-cd/reference/field-reference/)** — auto-generated field-level schema reference
 
 ### Feature Guides
-- **[Authentication Guide](https://eirueimi.github.io/unified-cd/operator-manual/authentication/)** — static tokens, PATs, OIDC SSO (Dex), CLI login
+- **[Authentication Guide](https://eirueimi.github.io/unified-cd/operator-manual/authentication/)** — accounts, the initial admin token, PATs, OIDC SSO (Dex), CLI login
 - **[Authorization Guide](https://eirueimi.github.io/unified-cd/operator-manual/authorization/)** — roles, the 28-permission catalogue, per-folder grants for separating teams, `authz show` / `explain`
 - **[Secrets Management Guide](https://eirueimi.github.io/unified-cd/user-guide/secrets/)** — create, reference, and encrypt secrets; log masking
 - **[Agent Labels and Routing](https://eirueimi.github.io/unified-cd/operator-manual/agents/)** — agentSelector, capability-based routing, hostname labels, Windows agents

@@ -27,14 +27,14 @@ answering the wrong question.
 admitted only by `oidc.permissions` folder grants). What a human may actually
 do is `Principal.Grants`, an `authz.Grants` built at authentication time: the
 global role's bundle united with every matching `oidc.permissions` entry, and
-for an owner PAT intersected with its ceiling.
+for a PAT intersected with its ceiling.
 
 ### Permissions, not ranks
 
 The decision logic lives in `internal/authz`, which has no dependency on the
 controller:
 
-- `catalogue.go` — the 28 permissions, which nine are folder-scopable, and the
+- `catalogue.go` — the 30 permissions, which nine are folder-scopable, and the
   role bundles (`Bundle`).
 - `grants.go` — `Grants`: `Can`, `Decide` (allowed plus the `grantedBy` string),
   `Explain`, `HeldAnywhere`, `Restrict` (the PAT ceiling) and `View` (the
@@ -50,7 +50,7 @@ order: `userMap` by email, then `userMap` by sub, then the highest-ranked match
 in `roleMap`, then the default. A denial returns `("", false)` rather than a
 role that happens to rank zero, so a deny is explicit rather than emergent.
 `identityGrants` (`rbac.go`) is the one place that unions that role with the
-matching `oidc.permissions` entries; login, `ServerAuth`, PAT owners and
+matching `oidc.permissions` entries; login, `ServerAuth`, PAT accounts and
 `authz explain` all call it, so they cannot disagree.
 
 ## Which middleware guards what
@@ -209,6 +209,38 @@ one-time initial token (`initial-admin-token`, or `UNIFIED_INITIAL_ADMIN_TOKEN`)
 which `handleBootstrap` exchanges for the first PAT of the built-in `admin`
 service account. `handleCreateToken` rejects the reserved `env:` and `system:`
 name prefixes.
+
+Authentication resolves a credential to an account first and the permissions
+second:
+
+- `ServerAuth` (`auth.go`) tries the PAT, the OIDC bearer id_token and the
+  session cookie. `patPrincipal` and `sessionPrincipal` call `resolveAccount`
+  (`auth_accounts.go`), which answers `forbidden: account disabled` for a
+  disabled or unknown account and `forbidden: no role` for one that holds
+  nothing. A human's grants come from `identityGrants` over the account's stored
+  email, `sub` and claims; a service account's from `serviceAccounts` in the
+  config (compiled by `authz.CompileServiceAccount`); the built-in `admin`
+  holds every permission while it is enabled (`adminEnabled` also honours the
+  `admin_enabled_until` lease that `admin recover --enable-admin` writes).
+- The bearer id_token path upserts the human account at most once a minute per
+  `sub` (`idTokenAccount`), so a disable reaches other replicas' id_token
+  requests within that minute. Sessions and PATs re-read the account on every
+  request.
+- With SSO configured, a PAT on a request that carries `Sec-Fetch-Mode` is
+  refused (`msgBrowserPATRefused`) unless `ui.allowTokenEntry` is set. This is a
+  UI policy, not a boundary.
+- `patExpiry` (`api_tokens.go`) applies `tokens.defaultLifetime`,
+  `tokens.maxLifetime` and the 720h cap of the `admin` account. A PAT may only
+  mint PATs for its own account unless the caller holds `token.manage` or
+  `serviceaccount.token`, and never for `admin`.
+- `unified-controller admin recover` (`cmd/controller/recover.go`) is not an
+  HTTP route: it opens the database with the controller's configuration,
+  creates a PAT of `admin`, writes the audit row with actor `recovery`, and
+  only then (optionally) writes the lease. It is the emergency path, so keep it
+  free of the HTTP stack.
+- Audit identities: `pat:<id>`, `oidc:<sub>`, `bootstrap`, `recovery`,
+  `migration`; a service account's PAT rows carry `details.account =
+  "sa:<name>"` (`auditLogMiddleware`).
 
 ## Adding an endpoint
 
