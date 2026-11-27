@@ -112,6 +112,10 @@ func BearerAuth(expected string) func(http.Handler) http.Handler {
 	}
 }
 
+// msgBrowserPATRefused is the 401 body for a PAT presented by a browser while
+// SSO is configured and ui.allowTokenEntry is off.
+const msgBrowserPATRefused = "personal access tokens are not accepted from the browser while SSO is configured; sign in with SSO"
+
 // ServerAuth returns an authentication middleware that tries three methods in order:
 // PAT, OIDC id_token, and session Cookie. Every credential resolves to an
 // account; a disabled or unknown account is refused with 403.
@@ -133,6 +137,12 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 						lookupFailed = true
 					}
 					if err == nil && pat != nil {
+						// With SSO configured, a PAT must not be typed into the
+						// browser; fetch/XHR requests always carry Sec-Fetch-Mode.
+						if srv != nil && !srv.allowBrowserTokenEntry() && r.Header.Get("Sec-Fetch-Mode") != "" {
+							http.Error(w, msgBrowserPATRefused, http.StatusUnauthorized)
+							return
+						}
 						go func() { _ = st.TouchPAT(context.Background(), pat.ID) }()
 						p, msg := srv.patPrincipal(r.Context(), pat)
 						if msg != "" {

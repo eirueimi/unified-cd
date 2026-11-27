@@ -203,3 +203,42 @@ describe('ApiError and 403 refresh', () => {
     expect(meCalls()).toHaveLength(1);
   });
 });
+
+describe('stored PAT under SSO without manual token entry', () => {
+  it('initAuth drops the stored token and re-reads /auth/me', async () => {
+    const { token, allowTokenEntry } = await import('./api.js');
+    token.set('stale-pat');
+    allowTokenEntry.set(true);
+    const user = { email: 'sso@example.com' };
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ browserSSOEnabled: true }) })
+      .mockResolvedValueOnce({ ok: false, status: 401 })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ stderrPlain: false, allowTokenEntry: false }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => user });
+
+    await initAuth();
+
+    expect(get(token)).toBe('');
+    expect(localStorage.getItem('ecd_token')).toBe('');
+    expect(get(currentUser)).toEqual(user);
+    expect(global.fetch.mock.calls[3][1].headers).toEqual({});
+  });
+
+  it('apiFetch clears the stored token on 401 before the SSO redirect', async () => {
+    const { token, allowTokenEntry } = await import('./api.js');
+    token.set('stale-pat');
+    allowTokenEntry.set(false);
+    browserSSOEnabled.set(true);
+    Object.defineProperty(window, 'location', {
+      value: { ...window.location, hash: '', href: '' },
+      writable: true,
+      configurable: true,
+    });
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401 });
+
+    await expect(apiFetch('/api/v1/jobs')).rejects.toThrow('sso-redirect');
+
+    expect(get(token)).toBe('');
+    allowTokenEntry.set(true);
+  });
+});

@@ -19,6 +19,10 @@ export class ApiError extends Error {
 // Server-set display preference (from /api/v1/ui-config): when true, the run log
 // renders step stderr the same color as stdout instead of red. Default: red.
 export const stderrPlain = writable(false);
+// Server-set policy (from /api/v1/ui-config): false means SSO is configured and
+// the manual token form is off (the server refuses a PAT sent by a browser).
+// Defaults to true so an older server that does not report it keeps the form.
+export const allowTokenEntry = writable(true);
 // Resolves once the initial session check (initAuth) has completed, whether it
 // found a session or not. The router waits on this before rendering the
 // current route so a hard-navigated / deep-linked hash route (e.g. reloading
@@ -85,9 +89,23 @@ export async function initAuth() {
     if (resp.ok) {
       const cfg = await resp.json();
       stderrPlain.set(cfg.stderrPlain === true);
+      allowTokenEntry.set(cfg.allowTokenEntry !== false);
     }
   } catch { }
+  // A PAT saved before SSO was enforced is refused by the server (401) and
+  // shadows a valid session cookie: drop it and re-read the session so the UI
+  // falls through to the SSO login instead of looping.
+  if (dropStoredTokenUnderSSO()) await refreshMe();
   authReady.set(true);
+}
+
+// dropStoredTokenUnderSSO clears a stored token when SSO is on and manual token
+// entry is off. It reports whether a token was dropped.
+export function dropStoredTokenUnderSSO() {
+  if (!get(browserSSOEnabled) || get(allowTokenEntry) || !get(token)) return false;
+  token.set('');
+  saveAuth('', get(serverURL));
+  return true;
 }
 
 // failResponse throws an ApiError for a non-OK response. On a 403 it first
@@ -106,6 +124,9 @@ export async function apiFetch(path, options = {}) {
   const resp = await fetch(url + path, { ...options, credentials: 'include', headers });
   if (resp.status === 401) {
     if (get(browserSSOEnabled)) {
+      // Forget a stored PAT the server will never accept here; otherwise it
+      // would keep shadowing the session cookie after the SSO round trip.
+      dropStoredTokenUnderSSO();
       savePostLoginHash();
       window.location.href = url + '/api/v1/auth/oidc-login';
       throw new Error('sso-redirect');
@@ -125,6 +146,7 @@ export async function apiFetchText(path, options = {}) {
   const resp = await fetch(url + path, { ...options, credentials: 'include', headers });
   if (resp.status === 401) {
     if (get(browserSSOEnabled)) {
+      dropStoredTokenUnderSSO();
       savePostLoginHash();
       window.location.href = url + '/api/v1/auth/oidc-login';
       throw new Error('sso-redirect');

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
-import { browserSSOEnabled, currentUser, token, serverURL } from '../lib/api.js';
+import { browserSSOEnabled, allowTokenEntry, currentUser, token, serverURL } from '../lib/api.js';
 import AuthSetup from './AuthSetup.svelte';
 
 // AuthSetup only ever renders the token-entry / SSO card — it shows nothing
@@ -10,6 +10,7 @@ import AuthSetup from './AuthSetup.svelte';
 
 beforeEach(() => {
   browserSSOEnabled.set(false);
+  allowTokenEntry.set(true);
   currentUser.set(null);
   token.set('');
   serverURL.set('http://localhost:8080');
@@ -72,6 +73,33 @@ describe('AuthSetup — token entry form', () => {
     render(AuthSetup);
 
     expect(screen.getByText('SSO Login')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Bearer token or PAT')).toBeInTheDocument();
+  });
+
+  it('hides the token form and the manual-entry line under SSO when allowTokenEntry is false', () => {
+    browserSSOEnabled.set(true);
+    allowTokenEntry.set(false);
+    render(AuthSetup);
+
+    expect(screen.getByText('SSO Login')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Bearer token or PAT')).not.toBeInTheDocument();
+    expect(screen.queryByText(/or enter token manually/)).not.toBeInTheDocument();
+  });
+
+  it('shows the token form under SSO when allowTokenEntry is true', () => {
+    browserSSOEnabled.set(true);
+    allowTokenEntry.set(true);
+    render(AuthSetup);
+
+    expect(screen.getByPlaceholderText('Bearer token or PAT')).toBeInTheDocument();
+    expect(screen.getByText(/or enter token manually/)).toBeInTheDocument();
+  });
+
+  it('shows the token form without SSO even when allowTokenEntry is false', () => {
+    browserSSOEnabled.set(false);
+    allowTokenEntry.set(false);
+    render(AuthSetup);
+
     expect(screen.getByPlaceholderText('Bearer token or PAT')).toBeInTheDocument();
   });
 });

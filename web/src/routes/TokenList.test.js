@@ -42,6 +42,31 @@ describe('TokenList — permission-aware form and listing', () => {
     expect(queryByText('Owner')).toBeNull();
   });
 
+  it('renders the Account and Expires columns', async () => {
+    global.fetch = vi.fn(() => jsonResponse([{ id: 't2', name: 'deploy', role: 'viewer', account: 'sa:ci', createdAt: '2026-01-01T00:00:00Z', expiresAt: '2026-04-01T00:00:00Z' }]));
+    currentUser.set({ email: 'v@example.com', role: 'viewer', permissions: { global: ['token.create'], folders: {} } });
+    const { findByText } = render(TokenList);
+    expect(await findByText('Account')).toBeTruthy();
+    expect(await findByText('Expires')).toBeTruthy();
+    expect(await findByText('sa:ci')).toBeTruthy();
+  });
+
+  it('shows the Account field only with token.manage or serviceaccount.token', async () => {
+    currentUser.set({ email: 'v@example.com', role: 'viewer', permissions: { global: ['token.create'], folders: {} } });
+    const plain = render(TokenList);
+    expect(plain.container.querySelector('input[placeholder^="Account"]')).toBeNull();
+    plain.unmount();
+
+    currentUser.set({ email: 'a@example.com', role: 'admin', permissions: { global: ['serviceaccount.token'], folders: {} } });
+    const sa = render(TokenList);
+    expect(sa.container.querySelector('input[placeholder^="Account"]')).not.toBeNull();
+    sa.unmount();
+
+    currentUser.set({ email: 'a@example.com', role: 'admin', permissions: { global: ['token.manage'], folders: {} } });
+    const mgr = render(TokenList);
+    expect(mgr.container.querySelector('input[placeholder^="Account"]')).not.toBeNull();
+  });
+
   it('shows "All tokens" and an Owner column with token.manage', async () => {
     currentUser.set({ email: 'a@example.com', role: 'admin', permissions: { global: ['token.manage'], folders: {} } });
     const { findByText } = render(TokenList);
