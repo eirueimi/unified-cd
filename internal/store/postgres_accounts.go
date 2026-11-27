@@ -100,6 +100,11 @@ func (p *Postgres) GetHumanAccountBySub(ctx context.Context, sub string) (*Accou
 // a row for every name and for "admin", clears disabled_at on the listed
 // names, and disables every other service row except "admin".
 func (p *Postgres) SyncServiceAccounts(ctx context.Context, names []string) error {
+	// pgx encodes a nil slice as SQL NULL, which would make the disable
+	// UPDATE match nothing; always bind a real (possibly empty) array.
+	if names == nil {
+		names = []string{}
+	}
 	all := append([]string{"admin"}, names...)
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {

@@ -40,6 +40,11 @@ func TestSyncServiceAccounts(t *testing.T) {
 	a2 := accountByName(t, pg, "a")
 	assert.Nil(t, a2.DisabledAt)
 	assert.Equal(t, a1.ID, a2.ID)
+
+	require.NoError(t, pg.SyncServiceAccounts(ctx, nil))
+	assert.NotNil(t, accountByName(t, pg, "a").DisabledAt)
+	assert.NotNil(t, accountByName(t, pg, "b").DisabledAt)
+	assert.Nil(t, accountByName(t, pg, "admin").DisabledAt)
 }
 
 func TestInitialTokenClaimAndConsume(t *testing.T) {
