@@ -45,7 +45,7 @@ func TestUIActionInventoryIsEnforced(t *testing.T) {
 	policy.WriteString("global:\n  users:\n")
 	emails := map[string]string{}
 	addCaller := func(kind string, perms []string, rule routeRule) string {
-		key := kind + "|" + string(rule.Perm) + "|" + string(rule.AltPerm)
+		key := kind + "|" + string(rule.Perm) + "|" + string(rule.AltPerm) + "|" + string(rule.AltPerm2)
 		if e, ok := emails[key]; ok {
 			return e
 		}
@@ -74,7 +74,7 @@ func TestUIActionInventoryIsEnforced(t *testing.T) {
 
 		var others []string
 		for _, p := range authz.All() {
-			if p != rule.Perm && p != rule.AltPerm {
+			if p != rule.Perm && p != rule.AltPerm && p != rule.AltPerm2 {
 				others = append(others, string(p))
 			}
 		}

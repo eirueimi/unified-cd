@@ -112,9 +112,9 @@ type PAT struct {
 	// EnrollLabels bounds the labels an enrollment-only PAT (agent.enroll) may
 	// put on the enrollment tokens it creates; nil means no bound.
 	EnrollLabels []string
-	// CreatedBy is the audit actor id ("break-glass", "pat:<id>", "oidc:<sub>")
+	// CreatedBy is the audit actor id ("pat:<id>", "oidc:<sub>", "bootstrap", "recovery")
 	// of the caller that created the PAT through the API; empty when unknown
-	// (NULL: bootstrap rows and rows that predate migration 030).
+	// (NULL: rows that predate migration 030).
 	CreatedBy string
 	// AccountID is the owning account (accounts.id).
 	AccountID string
@@ -123,7 +123,7 @@ type PAT struct {
 // AuditEntry is one audit_logs row. Permission, Scope and GrantedBy describe
 // the authorization decision and are stored as NULL when empty. Actor is a
 // display name only (PAT names are not unique); ActorID is the stable identity
-// ("pat:<id>", "oidc:<sub>", "break-glass", "agent:<id>") and ActorSub the OIDC
+// ("pat:<id>", "oidc:<sub>", "bootstrap", "recovery", "agent:<id>"; old rows may carry "break-glass") and ActorSub the OIDC
 // subject behind it. ActorID and ActorSub are stored as NULL when empty.
 type AuditEntry struct {
 	Actor, Method, Path, Action, Resource string

@@ -213,6 +213,9 @@ func TestEveryHumanRouteRefusesCallerWithoutItsPermission(t *testing.T) {
 			if rule.AltPerm != "" {
 				excluded = append(excluded, rule.AltPerm)
 			}
+			if rule.AltPerm2 != "" {
+				excluded = append(excluded, rule.AltPerm2)
+			}
 			token := ceilingToken(t, st, fmt.Sprintf("not-%s-%d", rule.Perm, i), allExcept(excluded...))
 			f := seedMatrix(t, st)
 			rec := doTimed(t, s, requestFor(rule, "team-a/x", f.runs["team-a/x"]), token)
@@ -228,6 +231,9 @@ func TestEveryHumanRouteAdmitsCallerWithItsPermission(t *testing.T) {
 		perms := []authz.Permission{rule.Perm}
 		if rule.AltPerm != "" {
 			perms = append(perms, rule.AltPerm)
+		}
+		if rule.AltPerm2 != "" {
+			perms = append(perms, rule.AltPerm2)
 		}
 		for _, held := range perms {
 			t.Run(rowName(rule)+" holding "+string(held), func(t *testing.T) {

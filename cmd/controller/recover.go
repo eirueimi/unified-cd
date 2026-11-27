@@ -27,10 +27,10 @@ const (
 	// the recovery command.
 	recoveryActor = "recovery"
 
-	adminUsage = "usage: unified-controller admin recover [-f config] [--dsn dsn] [--ttl 1h] [--enable-admin]"
+	adminUsage = "usage: <controller binary> admin recover [-f config] [--dsn dsn] [--ttl 1h] [--enable-admin]"
 )
 
-// runAdmin runs a `unified-controller admin` subcommand and returns the process
+// runAdmin runs a `<controller binary> admin` subcommand and returns the process
 // exit code. The token goes to stdout, everything else to stderr.
 func runAdmin(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "recover" {
@@ -45,7 +45,7 @@ func runAdmin(args []string, stdout, stderr io.Writer) int {
 // configuration is the only gate. It never starts the HTTP server or any
 // background loop.
 func runRecover(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("unified-controller admin recover", flag.ContinueOnError)
+	fs := flag.NewFlagSet("admin recover", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configFile := fs.String("f", config.FindFlag(args, "f"), "config file path (YAML)")
 	dsnFlag := fs.String("dsn", "", "postgres DSN (env: UNIFIED_DB_DSN)")
@@ -157,7 +157,7 @@ func recoverAdminPAT(ctx context.Context, st store.Store, now time.Time, ttl tim
 	}
 	if err := st.InsertAuditLog(ctx, store.AuditEntry{
 		Actor: recoveryActor, ActorID: recoveryActor,
-		Method: "CLI", Path: "unified-controller admin recover",
+		Method: "CLI", Path: "admin recover",
 		Action: "admin.recover", Resource: name, Status: 200,
 		Details: map[string]any{"patId": pat.ID, "ttl": ttl.String(), "enableAdmin": enableAdmin},
 	}); err != nil {

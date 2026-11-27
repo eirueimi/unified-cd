@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -13,6 +14,9 @@ import (
 const (
 	// msgAccountDisabled is the 403 body for a disabled or unknown account.
 	msgAccountDisabled = "forbidden: account disabled"
+	// msgAccountStoreError is the 500 body when the account lookup itself
+	// failed (the same answer ServerAuth gives a failed account upsert).
+	msgAccountStoreError = "account store error"
 	// msgNoRole is the 403 body for an account that holds no grants.
 	msgNoRole = "forbidden: no role"
 
@@ -26,6 +30,15 @@ const (
 	// when exceeded (entries are cheap to rebuild).
 	idTokenAccountCacheMax = 10000
 )
+
+// refusalStatus is the HTTP status for a refusal message from patPrincipal,
+// sessionAccount or resolveAccount: 500 for a store failure, 403 otherwise.
+func refusalStatus(msg string) int {
+	if msg == msgAccountStoreError {
+		return http.StatusInternalServerError
+	}
+	return http.StatusForbidden
+}
 
 // now returns the server clock (time.Now unless a test replaced it).
 func (s *Server) now() time.Time {

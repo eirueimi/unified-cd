@@ -143,7 +143,7 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 						go func() { _ = st.TouchPAT(context.Background(), pat.ID) }()
 						p, msg := srv.patPrincipal(r.Context(), pat)
 						if msg != "" {
-							http.Error(w, msg, http.StatusForbidden)
+							http.Error(w, msg, refusalStatus(msg))
 							return
 						}
 						next.ServeHTTP(w, withPrincipal(r, p))
@@ -202,10 +202,13 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 						if sess.ExpiresAt.Before(now) {
 							// Expired — delete the session.
 							_ = st.DeleteSession(context.Background(), sess.ID)
-						} else if acct := srv.sessionAccount(r.Context(), sess); acct == nil || acct.DisabledAt != nil {
+						} else if acct, msg := srv.sessionAccount(r.Context(), sess); msg != "" || acct.DisabledAt != nil {
 							// Checked before the refresh so a disabled account
 							// never reaches the IdP.
-							http.Error(w, msgAccountDisabled, http.StatusForbidden)
+							if msg == "" {
+								msg = msgAccountDisabled
+							}
+							http.Error(w, msg, refusalStatus(msg))
 							return
 						} else {
 							if sess.ExpiresAt.Sub(now) < refreshThreshold && srv.oidcCfg != nil && srv.km != nil {
@@ -224,7 +227,7 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 							go func() { _ = st.TouchSession(context.Background(), sess.ID) }()
 							p, msg := srv.sessionPrincipal(r.Context(), sess, acct)
 							if msg != "" {
-								http.Error(w, msg, http.StatusForbidden)
+								http.Error(w, msg, refusalStatus(msg))
 								return
 							}
 							next.ServeHTTP(w, withPrincipal(r, p))
@@ -272,7 +275,7 @@ func (srv *Server) patPrincipal(ctx context.Context, pat *store.PAT) (Principal,
 	acct, err := srv.store.GetAccount(ctx, pat.AccountID)
 	if err != nil {
 		slog.Error("load account for PAT failed", "error", err)
-		return Principal{}, msgAccountDisabled
+		return Principal{}, msgAccountStoreError
 	}
 	role, grants, msg := srv.resolveAccount(ctx, acct)
 	if msg != "" {
@@ -311,18 +314,22 @@ func (srv *Server) patPrincipal(ctx context.Context, pat *store.PAT) (Principal,
 	return p, ""
 }
 
-// sessionAccount loads the account a session belongs to; nil when the session
-// has none or the lookup fails.
-func (srv *Server) sessionAccount(ctx context.Context, sess *store.Session) *store.Account {
+// sessionAccount loads the account a session belongs to. A non-empty msg means
+// the session is refused: msgAccountDisabled when the session has no account
+// or the account is gone, msgAccountStoreError when the lookup failed.
+func (srv *Server) sessionAccount(ctx context.Context, sess *store.Session) (*store.Account, string) {
 	if srv == nil || srv.store == nil || sess.AccountID == "" {
-		return nil
+		return nil, msgAccountDisabled
 	}
 	acct, err := srv.store.GetAccount(ctx, sess.AccountID)
 	if err != nil {
 		slog.Error("load account for session failed", "error", err)
-		return nil
+		return nil, msgAccountStoreError
 	}
-	return acct
+	if acct == nil {
+		return nil, msgAccountDisabled
+	}
+	return acct, ""
 }
 
 // sessionPrincipal builds the principal for a browser session. The grants come

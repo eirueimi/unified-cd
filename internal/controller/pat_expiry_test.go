@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
@@ -61,4 +62,42 @@ func mustPATID(t *testing.T, pg store.Store, tokenName string) string {
 	require.NoError(t, err)
 	require.NotNil(t, p)
 	return p.ID
+}
+
+// PATs of disabled accounts and the short-lived recovery PATs are not worth a
+// warning; bootstrap PATs (720h operator PATs) still are.
+func TestPATExpiryWarningSkipsDisabledAndRecovery(t *testing.T) {
+	pg := storetest.NewTestPostgres(t)
+	cfg := withTestAdmin(Config{})
+	cfg = withExtraAccount(cfg, "gone")
+	syncTestServiceAccounts(t, pg, cfg)
+	active := serviceAccountByName(t, pg, testAdminAccount)
+	gone := serviceAccountByName(t, pg, "gone")
+	require.NoError(t, pg.SetAccountDisabled(t.Context(), gone.ID, true))
+
+	now := time.Now()
+	soon := now.Add(3 * 24 * time.Hour)
+	mk := func(name, accountID, createdBy string) {
+		_, err := pg.CreatePAT(t.Context(), store.NewPAT{Name: name, TokenHash: HashToken(name), AccountID: accountID, ExpiresAt: &soon, CreatedBy: createdBy})
+		require.NoError(t, err)
+	}
+	mk("active", active.ID, "")
+	mk("bootstrap", active.ID, "bootstrap")
+	mk("disabled-owner", gone.ID, "")
+	mk("recovery", active.ID, "recovery")
+
+	var buf bytes.Buffer
+	n, err := CheckExpiringPATs(t.Context(), pg, metrics.New(), now, slog.New(slog.NewTextHandler(&buf, nil)))
+	require.NoError(t, err)
+	assert.Equal(t, 2, n, buf.String())
+}
+
+func withExtraAccount(cfg Config, name string) Config {
+	grants := map[string]authz.Grants{}
+	for k, v := range cfg.ServiceAccountGrants {
+		grants[k] = v
+	}
+	grants[name] = authz.RoleGrants("viewer", "sa:"+name)
+	cfg.ServiceAccountGrants = grants
+	return cfg
 }

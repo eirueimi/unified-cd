@@ -25,9 +25,25 @@ func CheckExpiringPATs(ctx context.Context, st store.Store, m *metrics.Metrics, 
 	if err != nil {
 		return 0, err
 	}
+	accts, err := st.ListAccounts(ctx)
+	if err != nil {
+		return 0, err
+	}
+	disabled := make(map[string]bool, len(accts))
+	for _, a := range accts {
+		if a.DisabledAt != nil {
+			disabled[a.ID] = true
+		}
+	}
 	var ids []string
 	horizon := now.Add(patExpiryWarnWindow)
 	for _, p := range pats {
+		// A PAT of a disabled account cannot be used, and a recovery PAT is
+		// short-lived by design; neither is worth a warning. Bootstrap PATs
+		// are 720h operator PATs and still count.
+		if disabled[p.AccountID] || p.CreatedBy == "recovery" {
+			continue
+		}
 		if p.ExpiresAt != nil && p.ExpiresAt.After(now) && !p.ExpiresAt.After(horizon) {
 			ids = append(ids, p.ID)
 		}
