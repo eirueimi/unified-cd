@@ -2752,7 +2752,7 @@ func (p *Postgres) RunJobName(ctx context.Context, runID string) (string, bool, 
 }
 
 // patColumns is the column list every PAT read returns, in patScan order.
-const patColumns = `id, name, role, created_at, expires_at, last_used_at, owner_sub, owner_email, owner_claims, permissions, enroll_labels, created_by`
+const patColumns = `id, name, role, created_at, expires_at, last_used_at, owner_sub, owner_email, owner_claims, permissions, enroll_labels, created_by, account_id::text`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -2762,11 +2762,14 @@ type rowScanner interface {
 // Owner stays nil; permissions NULL stays a nil slice.
 func scanPAT(row rowScanner) (PAT, error) {
 	var pat PAT
-	var ownerSub, ownerEmail, createdBy *string
+	var ownerSub, ownerEmail, createdBy, accountID *string
 	var ownerClaims []string
 	if err := row.Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt,
-		&ownerSub, &ownerEmail, &ownerClaims, &pat.Permissions, &pat.EnrollLabels, &createdBy); err != nil {
+		&ownerSub, &ownerEmail, &ownerClaims, &pat.Permissions, &pat.EnrollLabels, &createdBy, &accountID); err != nil {
 		return PAT{}, err
+	}
+	if accountID != nil {
+		pat.AccountID = *accountID
 	}
 	if createdBy != nil {
 		pat.CreatedBy = *createdBy
@@ -3286,16 +3289,20 @@ func (p *Postgres) CreateSession(ctx context.Context, tokenHash, sub, email, rol
 
 // GetSessionByHash retrieves a session by token_hash.
 func (p *Postgres) GetSessionByHash(ctx context.Context, tokenHash string) (*Session, error) {
-	const q = `SELECT id, token_hash, sub, email, role, claims, refresh_token_dek, refresh_token_ct, expires_at, last_used_at, created_at
+	const q = `SELECT id, token_hash, sub, email, role, claims, refresh_token_dek, refresh_token_ct, expires_at, last_used_at, created_at, account_id::text
 		FROM sessions WHERE token_hash = $1`
 	var s Session
+	var accountID *string
 	err := p.pool.QueryRow(ctx, q, tokenHash).
-		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.Claims, &s.RefreshTokenDEK, &s.RefreshTokenCT, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
+		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.Claims, &s.RefreshTokenDEK, &s.RefreshTokenCT, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt, &accountID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get session: %w", err)
+	}
+	if accountID != nil {
+		s.AccountID = *accountID
 	}
 	return &s, nil
 }

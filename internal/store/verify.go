@@ -72,6 +72,8 @@ var schemaSentinels = []sentinel{
 	{version: 34, migration: "034_run_metadata", table: "runs", column: "trigger"},
 	// The same file also creates custom_metric_realtime.
 	{version: 35, migration: "035_custom_metrics", table: "custom_metric_gauges"},
+	// The same file also adds pats.account_id, sessions.account_id and the controller_settings bootstrap columns.
+	{version: 36, migration: "036_accounts", table: "accounts"},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel

@@ -118,6 +118,9 @@ type PAT struct {
 	// of the caller that created the PAT through the API; empty when unknown
 	// (NULL: bootstrap rows and rows that predate migration 030).
 	CreatedBy string
+	// AccountID is the owning account (accounts.id); empty for rows that
+	// predate migration 036 and have not been attributed.
+	AccountID string
 }
 
 // PATOwner is the OIDC identity a PAT was minted by, with the email and
@@ -673,7 +676,30 @@ type Store interface {
 	SetCLILoginCodePayload(ctx context.Context, id string, dek, ct []byte) error
 	ConsumeCLILoginCode(ctx context.Context, codeHash string) (*CLILoginCode, error)
 
+	// Accounts (migration 036). Get methods return nil, nil when missing.
+	// UpsertHumanAccount never clears disabled_at. SyncServiceAccounts ensures
+	// a row per name plus "admin", re-enables listed names and disables the
+	// other service rows except "admin".
+	UpsertHumanAccount(ctx context.Context, sub, issuer, email string, claims []string) (*Account, error)
+	GetAccount(ctx context.Context, id string) (*Account, error)
+	GetHumanAccountBySub(ctx context.Context, sub string) (*Account, error)
+	SyncServiceAccounts(ctx context.Context, names []string) error
+	ListAccounts(ctx context.Context) ([]Account, error)
+	SetAccountDisabled(ctx context.Context, id string, disabled bool) error
+	CreateAccountPAT(ctx context.Context, in NewPAT) (*PAT, error)
+	ListPATsByAccount(ctx context.Context, accountID string) ([]PAT, error)
+	DeleteAccountPAT(ctx context.Context, id, accountID string) (bool, error)
+	// Bootstrap state on the controller_settings singleton row.
+	// ClaimInitialToken stores hash only if none is stored and bootstrap is not
+	// done. ConsumeInitialToken atomically matches hash, marks bootstrap done
+	// and clears the stored hash.
+	GetBootstrapState(ctx context.Context) (BootstrapState, error)
+	ClaimInitialToken(ctx context.Context, hash string) (stored bool, err error)
+	ConsumeInitialToken(ctx context.Context, hash string) (ok bool, err error)
+	SetAdminEnabledUntil(ctx context.Context, t time.Time) error
+
 	// Sessions
+	CreateAccountSession(ctx context.Context, accountID, tokenHash, sub, email, role string, claims []string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error)
 	CreateSession(ctx context.Context, tokenHash, sub, email, role string, claims []string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error)
 	GetSessionByHash(ctx context.Context, tokenHash string) (*Session, error)
 	UpdateSessionExpiry(ctx context.Context, id string, refreshDEK, refreshCT []byte, expiresAt time.Time) error
@@ -790,6 +816,9 @@ type Session struct {
 	Sub       string
 	Email     string
 	Role      string
+	// AccountID is the owning account (accounts.id); empty for sessions
+	// created before migration 036.
+	AccountID string
 	// Claims is the OIDC claim snapshot taken at login; nil means NULL (a pre-upgrade, role-only session).
 	Claims          []string
 	RefreshTokenDEK []byte // envelope-encrypted OIDC refresh token
