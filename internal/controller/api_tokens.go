@@ -29,6 +29,10 @@ func generatePAT() (string, error) {
 	return patPrefix + hex.EncodeToString(buf), nil
 }
 
+// NewPATToken generates a random PAT value in the same format the API issues.
+// The recovery command uses it so it does not duplicate the format.
+func NewPATToken() (string, error) { return generatePAT() }
+
 // validateCeiling checks a requested PAT ceiling against what the creator
 // holds (spec 5.15). Nothing is ever clamped: a ceiling beyond the creator's is
 // a 400. For a PAT creator, Role and Grants are already restricted by its own
