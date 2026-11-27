@@ -167,7 +167,7 @@ services:
         # The initial admin token works once, so the admin PAT it yields is
         # kept in the admin-state volume and reused on later runs. The PAT
         # lasts 30 days; if it expired before the agent enrolled, remove the
-        # admin-state volume and mint a new one with `unified-controller admin recover`.
+        # admin-state volume and mint a new one with `<controller binary> admin recover`.
         if [ ! -s "$$ADMIN" ]; then
           (umask 077; go run -buildvcs=false ./cmd/unified-cli bootstrap > "$$ADMIN.tmp")
           mv "$$ADMIN.tmp" "$$ADMIN"

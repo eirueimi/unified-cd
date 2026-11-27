@@ -158,22 +158,31 @@ serviceAccounts:
   the path, never the value (logs are often shipped elsewhere).
 - Instead of generating, the operator can provide the value with
   `UNIFIED_INITIAL_ADMIN_TOKEN` (for automated installs, like GitLab's
-  `GITLAB_ROOT_PASSWORD`). The same one-time rules apply.
+  `GITLAB_ROOT_PASSWORD`). The same one-time rules apply. A provided value is
+  honoured even when SSO is configured (Compose and Helm rely on it), so under
+  SSO the operator either does not provide one or exchanges it once and then
+  sets `serviceAccounts.admin.enabled: false`. A provided value must be at
+  least 24 characters, and the value published in the repo-root
+  `docker-compose.yaml` is refused unless `UNIFIED_DEV_MODE` is set.
 - Exchanged once with `unified-cli bootstrap --initial-token <value>`
   (`POST /api/v1/bootstrap`). The response is a PAT of the built-in `admin`
   account. After the exchange the flag is set, the stored hash is erased, the
   file is deleted if the controller can delete it, and the value is useless.
 - Only one replica generates it: the generation is a database-guarded insert;
   other replicas log that another replica generated it.
-- The endpoint is rate-limited and returns the same error for "wrong value"
-  and "already used".
+- The endpoint is rate-limited (5 requests per minute per client address) and
+  returns the same error for "wrong value" and "already used".
+- While the built-in `admin` account is disabled (config disabled and no
+  unexpired recovery lease) the endpoint answers 409 without consuming the
+  token, because a PAT of a disabled `admin` would be useless.
 
 ### 6.5 PAT lifetime
 
-- Every new PAT has an expiry. The default is 90 days and the maximum is 365
-  days, configurable with `tokens.defaultLifetime` and `tokens.maxLifetime`.
-  `tokens.maxLifetime: 0` allows non-expiring PATs for operators who
-  explicitly accept that.
+- Every new PAT has an expiry; there are no non-expiring PATs. The default is
+  90 days and the maximum is 365 days, configurable with
+  `tokens.defaultLifetime` (must be positive) and `tokens.maxLifetime`.
+  `tokens.maxLifetime: 0` only removes the upper bound: a PAT still expires
+  after the default or the requested lifetime.
 - PATs of the built-in `admin` account are capped at 30 days regardless of
   `tokens.maxLifetime`.
 - `token list` shows the expiry; the controller logs a daily warning for PATs
@@ -181,15 +190,17 @@ serviceAccounts:
 
 ### 6.6 Recovery command
 
-- `unified-controller admin recover [--ttl 1h] [--enable-admin]` connects to
+- `<controller binary> admin recover [--ttl 1h] [--enable-admin]` (the binary
+  is `controller` in the image and release archive, `bin/unified-cd-controller`
+  from `make build`) connects to
   the database with the controller's normal configuration (config file, env,
-  flags) and prints a PAT of the built-in `admin` account, default lifetime 1
+  flags; it must run with the same `-f` and environment as the server) and prints a PAT of the built-in `admin` account, default lifetime 1
   hour, maximum 24 hours.
 - `--enable-admin` also re-enables `admin` when the config disabled it; the
   enablement lasts until the PAT expires, so the config remains the long-term
   authority.
 - Runs wherever the controller runs: on the host, `docker compose exec
-  controller unified-controller admin recover`, or `kubectl exec`. Needing
+  controller /controller admin recover`, or `kubectl exec`. Needing
   database credentials is the gate, like Jenkins' `$JENKINS_HOME` or GitLab's
   rake task.
 - Writes an audit row with actor `recovery`.
@@ -251,6 +262,11 @@ controller logs an error that names the migration guide and keeps starting
   an admin. This includes the built-in `admin` account (an `admin` PAT can mint
   a successor, still capped at 30 days). Creating a PAT for another account
   needs `token.manage` or `serviceaccount.token`, and never targets `admin`.
+  Self-rotation needs `token.create` on the service account. A holder of
+  `serviceaccount.token` (without `token.manage`) may also list and delete the
+  PATs of service accounts other than `admin`, never a human's, and can mint
+  PATs carrying any non-admin service account's grants, so the permission is
+  effectively the union of all service-account grants.
 - **`--enable-admin` lease.** Stored as `admin_enabled_until` in
   `controller_settings`. Startup config sync does not override an unexpired
   lease, and the request path treats `admin` as enabled while
@@ -290,8 +306,8 @@ A migration and the first start of the new version do the following.
    `env:UNIFIED_TOKEN` row, role-only PATs (created before owners existed, with
    `UNIFIED_TOKEN`, or with another role-only PAT), and ownerless
    enrollment-only PATs. The migration writes one audit row per deleted PAT
-   (id, name, role, `created_by`) and the first start logs the list, so
-   operators can see what to re-issue.
+   (id, name, role, `created_by`); the migration guide shows how to list them,
+   so operators can see what to re-issue.
 3. **Bootstrap on upgrade.** If, after step 2, SSO is not configured, the
    bootstrap flag is not set, so the first start generates an initial token
    exactly as for a fresh install (6.4). An upgraded non-SSO install is
@@ -319,8 +335,8 @@ database: every service account's permissions come from `serviceAccounts`.
 - CLI: `unified-cli bootstrap`, `account list|disable|enable`,
   `serviceaccount list`, `token create --account <sa>` (needs `token.manage`
   or the new permission `serviceaccount.token`; never for `admin`).
-- Web UI: an accounts page (list, disable/enable humans, service accounts and
-  their PATs).
+- Web UI: an accounts page (list with PAT counts, disable/enable humans); PATs
+  are managed on the Tokens page.
 - Docs: authentication, authorization (break-glass section rewritten),
   installation, quickstart, chart README, troubleshooting, a migration guide
   under `docs/operator-manual/migrations/`.

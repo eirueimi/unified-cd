@@ -5,7 +5,7 @@ now belongs to an **account**: a *human* account (created the first time a
 person signs in with SSO) or a *service* account (declared in the controller
 config, for CI and other automation). A non-SSO install gets in once with a
 one-time **initial admin token**, and a lost admin credential is replaced with
-`unified-controller admin recover`.
+`<controller binary> admin recover`.
 
 **You are affected if** you run any controller that used `UNIFIED_TOKEN` (every
 non-SSO install, and SSO installs that kept it as a fallback), if your
@@ -116,7 +116,9 @@ unified-cli bootstrap --initial-token-file /etc/unified-cd/initial-admin-token
 
 To choose the value yourself, set `UNIFIED_INITIAL_ADMIN_TOKEN` on the
 controller before its first start and pass the same value to `unified-cli
-bootstrap` (`--initial-token` or the same environment variable). The file is
+bootstrap` (`--initial-token` or the same environment variable). A provided value
+needs at least 24 characters, and the fixed value from the repo-root
+`docker-compose.yaml` is refused unless `UNIFIED_DEV_MODE` is set. The file is
 deleted after a successful exchange.
 
 ### Docker Compose
@@ -160,8 +162,9 @@ install can also set `generate=false` and skip the Secret.
 ### If the exchange fails
 
 - `invalid or already used initial token` (401): the value is wrong, or the token was already exchanged.
-- `too many bootstrap attempts` (429): the endpoint allows 5 attempts per minute; wait and retry.
-- If the exchange consumed the token but the PAT could not be created (the controller logs `bootstrap: create PAT (the initial token is already consumed; use 'unified-controller admin recover')`), or you lost the admin PAT, use [`admin recover`](#7-admin-recover).
+- `too many bootstrap attempts` (429): the endpoint allows 5 attempts per minute per client address; wait and retry.
+- `the built-in admin account is disabled; enable it or use the recovery command` (409): `serviceAccounts.admin.enabled` is `false` and no recovery lease is running. The initial token is not consumed; enable `admin` (restart) or use `<controller binary> admin recover --enable-admin`.
+- If the exchange consumed the token but the PAT could not be created (the controller logs `bootstrap: create PAT (the initial token is already consumed; use '<controller binary> admin recover')`), or you lost the admin PAT, use [`admin recover`](#7-admin-recover).
 
 ## 5. Declare service accounts for CI
 
@@ -209,7 +212,11 @@ PATs too if you want them to carry the new lifetime limits.
 ## 6. Disable `admin` under SSO
 
 With SSO configured no initial token is generated: the first admin comes from
-`oidc.userMap` / `oidc.roleMap`. The built-in `admin` account still exists, so
+`oidc.userMap` / `oidc.roleMap`. A value you provide with
+`UNIFIED_INITIAL_ADMIN_TOKEN` is still honoured under SSO (Compose and Helm
+set one), so under SSO either set `controller.initialAdminToken.generate=false`
+(Helm) or do not provide one, or exchange the token once and then set
+`serviceAccounts.admin.enabled: false`. The built-in `admin` account still exists, so
 the controller logs `the built-in admin service account is enabled while SSO is
 configured; set serviceAccounts.admin.enabled: false once SSO works`. Once an
 SSO admin can sign in, turn it off:
@@ -225,13 +232,19 @@ disabled`. `admin recover --enable-admin` brings it back temporarily (step 7).
 
 ## 7. `admin recover`
 
-`unified-controller admin recover` prints a short-lived PAT of the built-in
+`<controller binary> admin recover` prints a short-lived PAT of the built-in
 `admin` account. Its only gate is access to the database with the controller's
 configuration. It never starts the HTTP server and writes an audit row with
-actor `recovery`.
+actor `recovery`. Run it with the same configuration as the server (the same
+`-f` file and the same environment), or it may reach another database or take a
+different `admin` decision.
+
+The controller binary is called `controller` in the release archives and in the
+container image (`/controller`), and `bin/unified-cd-controller` after `make
+build`. This guide writes `<controller binary>` for whichever applies.
 
 ```bash
-unified-controller admin recover [-f config] [--dsn dsn] [--ttl 1h] [--enable-admin]
+<controller binary> admin recover [-f config] [--dsn dsn] [--ttl 1h] [--enable-admin]
 ```
 
 - `--ttl` defaults to `1h`; the maximum is `24h` (`--ttl must not exceed 24h`).
@@ -241,8 +254,8 @@ unified-controller admin recover [-f config] [--dsn dsn] [--ttl 1h] [--enable-ad
 Run it where the controller runs:
 
 ```bash
-# binary
-unified-cd-controller admin recover -f /etc/unified-cd/controller.yaml
+# release archive (use ./bin/unified-cd-controller after make build)
+./controller admin recover -f /etc/unified-cd/controller.yaml
 # Docker Compose
 docker compose -f deployments/docker/docker-compose.yaml exec controller /controller admin recover
 # Kubernetes

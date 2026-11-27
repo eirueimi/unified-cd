@@ -729,10 +729,11 @@ Refusals are printed as `server error: <message>`:
 | Message | Status | Cause |
 |---|---|---|
 | `invalid or already used initial token` | 401 | A wrong value, or the token was already exchanged (the two are not distinguished) |
-| `too many bootstrap attempts` | 429 | More than 5 attempts per minute; wait and retry |
+| `too many bootstrap attempts` | 429 | More than 5 attempts per minute from one client address; wait and retry |
+| `the built-in admin account is disabled; enable it or use the recovery command` | 409 | `serviceAccounts.admin.enabled` is `false` and no recovery lease is running; the token is not consumed |
 | `token name "env:x" is reserved` | 400 | `--name` starts with `env:` or `system:` |
 
-If the exchange consumed the token but the PAT could not be created, or the PAT was lost, use [`unified-controller admin recover`](#unified-controller-admin-recover). See [Authorization: Built-in admin account and recovery](../operator-manual/authorization.md#built-in-admin-account-and-recovery).
+If the exchange consumed the token but the PAT could not be created, or the PAT was lost, use [`<controller binary> admin recover`](#controller-admin-recover). See [Authorization: Built-in admin account and recovery](../operator-manual/authorization.md#built-in-admin-account-and-recovery).
 
 ---
 
@@ -775,12 +776,12 @@ An alias for `account list --kind service`. Create a service account's PAT with 
 
 ---
 
-## unified-controller admin recover
+## controller admin recover
 
-This is a command of the controller binary (`unified-cd-controller`, `/controller` in the container image), not of `unified-cli`. It prints a short-lived PAT of the built-in `admin` account straight from the database, for when nobody can sign in. Running the controller with no subcommand still starts the server.
+This is a command of the controller binary, not of `unified-cli`. The binary is called `controller` in the release archives (`controller.exe` on Windows) and in the container image (`/controller`), and `bin/unified-cd-controller` when you build with `make build`; this page writes `<controller binary>` for whichever applies. It prints a short-lived PAT of the built-in `admin` account straight from the database, for when nobody can sign in. Running the controller with no subcommand still starts the server.
 
 ```
-unified-controller admin recover [-f config] [--dsn dsn] [--ttl duration] [--enable-admin]
+<controller binary> admin recover [-f config] [--dsn dsn] [--ttl duration] [--enable-admin]
 
   -f              string   Controller config file (YAML); same effective configuration as the server (env and config file)
   --dsn           string   PostgreSQL DSN (env: UNIFIED_DB_DSN)
@@ -788,16 +789,16 @@ unified-controller admin recover [-f config] [--dsn dsn] [--ttl duration] [--ena
   --enable-admin           Enable the built-in admin account until the PAT expires, even if the configuration disables it
 ```
 
-- It connects to the database with the controller's normal configuration; reaching the database is the gate. It never starts the HTTP server.
+- It connects to the database with the controller's normal configuration; reaching the database is the gate. It never starts the HTTP server. Run it with the same configuration as the server: the same `-f` file and the same environment (database DSN, `serviceAccounts`, `tokens`). A different config can pick a different database or a different `admin.enabled` decision.
 - The PAT goes to stdout; a line with its expiry goes to stderr. It writes an audit row with actor `recovery`.
-- `--enable-admin` stores a lease equal to the PAT's expiry and replaces any existing lease. Without it, a configuration that sets `serviceAccounts.admin.enabled: false` makes the command refuse: `the built-in admin account is disabled in the configuration; pass --enable-admin`. The config stays the long-term authority: after the PAT expires, `admin` is disabled again.
+- `--enable-admin` stores a lease equal to the PAT's expiry and replaces any existing lease. While the lease runs, every previously minted, unexpired `admin` PAT works again, not only the new one. Without it, a configuration that sets `serviceAccounts.admin.enabled: false` makes the command refuse: `the built-in admin account is disabled in the configuration; pass --enable-admin`. The config stays the long-term authority: after the PAT expires, `admin` is disabled again.
 - `--ttl` above 24h is refused: `--ttl must not exceed 24h`.
 
 Run it where the controller runs:
 
 ```bash
-# binary on the host
-unified-cd-controller admin recover -f /etc/unified-cd/controller.yaml
+# release archive (use ./bin/unified-cd-controller after make build)
+./controller admin recover -f /etc/unified-cd/controller.yaml
 # Docker Compose
 docker compose -f deployments/docker/docker-compose.yaml exec controller /controller admin recover
 # Kubernetes

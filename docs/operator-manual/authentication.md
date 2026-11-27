@@ -40,7 +40,7 @@ Whether SSO is active is determined by whether OIDC configuration (`UNIFIED_OIDC
   The controller starts when the bootstrap is done or when it can generate (or was given) that token;
   otherwise it exits with an error such as `cannot write the initial admin token: no writable config or data directory; set UNIFIED_INITIAL_ADMIN_TOKEN`.
 - **OIDC configured** → All three methods are active. No initial token is generated: the first admin comes
-  from `oidc.userMap` / `roleMap`, and `unified-controller admin recover` remains as the emergency way in.
+  from `oidc.userMap` / `roleMap`, and `<controller binary> admin recover` remains as the emergency way in.
 - When both are in use they are not mutually exclusive: e.g. CI uses a service-account PAT while humans use SSO.
 
 An admin can disable a human account (`unified-cli account disable <id>`, permission `account.manage`), which
@@ -89,7 +89,7 @@ useless. The endpoint is rate limited and answers `invalid or already used initi
 used value, and `too many bootstrap attempts` (429). The Docker Compose stacks do this step for you in the
 `agent-enroll` one-shot and keep the PAT in the `admin-state` volume (see [Installation](../getting-started/installation.md#docker-recommended-for-production)).
 If the exchange consumed the token but failed to create the PAT, or you lost the admin PAT, use
-`unified-controller admin recover` (see [Authorization: Built-in admin account and recovery](authorization.md#built-in-admin-account-and-recovery)).
+`<controller binary> admin recover`, run with the same configuration as the server (see [Authorization: Built-in admin account and recovery](authorization.md#built-in-admin-account-and-recovery)).
 
 ### CLI access
 

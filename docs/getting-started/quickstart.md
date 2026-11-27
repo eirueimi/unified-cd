@@ -114,7 +114,7 @@ export UNIFIED_TOKEN="$(./bin/unified-cli bootstrap --initial-token <value>)"
 ```
 
 `UNIFIED_TOKEN` here is the CLI's own variable: the PAT the CLI sends. The commands below use it.
-If you lose the PAT, run `./bin/unified-cd-controller admin recover` (with the same database settings)
+If you lose the PAT, run `./bin/unified-cd-controller admin recover` (with the same configuration as the server: the same `-f` file and environment)
 to get a short-lived replacement. For CI, do not reuse this admin PAT: declare a service account in
 the controller config and issue it a PAT (see
 [Authentication](../operator-manual/authentication.md#non-sso-setup-initial-admin-token-and-service-accounts)).

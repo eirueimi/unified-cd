@@ -78,7 +78,7 @@ from anything the caller can choose:
 | `actorId` | Caller |
 |---|---|
 | `bootstrap` | The initial admin token exchange (`POST /api/v1/bootstrap`, action `bootstrap.exchange`); `details.patId` is the PAT it created |
-| `recovery` | The `unified-controller admin recover` command (action `admin.recover`); `details` carries `patId`, `ttl` and `enableAdmin` |
+| `recovery` | The `<controller binary> admin recover` command (action `admin.recover`); `details` carries `patId`, `ttl` and `enableAdmin` |
 | `migration` | The internal-accounts migration, one `token.delete` row per ownerless PAT it deleted (see [Migrating: internal accounts](migrations/2026-11-27-internal-accounts.md#2-find-the-deleted-pats)) |
 | `pat:<pat id>` | Any PAT, of a human or a service account. `<pat id>` is the PAT's primary key; unlike the name it is unique. For a service-account PAT the row's `details` also carry `account: sa:<name>` |
 | `oidc:<sub>` | An OIDC bearer token or a browser session; `<sub>` is the subject claim (also in `actorSub`) |

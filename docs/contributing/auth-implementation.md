@@ -207,7 +207,9 @@ shown in the token list comes from the account (email, else `sub`, else
 There is no static controller token. A fresh install is bootstrapped with the
 one-time initial token (`initial-admin-token`, or `UNIFIED_INITIAL_ADMIN_TOKEN`),
 which `handleBootstrap` exchanges for the first PAT of the built-in `admin`
-service account. `handleCreateToken` rejects the reserved `env:` and `system:`
+service account. `handleBootstrap` is rate limited per client address (5 per
+minute) and refuses with 409, without consuming the token, while `admin` is
+disabled. `handleCreateToken` rejects the reserved `env:` and `system:`
 name prefixes.
 
 Authentication resolves a credential to an account first and the permissions
@@ -217,7 +219,8 @@ second:
   session cookie. `patPrincipal` and `sessionPrincipal` call `resolveAccount`
   (`auth_accounts.go`), which answers `forbidden: account disabled` for a
   disabled or unknown account and `forbidden: no role` for one that holds
-  nothing. A human's grants come from `identityGrants` over the account's stored
+  nothing; a failed account lookup is a 500 `account store error`
+  (`refusalStatus`), never "disabled". A human's grants come from `identityGrants` over the account's stored
   email, `sub` and claims; a service account's from `serviceAccounts` in the
   config (compiled by `authz.CompileServiceAccount`); the built-in `admin`
   holds every permission while it is enabled (`adminEnabled` also honours the
@@ -234,8 +237,11 @@ second:
 - `patExpiry` (`api_tokens.go`) applies `tokens.defaultLifetime`,
   `tokens.maxLifetime` and the 720h cap of the `admin` account. A PAT may only
   mint PATs for its own account unless the caller holds `token.manage` or
-  `serviceaccount.token`, and never for `admin`.
-- `unified-controller admin recover` (`cmd/controller/recover.go`) is not an
+  `serviceaccount.token`, and never for `admin`. `serviceaccount.token` also lets a
+  caller list and delete the PATs of service accounts other than `admin`
+  (`serviceAccountTokenScope`); the token routes carry it as `AltPerm` (create) or
+  `AltPerm2` (list, delete).
+- `<controller binary> admin recover` (`cmd/controller/recover.go`) is not an
   HTTP route: it opens the database with the controller's configuration,
   creates a PAT of `admin`, writes the audit row with actor `recovery`, and
   only then (optionally) writes the lease. It is the emergency path, so keep it
