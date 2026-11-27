@@ -688,6 +688,8 @@ type Store interface {
 	SetAccountDisabled(ctx context.Context, id string, disabled bool) error
 	CreateAccountPAT(ctx context.Context, in NewPAT) (*PAT, error)
 	ListPATsByAccount(ctx context.Context, accountID string) ([]PAT, error)
+	// CountPATsByAccount returns the PAT count per account id (absent = 0).
+	CountPATsByAccount(ctx context.Context) (map[string]int, error)
 	DeleteAccountPAT(ctx context.Context, id, accountID string) (bool, error)
 	// Bootstrap state on the controller_settings singleton row.
 	// ClaimInitialToken stores hash only if none is stored and bootstrap is not

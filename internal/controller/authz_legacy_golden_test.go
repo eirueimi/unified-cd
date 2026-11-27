@@ -104,6 +104,9 @@ var legacyNewRoutes = map[string]bool{
 	"GET /api/v1/authz/policy":   true,
 	"POST /api/v1/authz/explain": true,
 
+	"GET /api/v1/accounts":                true,
+	"POST /api/v1/accounts/{id}/disable":  true,
+	"POST /api/v1/accounts/{id}/enable":   true,
 	"POST /api/v1/agent-volumes":          true,
 	"GET /api/v1/agent-volumes":           true,
 	"DELETE /api/v1/agent-volumes/{name}": true,

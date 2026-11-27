@@ -499,6 +499,18 @@ type CreatePATResponse struct {
 	EnrollLabels []string `json:"enrollLabels,omitempty"`
 }
 
+// Account is an account as listed by GET /api/v1/accounts.
+type Account struct {
+	ID         string     `json:"id"`
+	Kind       string     `json:"kind"` // "human" or "service"
+	Name       string     `json:"name"`
+	Email      string     `json:"email,omitempty"`
+	Disabled   bool       `json:"disabled"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
+	PATCount   int        `json:"patCount"`
+}
+
 // PATMeta is the metadata for a PAT (does not include the token hash).
 type PATMeta struct {
 	ID         string     `json:"id"`

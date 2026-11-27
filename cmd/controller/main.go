@@ -655,6 +655,9 @@ func main() {
 		}
 	}
 	go controller.RunApprovalReaper(ctx, backgroundSt, time.Minute)
+	// Every replica reports PATs that expire within 7 days (once at startup,
+	// then daily); it only reads the database, so no leader is needed.
+	go controller.RunPATExpiryCheck(ctx, backgroundSt, m)
 	go controller.RunCustomMetricsSweeper(ctx, backgroundSt, m.Custom(), customCfg.TTL)
 	go controller.RunStuckRunReaper(ctx, backgroundSt, 30*time.Second, 90*time.Second, 60*time.Second)
 	// Fail runs that have sat Queued for longer than the grace period (default

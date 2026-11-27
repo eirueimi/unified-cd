@@ -64,6 +64,7 @@ var noRequestCommands = map[string]string{
 // per non-test source file. Every one of them must be exercised by a row in
 // contractRows. Update this map together with the table.
 var requestConstructors = map[string]int{
+	"account.go":          1,
 	"agent_enrollment.go": 1,
 	"agent_install.go":    3,
 	"apply.go":            1,
@@ -263,6 +264,15 @@ func contractRows(t *testing.T) []contractRow {
 		{name: "token list", leaf: "token list", args: []string{"token", "list"}, want: []string{get + " /api/v1/tokens"}},
 		{name: "token delete", leaf: "token delete", args: []string{"token", "delete", "id1"}, want: []string{del + " /api/v1/tokens/id1"}},
 
+		// accounts
+		{name: "account list", leaf: "account list", args: []string{"account", "list"}, want: []string{get + " /api/v1/accounts"}},
+		{name: "account list --kind", leaf: "account list", args: []string{"account", "list", "--kind", "human"}, want: []string{get + " /api/v1/accounts?kind=human"}},
+		{name: "account disable", leaf: "account disable", args: []string{"account", "disable", "a1"},
+			status: map[string]int{"POST /api/v1/accounts/a1/disable": http.StatusNoContent}, want: []string{post + " /api/v1/accounts/a1/disable"}},
+		{name: "account enable", leaf: "account enable", args: []string{"account", "enable", "a1"},
+			status: map[string]int{"POST /api/v1/accounts/a1/enable": http.StatusNoContent}, want: []string{post + " /api/v1/accounts/a1/enable"}},
+		{name: "serviceaccount list", leaf: "serviceaccount list", args: []string{"serviceaccount", "list"}, want: []string{get + " /api/v1/accounts?kind=service"}},
+
 		// audit
 		{name: "audit list", leaf: "audit list", args: []string{"audit", "list"}, want: []string{get + " /api/v1/audit"}},
 
@@ -321,7 +331,7 @@ type contractTransport struct {
 }
 
 var collectionSegments = map[string]bool{
-	"agents": true, "jobs": true, "runs": true, "active": true, "schedules": true, "webhooks": true,
+	"accounts": true, "agents": true, "jobs": true, "runs": true, "active": true, "schedules": true, "webhooks": true,
 	"gitcredentials": true, "appsources": true, "tokens": true, "secrets": true, "artifacts": true,
 	"approvals": true, "steps": true, "logs": true, "audit": true, "vars": true,
 	"agent-enrollments": true, "agent-enrollment-policies": true, "agent-volumes": true,

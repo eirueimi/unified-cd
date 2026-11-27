@@ -560,6 +560,9 @@ func (s *Server) routes() {
 		r.With(s.authorize).Post("/tokens", s.handleCreateToken)
 		r.With(s.authorize).Get("/tokens", s.handleListTokens)
 		r.With(s.authorize).Delete("/tokens/{id}", s.handleDeleteToken)
+		r.With(s.authorize).Get("/accounts", s.handleListAccounts)
+		r.With(s.authorize).Post("/accounts/{id}/disable", s.handleDisableAccount)
+		r.With(s.authorize).Post("/accounts/{id}/enable", s.handleEnableAccount)
 
 		r.With(s.authorize).Post("/agent-enrollments", s.handleCreateAgentEnrollment)
 		r.With(s.authorize).Get("/agent-enrollments", s.handleListAgentEnrollments)

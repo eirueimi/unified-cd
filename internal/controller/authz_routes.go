@@ -135,6 +135,10 @@ var routeTable = []routeRule{
 	{Method: mGet, Pattern: "/api/v1/tokens", Perm: authz.TokenCreate, AltPerm: authz.TokenManage, Scope: scopeGlobal},
 	{Method: mDelete, Pattern: "/api/v1/tokens/{id}", Perm: authz.TokenCreate, AltPerm: authz.TokenManage, Scope: scopeGlobal},
 
+	global(mGet, "/api/v1/accounts", authz.AccountManage),
+	global(mPost, "/api/v1/accounts/{id}/disable", authz.AccountManage),
+	global(mPost, "/api/v1/accounts/{id}/enable", authz.AccountManage),
+
 	// agent.enroll (enrollment-only PATs) may create enrollment tokens; every other agent route needs agent.manage.
 	{Method: mPost, Pattern: "/api/v1/agent-enrollments", Perm: authz.AgentManage, AltPerm: authz.AgentEnroll, Scope: scopeGlobal},
 	global(mGet, "/api/v1/agent-enrollments", authz.AgentRead),

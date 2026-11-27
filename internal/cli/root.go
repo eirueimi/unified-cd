@@ -100,6 +100,8 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newWebhookCmd(resolve))
 	root.AddCommand(newAppSourceCmd(resolve))
 	root.AddCommand(newTokenCmd(resolve))
+	root.AddCommand(newAccountCmd(resolve))
+	root.AddCommand(newServiceAccountCmd(resolve))
 	root.AddCommand(newApproveCmd(resolve))
 	root.AddCommand(newRejectCmd(resolve))
 	root.AddCommand(newArtifactCmd(resolve))

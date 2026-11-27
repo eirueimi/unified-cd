@@ -185,6 +185,26 @@ func (p *Postgres) ListPATsByAccount(ctx context.Context, accountID string) ([]P
 	return pats, err
 }
 
+// CountPATsByAccount returns the number of PATs per account id; accounts with
+// no PAT are absent. PATs without an account are not counted.
+func (p *Postgres) CountPATsByAccount(ctx context.Context) (map[string]int, error) {
+	rows, err := p.pool.Query(ctx, `SELECT account_id::text, count(*) FROM pats WHERE account_id IS NOT NULL GROUP BY account_id`)
+	if err != nil {
+		return nil, fmt.Errorf("count pats by account: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, fmt.Errorf("count pats by account: %w", err)
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
 // DeleteAccountPAT deletes a PAT only when it belongs to accountID; it reports
 // whether a row was deleted.
 func (p *Postgres) DeleteAccountPAT(ctx context.Context, id, accountID string) (bool, error) {
