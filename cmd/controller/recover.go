@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/signal"
 	"syscall"
 	"time"
@@ -145,11 +146,13 @@ func recoverAdminPAT(ctx context.Context, st store.Store, now time.Time, ttl tim
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	// The lease is set after the PAT so a failure here never leaves the admin
-	// account enabled without a token the operator could use.
-	if enableAdmin {
-		if err := st.SetAdminEnabledUntil(ctx, expires); err != nil {
-			return "", time.Time{}, err
+	// Side effects are ordered PAT, audit row, lease. The lease comes last so a
+	// failed run never leaves a config-disabled admin account enabled without an
+	// audit trail. On any failure after the PAT exists it is deleted (best
+	// effort), so a failed run leaves neither a usable PAT nor a lease.
+	revoke := func() {
+		if _, derr := st.DeleteAccountPAT(context.WithoutCancel(ctx), pat.ID, adminID); derr != nil {
+			slog.Warn("recover: could not delete the unused recovery PAT", "patId", pat.ID, "error", derr)
 		}
 	}
 	if err := st.InsertAuditLog(ctx, store.AuditEntry{
@@ -158,7 +161,14 @@ func recoverAdminPAT(ctx context.Context, st store.Store, now time.Time, ttl tim
 		Action: "admin.recover", Resource: name, Status: 200,
 		Details: map[string]any{"patId": pat.ID, "ttl": ttl.String(), "enableAdmin": enableAdmin},
 	}); err != nil {
+		revoke()
 		return "", time.Time{}, fmt.Errorf("write audit log: %w", err)
+	}
+	if enableAdmin {
+		if err := st.SetAdminEnabledUntil(ctx, expires); err != nil {
+			revoke()
+			return "", time.Time{}, err
+		}
 	}
 	return token, expires, nil
 }

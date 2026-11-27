@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runRecover runs `admin recover` with args and returns the exit code and the
+// execRecover runs `admin recover` with args and returns the exit code and the
 // captured stdout and stderr.
 func execRecover(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
@@ -154,4 +155,54 @@ func TestServerStartArgsUnchanged(t *testing.T) {
 	eff, err = loadRuntimeConfig(nil, fs)
 	require.NoError(t, err)
 	assert.Equal(t, ":8080", eff.Addr)
+}
+
+// failingStore wraps a store and fails the selected recovery side effects.
+type failingStore struct {
+	store.Store
+	failAudit, failLease bool
+}
+
+func (f failingStore) InsertAuditLog(ctx context.Context, e store.AuditEntry) error {
+	if f.failAudit {
+		return errors.New("audit boom")
+	}
+	return f.Store.InsertAuditLog(ctx, e)
+}
+
+func (f failingStore) SetAdminEnabledUntil(ctx context.Context, t time.Time) error {
+	if f.failLease {
+		return errors.New("lease boom")
+	}
+	return f.Store.SetAdminEnabledUntil(ctx, t)
+}
+
+func TestRecoverFailureLeavesNoPATAndNoLease(t *testing.T) {
+	for name, fs := range map[string]failingStore{
+		"audit fails": {failAudit: true},
+		"lease fails": {failLease: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pg := storetest.NewTestPostgres(t)
+			fs.Store = pg
+			before, err := pg.GetBootstrapState(t.Context())
+			require.NoError(t, err)
+
+			token, _, err := recoverAdminPAT(t.Context(), fs, time.Now().UTC(), time.Hour, true)
+			require.Error(t, err)
+			assert.Empty(t, token)
+
+			// No PAT of the admin account survives, so nothing can authenticate.
+			accounts, err := pg.ListAccounts(t.Context())
+			require.NoError(t, err)
+			for _, a := range accounts {
+				pats, err := pg.ListPATsByAccount(t.Context(), a.ID)
+				require.NoError(t, err)
+				assert.Empty(t, pats, "account %s", a.Name)
+			}
+			after, err := pg.GetBootstrapState(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, before.AdminEnabledUntil, after.AdminEnabledUntil)
+		})
+	}
 }
