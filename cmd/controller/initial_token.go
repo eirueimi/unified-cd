@@ -117,10 +117,13 @@ func firstWritableDir(dirs []string) (string, error) {
 	return "", errNoWritableDir
 }
 
-// writeSecretFile writes value to path with mode 0600 (replacing any existing
-// file).
+// writeSecretFile writes value to path with mode 0600. Any existing file or
+// symlink is removed first and the new file is created exclusively.
 func writeSecretFile(path, value string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}

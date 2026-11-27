@@ -128,3 +128,17 @@ func TestLegacyTokenKeysAccepted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "old-secret", eff.Token)
 }
+
+func TestWriteSecretFileReplacesStaleFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), controller.InitialTokenFileName)
+	require.NoError(t, os.WriteFile(path, []byte("stale"), 0o644))
+	require.NoError(t, writeSecretFile(path, "uci_new"))
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "uci_new", string(b))
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
+}
