@@ -35,8 +35,8 @@ type Config struct {
 	// TokenDefaultLifetime and TokenMaxLifetime are the PAT lifetime policy
 	// (tokens.defaultLifetime / tokens.maxLifetime; max 0 means no limit).
 	TokenDefaultLifetime, TokenMaxLifetime time.Duration
-	// AllowTokenEntry keeps the web UI's manual token form while SSO is
-	// configured (ui.allowTokenEntry).
+	// AllowTokenEntry keeps the web UI's manual token form while browser SSO
+	// (OIDC with a client secret) is configured (ui.allowTokenEntry).
 	AllowTokenEntry bool
 
 	ListenAddr    string

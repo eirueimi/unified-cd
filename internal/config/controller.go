@@ -279,7 +279,7 @@ func (t *TokensConfig) UnmarshalYAML(n *yaml.Node) error {
 
 // UIConfig is the ui block. Env: UNIFIED_UI_ALLOW_TOKEN_ENTRY.
 type UIConfig struct {
-	// AllowTokenEntry keeps the manual token form in the web UI while SSO is
+	// AllowTokenEntry keeps the manual token form in the web UI while browser SSO is
 	// configured.
 	AllowTokenEntry bool `yaml:"allowTokenEntry"`
 }

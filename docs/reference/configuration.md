@@ -54,7 +54,7 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_INITIAL_ADMIN_TOKEN` | No | The one-time initial admin token (`uci_` plus 40 hex characters) of a non-SSO install, instead of letting the controller generate one into `initial-admin-token`. Exchange it once with `unified-cli bootstrap`; the same one-time rules apply. In HA set the same value on every replica. See [Authorization: Built-in admin account and recovery](../operator-manual/authorization.md#built-in-admin-account-and-recovery). |
 | `UNIFIED_TOKENS_DEFAULT_LIFETIME` | No | `tokens.defaultLifetime` as a Go duration (default `2160h`). |
 | `UNIFIED_TOKENS_MAX_LIFETIME` | No | `tokens.maxLifetime` as a Go duration (default `8760h`; `0` = no cap). |
-| `UNIFIED_UI_ALLOW_TOKEN_ENTRY` | No | `1` keeps the manual token form in the web UI while SSO is configured (`ui.allowTokenEntry`). |
+| `UNIFIED_UI_ALLOW_TOKEN_ENTRY` | No | `1` keeps the manual token form in the web UI while browser SSO is configured (`ui.allowTokenEntry`). |
 | `UNIFIED_TOKEN` | Ignored | **Removed.** The controller no longer has a static admin token. If set (or `--token`, or `token:` in the config file) it logs `UNIFIED_TOKEN is no longer used by the controller and is ignored; see docs/operator-manual/migrations/2026-11-27-internal-accounts.md` and starts anyway. `UNIFIED_TOKEN` still means "the PAT the CLI sends" for `unified-cli`; see the [CLI reference](cli.md#global-flags). The former default-token override variable and flag are accepted and ignored too. |
 | `UNIFIED_CONTROLLER_KEY_FILE` | Required | Path to a file containing a 32-byte hex master key (`unified-cli keygen --out /etc/unified-cd/kek`). Mutually exclusive with `UNIFIED_KMS_URI`. **All replicas must be given the same file in HA setups.** |
 | `UNIFIED_KMS_URI` | Optional | External KMS: `hashivault://[<mount>/]<key>` (default mount `transit`). The controller wraps DEKs with Vault/OpenBao Transit and never holds the key itself. |
@@ -156,7 +156,7 @@ tokens:                               # PAT lifetimes (Go durations)
   defaultLifetime: 2160h              # used when --expires-in is omitted (default 90 days)
   maxLifetime: 8760h                  # upper bound for --expires-in (default 365 days; 0 = no cap)
 ui:
-  allowTokenEntry: false              # true => keep the manual token form in the web UI while SSO is configured
+  allowTokenEntry: false              # true => keep the manual token form in the web UI while browser SSO is configured
 
 # Log level is a flag/env, not a config-file field: --log-level / UNIFIED_LOG_LEVEL
 
@@ -227,7 +227,7 @@ Both are Go durations (`720h`, `2160h`); the environment variables apply only to
 
 | Key | Env | Default | Meaning |
 |---|---|---|---|
-| `ui.allowTokenEntry` | `UNIFIED_UI_ALLOW_TOKEN_ENTRY` | `false` | With SSO configured, the web UI hides the manual token form and the controller refuses a PAT on browser requests (`personal access tokens are not accepted from the browser while SSO is configured; sign in with SSO`). `true` brings the form back, for example during an IdP outage. Without SSO the form is always shown. Helm: `controller.ui` |
+| `ui.allowTokenEntry` | `UNIFIED_UI_ALLOW_TOKEN_ENTRY` | `false` | When browser SSO is configured (OIDC with a client secret), the web UI hides the manual token form and the controller refuses a PAT on browser requests, detected by `Sec-Fetch-Site` (`personal access tokens are not accepted from the browser while SSO is configured; sign in with SSO`). `true` brings the form back, for example during an IdP outage. Without browser SSO the form is always shown. Helm: `controller.ui` |
 
 #### `oidc.permissions` (config file only)
 

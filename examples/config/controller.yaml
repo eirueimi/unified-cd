@@ -31,7 +31,7 @@ addr: :8080
 #   defaultLifetime: 2160h   # 90 days
 #   maxLifetime: 8760h       # 365 days
 
-# Under SSO the web UI hides the manual token form; true brings it back.
+# Under browser SSO the web UI hides the manual token form; true brings it back.
 # ui:
 #   allowTokenEntry: false
 

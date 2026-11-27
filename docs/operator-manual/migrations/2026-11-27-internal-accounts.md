@@ -266,12 +266,15 @@ tokens:
 
 ## 9. The web UI token form under SSO
 
-When SSO is configured, the web UI no longer offers "enter token manually", and
-the controller refuses a PAT on requests that carry browser fetch metadata
-(`Sec-Fetch-Mode`): `personal access tokens are not accepted from the browser
-while SSO is configured; sign in with SSO` (401). The CLI and API clients are
-unaffected, and so are session cookies and OIDC id_tokens. Without SSO the form
-stays.
+When browser SSO is configured (OIDC with a client secret), the web UI no longer
+offers "enter token manually", and the controller refuses a PAT on requests that
+carry browser fetch metadata (`Sec-Fetch-Site`): `personal access tokens are not
+accepted from the browser while SSO is configured; sign in with SSO` (401). The
+CLI and API clients are unaffected, and so are session cookies and OIDC
+id_tokens. Node.js `fetch` sends `Sec-Fetch-Mode` but not `Sec-Fetch-Site`, so it
+is not treated as a browser. Browsers send no `Sec-Fetch-*` headers to
+plain-http, non-localhost origins, so the policy does not apply there. Without
+browser SSO (no OIDC, or OIDC without a client secret) the form stays.
 
 This is a policy for the web UI, not a security boundary: someone holding a
 service-account PAT can still call the API with `curl`. Expiry, `last_used_at`

@@ -198,16 +198,19 @@ serviceAccounts:
 
 ### 6.7 Web UI token entry
 
-- When SSO is configured, the web UI hides the "enter token manually" form and
-  the server rejects PAT bearer credentials on requests that carry browser
-  fetch metadata (`Sec-Fetch-Site`/`Sec-Fetch-Mode` present). Humans use the
-  UI through SSO; CLI and API clients keep using PATs.
+- When browser SSO is configured (OIDC with a client secret), the web UI hides
+  the "enter token manually" form and the server rejects PAT bearer credentials
+  on requests that carry browser fetch metadata (`Sec-Fetch-Site` present;
+  Node's fetch sends `Sec-Fetch-Mode` only and is not affected, and browsers
+  send no `Sec-Fetch-*` headers to plain-http non-localhost origins). Humans use
+  the UI through SSO; CLI and API clients keep using PATs.
 - This is a policy for the web UI, not a security boundary: a person holding a
   service-account PAT can still call the API with curl. The audit log, PAT
   expiry and `last_used_at` are the controls for that.
 - `ui.allowTokenEntry: true` turns the form back on while SSO is configured,
   for example during an IdP outage.
-- Without SSO the form stays, as today.
+- Without browser SSO (no OIDC, or OIDC without a client secret) the form
+  stays, as today.
 
 ### 6.8 Startup rule
 

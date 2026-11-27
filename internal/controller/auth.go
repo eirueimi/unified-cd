@@ -133,8 +133,10 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 					}
 					if err == nil && pat != nil {
 						// With SSO configured, a PAT must not be typed into the
-						// browser; fetch/XHR requests always carry Sec-Fetch-Mode.
-						if srv != nil && !srv.allowBrowserTokenEntry() && r.Header.Get("Sec-Fetch-Mode") != "" {
+						// browser. Browsers send Sec-Fetch-Site on every request
+						// to a secure context; Node's fetch sends Sec-Fetch-Mode
+						// but not Sec-Fetch-Site, so it is not mistaken for one.
+						if srv != nil && !srv.allowBrowserTokenEntry() && r.Header.Get("Sec-Fetch-Site") != "" {
 							http.Error(w, msgBrowserPATRefused, http.StatusUnauthorized)
 							return
 						}

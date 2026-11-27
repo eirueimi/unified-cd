@@ -192,14 +192,17 @@ PAT's optional ceiling*:
 
 ### Web UI token form under SSO
 
-When SSO is configured, the web UI hides the "enter token manually" form, and the controller refuses a PAT on
-requests that carry browser fetch metadata (`Sec-Fetch-Mode`) with
+When browser SSO is configured (OIDC with a client secret), the web UI hides the "enter token manually" form, and the
+controller refuses a PAT on requests that carry browser fetch metadata (`Sec-Fetch-Site`) with
 `personal access tokens are not accepted from the browser while SSO is configured; sign in with SSO` (401).
+Browsers send no `Sec-Fetch-*` headers to plain-http, non-localhost origins, so the policy does not apply there.
+Node.js `fetch` sends `Sec-Fetch-Mode` but not `Sec-Fetch-Site`, so it is not treated as a browser.
+OIDC configured without a client secret (CLI/device-only SSO) offers no browser sign-in, so the form stays.
 CLI and API clients keep using PATs, and session cookies and OIDC id_tokens are unaffected. This is a policy for
 the web UI, not a security boundary: someone holding a service-account PAT can still call the API with `curl`;
 expiry, `last_used_at` and the audit log are the controls for that. Set `ui.allowTokenEntry: true`
 (`UNIFIED_UI_ALLOW_TOKEN_ENTRY=1`) to bring the form back while SSO is configured, for example during an IdP
-outage. Without SSO the form always stays.
+outage. Without browser SSO the form always stays.
 
 ## Agent authentication and enrollment
 

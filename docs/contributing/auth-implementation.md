@@ -226,9 +226,11 @@ second:
   `sub` (`idTokenAccount`), so a disable reaches other replicas' id_token
   requests within that minute. Sessions and PATs re-read the account on every
   request.
-- With SSO configured, a PAT on a request that carries `Sec-Fetch-Mode` is
-  refused (`msgBrowserPATRefused`) unless `ui.allowTokenEntry` is set. This is a
-  UI policy, not a boundary.
+- With browser SSO configured (OIDC with a client secret), a PAT on a request
+  that carries `Sec-Fetch-Site` is refused (`msgBrowserPATRefused`) unless
+  `ui.allowTokenEntry` is set. The check keys on `Sec-Fetch-Site` because Node's
+  fetch sends `Sec-Fetch-Mode` but not `Sec-Fetch-Site`. This is a UI policy,
+  not a boundary (`allowBrowserTokenEntry`, `api_uiconfig.go`).
 - `patExpiry` (`api_tokens.go`) applies `tokens.defaultLifetime`,
   `tokens.maxLifetime` and the 720h cap of the `admin` account. A PAT may only
   mint PATs for its own account unless the caller holds `token.manage` or
