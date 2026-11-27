@@ -231,6 +231,11 @@ The controller no longer requires `UNIFIED_TOKEN`. It starts when:
 - the bootstrap is done, or
 - it can generate (or was given) the initial token.
 
+A provided `UNIFIED_INITIAL_ADMIN_TOKEN` that is shorter than 24 characters,
+or that equals the published development value outside dev mode, stops the
+controller at startup. The variable is new in this release, so no existing
+deployment carries such a value into the upgrade.
+
 `--token` / `UNIFIED_TOKEN` on the controller are removed. If set, the
 controller logs an error that names the migration guide and keeps starting
 (see 7), so an upgrade does not turn into an outage.

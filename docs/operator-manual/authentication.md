@@ -147,8 +147,8 @@ audit row also carries the new PAT's id in `details.patId`, so a `pat:<id>` acto
 its creation even after the PAT is deleted (see [Audit log](audit.md#actor-identity)).
 `token list` shows each PAT's account (`sa:<name>` for a service account), ceiling and expiry.
 A service-account PAT can create its own successor (`unified-cli token create ... ` with the old PAT), so CI
-rotates its token without an admin. The service account needs `token.create` for that (as in the example above);
-without it the PAT cannot create tokens at all.
+rotates its token without an admin. The service account needs `token.create` (as in the example above) or
+`serviceaccount.token`; with neither, the PAT cannot create tokens at all.
 
 > **Production note**: The repo-root `docker-compose.yaml` ships a fixed `UNIFIED_INITIAL_ADMIN_TOKEN`
 > (`uci_dev000...`) so the local dev stack works with no setup. It is a published value: anyone who can reach
@@ -189,7 +189,8 @@ PAT's optional ceiling*:
 - A PAT created from an OIDC bearer id_token that carries no roles claim while the config has
   group-keyed grants is refused with `403`. The exact strings and fixes are in
   [Troubleshooting](../troubleshooting/controller-and-database.md#token-creation-is-refused-cannot-create-a-token).
-- Each user lists and revokes only their own PATs (`token.create`); `token.manage` (admin) sees and revokes everyone's.
+- Each user lists and revokes only their own PATs (`token.create`); `serviceaccount.token` also lists and revokes
+  the PATs of every service account except `admin`; `token.manage` (admin) sees and revokes everyone's.
 - **Changing the IdP.** Accounts are matched by `sub`. An IdP with different subjects creates new human accounts at first
   sign-in; the old accounts keep their PATs until an admin disables them.
 
