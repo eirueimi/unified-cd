@@ -13,7 +13,8 @@ rules:
     # a finished pod idle by updating its annotations (PodManager.UpdatePodAnnotations,
     # PodPool.ReleasePod). Without update, that call is forbidden and the pool
     # falls back to deleting the pod every run — reuse silently never happens.
-    verbs: ["create", "get", "list", "delete", "watch", "update", "patch"]
+    # No watch: the agent polls pods and uses no informer or Watch call.
+    verbs: ["create", "get", "list", "delete", "update", "patch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     # Agent-owned named volumes (AgentVolume resources delivered by the

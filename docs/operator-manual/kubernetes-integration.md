@@ -1256,9 +1256,8 @@ This is a narrower exposure than the bucket-wide credential the sidecar held bef
 
 ## RBAC example
 
-Minimum permissions required for k8s-agent to operate. [`charts/unified-cd/templates/agent/rbac.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/agent/rbac.yaml) ships
-a Role that is a superset of this one (it adds `update` and `patch` on Pods, which `podTemplate.reuse`
-needs to mark a finished Pod idle; without them reuse silently never happens).
+The Role below matches [`charts/unified-cd/templates/agent/rbac.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/agent/rbac.yaml) exactly, and the agent needs all of it. `update` and `patch` on Pods are what
+`podTemplate.reuse` uses to mark a finished Pod idle (without them reuse silently never happens). The agent never watches: there is no `watch` verb.
 
 **Roll the Role first and the agent image second.** The agent reads, lists and creates its PVCs on
 every heartbeat, patches them to record a volume's reclaim policy and when it left the set,
@@ -1277,7 +1276,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods", "pods/exec", "pods/log"]
-    verbs: ["create", "get", "list", "delete", "watch"]
+    verbs: ["create", "get", "list", "delete", "update", "patch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     # Only needed when the controller delivers AgentVolumes: the agent reads and

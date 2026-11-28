@@ -72,6 +72,58 @@ host, http otherwise), else empty.
 {{- end -}}
 {{- end -}}
 
+{{/*
+Name of the cluster the chart-computed policies refer to: the first entry of
+the (user-supplied or default) kubernetesClusters list that has no kubeconfig,
+that is the cluster the controller runs in. "in-cluster" when the list has no
+such entry; the render-time check in unified-cd.validate then names the problem.
+*/}}
+{{- define "unified-cd.ownClusterName" -}}
+{{- $own := "" -}}
+{{- range (dig "agentAuth" "kubernetesClusters" (list (dict "name" "in-cluster")) .Values.controller.config) -}}
+{{- if and (not $own) (kindIs "map" .) (not .kubeconfig) .name -}}{{- $own = .name -}}{{- end -}}
+{{- end -}}
+{{- default "in-cluster" $own -}}
+{{- end -}}
+
+{{/*
+The Kubernetes agent config as rendered into its ConfigMap: agent.config
+deep-merged over the computed default. Shared by the ConfigMap and the values
+derived from it (the store-credential ServiceAccounts, the namespace check).
+*/}}
+{{- define "unified-cd.agentConfig" -}}
+{{- include "unified-cd.mergeConfig" (dict "base" (include "unified-cd.agentConfigDefault" . | fromYaml) "over" .Values.agent.config) -}}
+{{- end -}}
+
+{{/*
+ServiceAccounts the default store-credential policy allows, as a YAML list:
+"default" plus every ServiceAccount the rendered agent config can run a job Pod
+under (podTemplates.<name>.spec.serviceAccountName or .serviceAccount, and
+jobPodPolicy.allowServiceAccounts), sorted and de-duplicated.
+*/}}
+{{- define "unified-cd.storeServiceAccounts" -}}
+{{- $agent := include "unified-cd.agentConfig" . | fromYaml -}}
+{{- $sas := list "default" -}}
+{{- range $name, $tpl := (get $agent "podTemplates" | default dict) -}}
+{{- if kindIs "map" $tpl -}}
+{{- $spec := get $tpl "spec" | default dict -}}
+{{- if kindIs "map" $spec -}}
+{{- range (list "serviceAccountName" "serviceAccount") -}}
+{{- $sa := get $spec . -}}
+{{- if and $sa (kindIs "string" $sa) -}}{{- $sas = append $sas $sa -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $policy := get $agent "jobPodPolicy" | default dict -}}
+{{- if kindIs "map" $policy -}}
+{{- range (get $policy "allowServiceAccounts" | default list) -}}
+{{- $sas = append $sas . -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml ($sas | uniq | sortAlpha) -}}
+{{- end -}}
+
 {{- define "unified-cd.controllerConfigDefault" -}}
 {{- with (include "unified-cd.externalUrl" .) }}
 externalUrl: {{ . | quote }}
@@ -97,7 +149,7 @@ agentAuth:
     - name: in-cluster
   kubernetesEnrollmentPolicies:
     - name: unified-cd-k8s-agents
-      cluster: in-cluster
+      cluster: {{ include "unified-cd.ownClusterName" . | quote }}
       namespaces: [{{ include "unified-cd.namespace" . | quote }}]
       serviceAccounts: [unified-cd-k8s-agent]
       allowedLabels: ["kind:kubernetes"]
@@ -106,14 +158,17 @@ agentAuth:
       enabled: true
   {{- /*
   Lets the agent's job Pods ask the controller for presigned object URLs for
-  the artifact sidecar (the field keeps its pre-presign name). Job Pods run
-  under the job namespace's default ServiceAccount; name a dedicated one
-  through controller.config when you use a custom ServiceAccount.
+  the artifact sidecar (the field keeps its pre-presign name). The allowed
+  ServiceAccounts are "default" plus those the rendered agent config can run
+  job Pods under (podTemplates, jobPodPolicy.allowServiceAccounts). A
+  kubernetesStoreCredentialPolicies list in controller.config replaces this
+  one entirely.
   */}}
   kubernetesStoreCredentialPolicies:
-    - cluster: in-cluster
+    - cluster: {{ include "unified-cd.ownClusterName" . | quote }}
       namespaces: [{{ .Values.jobNamespace.name | quote }}]
-      serviceAccounts: [default]
+      serviceAccounts:
+        {{- include "unified-cd.storeServiceAccounts" . | nindent 8 }}
 {{- end -}}
 
 {{/*
@@ -150,6 +205,28 @@ combination fails the render with a message naming the value to change.
 {{- end -}}
 {{- if and .Values.ingress.enabled (not .Values.ingress.hosts) -}}
 {{- fail "ingress.enabled requires at least one entry in ingress.hosts" -}}
+{{- end -}}
+{{- if .Values.agent.enabled -}}
+{{- $agentNamespace := get (include "unified-cd.agentConfig" . | fromYaml) "namespace" -}}
+{{- if ne $agentNamespace .Values.jobNamespace.name -}}
+{{- fail (printf "agent.config.namespace (%s) differs from jobNamespace.name (%s): the job Role, the Namespace and the controller policies follow jobNamespace.name, so set jobNamespace.name instead of agent.config.namespace" $agentNamespace .Values.jobNamespace.name) -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.controller.enabled -}}
+{{- /*
+The chart's own enrollment and store-credential policies name the first
+cluster without a kubeconfig. When the user replaced kubernetesClusters with a
+list that has none, those policies would name a cluster that does not exist
+and the controller would exit at startup, so fail here unless the user also
+supplied both policy lists (then the policies are theirs to get right).
+*/ -}}
+{{- $userAuth := dig "agentAuth" dict .Values.controller.config -}}
+{{- $names := list -}}
+{{- range (dig "agentAuth" "kubernetesClusters" (list (dict "name" "in-cluster")) .Values.controller.config) -}}{{- $names = append $names .name -}}{{- end -}}
+{{- $usesComputed := not (and (hasKey $userAuth "kubernetesEnrollmentPolicies") (hasKey $userAuth "kubernetesStoreCredentialPolicies")) -}}
+{{- if and $usesComputed (not (has (include "unified-cd.ownClusterName" .) $names)) -}}
+{{- fail (printf "controller.config.agentAuth.kubernetesClusters has no cluster without a kubeconfig (clusters: %s), so the chart's default kubernetesEnrollmentPolicies and kubernetesStoreCredentialPolicies have no cluster to name. Add a cluster entry without a kubeconfig, or supply both kubernetesEnrollmentPolicies and kubernetesStoreCredentialPolicies in controller.config" (join ", " $names)) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 
