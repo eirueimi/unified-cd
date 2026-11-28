@@ -421,6 +421,12 @@ func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Requ
 			s.recordAgentAuth("kubernetes", "failure", "unavailable")
 			http.Error(w, "kubernetes identity unavailable", http.StatusServiceUnavailable)
 		} else {
+			// The client only sees "enrollment policy rejected"; the cause
+			// (wrong cluster or audience, expired token, Pod not found, or
+			// a namespace/ServiceAccount the policy does not list) is only
+			// visible here. The error carries API errors and identity
+			// fields, never the token.
+			slog.Warn("kubernetes enrollment: rejected", "policy", policy.Name, "cluster", providerConfig.Cluster, "reason", err)
 			s.recordAgentAuth("kubernetes", "failure", "policy")
 			http.Error(w, "enrollment policy rejected", http.StatusForbidden)
 		}

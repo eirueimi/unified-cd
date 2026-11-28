@@ -51,7 +51,7 @@ func (v *kubernetesEnrollmentVerifier) Verify(ctx context.Context, token string,
 		return KubernetesEnrollmentIdentity{}, err
 	}
 	if !contains(constraints.Namespaces, identity.Namespace) || !contains(constraints.ServiceAccounts, identity.ServiceAccount) {
-		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: policy subject", ErrKubernetesEnrollmentRejected)
+		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: policy subject (namespace %q, serviceAccount %q, pod %q)", ErrKubernetesEnrollmentRejected, identity.Namespace, identity.ServiceAccount, identity.PodName)
 	}
 	return KubernetesEnrollmentIdentity{Cluster: identity.Cluster, Namespace: identity.Namespace, ServiceAccount: identity.ServiceAccount, PodName: identity.PodName, PodUID: identity.PodUID}, nil
 }

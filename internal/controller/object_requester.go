@@ -44,45 +44,53 @@ type StoreCredentialCluster struct {
 	ServiceAccounts []string
 }
 
-// verifyStoreCredentialToken tries every configured cluster's client in turn
-// and returns the first that authenticates the token against
-// api.KubernetesStoreCredentialAudience, along with the StoreCredentialCluster
-// entry that succeeded (needed afterward for its namespace/ServiceAccount
-// allowlist). In the common single-cluster deployment this tries exactly one
-// client.
+// verifyStoreCredentialToken authenticates the token against each DISTINCT
+// configured cluster in first-seen order (one TokenReview and Pod get per
+// cluster, however many policy entries name it) and returns the Pod identity
+// of the first cluster that authenticates it. allowed reports whether ANY
+// policy entry of that cluster allows the Pod's namespace and ServiceAccount;
+// the entries of one cluster are alternatives, so a later entry can allow what
+// an earlier one does not. The cluster name is returned for logging.
 //
-// The last error observed is returned when every cluster rejects the token,
-// so a genuinely unavailable TokenReview is reported as such rather than
-// folded into "rejected".
-func (s *Server) verifyStoreCredentialToken(r *http.Request, token string) (BoundPodIdentity, StoreCredentialCluster, error) {
+// When no cluster authenticates the token, an unavailable error is returned if
+// any cluster could not be asked (a retryable 503 beats a 401 that would stop
+// the sidecar retrying), otherwise the last rejection. Each failure cause is
+// logged here; the errors carry API errors only, never the token.
+func (s *Server) verifyStoreCredentialToken(r *http.Request, token string) (identity BoundPodIdentity, cluster string, allowed bool, err error) {
 	if len(s.storeCredentialClusters) == 0 {
-		return BoundPodIdentity{}, StoreCredentialCluster{}, ErrKubernetesEnrollmentUnavailable
+		return BoundPodIdentity{}, "", false, ErrKubernetesEnrollmentUnavailable
 	}
-	var lastErr error
-	type clusterErr struct {
-		cluster string
-		err     error
-	}
-	var unavailable []clusterErr
-	for _, cluster := range s.storeCredentialClusters {
-		identity, err := VerifyProjectedToken(r.Context(), cluster.Client, cluster.Cluster, api.KubernetesStoreCredentialAudience, token, KubernetesStoreCredentialRequestTimeout)
-		if err == nil {
-			return identity, cluster, nil
+	seen := map[string]bool{}
+	var firstUnavailable, lastErr error
+	for _, entry := range s.storeCredentialClusters {
+		if seen[entry.Cluster] {
+			continue
 		}
-		if isKubernetesIdentityUnavailable(err) {
-			unavailable = append(unavailable, clusterErr{cluster.Cluster, err})
+		seen[entry.Cluster] = true
+		id, verr := VerifyProjectedToken(r.Context(), entry.Client, entry.Cluster, api.KubernetesStoreCredentialAudience, token, KubernetesStoreCredentialRequestTimeout)
+		if verr != nil {
+			if isKubernetesIdentityUnavailable(verr) {
+				slog.Warn("kubernetes identity unavailable for object request", "cluster", entry.Cluster, "error", verr)
+				if firstUnavailable == nil {
+					firstUnavailable = verr
+				}
+			} else {
+				slog.Warn("object request: token rejected by cluster", "cluster", entry.Cluster, "reason", verr)
+			}
+			lastErr = verr
+			continue
 		}
-		lastErr = err
+		for _, e := range s.storeCredentialClusters {
+			if e.Cluster == entry.Cluster && contains(e.Namespaces, id.Namespace) && contains(e.ServiceAccounts, id.ServiceAccount) {
+				return id, entry.Cluster, true, nil
+			}
+		}
+		return id, entry.Cluster, false, nil
 	}
-	// Only when no cluster authenticated the token: the client sees at most
-	// "kubernetes identity unavailable", so this is the one place the cause
-	// (for example a forbidden Pod get when the controller lacks pods/get in
-	// the job namespace) is visible. The errors carry API errors only, never
-	// the token.
-	for _, u := range unavailable {
-		slog.Warn("kubernetes identity unavailable for object request", "cluster", u.cluster, "error", u.err)
+	if firstUnavailable != nil {
+		return BoundPodIdentity{}, "", false, firstUnavailable
 	}
-	return BoundPodIdentity{}, StoreCredentialCluster{}, lastErr
+	return BoundPodIdentity{}, "", false, lastErr
 }
 
 // isKubernetesIdentityUnavailable reports whether err is the "we could not
@@ -192,10 +200,11 @@ func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Reques
 	}
 	if len(s.storeCredentialClusters) == 0 {
 		// No cluster is trusted: a non-agent bearer cannot be anything valid.
+		slog.Warn("object request refused: no kubernetes cluster is trusted for job Pod tokens; set agentAuth.kubernetesStoreCredentialPolicies on the controller", "runId", runID)
 		writeObjectError(w, http.StatusUnauthorized, api.ObjectErrUnauthenticated, "unauthorized")
 		return objectRequester{}, false
 	}
-	identity, cluster, err := s.verifyStoreCredentialToken(r, token)
+	identity, cluster, allowed, err := s.verifyStoreCredentialToken(r, token)
 	if err != nil {
 		if isKubernetesIdentityUnavailable(err) {
 			writeObjectError(w, http.StatusServiceUnavailable, api.ObjectErrUnavailable, "kubernetes identity unavailable")
@@ -205,8 +214,10 @@ func (s *Server) authenticateObjectSidecar(w http.ResponseWriter, r *http.Reques
 		return objectRequester{}, false
 	}
 	req := objectRequester{PodUID: identity.PodUID}
-	if !contains(cluster.Namespaces, identity.Namespace) || !contains(cluster.ServiceAccounts, identity.ServiceAccount) {
-		s.auditPresignAction(r, req, action, runID, nil, http.StatusForbidden)
+	if !allowed {
+		slog.Warn("object request refused: namespace or service account not allowed by agentAuth.kubernetesStoreCredentialPolicies",
+			"cluster", cluster, "namespace", identity.Namespace, "serviceAccount", identity.ServiceAccount, "pod", identity.PodName, "runId", runID)
+		s.auditPresignAction(r, req, action, runID, map[string]any{"namespace": identity.Namespace, "serviceAccount": identity.ServiceAccount, "cluster": cluster}, http.StatusForbidden)
 		writeObjectError(w, http.StatusForbidden, api.ObjectErrForbidden, "this namespace or service account may not request object URLs")
 		return objectRequester{}, false
 	}
