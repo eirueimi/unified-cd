@@ -61,6 +61,12 @@ func (s *Server) verifyStoreCredentialToken(r *http.Request, token string) (iden
 		return BoundPodIdentity{}, "", false, ErrKubernetesEnrollmentUnavailable
 	}
 	seen := map[string]bool{}
+	type clusterErr struct {
+		cluster     string
+		err         error
+		unavailable bool
+	}
+	var failures []clusterErr
 	var firstUnavailable, lastErr error
 	for _, entry := range s.storeCredentialClusters {
 		if seen[entry.Cluster] {
@@ -69,13 +75,10 @@ func (s *Server) verifyStoreCredentialToken(r *http.Request, token string) (iden
 		seen[entry.Cluster] = true
 		id, verr := VerifyProjectedToken(r.Context(), entry.Client, entry.Cluster, api.KubernetesStoreCredentialAudience, token, KubernetesStoreCredentialRequestTimeout)
 		if verr != nil {
-			if isKubernetesIdentityUnavailable(verr) {
-				slog.Warn("kubernetes identity unavailable for object request", "cluster", entry.Cluster, "error", verr)
-				if firstUnavailable == nil {
-					firstUnavailable = verr
-				}
-			} else {
-				slog.Warn("object request: token rejected by cluster", "cluster", entry.Cluster, "reason", verr)
+			unavailable := isKubernetesIdentityUnavailable(verr)
+			failures = append(failures, clusterErr{entry.Cluster, verr, unavailable})
+			if unavailable && firstUnavailable == nil {
+				firstUnavailable = verr
 			}
 			lastErr = verr
 			continue
@@ -86,6 +89,16 @@ func (s *Server) verifyStoreCredentialToken(r *http.Request, token string) (iden
 			}
 		}
 		return id, entry.Cluster, false, nil
+	}
+	// Logged only when the request fails: a token that a later cluster
+	// authenticates is normal in a multi-cluster setup and must not warn about
+	// the clusters that did not issue it.
+	for _, f := range failures {
+		if f.unavailable {
+			slog.Warn("kubernetes identity unavailable for object request", "cluster", f.cluster, "error", f.err)
+		} else {
+			slog.Warn("object request: token rejected by cluster", "cluster", f.cluster, "reason", f.err)
+		}
 	}
 	if firstUnavailable != nil {
 		return BoundPodIdentity{}, "", false, firstUnavailable

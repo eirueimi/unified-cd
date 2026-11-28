@@ -37,7 +37,9 @@ These keep their names and now govern the presign endpoint for job Pod sidecars:
 `agentAuth.kubernetesStoreCredentialPolicies` (which cluster, namespace and ServiceAccount may ask),
 `storeCredentialRateLimit` with `UNIFIED_STORE_CREDENTIAL_RATE_BURST` / `UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND`,
 and the token audience `unified-cd-store-credentials`. Nothing to rename in existing configuration. The
-Helm chart still renders the policy for the job namespace and the `default` ServiceAccount.
+Helm chart renders the policy for the job namespace and the ServiceAccounts its agent config can run
+job Pods under: `default` plus those named in `agent.config.podTemplates` and
+`agent.config.jobPodPolicy.allowServiceAccounts`.
 
 **Caches keep their namespace.** The cache key prefix is still derived from the run's job name, and a
 test confirms the controller-derived name equals the one the agent used before (including folder-qualified

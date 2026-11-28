@@ -572,6 +572,7 @@ jobs:
                   key: ci-sa-cache-v1
               - name: probe
                 run: |
+                  set -e
                   if [ -f cachedir/f ]; then got=hit; else got=miss; mkdir -p cachedir; echo cached > cachedir/f; fi
                   echo "cache $got, expected {{ .Params.expect }}"
                   [ "$got" = "{{ .Params.expect }}" ]

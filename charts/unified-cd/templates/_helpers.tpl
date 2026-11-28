@@ -75,15 +75,15 @@ host, http otherwise), else empty.
 {{/*
 Name of the cluster the chart-computed policies refer to: the first entry of
 the (user-supplied or default) kubernetesClusters list that has no kubeconfig,
-that is the cluster the controller runs in. "in-cluster" when the list has no
-such entry; the render-time check in unified-cd.validate then names the problem.
+that is the cluster the controller runs in. empty when the list has no
+such entry (the render-time check in unified-cd.validate then fails).
 */}}
 {{- define "unified-cd.ownClusterName" -}}
 {{- $own := "" -}}
 {{- range (dig "agentAuth" "kubernetesClusters" (list (dict "name" "in-cluster")) .Values.controller.config) -}}
-{{- if and (not $own) (kindIs "map" .) (not .kubeconfig) .name -}}{{- $own = .name -}}{{- end -}}
+{{- if and (not $own) (kindIs "map" .) (not (.kubeconfig | default "" | toString | trim)) .name -}}{{- $own = .name -}}{{- end -}}
 {{- end -}}
-{{- default "in-cluster" $own -}}
+{{- $own -}}
 {{- end -}}
 
 {{/*
@@ -149,7 +149,7 @@ agentAuth:
     - name: in-cluster
   kubernetesEnrollmentPolicies:
     - name: unified-cd-k8s-agents
-      cluster: {{ include "unified-cd.ownClusterName" . | quote }}
+      cluster: {{ default "in-cluster" (include "unified-cd.ownClusterName" .) | quote }}
       namespaces: [{{ include "unified-cd.namespace" . | quote }}]
       serviceAccounts: [unified-cd-k8s-agent]
       allowedLabels: ["kind:kubernetes"]
@@ -165,7 +165,7 @@ agentAuth:
   one entirely.
   */}}
   kubernetesStoreCredentialPolicies:
-    - cluster: {{ include "unified-cd.ownClusterName" . | quote }}
+    - cluster: {{ default "in-cluster" (include "unified-cd.ownClusterName" .) | quote }}
       namespaces: [{{ .Values.jobNamespace.name | quote }}]
       serviceAccounts:
         {{- include "unified-cd.storeServiceAccounts" . | nindent 8 }}
@@ -224,7 +224,7 @@ supplied both policy lists (then the policies are theirs to get right).
 {{- $names := list -}}
 {{- range (dig "agentAuth" "kubernetesClusters" (list (dict "name" "in-cluster")) .Values.controller.config) -}}{{- $names = append $names .name -}}{{- end -}}
 {{- $usesComputed := not (and (hasKey $userAuth "kubernetesEnrollmentPolicies") (hasKey $userAuth "kubernetesStoreCredentialPolicies")) -}}
-{{- if and $usesComputed (not (has (include "unified-cd.ownClusterName" .) $names)) -}}
+{{- if and $usesComputed (not (include "unified-cd.ownClusterName" .)) -}}
 {{- fail (printf "controller.config.agentAuth.kubernetesClusters has no cluster without a kubeconfig (clusters: %s), so the chart's default kubernetesEnrollmentPolicies and kubernetesStoreCredentialPolicies have no cluster to name. Add a cluster entry without a kubeconfig, or supply both kubernetesEnrollmentPolicies and kubernetesStoreCredentialPolicies in controller.config" (join ", " $names)) -}}
 {{- end -}}
 {{- end -}}

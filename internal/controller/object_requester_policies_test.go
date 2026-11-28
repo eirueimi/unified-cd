@@ -181,3 +181,19 @@ func TestAgentEnrollment_RejectedLogsReason(t *testing.T) {
 	assert.Contains(t, out, "other-sa")
 	assert.NotContains(t, out, token)
 }
+
+// A cluster that does not issue the token must not warn when a later cluster
+// authenticates it.
+func TestPresign_NoWarnWhenALaterClusterAuthenticates(t *testing.T) {
+	logs := captureTextLogs(t)
+	rejecting := fake.NewSimpleClientset()
+	rejecting.Fake.PrependReactor("create", "tokenreviews", tokenReviewReactor(false, nil, "", ""))
+	var reviews atomic.Int32
+	good := countingStoreClient(&reviews)
+	res := presignAs(t, Config{StoreCredentialClusters: []StoreCredentialCluster{
+		{Cluster: "a", Client: rejecting, Namespaces: []string{"ci"}, ServiceAccounts: []string{"ci-runner"}},
+		{Cluster: "b", Client: good, Namespaces: []string{"ci"}, ServiceAccounts: []string{"ci-runner"}},
+	}})
+	assert.Equal(t, http.StatusOK, res.code, res.body)
+	assert.NotContains(t, logs.String(), "level=WARN")
+}

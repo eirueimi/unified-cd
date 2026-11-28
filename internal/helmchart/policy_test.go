@@ -92,3 +92,14 @@ func TestRemoteClusterWithOwnPoliciesRenders(t *testing.T) {
 		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[0].serviceAccounts={default}",
 	)
 }
+
+// The cluster named in-cluster with a kubeconfig is a remote cluster: the
+// chart's policies cannot follow it, so the render fails.
+func TestInClusterWithKubeconfigFailsRender(t *testing.T) {
+	_, stderr, err := RenderErr("unified-cd",
+		"controller.config.agentAuth.kubernetesClusters[0].name=in-cluster",
+		"controller.config.agentAuth.kubernetesClusters[0].kubeconfig=/etc/kube/remote",
+	)
+	require.Error(t, err)
+	assert.Contains(t, stderr, "without a kubeconfig")
+}
