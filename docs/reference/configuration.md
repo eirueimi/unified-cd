@@ -185,7 +185,9 @@ oidc:
           "my-org:team-a": developer
 
 # Kubernetes workload enrollment for the default controller and k8s-agent (the Helm chart sets this up; override it with controller.config).
-# An omitted kubeconfig uses the controller Pod's ServiceAccount identity.
+# An omitted kubeconfig uses the controller Pod's ServiceAccount identity; set
+# kubeconfig (a file path) to reach another cluster, for example when the
+# controller runs outside the cluster of an agent-only install.
 agentAuth:
   kubernetesClusters:
     - name: in-cluster
@@ -198,6 +200,12 @@ agentAuth:
       requiredLabels: [kind:kubernetes]
       accessTokenTTL: 1h
       enabled: true
+  # Which job Pods may ask for presigned object URLs (artifact and cache steps).
+  # Needed for artifact and cache steps: with no entry every sidecar request is refused with 401.
+  kubernetesStoreCredentialPolicies:
+    - cluster: in-cluster
+      namespaces: [ci]
+      serviceAccounts: [default]
 ```
 
 Config-file keys map 1:1 to the flags above (e.g. `dataDir` ↔ `--data-dir`), with OIDC settings under the nested `oidc:` block. See `internal/config/controller.go` for the authoritative field list.

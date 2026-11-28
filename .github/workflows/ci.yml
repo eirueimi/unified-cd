@@ -381,7 +381,14 @@ jobs:
             --set-string agent.config.sidecarImage=unified-cd-artifact-sidecar:ci \
             --set-string agent.config.shimImage=unified-cd-k8s-agent:ci \
             --set-string agent.config.podImage=alpine/k8s:1.31.2 \
+            --set-string agent.config.podTemplates.builder.spec.serviceAccountName=ci-builder \
             --wait --timeout 10m
+          # The ServiceAccount the "builder" podTemplate runs job Pods under.
+          # The chart derives it into the controller's store-credential policy
+          # (kubernetesStoreCredentialPolicies), so no controller.config is set
+          # for it; the Assert step runs a job under it. The job namespace
+          # exists once the install has finished.
+          kubectl -n ci create serviceaccount ci-builder
       - name: Server-side dry-run of every rendered bundle
         # Run after the install so the unified-cd namespace exists: a server
         # dry-run of namespaced objects needs it, and the bundle's own
@@ -510,6 +517,85 @@ jobs:
           api GET "/api/v1/runs/$run_id/artifacts/" -o artifacts.json
           jq -e 'any(.[]; .name == "out")' artifacts.json >/dev/null \
             || { echo "artifact 'out' is not listed for run $run_id"; cat artifacts.json; exit 1; }
+
+          # A job under a non-default ServiceAccount, selected through the
+          # agent's "builder" podTemplate (agent.config.podTemplates, set at
+          # install). Its Pod only gets presigned URLs because the chart
+          # derived ci-builder into the store-credential policy; before that
+          # derivation the sidecar was refused with 403. The same job saves a
+          # cache and a second run restores it: another presign operation
+          # through the same path. The probe step compares what it found with
+          # the "expect" parameter, so a cache that was not restored fails the
+          # run. Each run is bounded like the first one.
+          run_job() { # run_job NAME PARAMS_JSON -> sets run_id
+            run_id=""
+            for i in $(seq 1 10); do
+              if api POST /api/v1/runs -H 'Content-Type: application/json' \
+                   -d "{\"jobName\":\"$1\",\"params\":$2}" -o run.json 2>/dev/null; then
+                run_id=$(jq -r '.id' run.json); break
+              fi
+              sleep 2
+            done
+            [ -n "$run_id" ] && [ "$run_id" != "null" ] || { echo "triggering $1 failed"; exit 1; }
+            run_status=""
+            for i in $(seq 1 100); do
+              if api GET "/api/v1/runs/$run_id" -o run.json 2>/dev/null; then
+                run_status=$(jq -r '.status' run.json)
+                case "$run_status" in Succeeded|Failed|Cancelled) break ;; esac
+              fi
+              sleep 3
+            done
+            if [ "$run_status" != "Succeeded" ]; then
+              echo "$1 run $run_id ended as '$run_status' (expected Succeeded)"
+              api GET "/api/v1/runs/$run_id/steps" -o steps.json 2>/dev/null && jq -c '.' steps.json || true
+              exit 1
+            fi
+          }
+          jq -n --arg y 'apiVersion: unified-cd/v1
+          kind: Job
+          metadata:
+            name: ci-job-sa-cache
+          spec:
+            agentSelector:
+              - kind:kubernetes
+            podTemplate:
+              name: builder
+            params:
+              inputs:
+                - name: expect
+                  type: string
+                  default: miss
+            steps:
+              - name: restore_cache
+                cache:
+                  path: cachedir
+                  key: ci-sa-cache-v1
+              - name: probe
+                run: |
+                  set -e
+                  if [ -f cachedir/f ]; then got=hit; else got=miss; mkdir -p cachedir; echo cached > cachedir/f; fi
+                  echo "cache $got, expected {{ .Params.expect }}"
+                  [ "$got" = "{{ .Params.expect }}" ]
+                  echo sa-artifact > sa-out.txt
+              - name: upload
+                uploadArtifact:
+                  name: sa-out
+                  path: sa-out.txt' '{yaml: $y}' > sa-job-body.json
+          applied=""
+          for i in $(seq 1 10); do
+            api POST /api/v1/jobs -H 'Content-Type: application/json' -d @sa-job-body.json -o /dev/null 2>/dev/null && { applied=1; break; }
+            sleep 2
+          done
+          [ -n "$applied" ] || { echo "applying the ServiceAccount job failed"; exit 1; }
+          run_job ci-job-sa-cache '{"expect":"miss"}'
+          sa_run_id=$run_id
+          api GET "/api/v1/runs/$sa_run_id/artifacts/" -o artifacts.json
+          jq -e 'any(.[]; .name == "sa-out")' artifacts.json >/dev/null \
+            || { echo "artifact 'sa-out' is not listed for run $sa_run_id"; cat artifacts.json; exit 1; }
+          # The chart put the ServiceAccount into the controller's policy.
+          kubectl -n "$NS" get configmap unified-cd-controller-config -o jsonpath='{.data.controller-config\.yaml}' \
+            | grep 'ci-builder' >/dev/null || { echo "ci-builder missing from the rendered store-credential policy"; exit 1; }
+          run_job ci-job-sa-cache '{"expect":"hit"}'
 
           kek_before=$(kubectl -n "$NS" get secret unified-cd-controller-kek -o jsonpath='{.data.kek}')
           [ -n "$kek_before" ]

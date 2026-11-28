@@ -245,6 +245,63 @@ UNIFIED_K8S_CONFIG=k8s-agent-config.yaml ./bin/unified-cd-k8s-agent
 
 The Helm chart and the install bundles (`install.yaml`, `core-install.yaml`, `agent-only.yaml` — rendered from the chart and published as release assets) default the `unified-cd-k8s-agent` Deployment to `replicas: 2` (`agent.replicas`), running active-active; see [Agent Redundancy](high-availability.md#agent-redundancy) in the HA guide for why this is safe.
 
+### Controller side of an agent-only install
+
+When the controller runs outside the cluster that hosts the agent and the job Pods (Docker Compose on a host, another cluster), the chart on the agent side configures none of the controller's trust. The controller needs three things, all of them for the agent's cluster:
+
+1. **A cluster entry with a `kubeconfig`.** The controller reaches the agent's cluster with the credentials in that file. Do not use the `in-cluster` entry: it uses the controller's own ServiceAccount and fails at startup when the controller is not running in a cluster.
+2. **An enrollment policy** that binds the agent's identity. The agent-only chart and bundle fix them: namespace `unified-cd` (the release namespace), ServiceAccount `unified-cd-k8s-agent`, label `kind:kubernetes`.
+3. **A store-credential policy** for the job Pods. Without it every artifact or cache step fails with `401 unauthorized` from the presign endpoint, because the controller trusts no cluster to authenticate job Pods. The policy names the job namespace (`ci` by default, `jobNamespace.name`) and every ServiceAccount the jobs run under (`default` unless a `podTemplate` or `jobPodPolicy.allowServiceAccounts` names others).
+
+```yaml
+agentAuth:
+  kubernetesClusters:
+    - name: edge
+      kubeconfig: /etc/unified-cd/edge.kubeconfig   # a path on the controller's filesystem
+  kubernetesEnrollmentPolicies:
+    - name: unified-cd-k8s-agents
+      cluster: edge
+      namespaces: [unified-cd]
+      serviceAccounts: [unified-cd-k8s-agent]
+      allowedLabels: ["kind:kubernetes"]
+      requiredLabels: ["kind:kubernetes"]
+      accessTokenTTL: 1h
+      enabled: true
+  kubernetesStoreCredentialPolicies:
+    - cluster: edge
+      namespaces: [ci]
+      serviceAccounts: [default]
+```
+
+The identity in that kubeconfig needs this RBAC in the agent's cluster. The controller makes exactly two kinds of calls: a `TokenReview` (cluster-scoped) and a `get` of the Pod a token is bound to, in that Pod's own namespace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: unified-cd-token-reviewer
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+# Repeat this Role and RoleBinding in every namespace named by a policy:
+# unified-cd (the agent's namespace) and each job namespace, for example ci.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: unified-cd-pod-reader
+  namespace: ci
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+```
+
+Bind the ClusterRole with a ClusterRoleBinding and each Role with a RoleBinding to the identity the kubeconfig authenticates as. A missing `pods get` shows as `503 kubernetes identity unavailable` (the controller logs the forbidden Pod `get`); a TokenReview sent to the wrong cluster comes back unauthenticated and shows as `401` on presign and `403` on enrollment, with the cause in the controller log.
+
+The Helm chart cannot yet mount a kubeconfig into a controller it installs, so a remote cluster entry is for controllers you run yourself (or for editing the downloaded bundle). The agent-side chart and `agent-only.yaml` need no change.
+
 ---
 
 ## Resilience & concurrency
@@ -1233,7 +1290,7 @@ The sidecar holds **no object-store credentials** and needs no Secret. There is 
 
 **Binding.** The controller serves a Pod only for a run it is bound to. A run is bound to its claim Pod and to every isolated scope Pod (an image scope) the agent creates for it, because each scope Pod runs its own sidecar with its own token; the agent reports the scope Pod as an extra binding when it creates it and withdraws it when the Pod is deleted, and the controller accepts a request whose Pod is any of the run's bound Pods. A Pod bound to one run still cannot ask for another run's objects. The controller records a Pod binding only from the agent that has claimed the run and only while the run is not finished, so one agent cannot bind its Pod to another agent's run. All bindings of a run are deleted when the agent finishes the run, and a late heartbeat does not bring them back. A run that ends any other way (cancelled, reaped as stuck, or failed by the scheduler) keeps its bindings until the claiming agent reports the run finished, which also deletes them for a run that was already terminal. So the controller also refuses a sidecar request for a run that has finished, by any means, with `409 run-finished`; the sidecar treats that answer as final and does not retry. One exception: a **cancelled** run's cleanup (hook drains, `finally:` steps) still transfers objects through the sidecar, so a bound Pod keeps access to a cancelled run until the agent finishes it or one hour (`cancelledRunObjectGrace`) has passed since the cancel, whichever comes first. If the agent's `finallyTimeout` is long enough for cleanup to outlast that hour, the late transfers fail with `409 run-finished`. Either way a pooled Pod's sidecar can no longer ask for objects of a run it has finished. URLs already issued stay valid until they expire (at most 15 minutes). The agent reports each Pod's name and UID in its heartbeat (the `podBindingSets` field; older agents send one Pod in `podBindings`, which the controller still reads) as soon as the Pod is created, and sends that heartbeat immediately instead of waiting for the next 15-second tick (a heartbeat already in progress, such as a volume apply, can delay it by up to 30 seconds). A sidecar request that arrives before the controller has recorded the binding is answered `409 binding-pending` and retried for up to 30 seconds, so a pooled Pod's first step does not fail while the binding is in flight. If the controller never learns the binding (for example the agent cannot reach it), the transfer fails with an error naming `binding-pending`.
 
-**`kubernetesStoreCredentialPolicies` keeps its name.** The setting authorizes which job Pods (cluster, namespace, ServiceAccount) may ask the controller for object access. It predates presigned URLs, when the same list authorized fetching store credentials, and it keeps the name so existing configuration is unchanged. The Helm chart renders it whenever the controller is installed, with the job namespace and the `default` ServiceAccount; set `controller.config.agentAuth.kubernetesStoreCredentialPolicies` if your jobs run under another ServiceAccount. The related rate limit (`UNIFIED_STORE_CREDENTIAL_RATE_*`) now bounds presign requests.
+**`kubernetesStoreCredentialPolicies` keeps its name.** The setting authorizes which job Pods (cluster, namespace, ServiceAccount) may ask the controller for object access. It predates presigned URLs, when the same list authorized fetching store credentials, and it keeps the name so existing configuration is unchanged. The Helm chart renders it whenever the controller is installed, with the job namespace and the ServiceAccounts the rendered agent config can run job Pods under: `default`, every `agent.config.podTemplates.<name>.spec.serviceAccountName`, and every `agent.config.jobPodPolicy.allowServiceAccounts` entry, sorted. A job Pod under any other ServiceAccount (an operator template in a different agent, or a second job namespace) needs your own list. A `controller.config.agentAuth.kubernetesStoreCredentialPolicies` list **replaces** the computed one entirely, so include `default` and every other ServiceAccount and namespace you need; write them as one entry per namespace with all its ServiceAccounts, though several entries for one cluster also work, because a Pod is allowed when any entry of its cluster lists its namespace and ServiceAccount. The related rate limit (`UNIFIED_STORE_CREDENTIAL_RATE_*`) now bounds presign requests.
 
 **The controller needs `pods get` in every job namespace.** To check a job Pod's token the controller reads the Pod (`get` on `pods`) in the Pod's own namespace, not only in the release namespace. The Helm chart and the release bundles grant it: a Role and RoleBinding named `unified-cd-controller-job-pods` for the controller's ServiceAccount in the namespace of each `kubernetesStoreCredentialPolicies` entry for the controller's own cluster, the `kubernetesClusters` entry without a `kubeconfig` (`in-cluster` by default; the job namespace by default). If you add a namespace through `controller.config`, create it before installing. For a policy on a cluster with a `kubeconfig`, or if you install the controller without the chart, grant the controller's identity `get` on `pods` in each job namespace yourself. Without it, presign requests from job Pods fail with `503 kubernetes identity unavailable` (see [Troubleshooting](../troubleshooting/artifacts-and-storage.md)).
 
@@ -1256,9 +1313,8 @@ This is a narrower exposure than the bucket-wide credential the sidecar held bef
 
 ## RBAC example
 
-Minimum permissions required for k8s-agent to operate. [`charts/unified-cd/templates/agent/rbac.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/agent/rbac.yaml) ships
-a Role that is a superset of this one (it adds `update` and `patch` on Pods, which `podTemplate.reuse`
-needs to mark a finished Pod idle; without them reuse silently never happens).
+The Role below matches [`charts/unified-cd/templates/agent/rbac.yaml`](https://github.com/eirueimi/unified-cd/blob/main/charts/unified-cd/templates/agent/rbac.yaml) exactly, and the agent needs all of it. `update` and `patch` on Pods are what
+`podTemplate.reuse` uses to mark a finished Pod idle (without them reuse silently never happens). The agent never watches: there is no `watch` verb.
 
 **Roll the Role first and the agent image second.** The agent reads, lists and creates its PVCs on
 every heartbeat, patches them to record a volume's reclaim policy and when it left the set,
@@ -1277,7 +1333,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods", "pods/exec", "pods/log"]
-    verbs: ["create", "get", "list", "delete", "watch"]
+    verbs: ["create", "get", "list", "delete", "update", "patch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     # Only needed when the controller delivers AgentVolumes: the agent reads and

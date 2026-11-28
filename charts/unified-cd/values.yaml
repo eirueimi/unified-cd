@@ -74,6 +74,14 @@ controller:
   # policy on a cluster with a kubeconfig the chart renders nothing: grant
   # pods/get in that namespace to the controller's identity in that cluster
   # yourself.
+  # The default kubernetesStoreCredentialPolicies entry allows the
+  # ServiceAccounts default, plus every agent.config.podTemplates.<name>.spec.
+  # serviceAccountName and agent.config.jobPodPolicy.allowServiceAccounts
+  # (sorted, de-duplicated). A kubernetesStoreCredentialPolicies list you supply
+  # REPLACES it entirely: include default and every other ServiceAccount and
+  # namespace you need. The chart's policies name the first kubernetesClusters
+  # entry without a kubeconfig; if you replace that list with none, the render
+  # fails unless you also supply both policy lists.
   # Maps are merged key by key, but a list you supply (for example
   # agentAuth.kubernetesEnrollmentPolicies) replaces the computed list entirely.
   config: {}

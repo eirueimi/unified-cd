@@ -179,8 +179,17 @@ helm install unified-cd-agent oci://ghcr.io/eirueimi/charts/unified-cd \
   --set agent.server=https://controller.example.com
 ```
 
-Configure the external controller's in-cluster verifier and enrollment policy
-first; see `docs/operator-manual/kubernetes-integration.md`.
+Configure the external controller first. It needs a `kubernetesClusters` entry
+with a `kubeconfig` for this cluster (not the `in-cluster` entry, which only
+works for a controller running inside a cluster), an enrollment policy for
+namespace `unified-cd` and ServiceAccount `unified-cd-k8s-agent`, and a
+`kubernetesStoreCredentialPolicies` entry for the job namespace, without which
+every artifact and cache step fails with `401`. The identity in the kubeconfig
+needs `tokenreviews` `create` cluster-wide and `pods` `get` in `unified-cd` and
+in each job namespace. See "Controller side of an agent-only install" in
+`docs/operator-manual/kubernetes-integration.md` for a complete snippet and the
+RBAC. The chart cannot mount a kubeconfig into a controller it installs, so this
+applies to controllers you run yourself.
 
 ## Behavior to know
 
@@ -208,8 +217,21 @@ first; see `docs/operator-manual/kubernetes-integration.md`.
   delete them from `agent.config` when upgrading. Job Pods must be able to reach
   the object store endpoint the controller advertises. The controller's
   `kubernetesStoreCredentialPolicies` is rendered with the controller, whether or not
-  `bundledStores.enabled`; list another ServiceAccount there through
-  `controller.config` if your jobs do not run under `default`.
+  `bundledStores.enabled`. It allows the job namespace and the ServiceAccounts
+  `default`, every `agent.config.podTemplates.<name>.spec.serviceAccountName`
+  and every `agent.config.jobPodPolicy.allowServiceAccounts` entry (sorted,
+  de-duplicated). A `kubernetesStoreCredentialPolicies` list you set in
+  `controller.config` **replaces** that one entirely: include `default` and
+  every other ServiceAccount and namespace you need. A job Pod is allowed when
+  any entry for its cluster lists its namespace and ServiceAccount.
+- **Moving the job namespace.** Set `jobNamespace.name`. Setting
+  `agent.config.namespace` to a different value fails the render, because the
+  job Role, the Namespace and the controller's policies follow
+  `jobNamespace.name`.
+- **Replacing `agentAuth.kubernetesClusters`.** The chart's own enrollment and
+  store-credential policies name the first cluster without a `kubeconfig`. If
+  your list has none, the render fails unless you also supply both policy lists
+  in `controller.config`.
 - **The controller can read job Pods.** It verifies a job Pod's token by reading
   the Pod in the Pod's own namespace, so the chart renders a Role and RoleBinding
   `unified-cd-controller-job-pods` (`pods` `get` only) in the namespace of every
