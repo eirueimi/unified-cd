@@ -9,8 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testBootstrapPATName = "env:UNIFIED_TOKEN"
-
 func TestMigration024DropsRoleDefaults(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
@@ -25,145 +23,49 @@ func TestMigration024DropsRoleDefaults(t *testing.T) {
 	}
 }
 
-func TestOwnedPATRoundTrip(t *testing.T) {
+func TestAccountPATRoundTrip(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	created, err := pg.CreateOwnedPAT(ctx, NewOwnedPAT{
-		Name: "owned", TokenHash: "h1", Role: "",
-		Owner:       PATOwner{Sub: "s1", Email: "a@example.com", Claims: nil},
+	accountID := testPATAccountID(t, pg)
+	created, err := pg.CreatePAT(ctx, NewPAT{
+		Name: "owned", TokenHash: "h1", Role: "", AccountID: accountID,
 		Permissions: []string{"job.read"},
 	})
 	require.NoError(t, err)
-	require.NotNil(t, created.Owner)
+	assert.Equal(t, accountID, created.AccountID)
 
 	got, err := pg.GetPATByHash(ctx, "h1")
 	require.NoError(t, err)
-	require.NotNil(t, got.Owner)
-	assert.Equal(t, "s1", got.Owner.Sub)
-	assert.Equal(t, "a@example.com", got.Owner.Email)
-	assert.NotNil(t, got.Owner.Claims)
-	assert.Equal(t, []string{}, got.Owner.Claims)
+	assert.Equal(t, accountID, got.AccountID)
 	assert.Equal(t, []string{"job.read"}, got.Permissions)
 	assert.Equal(t, "", got.Role)
 
 	list, err := pg.ListPATs(ctx)
 	require.NoError(t, err)
 	require.Len(t, list, 1)
-	require.NotNil(t, list[0].Owner)
 	assert.Equal(t, []string{"job.read"}, list[0].Permissions)
 }
-
-func TestLegacyPATHasNoOwner(t *testing.T) {
+func TestPATWithoutPermissionsHasNilCeiling(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, err := pg.CreatePAT(ctx, "legacy", "h1", "developer", nil, "")
-	require.NoError(t, err)
+	createTestPAT(t, pg, "legacy", "h1", "developer", "")
 	got, err := pg.GetPATByHash(ctx, "h1")
 	require.NoError(t, err)
-	assert.Nil(t, got.Owner)
 	assert.Nil(t, got.Permissions)
 }
-
-func TestListPATsByOwner(t *testing.T) {
-	pg := NewTestPostgres(t)
-	ctx := context.Background()
-	for _, c := range []struct{ name, hash, sub string }{{"na", "ha", "s1"}, {"nb", "hb", "s2"}, {"nc", "hc", "s1"}} {
-		_, err := pg.CreateOwnedPAT(ctx, NewOwnedPAT{Name: c.name, TokenHash: c.hash,
-			Role: "viewer", Owner: PATOwner{Sub: c.sub, Claims: []string{"g"}}})
-		require.NoError(t, err)
-	}
-	_, err := pg.CreatePAT(ctx, "legacy", "hl", "viewer", nil, "")
-	require.NoError(t, err)
-	got, err := pg.ListPATsByOwner(ctx, "s1")
-	require.NoError(t, err)
-	require.Len(t, got, 2)
-	assert.Equal(t, "na", got[0].Name)
-	assert.Equal(t, "nc", got[1].Name)
-}
-
-func TestDeleteOwnedPATOnlyDeletesOwn(t *testing.T) {
-	pg := NewTestPostgres(t)
-	ctx := context.Background()
-	owned, err := pg.CreateOwnedPAT(ctx, NewOwnedPAT{Name: "o", TokenHash: "h1", Role: "viewer", Owner: PATOwner{Sub: "s1"}})
-	require.NoError(t, err)
-	legacy, err := pg.CreatePAT(ctx, "legacy", "h2", "viewer", nil, "")
-	require.NoError(t, err)
-
-	ok, err := pg.DeleteOwnedPAT(ctx, owned.ID, "other")
-	require.NoError(t, err)
-	assert.False(t, ok)
-	_, err = pg.GetPATByHash(ctx, "h1")
-	require.NoError(t, err, "row must be kept")
-
-	ok, err = pg.DeleteOwnedPAT(ctx, legacy.ID, "")
-	require.NoError(t, err)
-	assert.False(t, ok, "role-only row is never owned")
-	_, err = pg.GetPATByHash(ctx, "h2")
-	require.NoError(t, err)
-
-	ok, err = pg.DeleteOwnedPAT(ctx, owned.ID, "s1")
-	require.NoError(t, err)
-	assert.True(t, ok)
-	_, err = pg.GetPATByHash(ctx, "h1")
-	require.Error(t, err)
-}
-
-func TestUpdatePATOwnerSnapshot(t *testing.T) {
-	pg := NewTestPostgres(t)
-	ctx := context.Background()
-	for _, c := range []struct{ name, hash, sub string }{{"a", "h1", "s1"}, {"b", "h2", "s1"}, {"c", "h3", "s2"}} {
-		_, err := pg.CreateOwnedPAT(ctx, NewOwnedPAT{Name: c.name, TokenHash: c.hash, Role: "viewer",
-			Owner: PATOwner{Sub: c.sub, Email: "old@example.com", Claims: []string{"old"}}})
-		require.NoError(t, err)
-	}
-	n, err := pg.UpdatePATOwnerSnapshot(ctx, "s1", "new@example.com", []string{"g1", "g2"})
-	require.NoError(t, err)
-	assert.EqualValues(t, 2, n)
-
-	for _, h := range []string{"h1", "h2"} {
-		p, err := pg.GetPATByHash(ctx, h)
-		require.NoError(t, err)
-		assert.Equal(t, "new@example.com", p.Owner.Email)
-		assert.Equal(t, []string{"g1", "g2"}, p.Owner.Claims)
-	}
-	other, err := pg.GetPATByHash(ctx, "h3")
-	require.NoError(t, err)
-	assert.Equal(t, "old@example.com", other.Owner.Email)
-	assert.Equal(t, []string{"old"}, other.Owner.Claims)
-}
-
-func TestCountRoleOnlyPATsAboveViewer(t *testing.T) {
-	pg := NewTestPostgres(t)
-	ctx := context.Background()
-	_, err := pg.CreatePAT(ctx, "viewer", "h1", "viewer", nil, "")
-	require.NoError(t, err)
-	_, err = pg.CreatePAT(ctx, "dev", "h2", "developer", nil, "")
-	require.NoError(t, err)
-	_, err = pg.CreatePAT(ctx, "adm", "h3", "admin", nil, "")
-	require.NoError(t, err)
-	_, err = pg.UpsertBootstrapPAT(ctx, testBootstrapPATName, "h4")
-	require.NoError(t, err)
-	_, err = pg.CreateOwnedPAT(ctx, NewOwnedPAT{Name: "owned", TokenHash: "h5", Role: "developer", Owner: PATOwner{Sub: "s1"}})
-	require.NoError(t, err)
-
-	n, err := pg.CountRoleOnlyPATsAboveViewer(ctx, testBootstrapPATName)
-	require.NoError(t, err)
-	assert.Equal(t, 2, n)
-}
-
 func TestSessionClaimsNullVsEmpty(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 	exp := time.Now().Add(time.Hour)
 
-	s1, err := pg.CreateSession(ctx, "h1", "s1", "a@example.com", "viewer", nil, []byte{}, []byte{}, exp)
+	s1, err := pg.CreateSession(ctx, testPATAccountID(t, pg), "h1", "s1", "a@example.com", "viewer", nil, []byte{}, []byte{}, exp)
 	require.NoError(t, err)
 	assert.Nil(t, s1.Claims)
 	got, err := pg.GetSessionByHash(ctx, "h1")
 	require.NoError(t, err)
 	assert.Nil(t, got.Claims)
 
-	s2, err := pg.CreateSession(ctx, "h2", "s2", "b@example.com", "viewer", []string{}, []byte{}, []byte{}, exp)
+	s2, err := pg.CreateSession(ctx, testPATAccountID(t, pg), "h2", "s2", "b@example.com", "viewer", []string{}, []byte{}, []byte{}, exp)
 	require.NoError(t, err)
 	assert.NotNil(t, s2.Claims)
 	assert.Empty(t, s2.Claims)
@@ -233,20 +135,20 @@ func TestLatestSessionClaims(t *testing.T) {
 	assert.False(t, found)
 
 	// A NULL-claims session is not a snapshot.
-	_, err = pg.CreateSession(ctx, "h0", "sub-a", "a@example.com", "viewer", nil, []byte{}, []byte{}, exp)
+	_, err = pg.CreateSession(ctx, testPATAccountID(t, pg), "h0", "sub-a", "a@example.com", "viewer", nil, []byte{}, []byte{}, exp)
 	require.NoError(t, err)
 	_, found, err = pg.LatestSessionClaims(ctx, "a@example.com")
 	require.NoError(t, err)
 	assert.False(t, found)
 
-	_, err = pg.CreateSession(ctx, "h1", "sub-a", "a@example.com", "viewer", []string{"g-old"}, []byte{}, []byte{}, exp)
+	_, err = pg.CreateSession(ctx, testPATAccountID(t, pg), "h1", "sub-a", "a@example.com", "viewer", []string{"g-old"}, []byte{}, []byte{}, exp)
 	require.NoError(t, err)
-	_, err = pg.CreateSession(ctx, "h2", "sub-a", "a@example.com", "viewer", []string{"g-new"}, []byte{}, []byte{}, exp)
+	_, err = pg.CreateSession(ctx, testPATAccountID(t, pg), "h2", "sub-a", "a@example.com", "viewer", []string{"g-new"}, []byte{}, []byte{}, exp)
 	require.NoError(t, err)
 	// A newer session without claims does not hide the older snapshot.
-	_, err = pg.CreateSession(ctx, "h3", "sub-a", "a@example.com", "viewer", nil, []byte{}, []byte{}, exp)
+	_, err = pg.CreateSession(ctx, testPATAccountID(t, pg), "h3", "sub-a", "a@example.com", "viewer", nil, []byte{}, []byte{}, exp)
 	require.NoError(t, err)
-	_, err = pg.CreateSession(ctx, "h4", "sub-b", "b@example.com", "viewer", []string{}, []byte{}, []byte{}, exp)
+	_, err = pg.CreateSession(ctx, testPATAccountID(t, pg), "h4", "sub-b", "b@example.com", "viewer", []string{}, []byte{}, []byte{}, exp)
 	require.NoError(t, err)
 
 	for _, user := range []string{"a@example.com", "sub-a"} {
@@ -281,9 +183,8 @@ func TestMigration025AddsPATEnrollLabels(t *testing.T) {
 func TestPATEnrollLabelsRoundTrip(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	_, err := pg.CreateOwnedPAT(ctx, NewOwnedPAT{
-		Name: "owned", TokenHash: "h1",
-		Owner:        PATOwner{Sub: "s1", Email: "a@example.com"},
+	_, err := pg.CreatePAT(ctx, NewPAT{
+		Name: "owned", TokenHash: "h1", AccountID: testPATAccountID(t, pg),
 		Permissions:  []string{"agent.enroll"},
 		EnrollLabels: []string{"kind:linux"},
 	})
@@ -292,8 +193,7 @@ func TestPATEnrollLabelsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"kind:linux"}, got.EnrollLabels)
 
-	_, err = pg.CreatePAT(ctx, "legacy", "h2", "developer", nil, "")
-	require.NoError(t, err)
+	createTestPAT(t, pg, "legacy", "h2", "developer", "")
 	legacy, err := pg.GetPATByHash(ctx, "h2")
 	require.NoError(t, err)
 	assert.Nil(t, legacy.EnrollLabels)
@@ -305,23 +205,4 @@ func TestPATEnrollLabelsRoundTrip(t *testing.T) {
 		byName[p.Name] = p
 	}
 	assert.Equal(t, []string{"kind:linux"}, byName["owned"].EnrollLabels)
-}
-
-func TestCreateEnrollPATRoundTrip(t *testing.T) {
-	pg := NewTestPostgres(t)
-	ctx := context.Background()
-	created, err := pg.CreateEnrollPAT(ctx, NewEnrollPAT{Name: "prov", TokenHash: "h1", EnrollLabels: []string{"kind:linux", "pool:build"}})
-	require.NoError(t, err)
-	assert.Nil(t, created.Owner)
-
-	got, err := pg.GetPATByHash(ctx, "h1")
-	require.NoError(t, err)
-	assert.Nil(t, got.Owner)
-	assert.Equal(t, "", got.Role)
-	assert.Equal(t, []string{"agent.enroll"}, got.Permissions)
-	assert.Equal(t, []string{"kind:linux", "pool:build"}, got.EnrollLabels)
-
-	unbounded, err := pg.CreateEnrollPAT(ctx, NewEnrollPAT{Name: "free", TokenHash: "h2"})
-	require.NoError(t, err)
-	assert.Nil(t, unbounded.EnrollLabels)
 }

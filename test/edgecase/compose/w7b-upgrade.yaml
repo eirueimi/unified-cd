@@ -21,6 +21,17 @@
 # saves the npm+vite+Go build the W5 checkpoint priced.
 #
 # ---------------------------------------------------------------------------
+# AUTHENTICATION ACROSS THE UPGRADE.
+# ---------------------------------------------------------------------------
+# The old-image services (`old`, `agentv030`) keep the static `UNIFIED_TOKEN` /
+# `--token` credential: v0.3.0 has no accounts. HEAD controllers have no such
+# token. An upgraded non-SSO install therefore re-bootstraps: `new` is given a
+# fixed one-time `UNIFIED_INITIAL_ADMIN_TOKEN`, and `agentnew-enroll` exchanges
+# it once (`unified-cli bootstrap`) for an admin PAT before minting the
+# enrollment token. Use `POST /api/v1/bootstrap` the same way for anything else
+# that needs to call the HEAD API in this arm.
+#
+# ---------------------------------------------------------------------------
 # THE KEK IS THE SAME VALUE ON BOTH SIDES, DELIBERATELY.
 # ---------------------------------------------------------------------------
 # v0.3.0 takes it in `UNIFIED_CONTROLLER_KEY`; HEAD takes it in
@@ -91,7 +102,7 @@ services:
       dockerfile: docker/controller.Dockerfile
     environment:
       UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
-      UNIFIED_TOKEN: ha-admin-token
+      UNIFIED_INITIAL_ADMIN_TOKEN: uci_ha00000000000000000000000000000000000000
       UNIFIED_CONTROLLER_KEY_FILE: /run/secrets/kek
     volumes:
       - ./test/ha/kek:/run/secrets/kek:ro
@@ -110,7 +121,7 @@ services:
       - armb-agent-credentials:/var/lib/unified-cd-agent
     environment:
       UNIFIED_SERVER: http://new:8080
-      UNIFIED_TOKEN: ha-admin-token
+      UNIFIED_INITIAL_ADMIN_TOKEN: uci_ha00000000000000000000000000000000000000
     command:
       - sh
       - -c
@@ -119,6 +130,20 @@ services:
         DIR=/var/lib/unified-cd-agent/agenthead
         mkdir -p "$$DIR"
         rm -f "$$DIR/enrollment.token" "$$DIR/credentials.json"
+        # The upgraded controller has no standing admin token. Exchange its
+        # one-time initial token (UNIFIED_INITIAL_ADMIN_TOKEN, above) for an
+        # admin PAT; it works once, so a re-run of this one-shot needs a fresh DB.
+        PAT=""
+        for i in $$(seq 1 60); do
+          if PAT="$$(go run -buildvcs=false ./cmd/unified-cli bootstrap)" && [ -n "$$PAT" ]; then
+            break
+          fi
+          PAT=""
+          echo "agentnew-enroll: bootstrap not ready yet, retrying..."
+          sleep 2
+        done
+        [ -n "$$PAT" ] || { echo "agentnew-enroll: initial token exchange never succeeded" >&2; exit 1; }
+        export UNIFIED_TOKEN="$$PAT"
         for i in $$(seq 1 60); do
           if go run -buildvcs=false ./cmd/unified-cli agent enrollment create \
             --agent-id agenthead --label kind:linux \

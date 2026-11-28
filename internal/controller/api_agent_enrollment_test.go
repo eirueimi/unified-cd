@@ -107,7 +107,7 @@ func TestAgentEnrollmentAdminEnforcesMaximumLifetime(t *testing.T) {
 
 func TestAgentEnrollmentAdminAuthorizationAndRevoke(t *testing.T) {
 	s, pg := newTestServer(t)
-	makeRolePAT(t, pg, "viewer-token", "viewer")
+	makeRolePAT(t, s, pg, "viewer-token", "viewer")
 	require.Equal(t, http.StatusForbidden, enrollmentRequest(t, s, "viewer-token", api.CreateAgentEnrollmentRequest{AgentID: "vm-agent-01"}).Code)
 
 	created := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{AgentID: "vm-agent-01"})
@@ -120,7 +120,7 @@ func TestAgentEnrollmentAdminAuthorizationAndRevoke(t *testing.T) {
 
 func TestAgentEnrollmentPolicyAdminCRUD(t *testing.T) {
 	s, pg := newTestServer(t)
-	makeRolePAT(t, pg, "viewer-token", "viewer")
+	makeRolePAT(t, s, pg, "viewer-token", "viewer")
 	body := []byte(`{"name":"prod-k8s","provider":"kubernetes","cluster":"prod","namespaces":["unified-cd"],"serviceAccounts":["unified-cd-k8s-agent"],"agentIdTemplate":"k8s:{cluster}:{namespace}:{podUID}","allowedLabels":["kind:kubernetes"],"requiredLabels":["kind:kubernetes"],"accessTokenTTL":"15m","enabled":true}`)
 	require.Equal(t, http.StatusForbidden, doReq(t, s, http.MethodPost, "/api/v1/agent-enrollment-policies", "viewer-token", body))
 	require.Equal(t, http.StatusCreated, doReq(t, s, http.MethodPost, "/api/v1/agent-enrollment-policies", "secret", body))
@@ -131,7 +131,7 @@ func TestAgentEnrollmentPolicyAdminCRUD(t *testing.T) {
 
 func TestAgentIdentityAdminLifecycleAndViewerRead(t *testing.T) {
 	s, pg := newTestServer(t)
-	makeRolePAT(t, pg, "viewer-token", "viewer")
+	makeRolePAT(t, s, pg, "viewer-token", "viewer")
 	access, err := agentauth.Generate(agentauth.AccessToken)
 	require.NoError(t, err)
 	// Seed the persistent identity through a consumed one-time enrollment.
@@ -329,7 +329,7 @@ func enrollOnlyToken(t *testing.T, s *Server, bound []string) string {
 }
 
 func TestAgentEnrollmentEnrollOnlyCallerBoundToLabels(t *testing.T) {
-	s, _ := breakGlassServer(t)
+	s, _ := newTestServer(t)
 	bounded := enrollOnlyToken(t, s, []string{"kind:linux", "pool:build"})
 
 	rec := enrollmentRequest(t, s, bounded, api.CreateAgentEnrollmentRequest{Labels: []string{"kind:linux"}})
@@ -352,7 +352,7 @@ func TestAgentEnrollmentEnrollOnlyCallerBoundToLabels(t *testing.T) {
 }
 
 func TestAgentEnrollmentEnrollOnlyCallerWithoutBound(t *testing.T) {
-	s, _ := breakGlassServer(t)
+	s, _ := newTestServer(t)
 	unbounded := enrollOnlyToken(t, s, nil)
 
 	rec := enrollmentRequest(t, s, unbounded, api.CreateAgentEnrollmentRequest{Labels: []string{"kind:linux"}})
@@ -364,7 +364,7 @@ func TestAgentEnrollmentEnrollOnlyCallerWithoutBound(t *testing.T) {
 }
 
 func TestAgentEnrollmentEnrollOnlyCallerCannotSetAgentID(t *testing.T) {
-	s, _ := breakGlassServer(t)
+	s, _ := newTestServer(t)
 	tok := enrollOnlyToken(t, s, []string{"kind:linux"})
 	for _, id := range []string{"vm-agent-01", "aws:123456789012:i-0abc12345678", "Bad ID"} {
 		rec := enrollmentRequest(t, s, tok, api.CreateAgentEnrollmentRequest{AgentID: id})
@@ -386,7 +386,7 @@ func TestAgentEnrollmentRejectsCloudShapedAgentID(t *testing.T) {
 }
 
 func TestAgentEnrollmentAuditResourceCarriesAgentIDAndLabels(t *testing.T) {
-	s, pg := breakGlassServer(t)
+	s, pg := newTestServer(t)
 	tok := enrollOnlyToken(t, s, []string{"kind:linux", "pool:build"})
 	rec := enrollmentRequest(t, s, tok, api.CreateAgentEnrollmentRequest{Labels: []string{"kind:linux", "pool:build"}})
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())

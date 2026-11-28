@@ -59,7 +59,7 @@ func TestAudit_ReplayRecorded(t *testing.T) {
 	require.Len(t, logs, 1)
 	assert.Equal(t, "run.replay", logs[0].Action)
 	assert.Equal(t, id, logs[0].Resource)
-	assert.Equal(t, "test-bootstrap", logs[0].Actor)
+	assert.Equal(t, "test-admin", logs[0].Actor)
 	assert.Equal(t, "POST", logs[0].Method)
 	assert.Equal(t, "/api/v1/runs/"+id+"/replay", logs[0].Path)
 	assert.Equal(t, 200, logs[0].Status)
@@ -86,8 +86,7 @@ func TestAudit_AllowedWriteRecordsGrant(t *testing.T) {
 
 func TestAudit_LegacyRoleGrantedBy(t *testing.T) {
 	s, pg := newTestServer(t)
-	s.cfg.Token = "secret" // break-glass requires the configured bootstrap token
-	makeRolePAT(t, pg, "dev-token", "developer")
+	makeRolePAT(t, s, pg, "dev-token", "developer")
 	id := auditSeedRun(t, pg, "j")
 
 	rec := doAs(t, s, http.MethodPost, "/api/v1/runs/"+id+"/cancel", "dev-token", nil)
@@ -97,17 +96,17 @@ func TestAudit_LegacyRoleGrantedBy(t *testing.T) {
 
 	logs := auditRows(t, pg) // newest first
 	require.Len(t, logs, 2)
-	assert.Equal(t, "test-bootstrap", logs[0].Actor)
-	assert.Equal(t, "break-glass", logs[0].GrantedBy)
+	assert.Equal(t, "test-admin", logs[0].Actor)
+	assert.Equal(t, "sa:test-admin", logs[0].GrantedBy)
 	assert.Equal(t, "developer-user", logs[1].Actor)
-	assert.Equal(t, "role:developer (pat)", logs[1].GrantedBy)
+	assert.Equal(t, "role:developer", logs[1].GrantedBy)
 	assert.Equal(t, "run.cancel", logs[1].Permission)
 	assert.Equal(t, "j", logs[1].Scope)
 }
 
 func TestAudit_DeniedWriteRecorded(t *testing.T) {
 	s, pg := newTestServer(t)
-	makeRolePAT(t, pg, "view-token", "viewer")
+	makeRolePAT(t, s, pg, "view-token", "viewer")
 
 	rec := doAs(t, s, http.MethodPost, "/api/v1/jobs", "view-token", []byte(`{}`))
 	require.Equal(t, http.StatusForbidden, rec.Code)
@@ -137,7 +136,7 @@ func (f *entryStore) InsertAuditLog(_ context.Context, e store.AuditEntry) error
 // known, so the scope is empty.
 func TestAudit_PreCheckDenialOnJobRouteHasEmptyScope(t *testing.T) {
 	s, pg := newTestServer(t)
-	makeRolePAT(t, pg, "view-token", "viewer")
+	makeRolePAT(t, s, pg, "view-token", "viewer")
 
 	rec := doAs(t, s, http.MethodPost, "/api/v1/runs", "view-token", []byte(`{"jobName":"j"}`))
 	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
@@ -232,7 +231,7 @@ func TestAudit_HiddenAnswerRecordsActualStatus(t *testing.T) {
 
 func TestAudit_AllowedReadNotRecorded(t *testing.T) {
 	s, pg := newTestServer(t)
-	makeRolePAT(t, pg, "view-token", "viewer")
+	makeRolePAT(t, s, pg, "view-token", "viewer")
 
 	rec := doAs(t, s, http.MethodGet, "/api/v1/jobs", "view-token", nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -243,7 +242,7 @@ func TestAudit_AllowedReadNotRecorded(t *testing.T) {
 // and none of the new decision columns can carry a secret value.
 func TestAudit_SecretBodyNeverRecorded(t *testing.T) {
 	s, pg := newTestServerWithKM(t)
-	makeRolePAT(t, pg, "dev-token", "developer")
+	makeRolePAT(t, s, pg, "dev-token", "developer")
 	const value = "super-secret-value-xyz"
 
 	body, _ := json.Marshal(api.SetSecretRequest{Name: "AWS_KEY", Value: value})
@@ -261,7 +260,7 @@ func TestAudit_SecretBodyNeverRecorded(t *testing.T) {
 	assert.False(t, strings.Contains(string(raw), value), "audit row leaked the secret value: %s", raw)
 
 	// An allowed write carries the decision columns and still only the name.
-	makeRolePAT(t, pg, "admin-token", "admin")
+	makeRolePAT(t, s, pg, "admin-token", "admin")
 	rec = doAs(t, s, http.MethodPost, "/api/v1/secrets", "admin-token", body)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 	logs = auditRows(t, pg)

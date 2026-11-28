@@ -45,7 +45,7 @@ func TestUIActionInventoryIsEnforced(t *testing.T) {
 	policy.WriteString("global:\n  users:\n")
 	emails := map[string]string{}
 	addCaller := func(kind string, perms []string, rule routeRule) string {
-		key := kind + "|" + string(rule.Perm) + "|" + string(rule.AltPerm)
+		key := kind + "|" + string(rule.Perm) + "|" + string(rule.AltPerm) + "|" + string(rule.AltPerm2)
 		if e, ok := emails[key]; ok {
 			return e
 		}
@@ -74,7 +74,7 @@ func TestUIActionInventoryIsEnforced(t *testing.T) {
 
 		var others []string
 		for _, p := range authz.All() {
-			if p != rule.Perm && p != rule.AltPerm {
+			if p != rule.Perm && p != rule.AltPerm && p != rule.AltPerm2 {
 				others = append(others, string(p))
 			}
 		}
@@ -104,8 +104,7 @@ func TestUIActionInventoryIsEnforced(t *testing.T) {
 		_ = st.CreatePendingApproval(ctx, run.ID, 0, "gate", "", nil) // best effort: the gate may need a step
 		_, err = st.UpsertAppSource(ctx, "apps", []byte(`{"repoURL":"https://github.com/org/repo","targetRevision":"main","path":"jobs/"}`))
 		require.NoError(t, err)
-		pat, err := st.CreatePAT(ctx, "seed", HashToken("seed-token-"+strconv.Itoa(seq)), "viewer", nil, "")
-		require.NoError(t, err)
+		pat := createOwnedPATForTest(t, st, ownedPATInput{Name: "seed", TokenHash: HashToken("seed-token-" + strconv.Itoa(seq)), Role: "viewer", Owner: ownerIdentity{Sub: "seed-user"}})
 
 		path := strings.NewReplacer("{id}", run.ID, "{runID}", run.ID, "{name}", "apps", "{stepIndex}", "0").Replace(c.action.Route)
 		if strings.HasPrefix(c.action.Route, "/api/v1/tokens/") {

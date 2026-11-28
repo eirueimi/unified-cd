@@ -22,7 +22,7 @@ docker compose -f deployments/docker/docker-compose.yaml up -d
 ```
 
 This stack ships no default secrets. Compose refuses to start until
-`UNIFIED_TOKEN`, `POSTGRES_PASSWORD`, `GARAGE_RPC_SECRET`, `GARAGE_S3_ACCESS_KEY`,
+`UNIFIED_INITIAL_ADMIN_TOKEN`, `POSTGRES_PASSWORD`, `GARAGE_RPC_SECRET`, `GARAGE_S3_ACCESS_KEY`,
 `GARAGE_S3_SECRET_KEY` and `UNIFIED_KEK_FILE` are set, and dev mode is off, so
 the KEK comes from the key file rather than an ephemeral in-memory key. The
 Docker-in-Docker sidecar that runs isolated jobs listens on 2376 with mutual
@@ -33,6 +33,25 @@ boundary. The controller publishes 8080 over plain HTTP: put a TLS reverse
 proxy in front of it, and publish `127.0.0.1:8080:8080` instead of
 `8080:8080` if the proxy runs on the same host. Upgrading an earlier version of
 this stack: see [Hardened Production Compose](../operator-manual/migrations/2026-11-09-production-compose-hardening.md).
+
+**First admin access.** `UNIFIED_INITIAL_ADMIN_TOKEN` is a one-time token (generate it with
+`echo "uci_$(openssl rand -hex 20)"`), not a standing credential. The `agent-enroll` one-shot
+exchanges it once for a 30-day admin PAT, keeps the PAT in the `admin-state` volume and uses it
+to enroll the agent. Read the PAT, then use it as the CLI's `UNIFIED_TOKEN` and in the web UI sign-in form:
+
+```bash
+docker compose -f deployments/docker/docker-compose.yaml run --rm --no-deps --entrypoint cat agent-enroll /state/admin-token
+export UNIFIED_SERVER=http://localhost:8080
+export UNIFIED_TOKEN=<the PAT printed above>
+```
+
+If `agent-enroll` skipped because the agent already had credentials (an upgraded install), run
+`unified-cli bootstrap` yourself with the value from `.env`. To get back in after the PAT expired or
+was lost, run `docker compose -f deployments/docker/docker-compose.yaml exec controller /controller admin recover`.
+For automation, declare service accounts in the controller config instead of sharing the admin PAT
+(see [Authentication](../operator-manual/authentication.md#non-sso-setup-initial-admin-token-and-service-accounts)).
+Upgrading from a stack that used `UNIFIED_TOKEN`: see
+[Migrating: internal accounts](../operator-manual/migrations/2026-11-27-internal-accounts.md).
 
 Pin a release by setting `UNIFIED_CD_VERSION` (e.g. `v0.0.3`) in `.env`. The default is `latest`; the controller image for both `latest` and `v0.11.0` was verified to start from this Compose file with PostgreSQL and Garage and report `healthy` (the health check uses the BusyBox `wget` in the Alpine-based image).
 
@@ -60,7 +79,17 @@ helm install unified-cd oci://ghcr.io/eirueimi/charts/unified-cd \
 kubectl -n unified-cd port-forward svc/unified-cd-controller 8080:80
 ```
 
-Open <http://localhost:8080> and sign in with the token `dev-token-change-me`.
+There is no default password. The chart generates a one-time initial admin token in the
+cluster (Secret `unified-cd-initial-admin-token`); exchange it once for an admin PAT (valid
+30 days), then paste the PAT into the sign-in form at <http://localhost:8080>:
+
+```bash
+export UNIFIED_SERVER=http://localhost:8080
+export UNIFIED_INITIAL_ADMIN_TOKEN="$(kubectl -n unified-cd get secret unified-cd-initial-admin-token -o jsonpath='{.data.UNIFIED_INITIAL_ADMIN_TOKEN}' | base64 -d)"
+unified-cli bootstrap     # prints the admin PAT; use it as UNIFIED_TOKEN for unified-cli
+```
+
+The same steps are printed by `helm install` (NOTES).
 
 The defaults install the controller, two Kubernetes agents, the `ci` job
 namespace, and an in-cluster PostgreSQL and Garage (S3) with fixed development
@@ -90,7 +119,6 @@ kubectl create namespace unified-cd
 
 kubectl create secret generic unified-cd-controller -n unified-cd \
   --from-literal=UNIFIED_DB_DSN='postgres://...' \
-  --from-literal=UNIFIED_TOKEN='...' \
   --from-literal=UNIFIED_S3_ENDPOINT='...' \
   --from-literal=UNIFIED_S3_BUCKET='...' \
   --from-literal=UNIFIED_S3_KEY='...' \
@@ -101,8 +129,14 @@ kubectl create secret generic unified-cd-controller-kek -n unified-cd \
   --from-file=kek=./kek
 ```
 
-- `UNIFIED_DB_DSN` is the PostgreSQL connection string; `UNIFIED_TOKEN` is the
-  administrator static token for human and CLI authentication.
+- `UNIFIED_DB_DSN` is the PostgreSQL connection string. There is no administrator
+  token in this Secret: the chart's create-once Job generates the one-time initial
+  admin token into its own Secret, `unified-cd-initial-admin-token` (key
+  `UNIFIED_INITIAL_ADMIN_TOKEN`), which the controller reads. Exchange it with
+  `unified-cli bootstrap` after the install (the install NOTES print the commands), as in the trial
+  above. To supply the value yourself, or if you only use SSO, set
+  `controller.initialAdminToken.generate=false` (and create that Secret first if you want a
+  non-SSO admin).
 - For AWS S3 or GCS also set `UNIFIED_S3_USE_SSL=true` and `UNIFIED_S3_REGION`: presigned URLs travel to agents and job Pods, so those must be able to reach the endpoint you give here. See [Operations: networking and cost of object transfers](../operator-manual/operations.md#networking-and-cost-of-object-transfers).
 - Omitting the four `UNIFIED_S3_*` keys does not stop the controller. It starts
   and logs `no object store configured — log archival disabled`; log archival
@@ -155,8 +189,10 @@ Put non-secret controller and agent settings in `controller.config` and
 them restarts the Pods.
 
 **SSO / OIDC (optional).** Add OIDC keys to the `unified-cd-controller` Secret.
-Without them the controller uses only the static `UNIFIED_TOKEN`; with them
-`UNIFIED_TOKEN` stays as an administrator and CLI fallback. Only
+Without them the first admin comes from the initial admin token (above); with them the first admin
+comes from `oidc.userMap` / `roleMap`, the web UI hides the manual token form, and you should disable
+the built-in `admin` account once SSO works (`serviceAccounts.admin.enabled: false`, see
+[Authorization](../operator-manual/authorization.md#built-in-admin-account-and-recovery)). Only
 `UNIFIED_OIDC_ISSUER` and `UNIFIED_OIDC_CLIENT_ID` are required to enable SSO.
 
 | Key | Required | Description |
@@ -283,8 +319,10 @@ kubectl apply -f https://github.com/eirueimi/unified-cd/releases/latest/download
 | `core-install.yaml` | controller + k8s-agent | External PostgreSQL and S3 store, a TLS terminator, and the Secrets from the Production section. Download it and replace `https://controller.example.invalid` with your HTTPS endpoint. |
 | `agent-only.yaml` | k8s-agent only | A controller running elsewhere with the matching enrollment policy. Download it and replace `https://controller.example.invalid` with its HTTPS endpoint. |
 
-The bundles run the KEK Job as a plain Job (`kubectl apply` has no hooks);
-re-applying never replaces an existing KEK. Re-applying a newer `install.yaml` over a v0.11.0 install works in place and keeps the KEK; afterwards delete the orphaned `garage-config-<hash>` ConfigMap (see the [migration guide](../operator-manual/migrations/2026-10-30-helm-chart.md)). For production, prefer
+The bundles run the KEK Job and the initial-admin-token Job as plain Jobs (`kubectl apply` has no hooks);
+re-applying never replaces an existing KEK or initial-token Secret. After applying `install.yaml`, exchange the
+one-time initial admin token for an admin PAT as shown under Trial above (the Secret is
+`unified-cd-initial-admin-token` in the `unified-cd` namespace). Re-applying a newer `install.yaml` over a v0.11.0 install works in place and keeps the KEK; afterwards delete the orphaned `garage-config-<hash>` ConfigMap (see the [migration guide](../operator-manual/migrations/2026-10-30-helm-chart.md)). For production, prefer
 `helm install`: the bundles are fixed renderings, so changing anything means
 editing the downloaded file. Coming from the old Kustomize overlays? See
 [Migrating from the Kustomize overlays to Helm](../operator-manual/migrations/2026-10-30-helm-chart.md).

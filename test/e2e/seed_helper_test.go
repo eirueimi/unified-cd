@@ -2,18 +2,47 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/controller"
 	"github.com/eirueimi/unified-cd/internal/store"
 )
 
-// mustSeedBootstrapPAT reproduces the "sync UNIFIED_TOKEN to DB as a PAT" step that production
-// main.go performs at startup, so that e2e test server setup also has it. Because ServerAuth has no
-// branch dedicated to static tokens, the fixed token used in tests must be registered as a real PAT
-// or the management API (/api/v1/jobs, etc.) will return 401.
-func mustSeedBootstrapPAT(t *testing.T, pg *store.Postgres, token string) error {
+// testAdminAccount is the service account behind the fixed bearer token the
+// e2e tests send.
+const testAdminAccount = "test-admin"
+
+// adminConfig returns cfg with the test-admin service account (admin bundle)
+// declared, as a controller config with a serviceAccounts block would.
+func adminConfig(cfg controller.Config) controller.Config {
+	cfg.ServiceAccountGrants = map[string]authz.Grants{
+		testAdminAccount: authz.RoleGrants("admin", "sa:"+testAdminAccount),
+	}
+	return cfg
+}
+
+// mustSeedAdminPAT reproduces what production does once an operator has declared
+// a service account and minted a PAT for it: it syncs the service-account rows
+// and stores a PAT with the given token for test-admin. Pair it with a server
+// built from adminConfig, because ServerAuth resolves every PAT through its
+// account (there is no static-token branch).
+func mustSeedAdminPAT(t *testing.T, pg *store.Postgres, token string) error {
 	t.Helper()
-	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", controller.HashToken(token))
-	return err
+	ctx := context.Background()
+	if err := pg.SyncServiceAccounts(ctx, []string{testAdminAccount}); err != nil {
+		return err
+	}
+	accts, err := pg.ListAccounts(ctx)
+	if err != nil {
+		return err
+	}
+	for _, a := range accts {
+		if a.Kind == store.AccountKindService && a.Name == testAdminAccount {
+			_, err := pg.CreatePAT(ctx, store.NewPAT{Name: testAdminAccount, TokenHash: controller.HashToken(token), AccountID: a.ID})
+			return err
+		}
+	}
+	return fmt.Errorf("service account %q not found after sync", testAdminAccount)
 }

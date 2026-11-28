@@ -3,11 +3,14 @@
 # NOTE: Part D (w2-9-partD.sh) is the strongest and cheapest limb and only
 # needs this script's A1+A2 as setup — consider running it before A4.
 set -u
+# The rig has no standing admin token: exchange the initial one once (see ../lib/admin-token.sh).
+. "$(dirname "$0")/../lib/admin-token.sh"
+ADMIN_PAT="${UNIFIED_TOKEN:-$(bootstrap_admin_token)}"
 SCRATCH="${SCRATCH:?run from test/ha with SCRATCH exported, e.g. export SCRATCH=<scratchpad>/w2-9}"
 S="$SCRATCH"
 CF="${COMPOSE_FILES:--f docker-compose.ha.yaml}"
 API="http://localhost:18080"
-AUTH="Authorization: Bearer ha-admin-token"
+AUTH="Authorization: Bearer $ADMIN_PAT"
 psql() { docker compose $CF exec -T postgres psql -U unified -tAc "$1"; }
 trig() { curl -sS -X POST "$API/api/v1/runs" -H "$AUTH" -H "Content-Type: application/json" -d "{\"jobName\":\"$1\"}"; }
 idof() { printf '%s' "$1" | tr ',' '\n' | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1; }
@@ -39,7 +42,7 @@ fi
 {
 echo "=== A2 bulk-submit start $(date -u +%FT%T.%3NZ) ==="
 } 2>&1 | tee "$S/partA-bulk-timing.txt"
-UNIFIED_SERVER="$API" UNIFIED_TOKEN=ha-admin-token \
+UNIFIED_SERVER="$API" UNIFIED_TOKEN="$ADMIN_PAT" \
   sh ../edgecase/tools/bulk-submit.sh edge-sideeffect 55 \
   > "$S/partA-blocked-ids.txt" 2> "$S/partA-bulk-stderr.txt"
 RC=$?

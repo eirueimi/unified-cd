@@ -6,7 +6,7 @@
   import { fmtTime } from '../lib/utils.js';
 
   let tokens = [], loading = true, error = '', createError = '';
-  let newName = '', newExpiry = '', newRole = '';
+  let newName = '', newExpiry = '', newRole = '', newAccount = '';
   let createdToken = null;
   let chosenPerms = [];
 
@@ -19,8 +19,12 @@
   $: heldPerms = $grants
     ? [...new Set([...($grants.global || []), ...Object.values($grants.folders || {}).flat()])].sort()
     : [];
-  $: canCreate = allows($grants, 'token.create');
+  // serviceaccount.token alone may issue tokens for service accounts.
+  $: canCreate = allows($grants, 'token.create') || allows($grants, 'serviceaccount.token');
   $: canManage = $grants != null && allows($grants, 'token.manage');
+  // Minting a token for a service account needs token.manage or
+  // serviceaccount.token; the server enforces it.
+  $: canPickAccount = $grants != null && (canManage || allows($grants, 'serviceaccount.token'));
 
   async function load() {
     loading = true; error = '';
@@ -36,6 +40,7 @@
     try {
       const body = { name };
       if (newExpiry.trim()) body.expiresIn = newExpiry.trim();
+      if (canPickAccount && newAccount.trim()) body.account = newAccount.trim();
       if (chosenPerms.length) body.permissions = chosenPerms;
       else if (newRole) body.role = newRole;
       const resp = await apiFetch('/api/v1/tokens', {
@@ -43,7 +48,7 @@
         body: JSON.stringify(body),
       });
       createdToken = resp.token;
-      newName = ''; newExpiry = ''; newRole = ''; chosenPerms = [];
+      newName = ''; newExpiry = ''; newRole = ''; newAccount = ''; chosenPerms = [];
       await load();
     } catch (e) { createError = e.message; }
   }
@@ -86,6 +91,9 @@
     <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap">
       <input class="token-input" bind:value={newName} placeholder="Name (e.g. ci-deploy)" style="flex:2;min-width:150px"/>
       <input class="token-input" bind:value={newExpiry} placeholder="Expiry (e.g. 24h, 720h), optional" style="flex:1;min-width:120px"/>
+      {#if canPickAccount}
+      <input class="token-input" bind:value={newAccount} placeholder="Account (service account name), default: yourself" style="flex:2;min-width:150px"/>
+      {/if}
       <select class="token-input" bind:value={newRole} style="flex:1;min-width:120px" disabled={chosenPerms.length > 0} title="Cannot exceed your own role; choose permissions instead for a narrower token">
         <option value="">Role (default: yourself)</option>
         {#each roleOptions as r}<option value={r}>{r}</option>{/each}
@@ -114,6 +122,7 @@
     <thead>
       <tr>
         <th>Name</th>
+        <th>Account</th>
         {#if canManage}<th>Owner</th>{/if}
         <th>Role</th>
         <th>Created</th>
@@ -125,6 +134,7 @@
       {#each tokens as t (t.id)}
         <tr>
           <td>{t.name}</td>
+          <td class="meta">{t.account || '—'}</td>
           {#if canManage}<td class="meta">{t.owner || '—'}</td>{/if}
           <td class="meta">{t.role || (t.permissions ? t.permissions.join(', ') : '')}</td>
           <td class="meta">{fmtTime(t.createdAt)}</td>

@@ -106,52 +106,24 @@ type PAT struct {
 	CreatedAt  time.Time
 	ExpiresAt  *time.Time
 	LastUsedAt *time.Time
-	// Owner is nil for a role-only PAT (owner_sub IS NULL).
-	Owner *PATOwner
 	// Permissions is the PAT's permission ceiling list; nil means NULL (the
 	// role column is the ceiling).
 	Permissions []string
 	// EnrollLabels bounds the labels an enrollment-only PAT (agent.enroll) may
 	// put on the enrollment tokens it creates; nil means no bound.
 	EnrollLabels []string
-	// CreatedBy is the audit actor id ("break-glass", "pat:<id>", "oidc:<sub>")
+	// CreatedBy is the audit actor id ("pat:<id>", "oidc:<sub>", "bootstrap", "recovery")
 	// of the caller that created the PAT through the API; empty when unknown
-	// (NULL: bootstrap rows and rows that predate migration 030).
+	// (NULL: rows that predate migration 030).
 	CreatedBy string
-}
-
-// PATOwner is the OIDC identity a PAT was minted by, with the email and
-// claim values observed at creation (refreshed on later logins).
-type PATOwner struct {
-	Sub    string
-	Email  string
-	Claims []string
-}
-
-// NewOwnedPAT is the input of CreateOwnedPAT. Role may be empty when
-// Permissions is set. A nil Owner.Claims is stored as the empty array.
-type NewOwnedPAT struct {
-	Name, TokenHash, Role string
-	Owner                 PATOwner
-	Permissions           []string
-	EnrollLabels          []string
-	ExpiresAt             *time.Time
-	CreatedBy             string
-}
-
-// NewEnrollPAT is the input of CreateEnrollPAT: an ownerless PAT whose only
-// permission is agent.enroll.
-type NewEnrollPAT struct {
-	Name, TokenHash string
-	EnrollLabels    []string
-	ExpiresAt       *time.Time
-	CreatedBy       string
+	// AccountID is the owning account (accounts.id).
+	AccountID string
 }
 
 // AuditEntry is one audit_logs row. Permission, Scope and GrantedBy describe
 // the authorization decision and are stored as NULL when empty. Actor is a
 // display name only (PAT names are not unique); ActorID is the stable identity
-// ("pat:<id>", "oidc:<sub>", "break-glass", "agent:<id>") and ActorSub the OIDC
+// ("pat:<id>", "oidc:<sub>", "bootstrap", "recovery", "agent:<id>"; old rows may carry "break-glass") and ActorSub the OIDC
 // subject behind it. ActorID and ActorSub are stored as NULL when empty.
 type AuditEntry struct {
 	Actor, Method, Path, Action, Resource string
@@ -588,33 +560,10 @@ type Store interface {
 	ListenForNotify(ctx context.Context, channel string, callback func(payload string)) error
 
 	// PAT
-	CreatePAT(ctx context.Context, name, tokenHash, role string, expiresAt *time.Time, createdBy string) (*PAT, error)
 	GetPATByHash(ctx context.Context, tokenHash string) (*PAT, error)
 	ListPATs(ctx context.Context) ([]PAT, error)
 	DeletePAT(ctx context.Context, id string) error
-	// CreateOwnedPAT creates a PAT bound to the OIDC identity that minted it.
-	CreateOwnedPAT(ctx context.Context, in NewOwnedPAT) (*PAT, error)
-	// CreateEnrollPAT creates an ownerless PAT with role "" and permissions {agent.enroll}.
-	CreateEnrollPAT(ctx context.Context, in NewEnrollPAT) (*PAT, error)
-	// ListPATsByOwner returns the PATs owned by ownerSub, oldest first.
-	ListPATsByOwner(ctx context.Context, ownerSub string) ([]PAT, error)
-	// DeleteOwnedPAT deletes a PAT only if ownerSub owns it; reports whether a row was deleted.
-	DeleteOwnedPAT(ctx context.Context, id, ownerSub string) (bool, error)
-	// UpdatePATOwnerSnapshot refreshes email and claims on every PAT of ownerSub and returns the row count.
-	UpdatePATOwnerSnapshot(ctx context.Context, ownerSub, email string, claims []string) (int64, error)
-	// CountRoleOnlyPATsAboveViewer counts role-only PATs whose role is not viewer, excluding the row named excludeName.
-	CountRoleOnlyPATsAboveViewer(ctx context.Context, excludeName string) (int, error)
 	TouchPAT(ctx context.Context, id string) error
-	// UpsertBootstrapPAT creates or updates the hash of the single PAT row identified by name.
-	// Used to sync UNIFIED_TOKEN as a PAT on each startup (replaces the hash when the value changes, never creates duplicate rows).
-	UpsertBootstrapPAT(ctx context.Context, name, tokenHash string) (*PAT, error)
-	// SyncBootstrapPAT atomically deletes every PAT row named name whose token hash
-	// differs from tokenHash, then creates or updates the single admin row with tokenHash.
-	// It returns the rows removed (id, role, created_at populated) so the caller can warn.
-	SyncBootstrapPAT(ctx context.Context, name, tokenHash string) ([]PAT, error)
-	// DeleteBootstrapPATByName deletes the PAT row identified by name (no-op if it does not exist).
-	// Used to avoid leaving a previously synced row behind when UNIFIED_TOKEN is unset.
-	DeleteBootstrapPATByName(ctx context.Context, name string) error
 
 	// WebhookReceivers
 	UpsertWebhookReceiver(ctx context.Context, name string, spec []byte) (*WebhookReceiver, error)
@@ -673,8 +622,32 @@ type Store interface {
 	SetCLILoginCodePayload(ctx context.Context, id string, dek, ct []byte) error
 	ConsumeCLILoginCode(ctx context.Context, codeHash string) (*CLILoginCode, error)
 
+	// Accounts (migration 036). Get methods return nil, nil when missing.
+	// UpsertHumanAccount never clears disabled_at. SyncServiceAccounts ensures
+	// a row per name plus "admin", re-enables listed names and disables the
+	// other service rows except "admin".
+	UpsertHumanAccount(ctx context.Context, sub, issuer, email string, claims []string) (*Account, error)
+	GetAccount(ctx context.Context, id string) (*Account, error)
+	GetHumanAccountBySub(ctx context.Context, sub string) (*Account, error)
+	SyncServiceAccounts(ctx context.Context, names []string) error
+	ListAccounts(ctx context.Context) ([]Account, error)
+	SetAccountDisabled(ctx context.Context, id string, disabled bool) error
+	CreatePAT(ctx context.Context, in NewPAT) (*PAT, error)
+	ListPATsByAccount(ctx context.Context, accountID string) ([]PAT, error)
+	// CountPATsByAccount returns the PAT count per account id (absent = 0).
+	CountPATsByAccount(ctx context.Context) (map[string]int, error)
+	DeleteAccountPAT(ctx context.Context, id, accountID string) (bool, error)
+	// Bootstrap state on the controller_settings singleton row.
+	// ClaimInitialToken stores hash only if none is stored and bootstrap is not
+	// done. ConsumeInitialToken atomically matches hash, marks bootstrap done
+	// and clears the stored hash.
+	GetBootstrapState(ctx context.Context) (BootstrapState, error)
+	ClaimInitialToken(ctx context.Context, hash string) (stored bool, err error)
+	ConsumeInitialToken(ctx context.Context, hash string) (ok bool, err error)
+	SetAdminEnabledUntil(ctx context.Context, t time.Time) error
+
 	// Sessions
-	CreateSession(ctx context.Context, tokenHash, sub, email, role string, claims []string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error)
+	CreateSession(ctx context.Context, accountID, tokenHash, sub, email, role string, claims []string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error)
 	GetSessionByHash(ctx context.Context, tokenHash string) (*Session, error)
 	UpdateSessionExpiry(ctx context.Context, id string, refreshDEK, refreshCT []byte, expiresAt time.Time) error
 	UpdateSessionClaims(ctx context.Context, id string, claims []string) error
@@ -790,6 +763,9 @@ type Session struct {
 	Sub       string
 	Email     string
 	Role      string
+	// AccountID is the owning account (accounts.id); empty for sessions
+	// created before migration 036.
+	AccountID string
 	// Claims is the OIDC claim snapshot taken at login; nil means NULL (a pre-upgrade, role-only session).
 	Claims          []string
 	RefreshTokenDEK []byte // envelope-encrypted OIDC refresh token

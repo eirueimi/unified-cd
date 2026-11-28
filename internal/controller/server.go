@@ -23,7 +23,21 @@ import (
 
 // Config holds the configuration for the master server.
 type Config struct {
-	Token         string
+	// ServiceAccountGrants are the compiled permissions of each service
+	// account declared in the config (config.ControllerConfig), keyed by name;
+	// the built-in "admin" account is not in the map.
+	ServiceAccountGrants map[string]authz.Grants
+	// AdminEnabled is true when the built-in admin account may authenticate
+	// (serviceAccounts.admin.enabled, default true). A recovery lease stored in
+	// the database can enable it temporarily.
+	AdminEnabled bool
+	// TokenDefaultLifetime and TokenMaxLifetime are the PAT lifetime policy
+	// (tokens.defaultLifetime / tokens.maxLifetime; max 0 means no upper bound; a PAT always expires).
+	TokenDefaultLifetime, TokenMaxLifetime time.Duration
+	// AllowTokenEntry keeps the web UI's manual token form while browser SSO
+	// (OIDC with a client secret) is configured (ui.allowTokenEntry).
+	AllowTokenEntry bool
+
 	ListenAddr    string
 	WebDir        string // Directory for static web files. When empty, /ui/* returns 404.
 	UIProxyTarget string // URL of the Vite dev server to proxy /ui/* to when WebDir is not set (e.g. http://vite:5173). When empty, /ui/* returns 404.
@@ -91,6 +105,11 @@ type Config struct {
 	// ExternalURL is the controller's public base URL, used to build the run
 	// URL sent to agents on claim. Empty means no run URL is sent.
 	ExternalURL string
+
+	// InitialTokenDirs are the directories this replica may have written the
+	// initial-admin-token file to; a successful bootstrap exchange deletes
+	// the file from them.
+	InitialTokenDirs []string
 }
 
 // OIDCConfig holds the OIDC provider configuration.
@@ -142,11 +161,18 @@ type Server struct {
 	objectLimiter                 *enrollmentLimiter // Per-requester budget of the object endpoints (StoreCredentialRate*).
 	objectNow                     func() time.Time   // Test clock for cancelledRunObjectGrace; nil means time.Now.
 	cliRelay                      *cliRelayLimiters  // Per-IP limiters for the CLI relay routes.
+	bootstrapLimiter              *enrollmentLimiter // POST /api/v1/bootstrap budget (per client address).
 	credentialTouches             *credentialTouchLimiter
 	kubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
 	cloudEnrollmentVerifiers      map[string]CloudEnrollmentVerifier
 	storeCredentialClusters       []StoreCredentialCluster
 	storeCredentialS3             *objectstore.S3Config
+
+	// clock is the time source of the account caches; nil means time.Now.
+	// Tests replace it to expire the caches without sleeping.
+	clock      func() time.Time
+	idAccounts idTokenAccounts // Human accounts of bearer id_tokens, per sub.
+	adminLease adminLease      // Cached admin_enabled_until.
 
 	// Cached provider for OIDC Bearer token verification (lazily initialized).
 	// Used to verify id_tokens obtained via the CLI device flow for API authentication.
@@ -179,6 +205,7 @@ type Server struct {
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
 	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), shutdownCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), objectLimiter: newStoreCredentialLimiter(cfg), cliRelay: newCLIRelayLimiters(), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters}
+	s.bootstrapLimiter = newBootstrapLimiter()
 	s.cloudEnrollmentVerifiers = defaultCloudEnrollmentVerifiers()
 	for provider, verifier := range cfg.CloudEnrollmentVerifiers {
 		s.cloudEnrollmentVerifiers[provider] = verifier
@@ -525,6 +552,9 @@ func (s *Server) routes() {
 		r.With(s.authorize).Post("/tokens", s.handleCreateToken)
 		r.With(s.authorize).Get("/tokens", s.handleListTokens)
 		r.With(s.authorize).Delete("/tokens/{id}", s.handleDeleteToken)
+		r.With(s.authorize).Get("/accounts", s.handleListAccounts)
+		r.With(s.authorize).Post("/accounts/{id}/disable", s.handleDisableAccount)
+		r.With(s.authorize).Post("/accounts/{id}/enable", s.handleEnableAccount)
 
 		r.With(s.authorize).Post("/agent-enrollments", s.handleCreateAgentEnrollment)
 		r.With(s.authorize).Get("/agent-enrollments", s.handleListAgentEnrollments)
@@ -629,6 +659,9 @@ func (s *Server) routes() {
 	s.r.Get("/api/v1/auth/oidc-login", s.handleOIDCLogin)
 	s.r.Get("/api/v1/auth/oidc-callback", s.handleOIDCCallback)
 	s.r.Post("/api/v1/auth/logout", s.handleLogout)
+
+	// Initial-token exchange (no auth: the one-time initial token is the credential; rate limited).
+	s.r.Post("/api/v1/bootstrap", s.handleBootstrap)
 
 	// CLI token relay (no auth; rate limited; the controller adds the client secret).
 	s.r.Post("/api/v1/auth/cli/device/start", s.handleCLIDeviceStart)

@@ -11,7 +11,7 @@ import (
 )
 
 func TestAuthorize_UnclassifiedRouteFailsClosed(t *testing.T) {
-	s, st := newAuthzTestServer(t, authz.Legacy{}, "")
+	s, st := newAuthzTestServer(t, authz.Legacy{RoleMap: map[string]string{"g": "admin"}}, "")
 	mustOwnedPAT(t, st, "unclassified-tok", "admin", nil, []string{"g"})
 
 	reached := false

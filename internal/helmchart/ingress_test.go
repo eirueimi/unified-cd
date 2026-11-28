@@ -60,7 +60,7 @@ func TestIngressWithTrialFails(t *testing.T) {
 	}
 	_, stderr, err := RenderErr("unified-cd", "ingress.enabled=true")
 	require.Error(t, err)
-	assert.Contains(t, stderr, "ingress.enabled with the bundled trial credentials would expose dev-token-change-me")
+	assert.Contains(t, stderr, "ingress.enabled with the bundled trial credentials would expose the trial database password; use the production values")
 }
 
 func TestIngressWithoutHostsFails(t *testing.T) {
@@ -118,11 +118,14 @@ func TestNotesTrialWarning(t *testing.T) {
 	out := install(t, "x")
 	assert.Contains(t, out, "TRIAL ONLY")
 	assert.Contains(t, out, "kubectl -n x port-forward svc/unified-cd-controller 8080:80")
-	assert.Contains(t, out, "dev-token-change-me")
+	assert.Contains(t, out, "unified-cd-initial-admin-token")
+	assert.Contains(t, out, "unified-cli bootstrap")
+	assert.NotContains(t, out, "dev-token-change-me")
 
 	prod := install(t, "x", "bundledStores.enabled=false", "controller.existingSecret=prod")
 	assert.NotContains(t, prod, "TRIAL ONLY")
 	assert.NotContains(t, prod, "dev-token-change-me")
+	assert.Contains(t, prod, "unified-cd-initial-admin-token")
 	assert.Contains(t, prod, "port-forward")
 
 	// Plain in-cluster agent HTTP outside trial mode warns; an https agent.server does not.
@@ -136,4 +139,17 @@ func TestNotesTrialWarning(t *testing.T) {
 
 	withIngress := install(t, "x", prodIngressSet...)
 	assert.Contains(t, withIngress, "https://cd.example.com/")
+}
+
+// With controller.initialAdminToken.generate=false the chart creates no
+// Secret, so the trial notes must not tell the reader to read one.
+func TestNotesTrialWithoutGeneratedInitialToken(t *testing.T) {
+	out := install(t, "x", "controller.initialAdminToken.generate=false")
+	assert.Contains(t, out, "TRIAL ONLY")
+	assert.NotContains(t, out, "unified-cli bootstrap")
+	assert.NotContains(t, out, "kubectl -n x get secret unified-cd-initial-admin-token")
+
+	generated := install(t, "x")
+	assert.Contains(t, generated, "controller.initialAdminToken.generate=false")
+	assert.Contains(t, generated, "serviceAccounts.admin.enabled: false")
 }

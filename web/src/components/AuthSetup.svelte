@@ -1,5 +1,5 @@
 <script>
-  import { token, serverURL, browserSSOEnabled, currentUser, saveAuth } from '../lib/api.js';
+  import { token, serverURL, browserSSOEnabled, allowTokenEntry, currentUser, saveAuth } from '../lib/api.js';
 
   let localToken = $token;
   let localServer = $serverURL;
@@ -40,8 +40,11 @@
         SSO Login
       </button>
     </div>
+    {#if $allowTokenEntry}
     <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.5rem">── or enter token manually ──</div>
+    {/if}
   {/if}
+  {#if !$browserSSOEnabled || $allowTokenEntry}
   <div class="token-form">
     <input class="token-input" bind:value={localServer} placeholder="Server URL" style="flex:2"/>
     <input class="token-input" bind:value={localToken} type="password" placeholder="Bearer token or PAT"/>
@@ -49,6 +52,7 @@
   </div>
   {#if saveError}
     <div class="error" style="margin-top:0.5rem;font-size:0.85rem">{saveError}</div>
+  {/if}
   {/if}
 </div>
 {/if}

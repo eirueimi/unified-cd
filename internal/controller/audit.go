@@ -44,6 +44,8 @@ var auditActionTable = map[string]string{
 	"DELETE /api/v1/gitcredentials/{name}":                       "gitcredential.delete",
 	"POST /api/v1/tokens":                                        "token.create",
 	"DELETE /api/v1/tokens/{id}":                                 "token.delete",
+	"POST /api/v1/accounts/{id}/disable":                         "account.disable",
+	"POST /api/v1/accounts/{id}/enable":                          "account.enable",
 	"POST /api/v1/webhooks":                                      "webhook.apply",
 	"DELETE /api/v1/webhooks/{name}":                             "webhook.delete",
 	"POST /api/v1/vars":                                          "vars.apply",
@@ -82,6 +84,8 @@ var auditResourceParams = map[string]string{
 	"secret.delete":            "name",
 	"gitcredential.delete":     "name",
 	"token.delete":             "id",
+	"account.disable":          "id",
+	"account.enable":           "id",
 	"webhook.delete":           "name",
 	"vars.delete":              "name",
 	"agentvolume.delete":       "name",
@@ -208,6 +212,16 @@ func auditLogMiddleware(st interface {
 			}
 			e.ActorID = p.AuditActorID()
 			e.ActorSub = p.Sub
+			if p.AccountKind == store.AccountKindService && p.AccountName != "" {
+				// Name the service account behind the PAT; the PAT id alone
+				// does not say whose it is. Copy so the handler's map is untouched.
+				d := make(map[string]any, len(e.Details)+1)
+				for k, v := range e.Details {
+					d[k] = v
+				}
+				d["account"] = "sa:" + p.AccountName
+				e.Details = d
+			}
 		}
 		e.Method = r.Method
 		e.Path = r.URL.Path

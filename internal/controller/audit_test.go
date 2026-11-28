@@ -41,7 +41,7 @@ spec:
 	logs, err := pg.ListAuditLogs(t.Context(), 10, 0)
 	require.NoError(t, err)
 	require.Len(t, logs, 1)
-	assert.Equal(t, "test-bootstrap", logs[0].Actor)
+	assert.Equal(t, testAdminAccount, logs[0].Actor)
 	assert.Equal(t, "job.apply", logs[0].Action)
 	assert.Equal(t, "hello", logs[0].Resource)
 	assert.Equal(t, "POST", logs[0].Method)

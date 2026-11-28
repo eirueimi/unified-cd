@@ -7,8 +7,6 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/authz"
-	"github.com/eirueimi/unified-cd/internal/store"
-	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,18 +30,6 @@ func postToken(t *testing.T, s *Server, token string, req api.CreatePATRequest) 
 	return rec.Code, rec.Body.String(), resp
 }
 
-// breakGlassServer is a server whose UNIFIED_TOKEN ("secret") is synced as the
-// break-glass PAT, as at startup.
-func breakGlassServer(t *testing.T) (*Server, store.Store) {
-	t.Helper()
-	pg := storetest.NewTestPostgres(t)
-	s := NewServer(Config{Token: "secret"}, pg)
-	t.Cleanup(s.Close)
-	_, err := pg.CreatePAT(t.Context(), BootstrapPATName, HashToken("secret"), "admin", nil, "")
-	require.NoError(t, err)
-	return s, pg
-}
-
 func TestCreateToken_OwnerEnrollPATWithLabels(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, enrollAdminPolicy)
 	code, body, resp := postToken(t, s, bearer("m@example.com", "g-mgr"),
@@ -54,18 +40,18 @@ func TestCreateToken_OwnerEnrollPATWithLabels(t *testing.T) {
 	pat, err := pg.GetPATByHash(t.Context(), HashToken(resp.Token))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"kind:linux", "pool:build"}, pat.EnrollLabels)
-	require.NotNil(t, pat.Owner)
+	assert.NotEmpty(t, pat.AccountID)
 }
 
-func TestCreateToken_BreakGlassMintsEnrollPAT(t *testing.T) {
-	s, pg := breakGlassServer(t)
+func TestCreateToken_ServiceAccountMintsEnrollPAT(t *testing.T) {
+	s, pg := newTestServer(t)
 	code, body, resp := postToken(t, s, "secret",
 		api.CreatePATRequest{Name: "prov", Permissions: []string{"agent.enroll"}, EnrollLabels: []string{"kind:linux"}})
 	require.Equal(t, http.StatusOK, code, body)
 	assert.Equal(t, []string{"kind:linux"}, resp.EnrollLabels)
 	pat, err := pg.GetPATByHash(t.Context(), HashToken(resp.Token))
 	require.NoError(t, err)
-	assert.Nil(t, pat.Owner)
+	assert.NotEmpty(t, pat.AccountID)
 	assert.Equal(t, "", pat.Role)
 	assert.Equal(t, []string{"agent.enroll"}, pat.Permissions)
 
@@ -74,21 +60,8 @@ func TestCreateToken_BreakGlassMintsEnrollPAT(t *testing.T) {
 	require.Equal(t, http.StatusOK, code, body)
 }
 
-func TestCreateToken_RoleOnlyCreatorOtherPermissionsStill400(t *testing.T) {
-	s, _ := breakGlassServer(t)
-	for _, req := range []api.CreatePATRequest{
-		{Name: "x", Permissions: []string{"agent.enroll", "job.read"}},
-		{Name: "x", Permissions: []string{"job.read"}},
-		{Name: "x", Role: "viewer", Permissions: []string{"agent.enroll"}},
-	} {
-		code, body, _ := postToken(t, s, "secret", req)
-		assert.Equal(t, http.StatusBadRequest, code)
-		assert.Equal(t, "cannot grant permissions: this token has no owner; use --role\n", body)
-	}
-}
-
 func TestCreateToken_EnrollLabelValidation(t *testing.T) {
-	s, _ := breakGlassServer(t)
+	s, _ := newTestServer(t)
 	cases := []struct {
 		name string
 		req  api.CreatePATRequest
@@ -143,7 +116,7 @@ func TestCreateToken_EnrollPATFromPATLabelSubset(t *testing.T) {
 }
 
 func TestListTokens_ShowsEnrollLabels(t *testing.T) {
-	s, _ := breakGlassServer(t)
+	s, _ := newTestServer(t)
 	code, body, _ := postToken(t, s, "secret", api.CreatePATRequest{Name: "prov", Permissions: []string{"agent.enroll"}, EnrollLabels: []string{"kind:linux"}})
 	require.Equal(t, http.StatusOK, code, body)
 	rec := doAs(t, s, http.MethodGet, "/api/v1/tokens", "secret", nil)
@@ -161,17 +134,17 @@ func TestListTokens_ShowsEnrollLabels(t *testing.T) {
 }
 
 func TestPatPrincipal_EnrollPAT(t *testing.T) {
-	s, pg := breakGlassServer(t)
+	s, pg := newTestServer(t)
 	_, _, resp := postToken(t, s, "secret", api.CreatePATRequest{Name: "prov", Permissions: []string{"agent.enroll"}, EnrollLabels: []string{"kind:linux"}})
 	pat, err := pg.GetPATByHash(t.Context(), HashToken(resp.Token))
 	require.NoError(t, err)
-	p, ok := s.patPrincipal(pat, HashToken(resp.Token))
-	require.True(t, ok)
+	p, msg := s.patPrincipal(t.Context(), pat)
+	require.Empty(t, msg)
 	assert.True(t, p.Grants.Can(authz.AgentEnroll, ""))
 	assert.False(t, p.Grants.Can(authz.AgentRead, ""))
 	assert.False(t, p.Grants.Can(authz.AgentManage, ""))
 	assert.Equal(t, []string{"kind:linux"}, p.EnrollLabels)
-	assert.Equal(t, []string{"pat:prov"}, p.Grants.Explain(authz.AgentEnroll, ""))
+	assert.Equal(t, []string{"sa:test-admin & pat-ceiling", "agent.manage (implies agent.enroll) & pat-ceiling"}, p.Grants.Explain(authz.AgentEnroll, ""))
 }
 
 func TestPatPrincipal_OwnerPATCopiesEnrollLabels(t *testing.T) {
@@ -180,8 +153,8 @@ func TestPatPrincipal_OwnerPATCopiesEnrollLabels(t *testing.T) {
 		api.CreatePATRequest{Name: "prov", Permissions: []string{"agent.enroll"}, EnrollLabels: []string{"kind:linux"}})
 	pat, err := pg.GetPATByHash(t.Context(), HashToken(resp.Token))
 	require.NoError(t, err)
-	p, ok := s.patPrincipal(pat, HashToken(resp.Token))
-	require.True(t, ok)
+	p, msg := s.patPrincipal(t.Context(), pat)
+	require.Empty(t, msg)
 	assert.Equal(t, []string{"kind:linux"}, p.EnrollLabels)
 	// The owner holds agent.manage, which stands in for agent.enroll.
 	assert.True(t, p.Grants.Can(authz.AgentEnroll, ""))
@@ -203,8 +176,8 @@ func TestCreateToken_EnrollChildOfManageCeilingParent(t *testing.T) {
 
 	pat, err := pg.GetPATByHash(t.Context(), HashToken(child.Token))
 	require.NoError(t, err)
-	p, ok := s.patPrincipal(pat, HashToken(child.Token))
-	require.True(t, ok)
+	p, msg := s.patPrincipal(t.Context(), pat)
+	require.Empty(t, msg)
 	assert.True(t, p.Grants.Can(authz.AgentEnroll, ""))
 	assert.Equal(t, []string{"kind:linux"}, p.EnrollLabels)
 }
@@ -213,16 +186,15 @@ func TestCreateToken_EnrollChildOfManageCeilingParent(t *testing.T) {
 // from a PAT, even one whose ceiling lists it.
 func TestPatPrincipal_OwnerWithoutManageOrEnrollGetsNoEnroll(t *testing.T) {
 	s, pg := newAuthzTestServer(t, authz.Legacy{}, enrollAdminPolicy)
-	_, err := pg.CreateOwnedPAT(t.Context(), store.NewOwnedPAT{
+	createOwnedPATForTest(t, pg, ownedPATInput{
 		Name: "weak", TokenHash: HashToken("exc_weak"),
-		Owner:       store.PATOwner{Sub: "n@example.com", Email: "n@example.com", Claims: []string{"g-none"}},
+		Owner:       ownerIdentity{Sub: "n@example.com", Email: "n@example.com", Claims: []string{"g-none"}},
 		Permissions: []string{"agent.enroll", "job.read"},
 	})
-	require.NoError(t, err)
 	pat, err := pg.GetPATByHash(t.Context(), HashToken("exc_weak"))
 	require.NoError(t, err)
-	p, ok := s.patPrincipal(pat, HashToken("exc_weak"))
-	require.True(t, ok)
+	p, msg := s.patPrincipal(t.Context(), pat)
+	require.Empty(t, msg)
 	assert.False(t, p.Grants.Can(authz.AgentEnroll, ""))
 	assert.True(t, p.Grants.Can(authz.JobRead, ""))
 }

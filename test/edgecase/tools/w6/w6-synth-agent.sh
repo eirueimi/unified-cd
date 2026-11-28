@@ -52,7 +52,7 @@
 #
 # Env:
 #   UNIFIED_SERVER  base URL for BOTH admin and agent calls (default http://localhost:18080)
-#   UNIFIED_TOKEN   admin PAT (default ha-admin-token)
+#   UNIFIED_TOKEN   admin PAT (default: the admin PAT from ../lib/admin-token.sh)
 #   W6_AGENT_ID     default w6-synth
 #   W6_LABEL        default kind:w6synth
 #   W6_STATE_DIR    default <repo>/.w6run/<agent id>
@@ -73,7 +73,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "${here}/../../../.." && pwd)"
 
 server="${UNIFIED_SERVER:-http://localhost:18080}"
-admin="${UNIFIED_TOKEN:-ha-admin-token}"
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/admin-token.sh"
+admin="${UNIFIED_TOKEN:-$(bootstrap_admin_token "${server}")}"
 agent_id="${W6_AGENT_ID:-w6-synth}"
 label="${W6_LABEL:-kind:w6synth}"
 state="${W6_STATE_DIR:-${repo}/.w6run/${agent_id}}"

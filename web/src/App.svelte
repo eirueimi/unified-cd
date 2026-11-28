@@ -13,6 +13,7 @@
   import AgentMonitor from "./routes/AgentMonitor.svelte";
   import AgentDetail from "./routes/AgentDetail.svelte";
   import TokenList from "./routes/TokenList.svelte";
+  import AccountList from "./routes/AccountList.svelte";
   import ScheduleList from "./routes/ScheduleList.svelte";
   import WebhookList from "./routes/WebhookList.svelte";
   import GitCredentialList from "./routes/GitCredentialList.svelte";
@@ -31,6 +32,7 @@
     "/agents/:id": AgentDetail,
     "/volumes": AgentVolumeList,
     "/tokens": TokenList,
+    "/accounts": AccountList,
     "/resources/schedules": ScheduleList,
     "/resources/webhooks": WebhookList,
     "/resources/gitcredentials": GitCredentialList,
@@ -86,7 +88,8 @@
     </div>
   </div>
   {/if}
-  {#if allows($grants, 'token.create') || allows($grants, 'token.manage')}<a href="#/tokens">Tokens</a>{/if}
+  {#if allows($grants, 'token.create') || allows($grants, 'token.manage') || allows($grants, 'serviceaccount.token')}<a href="#/tokens">Tokens</a>{/if}
+  {#if allows($grants, 'account.manage')}<a href="#/accounts">Accounts</a>{/if}
   <span class="spacer"></span>
   <button
     class="btn theme-toggle"

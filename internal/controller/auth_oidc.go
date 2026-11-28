@@ -642,31 +642,42 @@ func oidcIdentityQuiet(s *Server, claims map[string]any) (sub, email string, val
 }
 
 // admitOIDCClaims decides whether verified id_token claims may log in, for both
-// the web login and the CLI browser login. It refreshes the owner snapshot of
-// every PAT the user owns before deciding, so a denied login still drops stale
-// claims (spec 5.5). On failure it returns the HTTP status and message to
-// send; status is 0 when the user is admitted.
+// the web login and the CLI browser login. The admission check runs first; only
+// an admitted identity is written to the accounts table (a refused person
+// leaves no row), and a disabled account is refused. On failure it returns the
+// HTTP status and message to send; status is 0 when the user is admitted.
 func (s *Server) admitOIDCClaims(ctx context.Context, claims map[string]any) (status int, msg string) {
+	_, status, msg = s.admitOIDCAccount(ctx, claims)
+	return status, msg
+}
+
+// admitOIDCAccount is admitOIDCClaims that also returns the human account of
+// an admitted login.
+func (s *Server) admitOIDCAccount(ctx context.Context, claims map[string]any) (acct *store.Account, status int, msg string) {
 	sub, email, values := oidcIdentity(s, claims)
-	_, _, admitted := s.identityGrants(values, email, sub)
-	if _, err := s.store.UpdatePATOwnerSnapshot(ctx, sub, email, values); err != nil {
-		return http.StatusInternalServerError, "session store error"
+	if _, _, admitted := s.identityGrants(values, email, sub); !admitted {
+		return nil, http.StatusForbidden, "forbidden: no role assigned"
 	}
-	if !admitted {
-		return http.StatusForbidden, "forbidden: no role assigned"
+	acct, err := s.upsertHuman(ctx, sub, email, values)
+	if err != nil {
+		return nil, http.StatusInternalServerError, "session store error"
 	}
-	return 0, ""
+	if acct.DisabledAt != nil {
+		return nil, http.StatusForbidden, msgAccountDisabled
+	}
+	return acct, 0, ""
 }
 
 // completeOIDCLogin turns verified id_token claims into a stored session. It
 // admits the user when the legacy role resolution succeeds or an
 // oidc.permissions entry matches, stores the claim values on the session, and
-// refreshes the owner snapshot of every PAT the user owns. On failure it
+// records the account. On failure it
 // returns the HTTP status and message to send; status is 0 on success.
 func (s *Server) completeOIDCLogin(ctx context.Context, claims map[string]any, refreshToken string) (sessionToken string, expiresAt time.Time, status int, msg string) {
-	// Admission (and the PAT owner snapshot refresh) runs before the session
-	// exists, so a failure leaves no orphaned session row.
-	if status, msg := s.admitOIDCClaims(ctx, claims); status != 0 {
+	// Admission (and the account upsert) runs before the session exists, so a
+	// failure leaves no orphaned session row.
+	acct, status, msg := s.admitOIDCAccount(ctx, claims)
+	if status != 0 {
 		return "", time.Time{}, status, msg
 	}
 	// admitOIDCClaims already evaluated (and warned about) these claims.
@@ -684,7 +695,7 @@ func (s *Server) completeOIDCLogin(ctx context.Context, claims map[string]any, r
 	tokenHash := HashToken(sessionToken)
 	expiresAt = time.Now().Add(sessionDuration)
 
-	if _, err := s.createSessionWithRefreshToken(ctx, tokenHash, sub, email, role, values, refreshToken, expiresAt); err != nil {
+	if _, err := s.createSessionWithRefreshToken(ctx, acct.ID, tokenHash, sub, email, role, values, refreshToken, expiresAt); err != nil {
 		return "", time.Time{}, http.StatusInternalServerError, "session store error"
 	}
 	return sessionToken, expiresAt, 0, ""
@@ -696,10 +707,10 @@ func (s *Server) completeOIDCLogin(ctx context.Context, claims map[string]any, r
 // The binding needs the ID, which Postgres assigns on insert, so the row is
 // created with a placeholder and immediately re-encrypted under the real ID.
 // This costs one extra UPDATE per login and keeps every stored blob bound.
-func (s *Server) createSessionWithRefreshToken(ctx context.Context, tokenHash, sub, email, role string, claims []string, refreshToken string, expiresAt time.Time) (*store.Session, error) {
+func (s *Server) createSessionWithRefreshToken(ctx context.Context, accountID, tokenHash, sub, email, role string, claims []string, refreshToken string, expiresAt time.Time) (*store.Session, error) {
 	// Empty slices, not nil: pgx encodes a nil []byte as SQL NULL, and both
 	// refresh-token columns are NOT NULL. `''::bytea` is a valid non-null value.
-	sess, err := s.store.CreateSession(ctx, tokenHash, sub, email, role, claims, []byte{}, []byte{}, expiresAt)
+	sess, err := s.store.CreateSession(ctx, accountID, tokenHash, sub, email, role, claims, []byte{}, []byte{}, expiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}

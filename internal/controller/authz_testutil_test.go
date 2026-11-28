@@ -116,10 +116,12 @@ func authenticate(t *testing.T, s *Server, token, sessionToken string) (Principa
 	return got, rec
 }
 
-// addSession stores a session whose cookie value is sessionToken.
+// addSession stores a session whose cookie value is sessionToken, owned by the
+// human account of sub (created on demand).
 func addSession(t *testing.T, st store.Store, sessionToken, sub, email, role string, claims []string) {
 	t.Helper()
-	_, err := st.CreateSession(context.Background(), HashToken(sessionToken), sub, email, role, claims,
+	acct := addHumanAccount(t, st, sub, email, claims)
+	_, err := st.CreateSession(context.Background(), acct.ID, HashToken(sessionToken), sub, email, role, claims,
 		[]byte("dek"), []byte("ct"), time.Now().Add(time.Hour))
 	require.NoError(t, err)
 }

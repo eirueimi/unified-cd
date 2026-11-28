@@ -48,8 +48,8 @@ that layout, so resolve any citation against the tree at that commit.
 - `tools/bulk-submit.sh <job-name> <count>` — submits `count` runs of an
   already-applied job and prints one run id per line (progress on stderr, so
   `| tee ids.txt` captures ids only). Honors `UNIFIED_SERVER`
-  (default `http://localhost:18080`) and `UNIFIED_TOKEN` (default
-  `ha-admin-token`). Used by W2-9 to push >50 runs into `Pending`.
+  (default `http://localhost:18080`) and `UNIFIED_TOKEN` (default: the admin PAT from `bootstrap_admin_token`,
+  see `tools/lib/admin-token.sh`). Used by W2-9 to push >50 runs into `Pending`.
 
   The trigger endpoint is `POST /api/v1/runs` with body `{"jobName":"..."}`
   (`internal/controller/server.go:370` → `handleTriggerRun`,
@@ -113,7 +113,7 @@ Until that is done, **a re-runner of W3-5 or W3-6 must rebuild the helper from
 the runbook's own steps** — both runbooks specify every call it makes.
 - `compose/mixedkek.override.yaml` — no injector script; the fault **is** the
   configuration. Gives **controller3 alone** a different local KEK
-  (`compose/kek-b`, a committed throwaway test key like `ha-admin-token`), by
+  (`compose/kek-b`, a committed throwaway test key like the fixture initial admin token), by
   adding a second mount at a **new** target and repointing
   `UNIFIED_CONTROLLER_KEY_FILE` — not by re-pointing the existing
   `/run/secrets/kek` mount, so the divergence shows as two distinct lines in
@@ -1328,8 +1328,18 @@ Each runbook lists its exact stack invocation. The general shape:
     docker compose -f test/ha/docker-compose.ha.yaml \
       -f test/edgecase/compose/<overlay>.yaml up -d --build
 
-The LB is `http://localhost:18080`, admin token `ha-admin-token`
-(both inherited from the test/ha stack).
+The LB is `http://localhost:18080` (inherited from the test/ha stack). The stack
+has no standing admin token: the controllers get the fixed one-time initial admin
+token `uci_ha00000000000000000000000000000000000000`
+(`UNIFIED_INITIAL_ADMIN_TOKEN`), and the `agent-enroll` one-shot exchanges it
+once for an admin PAT, kept at `/state/admin-token` in the `admin-state` volume.
+The runbooks in `scenarios/` write that PAT as `$ADMIN_PAT`; obtain it with:
+
+    . test/edgecase/tools/lib/admin-token.sh
+    ADMIN_PAT=$(bootstrap_admin_token)    # cached in ${TMPDIR:-/tmp}/unified-ha-admin-token
+
+(`POST /api/v1/bootstrap` with `{"initialToken":"..."}` works only once per
+database; after `down -v` and a fresh `up` the old PAT is rejected and replaced.)
 
 ## Running probe tests
 

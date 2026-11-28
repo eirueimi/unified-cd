@@ -42,6 +42,7 @@ func TestValidateVarKeys(t *testing.T) {
 		{"space", map[string]string{"BAD KEY": "x"}, "BAD KEY"},
 		{"empty key", map[string]string{"": "x"}, "empty"},
 		{"reserved token", map[string]string{"UNIFIED_TOKEN": "x"}, "UNIFIED_TOKEN"},
+		{"reserved initial admin token", map[string]string{"UNIFIED_INITIAL_ADMIN_TOKEN": "x"}, "UNIFIED_INITIAL_ADMIN_TOKEN"},
 		{"reserved cache secret", map[string]string{"UNIFIED_CACHE_SECRET": "x"}, "UNIFIED_CACHE_SECRET"},
 		{"reserved PATH", map[string]string{"PATH": "/x"}, "PATH"},
 		{"reserved HOME", map[string]string{"HOME": "/x"}, "HOME"},

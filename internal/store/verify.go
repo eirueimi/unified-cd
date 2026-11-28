@@ -72,6 +72,10 @@ var schemaSentinels = []sentinel{
 	{version: 34, migration: "034_run_metadata", table: "runs", column: "trigger"},
 	// The same file also creates custom_metric_realtime.
 	{version: 35, migration: "035_custom_metrics", table: "custom_metric_gauges"},
+	// The same file also adds pats.account_id, sessions.account_id and the controller_settings bootstrap columns.
+	{version: 36, migration: "036_accounts", table: "accounts"},
+	// Drops pats.owner_sub, owner_email and owner_claims together with this index, and makes pats.account_id and sessions.account_id NOT NULL.
+	{version: 37, migration: "037_accounts_cleanup", table: "pats", indexAbsent: "pats_owner_sub_idx"},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel

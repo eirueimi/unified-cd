@@ -43,11 +43,11 @@ func TestAPI_ListTokens(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	var list []api.PATMeta
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
-	// newTestServer also syncs a bootstrap PAT equivalent to UNIFIED_TOKEN, so the count is +1 over what was created.
+	// newTestServer also seeds the test-admin PAT behind "secret", so the count is +1 over what was created.
 	require.Len(t, list, 2)
 	names := []string{list[0].Name, list[1].Name}
 	assert.Contains(t, names, "tok1")
-	assert.Contains(t, names, "test-bootstrap")
+	assert.Contains(t, names, testAdminAccount)
 }
 
 func TestAPI_PAT_CanAuthenticateAPI(t *testing.T) {
@@ -67,4 +67,17 @@ func TestAPI_PAT_CanAuthenticateAPI(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec2, req2)
 	assert.Equal(t, http.StatusOK, rec2.Code, "should be able to call the API with the PAT")
+}
+
+func TestCreateToken_ReservedNames(t *testing.T) {
+	s, _ := newTestServer(t)
+	for _, name := range []string{"env:UNIFIED_TOKEN", "env:x"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tokens", bytes.NewReader([]byte(`{"name":"`+name+`"}`)))
+		req.Header.Set("Authorization", "Bearer secret")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, name)
+		assert.Equal(t, "token name \""+name+"\" is reserved\n", rec.Body.String())
+	}
 }

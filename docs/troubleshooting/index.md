@@ -82,11 +82,10 @@ covers it.
 
 **Controller and Database**
 
-- [`token name "env:..." is reserved` / startup warning about impersonating tokens](controller-and-database.md#token-name-env-is-reserved-startup-warning-about-impersonating-tokens)
+- [`token name "env:..." is reserved`](controller-and-database.md#token-name-env-is-reserved)
 - [Controller refuses to start with an `oidc.permissions` error](controller-and-database.md#controller-refuses-to-start-with-an-oidcpermissions-error)
 - [Startup warning: unknown role in `roleMap` is ignored](controller-and-database.md#startup-warning-unknown-role-in-rolemap-is-ignored)
-- [Startup warning: `UNIFIED_TOKEN is set while SSO is configured`](controller-and-database.md#startup-warning-unified_token-is-set-while-sso-is-configured)
-- [Startup warning: role-only personal access tokens bypass folder grants](controller-and-database.md#startup-warning-role-only-personal-access-tokens-bypass-folder-grants)
+- [Accounts and the initial admin token: `forbidden: account disabled`, `invalid or already used initial token`, `UNIFIED_TOKEN is no longer used by the controller`, `expiresIn exceeds tokens.maxLifetime`, `admin recover`](controller-and-database.md#accounts-and-the-initial-admin-token)
 - [Startup warning: `oidc.permissions is set but oidc.clientId is not`](controller-and-database.md#startup-warning-oidcpermissions-is-set-but-oidcclientid-is-not)
 - [`403 forbidden: missing permission "..."`](controller-and-database.md#403-forbidden-missing-permission)
 - [A job or run returns 404 although the caller expects to read it](controller-and-database.md#a-job-or-run-returns-404-although-the-caller-expects-to-read-it)

@@ -6,7 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
-	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -30,30 +30,34 @@ type Principal struct {
 	// for a principal admitted only through oidc.permissions grants.
 	Role string
 
-	// Sub and Email identify the OIDC user behind the principal (owner PATs,
-	// sessions and bearer tokens); empty for role-only PATs and break-glass.
+	// Sub and Email identify the OIDC user behind the principal (human
+	// accounts: sessions, bearer tokens and their PATs); empty for service
+	// accounts.
 	Sub, Email string
+	// AccountID is the accounts row the principal authenticated as, and
+	// AccountKind/AccountName its kind ("human" | "service") and name (the
+	// service account name; the display name for a human).
+	AccountID, AccountKind, AccountName string
 	// Claims are the values of oidc.rolesClaim known for the principal;
-	// ClaimsKnown is false when they could not be determined (role-only PATs,
-	// pre-upgrade sessions, bearer tokens that omit a claim the config needs).
+	// ClaimsKnown is false when they could not be determined (bearer tokens
+	// that omit a claim the config needs).
 	Claims      []string
 	ClaimsKnown bool
 
 	// Grants are the principal's effective permissions.
 	Grants authz.Grants
-	// Ceiling is the owner PAT's permission ceiling already applied to Grants
+	// Ceiling is the PAT's permission ceiling already applied to Grants
 	// (nil = none); CeilingRole and CeilingPerms are the raw pat.Role and
 	// pat.Permissions it was derived from, for PAT-from-PAT inheritance.
 	Ceiling      *authz.Set
 	CeilingRole  string
 	CeilingPerms []string
-	// OwnerPATID is the PAT row ID when the principal is an owner PAT.
+	// OwnerPATID is the PAT row ID when the principal authenticated with a PAT
+	// (every PAT belongs to an account); empty otherwise.
 	OwnerPATID string
 	// PATID is the PAT row ID for every PAT-authenticated principal (Kind
 	// "pat"), owner or not; empty otherwise. Unlike Name it is unique.
 	PATID string
-	// BreakGlass is true for the env:UNIFIED_TOKEN PAT.
-	BreakGlass bool
 	// EnrollLabels bounds the labels an agent.enroll PAT may put on the
 	// enrollment tokens it creates; nil means no bound.
 	EnrollLabels []string
@@ -61,13 +65,10 @@ type Principal struct {
 
 // AuditActorID returns the stable, unambiguous identity recorded in the audit
 // log next to the display Name (which is a user-chosen PAT name or an email and
-// is not unique): "break-glass" for the UNIFIED_TOKEN credential, "pat:<id>"
-// for any other PAT, "oidc:<sub>" for an OIDC bearer token or session, and ""
-// when nothing stable is known.
+// is not unique): "pat:<id>" for a PAT, "oidc:<sub>" for an OIDC bearer token
+// or session, and "" when nothing stable is known.
 func (p Principal) AuditActorID() string {
 	switch {
-	case p.BreakGlass:
-		return "break-glass"
 	case p.Kind == "pat" && p.PATID != "":
 		return "pat:" + p.PATID
 	case p.Sub != "" && (p.Kind == "oidc" || p.Kind == "session"):
@@ -85,11 +86,6 @@ func principalFromContext(ctx context.Context) (Principal, bool) {
 	p, ok := ctx.Value(principalCtxKey).(Principal)
 	return p, ok
 }
-
-// BootstrapPATName is the fixed identifier used when syncing UNIFIED_TOKEN as a PAT at startup.
-// Using this name with UpsertBootstrapPAT / DeleteBootstrapPATByName ensures that when the
-// value changes, rows are not duplicated — only the hash is updated.
-const BootstrapPATName = "env:UNIFIED_TOKEN"
 
 // BearerAuth returns the existing static-token authentication middleware (for agent auth).
 func BearerAuth(expected string) func(http.Handler) http.Handler {
@@ -111,12 +107,15 @@ func BearerAuth(expected string) func(http.Handler) http.Handler {
 	}
 }
 
+// msgBrowserPATRefused is the 401 body for a PAT presented by a browser while
+// SSO is configured and ui.allowTokenEntry is off.
+const msgBrowserPATRefused = "personal access tokens are not accepted from the browser while SSO is configured; sign in with SSO"
+
 // ServerAuth returns an authentication middleware that tries three methods in order:
-// PAT, OIDC id_token, and session Cookie. UNIFIED_TOKEN (the static token) is synced to
-// the DB as a PAT at startup, so no dedicated comparison branch is needed here
-// (it is not special-cased so that deleting it from the UI revokes it immediately).
+// PAT, OIDC id_token, and session Cookie. Every credential resolves to an
+// account; a disabled or unknown account is refused with 403.
 //
-// Every admitted human principal carries its effective authz.Grants (spec 5.15).
+// Every admitted principal carries its effective authz.Grants (spec 5.15).
 func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +124,7 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 			h := r.Header.Get("Authorization")
 			if strings.HasPrefix(h, bearerPrefix) {
 				token := strings.TrimPrefix(h, bearerPrefix)
-				// 1a. PAT (including those synced from UNIFIED_TOKEN)
+				// 1a. PAT: always owned by an account.
 				if st != nil {
 					hash := HashToken(token)
 					pat, err := st.GetPATByHash(r.Context(), hash)
@@ -133,10 +132,18 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 						lookupFailed = true
 					}
 					if err == nil && pat != nil {
+						// With SSO configured, a PAT must not be typed into the
+						// browser. Browsers send Sec-Fetch-Site on every request
+						// to a secure context; Node's fetch sends Sec-Fetch-Mode
+						// but not Sec-Fetch-Site, so it is not mistaken for one.
+						if srv != nil && !srv.allowBrowserTokenEntry() && r.Header.Get("Sec-Fetch-Site") != "" {
+							http.Error(w, msgBrowserPATRefused, http.StatusUnauthorized)
+							return
+						}
 						go func() { _ = st.TouchPAT(context.Background(), pat.ID) }()
-						p, ok := srv.patPrincipal(pat, hash)
-						if !ok {
-							http.Error(w, "forbidden: no role", http.StatusForbidden)
+						p, msg := srv.patPrincipal(r.Context(), pat)
+						if msg != "" {
+							http.Error(w, msg, refusalStatus(msg))
 							return
 						}
 						next.ServeHTTP(w, withPrincipal(r, p))
@@ -158,10 +165,23 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 						srv.warnGroupsOverage(claims, values, true)
 						role, grants, admitted := srv.identityGrants(values, email, sub)
 						if !admitted {
-							http.Error(w, "forbidden: no role", http.StatusForbidden)
+							http.Error(w, msgNoRole, http.StatusForbidden)
 							return
 						}
-						p := Principal{Name: name, Kind: "oidc", Role: role, Sub: sub, Email: email, Grants: grants}
+						// Admitted: record the human account (at most once a
+						// minute per sub) and refuse a disabled one.
+						acct, aerr := srv.idTokenAccount(r.Context(), sub, email, nonNilClaims(values))
+						if aerr != nil {
+							slog.Error("upsert human account failed", "error", aerr)
+							http.Error(w, "account store error", http.StatusInternalServerError)
+							return
+						}
+						if acct.DisabledAt != nil {
+							http.Error(w, msgAccountDisabled, http.StatusForbidden)
+							return
+						}
+						p := Principal{Name: name, Kind: "oidc", Role: role, Sub: sub, Email: email, Grants: grants,
+							AccountID: acct.ID, AccountKind: store.AccountKindHuman, AccountName: name}
 						p.ClaimsKnown = values != nil || !(srv.oidcCfg.Policy.HasGroupKeyedGrants() || len(srv.oidcCfg.RoleMap) > 0)
 						if p.ClaimsKnown {
 							p.Claims = nonNilClaims(values)
@@ -182,6 +202,14 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 						if sess.ExpiresAt.Before(now) {
 							// Expired — delete the session.
 							_ = st.DeleteSession(context.Background(), sess.ID)
+						} else if acct, msg := srv.sessionAccount(r.Context(), sess); msg != "" || acct.DisabledAt != nil {
+							// Checked before the refresh so a disabled account
+							// never reaches the IdP.
+							if msg == "" {
+								msg = msgAccountDisabled
+							}
+							http.Error(w, msg, refusalStatus(msg))
+							return
 						} else {
 							if sess.ExpiresAt.Sub(now) < refreshThreshold && srv.oidcCfg != nil && srv.km != nil {
 								// Less than 5 minutes remaining — silent refresh.
@@ -197,9 +225,9 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 								}
 							}
 							go func() { _ = st.TouchSession(context.Background(), sess.ID) }()
-							p, ok := srv.sessionPrincipal(sess)
-							if !ok {
-								http.Error(w, "forbidden: no role", http.StatusForbidden)
+							p, msg := srv.sessionPrincipal(r.Context(), sess, acct)
+							if msg != "" {
+								http.Error(w, msg, refusalStatus(msg))
 								return
 							}
 							next.ServeHTTP(w, withPrincipal(r, p))
@@ -236,42 +264,23 @@ func nonNilClaims(values []string) []string {
 	return values
 }
 
-// isBreakGlass reports whether pat is the break-glass credential: the server
-// has a configured bootstrap token, the presented token hashes to it, and the
-// PAT has no owner. The PAT name alone never grants break-glass.
-func (srv *Server) isBreakGlass(pat *store.PAT, presentedHash string) bool {
-	if srv == nil || srv.cfg.Token == "" || pat.Owner != nil {
-		return false
+// patPrincipal builds the principal for an authenticated PAT: the owning
+// account's grants under the current config, capped by the PAT's ceiling. A
+// non-empty msg means the PAT is refused with 403 and that body. A PAT without
+// an account (a row from before accounts existed) is refused.
+func (srv *Server) patPrincipal(ctx context.Context, pat *store.PAT) (Principal, string) {
+	if srv == nil || srv.store == nil || pat.AccountID == "" {
+		return Principal{}, msgAccountDisabled
 	}
-	want := HashToken(srv.cfg.Token)
-	return subtle.ConstantTimeCompare([]byte(presentedHash), []byte(want)) == 1
-}
-
-// patPrincipal builds the principal for an authenticated PAT (spec 5.15).
-// srv may be nil (ServerAuth(st, nil)); owner PATs then carry no grants.
-// ok=false means the PAT is refused with "forbidden: no role".
-func (srv *Server) patPrincipal(pat *store.PAT, presentedHash string) (Principal, bool) {
-	if srv.isBreakGlass(pat, presentedHash) {
-		// Break-glass is always admin, checked before OIDC resolution.
-		return Principal{Name: pat.Name, Kind: "pat", Role: "admin", BreakGlass: true, PATID: pat.ID,
-			Grants: authz.AllGrants("break-glass")}, true
+	acct, err := srv.store.GetAccount(ctx, pat.AccountID)
+	if err != nil {
+		slog.Error("load account for PAT failed", "error", err)
+		return Principal{}, msgAccountStoreError
 	}
-	if pat.Owner == nil && isEnrollPAT(pat) {
-		// Enrollment-only PAT: exactly agent.enroll, globally, and nothing else.
-		var g authz.Grants
-		g.Add("", authz.Set(0).With(authz.AgentEnroll), "pat:"+pat.Name)
-		return Principal{Name: pat.Name, Kind: "pat", PATID: pat.ID, Grants: g, EnrollLabels: pat.EnrollLabels}, true
+	role, grants, msg := srv.resolveAccount(ctx, acct)
+	if msg != "" {
+		return Principal{}, msg
 	}
-	if pat.Owner == nil {
-		// Role-only PAT: the same semantics as before, the refusal just moves up front.
-		if roleRank(pat.Role) == 0 {
-			return Principal{}, false
-		}
-		return Principal{Name: pat.Name, Kind: "pat", Role: pat.Role, PATID: pat.ID,
-			Grants: authz.RoleGrants(pat.Role, fmt.Sprintf("role:%s (pat)", pat.Role))}, true
-	}
-	// Owner PAT: the owner's grants under the current config, capped by the ceiling.
-	role, grants, _ := srv.identityGrants(pat.Owner.Claims, pat.Owner.Email, pat.Owner.Sub)
 	ceiling := ceilingSet(pat.Role, pat.Permissions)
 	if ceiling != nil && ceiling.Has(authz.AgentEnroll) && grants.Can(authz.AgentManage, "") {
 		// agent.manage covers agent.enroll for the owner, so an enrollment PAT
@@ -288,42 +297,63 @@ func (srv *Server) patPrincipal(pat *store.PAT, presentedHash string) (Principal
 			role = pat.Role
 		}
 	}
-	return Principal{
+	p := Principal{
 		Name: pat.Name, Kind: "pat", Role: role,
-		Sub: pat.Owner.Sub, Email: pat.Owner.Email, Claims: nonNilClaims(pat.Owner.Claims), ClaimsKnown: true,
+		AccountID: acct.ID, AccountKind: acct.Kind, AccountName: acct.Name,
 		Grants: grants, Ceiling: ceiling, CeilingRole: pat.Role, CeilingPerms: pat.Permissions,
 		OwnerPATID: pat.ID, PATID: pat.ID, EnrollLabels: pat.EnrollLabels,
-	}, true
+		ClaimsKnown: true, Claims: nonNilClaims(acct.Claims),
+	}
+	if acct.Kind == store.AccountKindHuman {
+		p.Sub, p.Email = acct.OIDCSub, acct.Email
+		p.AccountName = acct.Email
+		if p.AccountName == "" {
+			p.AccountName = acct.OIDCSub
+		}
+	}
+	return p, ""
 }
 
-// isEnrollPAT reports whether pat is an ownerless enrollment-only PAT: empty
-// role and the single permission agent.enroll.
-func isEnrollPAT(pat *store.PAT) bool {
-	return pat.Role == "" && len(pat.Permissions) == 1 && pat.Permissions[0] == string(authz.AgentEnroll)
+// sessionAccount loads the account a session belongs to. A non-empty msg means
+// the session is refused: msgAccountDisabled when the session has no account
+// or the account is gone, msgAccountStoreError when the lookup failed.
+func (srv *Server) sessionAccount(ctx context.Context, sess *store.Session) (*store.Account, string) {
+	if srv == nil || srv.store == nil || sess.AccountID == "" {
+		return nil, msgAccountDisabled
+	}
+	acct, err := srv.store.GetAccount(ctx, sess.AccountID)
+	if err != nil {
+		slog.Error("load account for session failed", "error", err)
+		return nil, msgAccountStoreError
+	}
+	if acct == nil {
+		return nil, msgAccountDisabled
+	}
+	return acct, ""
 }
 
-// sessionPrincipal builds the principal for a browser session (spec 5.15).
-// ok=false means the session is refused with "forbidden: no role".
-func (srv *Server) sessionPrincipal(sess *store.Session) (Principal, bool) {
+// sessionPrincipal builds the principal for a browser session. The grants come
+// from the session's account; the session's own claims (refreshed from the
+// IdP) take precedence over the account snapshot. A non-empty msg means the
+// session is refused with 403 and that body.
+func (srv *Server) sessionPrincipal(ctx context.Context, sess *store.Session, acct *store.Account) (Principal, string) {
 	name := sess.Email
 	if name == "" {
 		name = sess.Sub
 	}
-	p := Principal{Name: name, Kind: "session", Sub: sess.Sub, Email: sess.Email}
+	view := *acct
 	if sess.Claims != nil {
-		// Role is recomputed from the stored claims and the current config; the
-		// session is admitted even when that leaves no global role.
-		p.Role, p.Grants, _ = srv.identityGrants(sess.Claims, sess.Email, sess.Sub)
-		p.Claims, p.ClaimsKnown = sess.Claims, true
-		return p, true
+		view.Claims = sess.Claims
 	}
-	// Pre-upgrade session: role-only.
-	if roleRank(sess.Role) == 0 {
-		return Principal{}, false
+	role, grants, msg := srv.resolveAccount(ctx, &view)
+	if msg != "" {
+		return Principal{}, msg
 	}
-	p.Role = sess.Role
-	p.Grants = authz.RoleGrants(sess.Role, fmt.Sprintf("role:%s (session)", sess.Role))
-	return p, true
+	return Principal{
+		Name: name, Kind: "session", Role: role, Sub: sess.Sub, Email: sess.Email,
+		AccountID: acct.ID, AccountKind: acct.Kind, AccountName: name,
+		Claims: nonNilClaims(view.Claims), ClaimsKnown: true, Grants: grants,
+	}, ""
 }
 
 // AgentOrServerAuth allows the agent static token (constant-time compare) OR,

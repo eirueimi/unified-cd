@@ -6,9 +6,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCatalogueHas28PermissionsInOrder(t *testing.T) {
+func TestCatalogueHas30PermissionsInOrder(t *testing.T) {
 	all := All()
-	require.Len(t, all, 28)
+	require.Len(t, all, 30)
+	require.Equal(t, AccountManage, all[28])
+	require.Equal(t, ServiceAccountToken, all[29])
+	require.False(t, FolderScopable(AccountManage))
+	require.False(t, FolderScopable(ServiceAccountToken))
+	admin, _ := Bundle("admin")
+	dev, _ := Bundle("developer")
+	require.True(t, admin.Has(AccountManage))
+	require.True(t, admin.Has(ServiceAccountToken))
+	require.False(t, dev.Has(AccountManage))
+	require.False(t, dev.Has(ServiceAccountToken))
 	folder := 0
 	for i, p := range all {
 		if FolderScopable(p) {

@@ -44,11 +44,11 @@ Apply the job and trigger a run:
 
 ```bash
 curl -fsS -X POST localhost:18080/api/v1/jobs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   --data-binary @../edgecase/workloads/longrun.payload.json
 
 curl -fsS -X POST localhost:18080/api/v1/runs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   -d '{"jobName":"edge-longrun"}'
 # capture .id from the JSON response as RUN_ID
 ```
@@ -58,10 +58,10 @@ confirm live delivery before injecting:
 
 ```bash
 for i in $(seq 1 4); do
-  date; curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer ha-admin-token"
+  date; curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer $ADMIN_PAT"
   sleep 10
 done
-curl -N --max-time 15 "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer ha-admin-token"
+curl -N --max-time 15 "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer $ADMIN_PAT"
 ```
 
 > **Phase dependence — this is what makes or breaks the "zero log loss"
@@ -110,11 +110,11 @@ agent report (I5):
 
 ```bash
 for i in $(seq 1 8); do
-  date; curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer ha-admin-token"
+  date; curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer $ADMIN_PAT"
   sleep 15
 done
 
-curl -N --max-time 15 "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer ha-admin-token"
+curl -N --max-time 15 "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer $ADMIN_PAT"
 ```
 
 **Line accounting (I4)** — once the run is `Succeeded`, fetch the full log
@@ -128,10 +128,10 @@ cross-check):
 
 ```bash
 curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/logs?after=0" \
-  -H "Authorization: Bearer ha-admin-token" > /path/to/scratchpad/w1/run-logs.json
+  -H "Authorization: Bearer $ADMIN_PAT" > /path/to/scratchpad/w1/run-logs.json
 
 curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/logs/stats" \
-  -H "Authorization: Bearer ha-admin-token"
+  -H "Authorization: Bearer $ADMIN_PAT"
 
 # count/verify tick lines from the captured file (jq or grep -c), check for
 # duplicates and monotonic seq/ordering, and grep for the drop marker:

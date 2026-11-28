@@ -469,7 +469,7 @@ Gotchas:
 
     See [Inspecting the policy](authorization.md#inspecting-the-policy-authz-show-and-authz-explain). It describes an identity, not a token.
 4. **Log in again.** Sessions store the groups captured at login; users must sign in again (browser and `unified-cli login`) after an IdP-side claim change.
-5. **Re-issue role-only PATs** when you introduce folders: they have no owner and bypass folder grants until revoked. See [PAT owners and ceilings](authentication.md#pat-owners-and-ceilings).
+5. **Give automation a service account** when you introduce folders: a PAT is bounded by its account's folder grants, so CI uses a [service account](authorization.md#service-accounts) with only the folders it needs. See [PAT accounts and ceilings](authentication.md#pat-accounts-and-ceilings).
 6. **Confirm denial works.** A user that matches nothing should get `403 forbidden: no role assigned` (browser) or `403 forbidden: no role` (bearer token). If everyone is denied, the claim is usually missing from the ID token or its values do not match your keys.
 
 Troubleshooting entries for the login and token errors are in [Authentication](authentication.md#troubleshooting).

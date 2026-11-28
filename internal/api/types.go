@@ -477,8 +477,11 @@ type AgentFetchSecretsResponse struct {
 
 // CreatePATRequest is the request for creating a PAT.
 type CreatePATRequest struct {
-	Name        string   `json:"name"`
-	ExpiresIn   string   `json:"expiresIn,omitempty"`
+	Name      string `json:"name"`
+	ExpiresIn string `json:"expiresIn,omitempty"`
+	// Account names the service account the PAT is created for. Empty means
+	// the caller's own account.
+	Account     string   `json:"account,omitempty"`
 	Role        string   `json:"role,omitempty"`
 	Permissions []string `json:"permissions,omitempty"`
 	// EnrollLabels bounds the labels of the enrollment tokens an agent.enroll
@@ -496,6 +499,18 @@ type CreatePATResponse struct {
 	EnrollLabels []string `json:"enrollLabels,omitempty"`
 }
 
+// Account is an account as listed by GET /api/v1/accounts.
+type Account struct {
+	ID         string     `json:"id"`
+	Kind       string     `json:"kind"` // "human" or "service"
+	Name       string     `json:"name"`
+	Email      string     `json:"email,omitempty"`
+	Disabled   bool       `json:"disabled"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
+	PATCount   int        `json:"patCount"`
+}
+
 // PATMeta is the metadata for a PAT (does not include the token hash).
 type PATMeta struct {
 	ID         string     `json:"id"`
@@ -504,11 +519,15 @@ type PATMeta struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
-	// Owner is the owner's email, else its sub; empty for a role-only token.
-	Owner        string   `json:"owner,omitempty"`
+	// Owner labels the owning account: a person's email (else sub), or a service
+	// account's name.
+	Owner string `json:"owner,omitempty"`
+	// Account labels the owning account: "sa:<name>" for a service account,
+	// a person's email (else sub) for a human.
+	Account      string   `json:"account"`
 	Permissions  []string `json:"permissions,omitempty"`
 	EnrollLabels []string `json:"enrollLabels,omitempty"`
-	// CreatedBy is the audit actor id of the creator ("break-glass", "pat:<id>",
+	// CreatedBy is the audit actor id of the creator ("pat:<id>",
 	// "oidc:<sub>"); empty for tokens created before it was recorded.
 	CreatedBy string `json:"createdBy,omitempty"`
 }
@@ -768,7 +787,7 @@ type AuditLog struct {
 	Scope      string    `json:"scope,omitempty"`
 	GrantedBy  string    `json:"grantedBy,omitempty"`
 	// ActorID is the stable identity of the caller ("pat:<id>", "oidc:<sub>",
-	// "break-glass", "agent:<id>"). Actor is only a display name and is not
+	// "agent:<id>"; old rows may carry "break-glass"). Actor is only a display name and is not
 	// unique; empty for rows written before ActorID was recorded.
 	ActorID string `json:"actorId,omitempty"`
 	// ActorSub is the OIDC subject behind the actor, when there is one.

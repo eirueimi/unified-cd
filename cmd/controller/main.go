@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -173,7 +174,127 @@ func bootstrapKubernetesEnrollmentPolicies(ctx context.Context, st enrollmentPol
 	return nil
 }
 
+// serverFlags holds the pointers to every flag the controller server
+// registers, plus the env-parse warnings collected while registering.
+type serverFlags struct {
+	f, dsn, addr, externalURL, token                                         *string
+	s3Endpoint, s3Bucket, s3Key, s3Secret, s3Region, artifactDownload        *string
+	dataDir, webDir, uiProxyTarget, trustedProxies, logLevel                 *string
+	gitKnownHostsFlag                                                        *string
+	s3UseSSL, stderrPlain, insecureCookies, storeCredentialRequireRunBinding *bool
+	customMetricsEnabled                                                     *bool
+	maxRequestBodyBytes, gitMaxRepoBytes                                     *int64
+	storeCredBurst, customMetricsMaxSeries                                   *int
+	auditRetentionDays, runRetentionDays, logTrimDays                        *int
+	matrixMax, webhookMaxBodyBytes                                           *int
+	storeCredPerSecond                                                       *float64
+	customMetricsTTL, gitTimeout                                             *time.Duration
+
+	// Set while registering, before the logger exists; logged by main.
+	matrixMaxEnvWarning, webhookMaxBodyBytesEnvWarning string
+}
+
+// registerServerFlags registers the controller server flags on fs with the
+// merged (env + config file) defaults from eff.
+func registerServerFlags(fs *flag.FlagSet, eff *config.ControllerConfig, configFile string) *serverFlags {
+	sf := &serverFlags{}
+	sf.f = fs.String("f", configFile, "config file path (YAML)")
+	// Handled by the pre-scan above; registered so it appears in -h output
+	// and doesn't trip "flag provided but not defined".
+	_ = fs.Bool("version", false, "print the controller version and exit")
+	sf.dsn = fs.String("dsn", eff.DSN, "postgres DSN (env: UNIFIED_DB_DSN)")
+	sf.addr = fs.String("addr", func() string {
+		if eff.Addr != "" {
+			return eff.Addr
+		}
+		return ":8080"
+	}(), "listen address")
+	sf.externalURL = fs.String("external-url", eff.ExternalURL, "controller public base URL, used for run links (UNIFIED_RUN_URL); falls back to oidc.externalUrl (env: UNIFIED_EXTERNAL_URL)")
+	// Deprecated and ignored: kept registered so an existing deployment that
+	// passes --token / --allow-default-token still starts (spec 6.8).
+	sf.token = fs.String("token", "", "deprecated and ignored: the controller no longer authenticates with a static token")
+	sf.s3Endpoint = fs.String("s3-endpoint", eff.S3Endpoint, "S3-compatible endpoint (env: UNIFIED_S3_ENDPOINT)")
+	sf.s3Bucket = fs.String("s3-bucket", eff.S3Bucket, "S3 bucket name (env: UNIFIED_S3_BUCKET)")
+	sf.s3Key = fs.String("s3-key", eff.S3Key, "S3 access key (env: UNIFIED_S3_KEY)")
+	sf.s3Secret = fs.String("s3-secret", eff.S3Secret, "S3 secret key (env: UNIFIED_S3_SECRET)")
+	sf.s3UseSSL = fs.Bool("s3-use-ssl", eff.S3UseSSL, "reach the S3 endpoint over https; required for presigned URLs on AWS S3 and GCS (env: UNIFIED_S3_USE_SSL)")
+	sf.s3Region = fs.String("s3-region", eff.S3Region, "S3 bucket region; \"auto\" for GCS (env: UNIFIED_S3_REGION)")
+	sf.artifactDownload = fs.String("artifact-download", eff.ArtifactDownloadMode(), "how human artifact downloads are served: \"proxy\" streams through the controller, \"redirect\" answers with a 15-minute presigned GET URL (S3-compatible store only); agents are always proxied (env: UNIFIED_ARTIFACT_DOWNLOAD)")
+	sf.dataDir = fs.String("data-dir", eff.DataDir, "local object store directory (env: UNIFIED_DATA_DIR)")
+	sf.webDir = fs.String("web-dir", eff.WebDir, "static web assets directory; if empty /ui/* returns 404 (env: UNIFIED_WEB_DIR)")
+	sf.uiProxyTarget = fs.String("ui-proxy-target", eff.UIProxyTarget, "Vite dev server URL to reverse-proxy /ui/* to when --web-dir is empty, e.g. http://localhost:5173 (env: UNIFIED_UI_PROXY_TARGET)")
+	sf.stderrPlain = fs.Bool("log-stderr-plain", eff.StderrPlain, "render step stderr in the run log the same color as stdout instead of red (env: UNIFIED_LOG_STDERR_PLAIN)")
+	sf.insecureCookies = fs.Bool("insecure-cookies", eff.InsecureCookies, "do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)")
+	sf.storeCredentialRequireRunBinding = fs.Bool("store-credential-require-run-binding", eff.StoreCredentialRequireRunBinding, "deprecated and ignored: run binding is always required for presigned object access (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING)")
+	_ = fs.Bool("allow-default-token", false, "deprecated and ignored: the controller no longer has a default admin token")
+	sf.trustedProxies = fs.String("trusted-proxies", strings.Join(eff.TrustedProxies, ","), "comma-separated CIDRs/IPs of reverse proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the client IP; empty ignores those headers (env: UNIFIED_TRUSTED_PROXIES)")
+	sf.maxRequestBodyBytes = fs.Int64("max-request-body-bytes", func() int64 {
+		if eff.MaxRequestBodyBytes > 0 {
+			return eff.MaxRequestBodyBytes
+		}
+		return 1 << 20
+	}(), "max size in bytes of an API request body; larger bodies are rejected with 413. Webhook ingress (--webhook-max-body-bytes) and artifact upload have their own limits (env: UNIFIED_MAX_REQUEST_BODY_BYTES)")
+	sf.storeCredBurst = fs.Int("store-credential-rate-burst", func() int {
+		if eff.StoreCredentialRateLimit.Burst > 0 {
+			return eff.StoreCredentialRateLimit.Burst
+		}
+		return 200
+	}(), "burst size of the rate limit on POST /api/v1/runs/{runID}/objects/presign (per agent, or per client address for sidecars) (env: UNIFIED_STORE_CREDENTIAL_RATE_BURST)")
+	sf.storeCredPerSecond = fs.Float64("store-credential-rate-per-second", func() float64 {
+		if eff.StoreCredentialRateLimit.PerSecond > 0 {
+			return eff.StoreCredentialRateLimit.PerSecond
+		}
+		return 20
+	}(), "sustained requests per second of the same rate limits (env: UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND)")
+	sf.customMetricsEnabled = fs.Bool("custom-metrics-enabled", eff.CustomMetricsEnabled(), "emit and export job-defined custom metrics (metrics: blocks of a Job); when false they still validate at apply time but nothing is emitted (env: UNIFIED_CUSTOM_METRICS_ENABLED)")
+	sf.customMetricsMaxSeries = fs.Int("custom-metrics-max-series-per-metric", eff.CustomMetricsMaxSeries(), "max label combinations per custom metric name per replica; new combinations over the cap are dropped; 0 = unlimited (env: UNIFIED_CUSTOM_METRICS_MAX_SERIES_PER_METRIC)")
+	sf.customMetricsTTL = fs.Duration("custom-metrics-ttl", eff.CustomMetricsTTL(), "drop a custom metric series that has not been updated for this long; 0 disables expiry (env: UNIFIED_CUSTOM_METRICS_TTL)")
+	sf.logLevel = fs.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
+	sf.auditRetentionDays = fs.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
+	sf.runRetentionDays = fs.Int("run-retention-days", runRetentionDaysDefault(), "days to keep terminal runs incl. their logs, log archives, and artifacts; 0 = keep forever (env: UNIFIED_RUN_RETENTION_DAYS)")
+	sf.logTrimDays = fs.Int("log-trim-days", logTrimDaysDefault(), "days after archival to delete a run's DB log rows (reads switch to the archive); 0 = never trim (env: UNIFIED_LOG_TRIM_DAYS)")
+	sf.matrixMax = fs.Int("matrix-max-combinations", envIntOr("UNIFIED_MATRIX_MAX_COMBINATIONS", 64, &sf.matrixMaxEnvWarning), "max combinations a matrix step may expand to (env: UNIFIED_MATRIX_MAX_COMBINATIONS)")
+	sf.webhookMaxBodyBytes = fs.Int("webhook-max-body-bytes", envIntOr("UNIFIED_WEBHOOK_MAX_BODY_BYTES", 1<<20, &sf.webhookMaxBodyBytesEnvWarning), "max webhook ingress request body size in bytes; larger bodies are rejected with 413 instead of being truncated (env: UNIFIED_WEBHOOK_MAX_BODY_BYTES)")
+	sf.gitTimeout = fs.Duration("git-timeout", gitTimeoutDefault(), "maximum time for one controller-side git operation (AppSource fetch, ls-remote, git:// template fetch) before its process tree is killed (env: UNIFIED_GIT_TIMEOUT)")
+	sf.gitMaxRepoBytes = fs.Int64("git-max-repo-bytes", gitMaxRepoBytesDefault(), "abort a controller-side git fetch whose repository exceeds this many bytes; 0 = no limit (default 1 GiB, env: UNIFIED_GIT_MAX_REPO_BYTES)")
+	sf.gitKnownHostsFlag = fs.String("git-known-hosts-file", os.Getenv("UNIFIED_GIT_KNOWN_HOSTS_FILE"), "persistent SSH known_hosts file for trust-on-first-use of git SSH host keys when a GitCredential has no knownHosts; defaults to <data-dir>/.ssh/known_hosts, else a temp dir (env: UNIFIED_GIT_KNOWN_HOSTS_FILE)")
+	return sf
+}
+
+// loadServerFlags loads the effective controller configuration and parses the
+// server flags from args. The config file is found with a pre-scan of args
+// for -f so it can supply the flag defaults, which gives the priority env
+// vars -> config file -> CLI flags. The values of the flags that mirror
+// configuration fields (-f, --dsn, --addr) are written back into the returned
+// config.
+func loadServerFlags(args []string, fs *flag.FlagSet) (*config.ControllerConfig, *serverFlags, error) {
+	configFile := config.FindFlag(args, "f")
+	eff, err := config.ControllerEffective(configFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	sf := registerServerFlags(fs, eff, configFile)
+	if err := fs.Parse(args); err != nil {
+		return nil, nil, err
+	}
+	eff.DSN = *sf.dsn
+	eff.Addr = *sf.addr
+	return eff, sf, nil
+}
+
+// loadRuntimeConfig loads the controller configuration the way the server
+// does: environment variables, then the config file named by -f, then flags
+// from args registered on fs.
+func loadRuntimeConfig(args []string, fs *flag.FlagSet) (*config.ControllerConfig, error) {
+	eff, _, err := loadServerFlags(args, fs)
+	return eff, err
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "admin" {
+		os.Exit(runAdmin(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	// --version answers before anything else so it works in an image with no
 	// config file and no DSN: `docker run <image> --version`.
 	if config.VersionRequested(os.Args[1:]) {
@@ -181,78 +302,24 @@ func main() {
 		return
 	}
 
-	// Pre-scan os.Args for -f so we can load the config file before defining
-	// other flags. This gives priority: env vars → config file → CLI flags.
-	configFile := config.FindFlag(os.Args[1:], "f")
-
-	eff, err := config.ControllerEffective(configFile)
+	eff, sf, err := loadServerFlags(os.Args[1:], flag.CommandLine)
 	if err != nil {
 		slog.Error("config file", "error", err)
 		os.Exit(1)
 	}
-
-	// Register flags with merged (env+file) defaults. Explicit flags override.
-	f := flag.String("f", configFile, "config file path (YAML)")
-	// Handled by the pre-scan above; registered so it appears in -h output
-	// and doesn't trip "flag provided but not defined".
-	_ = flag.Bool("version", false, "print the controller version and exit")
-	dsn := flag.String("dsn", eff.DSN, "postgres DSN (env: UNIFIED_DB_DSN)")
-	addr := flag.String("addr", func() string {
-		if eff.Addr != "" {
-			return eff.Addr
-		}
-		return ":8080"
-	}(), "listen address")
-	externalURL := flag.String("external-url", eff.ExternalURL, "controller public base URL, used for run links (UNIFIED_RUN_URL); falls back to oidc.externalUrl (env: UNIFIED_EXTERNAL_URL)")
-	token := flag.String("token", eff.Token, "static bearer token (env: UNIFIED_TOKEN)")
-	s3Endpoint := flag.String("s3-endpoint", eff.S3Endpoint, "S3-compatible endpoint (env: UNIFIED_S3_ENDPOINT)")
-	s3Bucket := flag.String("s3-bucket", eff.S3Bucket, "S3 bucket name (env: UNIFIED_S3_BUCKET)")
-	s3Key := flag.String("s3-key", eff.S3Key, "S3 access key (env: UNIFIED_S3_KEY)")
-	s3Secret := flag.String("s3-secret", eff.S3Secret, "S3 secret key (env: UNIFIED_S3_SECRET)")
-	s3UseSSL := flag.Bool("s3-use-ssl", eff.S3UseSSL, "reach the S3 endpoint over https; required for presigned URLs on AWS S3 and GCS (env: UNIFIED_S3_USE_SSL)")
-	s3Region := flag.String("s3-region", eff.S3Region, "S3 bucket region; \"auto\" for GCS (env: UNIFIED_S3_REGION)")
-	artifactDownload := flag.String("artifact-download", eff.ArtifactDownloadMode(), "how human artifact downloads are served: \"proxy\" streams through the controller, \"redirect\" answers with a 15-minute presigned GET URL (S3-compatible store only); agents are always proxied (env: UNIFIED_ARTIFACT_DOWNLOAD)")
-	dataDir := flag.String("data-dir", eff.DataDir, "local object store directory (env: UNIFIED_DATA_DIR)")
-	webDir := flag.String("web-dir", eff.WebDir, "static web assets directory; if empty /ui/* returns 404 (env: UNIFIED_WEB_DIR)")
-	uiProxyTarget := flag.String("ui-proxy-target", eff.UIProxyTarget, "Vite dev server URL to reverse-proxy /ui/* to when --web-dir is empty, e.g. http://localhost:5173 (env: UNIFIED_UI_PROXY_TARGET)")
-	stderrPlain := flag.Bool("log-stderr-plain", eff.StderrPlain, "render step stderr in the run log the same color as stdout instead of red (env: UNIFIED_LOG_STDERR_PLAIN)")
-	insecureCookies := flag.Bool("insecure-cookies", eff.InsecureCookies, "do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)")
-	storeCredentialRequireRunBinding := flag.Bool("store-credential-require-run-binding", eff.StoreCredentialRequireRunBinding, "deprecated and ignored: run binding is always required for presigned object access (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING)")
-	allowDefaultToken := flag.Bool("allow-default-token", eff.AllowDefaultToken, "allow starting with the publicly documented default admin token; trial use only (env: UNIFIED_ALLOW_DEFAULT_TOKEN)")
-	trustedProxies := flag.String("trusted-proxies", strings.Join(eff.TrustedProxies, ","), "comma-separated CIDRs/IPs of reverse proxies whose X-Forwarded-For / X-Real-IP headers are trusted for the client IP; empty ignores those headers (env: UNIFIED_TRUSTED_PROXIES)")
-	maxRequestBodyBytes := flag.Int64("max-request-body-bytes", func() int64 {
-		if eff.MaxRequestBodyBytes > 0 {
-			return eff.MaxRequestBodyBytes
-		}
-		return 1 << 20
-	}(), "max size in bytes of an API request body; larger bodies are rejected with 413. Webhook ingress (--webhook-max-body-bytes) and artifact upload have their own limits (env: UNIFIED_MAX_REQUEST_BODY_BYTES)")
-	storeCredBurst := flag.Int("store-credential-rate-burst", func() int {
-		if eff.StoreCredentialRateLimit.Burst > 0 {
-			return eff.StoreCredentialRateLimit.Burst
-		}
-		return 200
-	}(), "burst size of the rate limit on POST /api/v1/runs/{runID}/objects/presign (per agent, or per client address for sidecars) (env: UNIFIED_STORE_CREDENTIAL_RATE_BURST)")
-	storeCredPerSecond := flag.Float64("store-credential-rate-per-second", func() float64 {
-		if eff.StoreCredentialRateLimit.PerSecond > 0 {
-			return eff.StoreCredentialRateLimit.PerSecond
-		}
-		return 20
-	}(), "sustained requests per second of the same rate limits (env: UNIFIED_STORE_CREDENTIAL_RATE_PER_SECOND)")
-	customMetricsEnabled := flag.Bool("custom-metrics-enabled", eff.CustomMetricsEnabled(), "emit and export job-defined custom metrics (metrics: blocks of a Job); when false they still validate at apply time but nothing is emitted (env: UNIFIED_CUSTOM_METRICS_ENABLED)")
-	customMetricsMaxSeries := flag.Int("custom-metrics-max-series-per-metric", eff.CustomMetricsMaxSeries(), "max label combinations per custom metric name per replica; new combinations over the cap are dropped; 0 = unlimited (env: UNIFIED_CUSTOM_METRICS_MAX_SERIES_PER_METRIC)")
-	customMetricsTTL := flag.Duration("custom-metrics-ttl", eff.CustomMetricsTTL(), "drop a custom metric series that has not been updated for this long; 0 disables expiry (env: UNIFIED_CUSTOM_METRICS_TTL)")
-	logLevel := flag.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
-	auditRetentionDays := flag.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
-	runRetentionDays := flag.Int("run-retention-days", runRetentionDaysDefault(), "days to keep terminal runs incl. their logs, log archives, and artifacts; 0 = keep forever (env: UNIFIED_RUN_RETENTION_DAYS)")
-	logTrimDays := flag.Int("log-trim-days", logTrimDaysDefault(), "days after archival to delete a run's DB log rows (reads switch to the archive); 0 = never trim (env: UNIFIED_LOG_TRIM_DAYS)")
-	var matrixMaxEnvWarning string
-	matrixMax := flag.Int("matrix-max-combinations", envIntOr("UNIFIED_MATRIX_MAX_COMBINATIONS", 64, &matrixMaxEnvWarning), "max combinations a matrix step may expand to (env: UNIFIED_MATRIX_MAX_COMBINATIONS)")
-	var webhookMaxBodyBytesEnvWarning string
-	webhookMaxBodyBytes := flag.Int("webhook-max-body-bytes", envIntOr("UNIFIED_WEBHOOK_MAX_BODY_BYTES", 1<<20, &webhookMaxBodyBytesEnvWarning), "max webhook ingress request body size in bytes; larger bodies are rejected with 413 instead of being truncated (env: UNIFIED_WEBHOOK_MAX_BODY_BYTES)")
-	gitTimeout := flag.Duration("git-timeout", gitTimeoutDefault(), "maximum time for one controller-side git operation (AppSource fetch, ls-remote, git:// template fetch) before its process tree is killed (env: UNIFIED_GIT_TIMEOUT)")
-	gitMaxRepoBytes := flag.Int64("git-max-repo-bytes", gitMaxRepoBytesDefault(), "abort a controller-side git fetch whose repository exceeds this many bytes; 0 = no limit (default 1 GiB, env: UNIFIED_GIT_MAX_REPO_BYTES)")
-	gitKnownHostsFlag := flag.String("git-known-hosts-file", os.Getenv("UNIFIED_GIT_KNOWN_HOSTS_FILE"), "persistent SSH known_hosts file for trust-on-first-use of git SSH host keys when a GitCredential has no knownHosts; defaults to <data-dir>/.ssh/known_hosts, else a temp dir (env: UNIFIED_GIT_KNOWN_HOSTS_FILE)")
-	flag.Parse()
+	f, dsn, addr, externalURL, token := sf.f, sf.dsn, sf.addr, sf.externalURL, sf.token
+	s3Endpoint, s3Bucket, s3Key, s3Secret, s3Region, artifactDownload := sf.s3Endpoint, sf.s3Bucket, sf.s3Key, sf.s3Secret, sf.s3Region, sf.artifactDownload
+	dataDir, webDir, uiProxyTarget, trustedProxies, logLevel := sf.dataDir, sf.webDir, sf.uiProxyTarget, sf.trustedProxies, sf.logLevel
+	gitKnownHostsFlag := sf.gitKnownHostsFlag
+	s3UseSSL, stderrPlain, insecureCookies, storeCredentialRequireRunBinding := sf.s3UseSSL, sf.stderrPlain, sf.insecureCookies, sf.storeCredentialRequireRunBinding
+	customMetricsEnabled := sf.customMetricsEnabled
+	maxRequestBodyBytes, gitMaxRepoBytes := sf.maxRequestBodyBytes, sf.gitMaxRepoBytes
+	storeCredBurst, customMetricsMaxSeries := sf.storeCredBurst, sf.customMetricsMaxSeries
+	auditRetentionDays, runRetentionDays, logTrimDays := sf.auditRetentionDays, sf.runRetentionDays, sf.logTrimDays
+	matrixMax, webhookMaxBodyBytes := sf.matrixMax, sf.webhookMaxBodyBytes
+	storeCredPerSecond := sf.storeCredPerSecond
+	customMetricsTTL, gitTimeout := sf.customMetricsTTL, sf.gitTimeout
+	matrixMaxEnvWarning, webhookMaxBodyBytesEnvWarning := sf.matrixMaxEnvWarning, sf.webhookMaxBodyBytesEnvWarning
 	_ = f // registered to prevent "flag provided but not defined" error
 
 	level, err := config.ParseLogLevel(*logLevel)
@@ -286,13 +353,8 @@ func main() {
 		os.Exit(1)
 	}
 	ssoConfigured := config.OIDCConfigured(eff.OIDC)
-	if *token == "" && !ssoConfigured {
-		slog.Error("token is required when SSO is not configured (--token, UNIFIED_TOKEN, config file, or UNIFIED_OIDC_ISSUER/UNIFIED_OIDC_CLIENT_ID)")
-		os.Exit(1)
-	}
-	if err := config.CheckAdminToken(*token, eff.KeySource.DevMode, *allowDefaultToken); err != nil {
-		slog.Error("refusing to start", "error", err)
-		os.Exit(1)
+	if *token != "" || eff.Token != "" {
+		slog.Error("UNIFIED_TOKEN is no longer used by the controller and is ignored; see docs/operator-manual/migrations/2026-11-27-internal-accounts.md")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -336,6 +398,17 @@ func main() {
 		slog.Warn("removed credentials embedded in AppSource repoURL; create a GitCredential for each repository host so these AppSources can authenticate again",
 			"appSources", names)
 	}
+	// Make the service-account rows match the config: new names are created,
+	// removed names are disabled (re-adding one re-enables it).
+	serviceAccountNames := make([]string, 0, len(eff.ServiceAccountGrants))
+	for name := range eff.ServiceAccountGrants {
+		serviceAccountNames = append(serviceAccountNames, name)
+	}
+	sort.Strings(serviceAccountNames)
+	if err := pg.SyncServiceAccounts(ctx, serviceAccountNames); err != nil {
+		slog.Error("sync service accounts", "error", err)
+		os.Exit(1)
+	}
 	if err := bootstrapKubernetesEnrollmentPolicies(ctx, pg, eff.AgentAuth); err != nil {
 		slog.Error("bootstrap kubernetes enrollment policies", "error", err)
 		os.Exit(1)
@@ -348,30 +421,28 @@ func main() {
 	backgroundPG := pg.BackgroundStore()
 	backgroundSt := metrics.NewInstrumentedStore(backgroundPG, m)
 
-	// UNIFIED_TOKEN is synced to the DB as a PAT. This allows it to be listed
-	// and deleted (revoked) via /api/v1/tokens just like regular PATs. If the
-	// token is later unset, the previously synced row is removed.
-	if *token != "" {
-		// One transaction: drop every other row carrying the reserved name (a stale
-		// row after rotation, or a user-created one) and upsert the real bootstrap row.
-		removed, err := pg.SyncBootstrapPAT(ctx, controller.BootstrapPATName, controller.HashToken(*token))
-		if err != nil {
-			slog.Error("sync UNIFIED_TOKEN as bootstrap PAT", "error", err)
+	// The one-time initial admin token (spec 6.4). Startup rule (spec 6.8): the
+	// controller starts when SSO is configured, the bootstrap is done, or the
+	// initial token could be generated or was provided.
+	initialDirs := initialTokenDirs(*f, *dataDir)
+	if err := validateProvidedInitialToken(os.Getenv("UNIFIED_INITIAL_ADMIN_TOKEN"), eff.KeySource.DevMode); err != nil {
+		slog.Error("initial admin token", "error", err)
+		os.Exit(1)
+	}
+	if _, err := prepareInitialToken(ctx, pg, ssoConfigured, os.Getenv("UNIFIED_INITIAL_ADMIN_TOKEN"), initialDirs); err != nil {
+		state, stateErr := pg.GetBootstrapState(ctx)
+		if !ssoConfigured && (stateErr != nil || !state.Done) {
+			if errors.Is(err, errNoWritableDir) {
+				slog.Error("cannot write the initial admin token: no writable config or data directory; set UNIFIED_INITIAL_ADMIN_TOKEN")
+			} else {
+				slog.Error("initial admin token", "error", err)
+			}
 			os.Exit(1)
 		}
-		if len(removed) > 0 {
-			ids := make([]string, 0, len(removed))
-			roles := make([]string, 0, len(removed))
-			for _, r := range removed {
-				ids = append(ids, r.ID)
-				roles = append(roles, r.Role)
-			}
-			slog.Warn(`removed personal access tokens named "env:UNIFIED_TOKEN" that do not match the configured UNIFIED_TOKEN (a stale row after token rotation, or a user-created token)`,
-				"count", len(removed), "ids", ids, "roles", roles)
-		}
-	} else if err := pg.DeleteBootstrapPATByName(ctx, controller.BootstrapPATName); err != nil {
-		slog.Error("remove stale bootstrap PAT", "error", err)
-		os.Exit(1)
+		slog.Warn("initial admin token", "error", err)
+	}
+	if ssoConfigured && eff.AdminAccountEnabled() {
+		slog.Warn("the built-in admin service account is enabled while SSO is configured; set serviceAccounts.admin.enabled: false once SSO works")
 	}
 
 	resolved, err := eff.KeySource.Resolve(ctx)
@@ -469,7 +540,7 @@ func main() {
 		}
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StoreCredentialRateBurst: *storeCredBurst, StoreCredentialRatePerSecond: *storeCredPerSecond, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, ArtifactDownload: *artifactDownload, ExternalURL: *externalURL}, st)
+	srv := controller.NewServer(controller.Config{ServiceAccountGrants: eff.ServiceAccountGrants, AdminEnabled: eff.AdminAccountEnabled(), TokenDefaultLifetime: eff.TokenDefaultLifetime(), TokenMaxLifetime: eff.TokenMaxLifetime(), AllowTokenEntry: eff.UI.AllowTokenEntry, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), TrustedProxies: trustedProxyPrefixes, MaxRequestBodyBytes: *maxRequestBodyBytes, StoreCredentialRateBurst: *storeCredBurst, StoreCredentialRatePerSecond: *storeCredPerSecond, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies, ArtifactDownload: *artifactDownload, ExternalURL: *externalURL, InitialTokenDirs: initialDirs}, st)
 	// Stops the shared log-notify listener goroutine (started lazily on the
 	// first SSE viewer — see (*controller.Server).subscribeLogNotify) if it
 	// was ever started. A no-op otherwise. Deferred here rather than left to
@@ -533,9 +604,6 @@ func main() {
 			Policy:             eff.OIDC.Policy,
 		})
 		oidcConfigured = true
-		if err := controller.WarnRoleOnlyPATs(ctx, st, eff.OIDC.Policy, slog.Default()); err != nil {
-			slog.Error("role-only PAT check failed", "error", err)
-		}
 		slog.Info("OIDC configured", "issuer", eff.OIDC.Issuer, "issuerInternal", eff.OIDC.IssuerInternal, "browserSSO", eff.OIDC.ClientSecret != "")
 		if eff.OIDC.IssuerInternal == "" {
 			slog.Warn("UNIFIED_OIDC_ISSUER_INTERNAL not set: /dex/* proxy is disabled. CLI device flow will fail. Use docker-compose.sso.yml")
@@ -547,9 +615,6 @@ func main() {
 		}
 		if eff.OIDC.Policy.Configured() && eff.OIDC.ClientID == "" {
 			slog.Warn("oidc.permissions is set but oidc.clientId is not; no OIDC caller can authenticate")
-		}
-		if w := bootstrapTokenWarning(eff.OIDC.Issuer, *token); w != "" {
-			slog.Warn(w)
 		}
 	}
 
@@ -594,6 +659,9 @@ func main() {
 		}
 	}
 	go controller.RunApprovalReaper(ctx, backgroundSt, time.Minute)
+	// Every replica reports PATs that expire within 7 days (once at startup,
+	// then daily); it only reads the database, so no leader is needed.
+	go controller.RunPATExpiryCheck(ctx, backgroundSt, m)
 	go controller.RunCustomMetricsSweeper(ctx, backgroundSt, m.Custom(), customCfg.TTL)
 	go controller.RunStuckRunReaper(ctx, backgroundSt, 30*time.Second, 90*time.Second, 60*time.Second)
 	// Fail runs that have sat Queued for longer than the grace period (default
@@ -757,14 +825,4 @@ func envIntOr(name string, def int, warning *string) int {
 		}
 	}
 	return def
-}
-
-// bootstrapTokenWarning returns the break-glass warning logged when SSO is
-// configured while the bootstrap token (--token, UNIFIED_TOKEN or config
-// token) is also set, or "" otherwise.
-func bootstrapTokenWarning(issuer, token string) string {
-	if issuer == "" || token == "" {
-		return ""
-	}
-	return "UNIFIED_TOKEN is set while SSO is configured: the env:UNIFIED_TOKEN token is always admin and bypasses oidc.permissions; unset it once SSO works and keep it only as a break-glass credential"
 }

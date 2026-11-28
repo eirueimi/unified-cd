@@ -64,6 +64,7 @@ var noRequestCommands = map[string]string{
 // per non-test source file. Every one of them must be exercised by a row in
 // contractRows. Update this map together with the table.
 var requestConstructors = map[string]int{
+	"account.go":          1,
 	"agent_enrollment.go": 1,
 	"agent_install.go":    3,
 	"apply.go":            1,
@@ -72,6 +73,7 @@ var requestConstructors = map[string]int{
 	"artifact.go":         2,
 	"audit.go":            1,
 	"authz.go":            1,
+	"bootstrap.go":        1,
 	"export.go":           1,
 	"gitcredential.go":    2,
 	"jobs.go":             4,
@@ -244,6 +246,11 @@ func contractRows(t *testing.T) []contractRow {
 		{name: "appsource get", leaf: "appsource get", args: []string{"appsource", "get", "a1"}, want: []string{get + " /api/v1/appsources/a1"}},
 		{name: "appsource delete", leaf: "appsource delete", args: []string{"appsource", "delete", "a1"}, want: []string{del + " /api/v1/appsources/a1"}},
 
+		// bootstrap
+		{name: "bootstrap", leaf: "bootstrap", args: []string{"bootstrap", "--initial-token", "uci_x"},
+			resp: map[string]string{"POST /api/v1/bootstrap": `{"id":"id1","name":"bootstrap","token":"exc_x"}`}, status: map[string]int{"POST /api/v1/bootstrap": http.StatusCreated},
+			want: []string{post + " /api/v1/bootstrap"}},
+
 		// tokens
 		{name: "token create", leaf: "token create", args: []string{"token", "create", "t1"},
 			resp: map[string]string{"POST /api/v1/tokens": `{"id":"id1","name":"t1","token":"secret"}`}, want: []string{post + " /api/v1/tokens"}},
@@ -256,6 +263,15 @@ func contractRows(t *testing.T) []contractRow {
 			want: []string{post + " /api/v1/tokens", del + " /api/v1/tokens/id1"}},
 		{name: "token list", leaf: "token list", args: []string{"token", "list"}, want: []string{get + " /api/v1/tokens"}},
 		{name: "token delete", leaf: "token delete", args: []string{"token", "delete", "id1"}, want: []string{del + " /api/v1/tokens/id1"}},
+
+		// accounts
+		{name: "account list", leaf: "account list", args: []string{"account", "list"}, want: []string{get + " /api/v1/accounts"}},
+		{name: "account list --kind", leaf: "account list", args: []string{"account", "list", "--kind", "human"}, want: []string{get + " /api/v1/accounts?kind=human"}},
+		{name: "account disable", leaf: "account disable", args: []string{"account", "disable", "a1"},
+			status: map[string]int{"POST /api/v1/accounts/a1/disable": http.StatusNoContent}, want: []string{post + " /api/v1/accounts/a1/disable"}},
+		{name: "account enable", leaf: "account enable", args: []string{"account", "enable", "a1"},
+			status: map[string]int{"POST /api/v1/accounts/a1/enable": http.StatusNoContent}, want: []string{post + " /api/v1/accounts/a1/enable"}},
+		{name: "serviceaccount list", leaf: "serviceaccount list", args: []string{"serviceaccount", "list"}, want: []string{get + " /api/v1/accounts?kind=service"}},
 
 		// audit
 		{name: "audit list", leaf: "audit list", args: []string{"audit", "list"}, want: []string{get + " /api/v1/audit"}},
@@ -315,7 +331,7 @@ type contractTransport struct {
 }
 
 var collectionSegments = map[string]bool{
-	"agents": true, "jobs": true, "runs": true, "active": true, "schedules": true, "webhooks": true,
+	"accounts": true, "agents": true, "jobs": true, "runs": true, "active": true, "schedules": true, "webhooks": true,
 	"gitcredentials": true, "appsources": true, "tokens": true, "secrets": true, "artifacts": true,
 	"approvals": true, "steps": true, "logs": true, "audit": true, "vars": true,
 	"agent-enrollments": true, "agent-enrollment-policies": true, "agent-volumes": true,

@@ -33,9 +33,9 @@ func TestMetricsEndToEndWiring(t *testing.T) {
 	t.Cleanup(func() { metrics.SetBackgroundRecorder(nil) })
 	st := metrics.NewInstrumentedStore(pg, m)
 
-	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
+	var err error
 	require.NoError(t, err)
-	s := NewServer(Config{}, st)
+	s := newServerWithAdminPAT(t, st, Config{})
 	s.SetMetrics(m)
 
 	_, err = pg.UpsertJob(context.Background(), "wiring-job", "unified-cd/v1", []byte(`{}`), store.JobMeta{})

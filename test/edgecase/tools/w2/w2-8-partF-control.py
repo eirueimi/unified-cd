@@ -2,7 +2,9 @@
 agent's cancel-detection fence (cancel + 8 s > CancelPollInterval = 5 s).
 Expect: no post-gate execution.  usage: partF-control.py <label> <delay_s>"""
 import json, sys, time, urllib.request, urllib.error, os
-API="http://localhost:18080"; TOK="ha-admin-token"
+API="http://localhost:18080"
+# Admin PAT: UNIFIED_TOKEN, else the cache written by bootstrap_admin_token (lib/admin-token.sh).
+TOK = os.environ.get("UNIFIED_TOKEN") or open(os.path.join(os.environ.get("TMPDIR", "/tmp"), "unified-ha-admin-token")).read().strip()
 label=sys.argv[1]; delay=float(sys.argv[2])
 def req(m,p,b=None):
     d=json.dumps(b).encode() if b is not None else None

@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/spf13/cobra"
@@ -33,6 +35,7 @@ func newTokenCreateCmd(resolve func() (Config, error), httpClient *http.Client) 
 	var role string
 	var permissions []string
 	var enrollLabels []string
+	var account string
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a new Personal Access Token",
@@ -42,7 +45,7 @@ func newTokenCreateCmd(resolve func() (Config, error), httpClient *http.Client) 
 			if err != nil {
 				return err
 			}
-			body, _ := json.Marshal(api.CreatePATRequest{Name: args[0], ExpiresIn: expiresIn, Role: role, Permissions: permissions, EnrollLabels: enrollLabels})
+			body, _ := json.Marshal(api.CreatePATRequest{Name: args[0], ExpiresIn: expiresIn, Role: role, Permissions: permissions, EnrollLabels: enrollLabels, Account: account})
 			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, cfg.Server+"/api/v1/tokens", bytes.NewReader(body))
 			if err != nil {
 				return err
@@ -105,6 +108,7 @@ func newTokenCreateCmd(resolve func() (Config, error), httpClient *http.Client) 
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&account, "account", "", "create the token for this service account (default: your own account)")
 	cmd.Flags().StringVar(&expiresIn, "expires-in", "", "expiry duration (e.g. 720h, 8760h)")
 	cmd.Flags().StringVar(&role, "role", "", "role ceiling for the token: admin, developer, or viewer (must not exceed your global role)")
 	cmd.Flags().StringArrayVar(&permissions, "permission", nil, "permission ceiling for the token, e.g. job.read (repeatable; you must hold each one; cannot be combined with --role)")
@@ -144,6 +148,8 @@ func newTokenListCmd(resolve func() (Config, error), httpClient *http.Client) *c
 				fmt.Fprintln(cmd.OutOrStdout(), "(no tokens)")
 				return nil
 			}
+			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 8, 2, ' ', 0)
+			fmt.Fprintln(tw, "ID\tNAME\tACCOUNT\tCEILING\tEXPIRES\tCREATED")
 			for _, t := range list {
 				ceiling := t.Role
 				if len(t.Permissions) > 0 {
@@ -156,9 +162,13 @@ func newTokenListCmd(resolve func() (Config, error), httpClient *http.Client) *c
 				if t.CreatedBy != "" {
 					created += " by " + t.CreatedBy
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t(%s)\n", t.ID, t.Name, ceiling, created)
+				expires := "never"
+				if t.ExpiresAt != nil {
+					expires = t.ExpiresAt.Format(time.DateOnly)
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, t.Name, t.Account, ceiling, expires, created)
 			}
-			return nil
+			return tw.Flush()
 		},
 	}
 }

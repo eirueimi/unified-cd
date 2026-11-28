@@ -152,12 +152,12 @@ curl -s -o /dev/null -w 'readyz=%{http_code}\n' localhost:18080/readyz          
 docker compose -f docker-compose.ha.yaml ps --format '{{.Service}} {{.State}}'
 
 # 2. Both agents registered and idle
-curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token"
+curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer $ADMIN_PAT"
 
 # 3. Apply every fixture this scenario uses
 for f in call-parent call-child longrun sideeffect mutex-successor; do
   curl -fsS -X POST localhost:18080/api/v1/jobs \
-    -H "Authorization: Bearer ha-admin-token" -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $ADMIN_PAT" -H 'Content-Type: application/json' \
     --data-binary @../edgecase/workloads/$f.payload.json -o /dev/null -w "$f=%{http_code}\n"
 done                                                                  # expect 200 x5
 
@@ -177,7 +177,7 @@ docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -tAc "
 ```bash
 # A1. Trigger the parent and record the wall clock
 date -u +%FT%T.%3NZ | tee "$SCRATCH/partA-timeline.txt"
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-call-parent"}' \
   | tee "$SCRATCH/partA-parent-trigger.json"
 PARENT=<id from the response>
@@ -254,7 +254,7 @@ tested; say so rather than claiming Part A proved lock release).
 
 ```bash
 # B1. Trigger a fresh long run and catch the claim as tightly as possible.
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-longrun"}'
 # poll at 0.5s until claimed_at is non-null, printing the wall clock each time
 for i in $(seq 1 120); do
@@ -288,9 +288,9 @@ Also capture how the failure is **reported to the operator**, which is the
 part the docs do not cover:
 
 ```bash
-curl -fsS "localhost:18080/api/v1/runs/$RUN" -H "Authorization: Bearer ha-admin-token" \
+curl -fsS "localhost:18080/api/v1/runs/$RUN" -H "Authorization: Bearer $ADMIN_PAT" \
   | tee "$SCRATCH/partB-run.json"
-curl -fsS "localhost:18080/api/v1/runs/$RUN/logs" -H "Authorization: Bearer ha-admin-token" \
+curl -fsS "localhost:18080/api/v1/runs/$RUN/logs" -H "Authorization: Bearer $ADMIN_PAT" \
   | tee "$SCRATCH/partB-run-logs.txt"
 psql "SELECT step_index, name, status, started_at, ended_at FROM step_reports WHERE run_id='$RUN' ORDER BY step_index;" \
   | tee "$SCRATCH/partB-steps.txt"
@@ -310,7 +310,7 @@ period longer than the run.
 
 ```bash
 # B2a. A run that finishes in ~120s, on a known agent.
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-sideeffect"}'
 psql "SELECT id, status, claimed_by, claimed_at FROM runs WHERE job_name='edge-sideeffect' ORDER BY created_at DESC LIMIT 1;"
 
@@ -358,7 +358,7 @@ Part A's runs hold no mutex, so I3 needs its own arm using the mutex fixtures.
 
 ```bash
 # C1. edge-sideeffect declares `spec.concurrency.mutex: edge-mutex`.
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-sideeffect"}'
 #     The column is `mutex_name`, NOT `name` (001_init.up.sql:123) — see the
 #     execution note below; a typo here lost the first Part B2 lock reading.
@@ -380,14 +380,14 @@ done | tee "$SCRATCH/partC-release-poll.txt"
 
 ```bash
 # C3. The successor must actually acquire it — an empty table is necessary, not sufficient.
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-mutex-successor"}'
 for i in $(seq 1 30); do
   date -u +%FT%T.%3NZ
   psql "SELECT id, job_name, status FROM runs WHERE job_name='edge-mutex-successor';"
   sleep 2
 done | tee "$SCRATCH/partC-successor-poll.txt"
-curl -fsS "localhost:18080/api/v1/runs/$SUCCESSOR/logs" -H "Authorization: Bearer ha-admin-token" \
+curl -fsS "localhost:18080/api/v1/runs/$SUCCESSOR/logs" -H "Authorization: Bearer $ADMIN_PAT" \
   | tee "$SCRATCH/partC-successor-logs.txt"     # expect `acquired-mutex-ok`
 ```
 

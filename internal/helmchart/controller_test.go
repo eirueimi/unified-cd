@@ -207,3 +207,22 @@ func TestControllerExternalURL_ConfigOverrides(t *testing.T) {
 		ingressSet("controller.config.externalUrl=https://override.example")...))
 	assert.Equal(t, "https://override.example", cfg["externalUrl"])
 }
+
+func TestControllerConfigAccountsFromValues(t *testing.T) {
+	objs := Render(t, "unified-cd")
+	cfg := controllerConfig(t, objs)
+	assert.NotContains(t, cfg, "serviceAccounts")
+	assert.NotContains(t, cfg, "tokens")
+	assert.NotContains(t, cfg, "ui")
+
+	objs = Render(t, "unified-cd",
+		"controller.serviceAccounts.ci-bot.enabled=true",
+		"controller.tokens.defaultLifetime=720h",
+		"controller.tokens.maxLifetime=2160h",
+		"controller.ui.allowTokenEntry=true")
+	cfg = controllerConfig(t, objs)
+	assert.Equal(t, true, dig(t, cfg, "serviceAccounts", "ci-bot", "enabled"))
+	assert.Equal(t, "720h", dig(t, cfg, "tokens", "defaultLifetime"))
+	assert.Equal(t, "2160h", dig(t, cfg, "tokens", "maxLifetime"))
+	assert.Equal(t, true, dig(t, cfg, "ui", "allowTokenEntry"))
+}

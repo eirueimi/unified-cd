@@ -299,7 +299,7 @@ BLOCKED with the evidence.
 ```bash
 curl -s -o /dev/null -w 'readyz=%{http_code}\n' localhost:18080/readyz
 docker compose $COMPOSE_FILES ps --format '{{.Service}} {{.State}}'
-curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token" | tee "$SCRATCH/agents.json"
+curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer $ADMIN_PAT" | tee "$SCRATCH/agents.json"
 
 # G1. Statement logging on, with host attribution. log_parameter_max_length is
 #     -1 on postgres:16-alpine (W2-1), so DETAIL parameter lines come free.
@@ -331,11 +331,11 @@ psql "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=17023885
 # G3. Apply the job, then the schedule. Schedule fires start immediately:
 #     last_fired_at is NULL so base = now-1h and the newest past occurrence is due.
 curl -fsS -X POST localhost:18080/api/v1/jobs \
-  -H "Authorization: Bearer ha-admin-token" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $ADMIN_PAT" -H 'Content-Type: application/json' \
   --data-binary @../edgecase/workloads/tick.payload.json -o /dev/null -w "tick=%{http_code}\n"
 # NOTE the DIFFERENT path. POST /api/v1/jobs returns 400 for a kind: Schedule.
 curl -fsS -X POST localhost:18080/api/v1/schedules \
-  -H "Authorization: Bearer ha-admin-token" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $ADMIN_PAT" -H 'Content-Type: application/json' \
   --data-binary @../edgecase/workloads/schedule-every-minute.payload.json \
   -w "\nschedule=%{http_code}\n"                                # expect 200 x2
 psql "SELECT name, cron, job_name, last_fired_at FROM schedules;"

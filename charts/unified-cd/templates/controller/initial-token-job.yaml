@@ -1,0 +1,127 @@
+{{- if include "unified-cd.initialTokenGenerate" . }}
+{{- /*
+Generates the one-time initial admin token at install time, in the cluster, so
+the value never appears in a rendered manifest, a release bundle or Helm
+release metadata. A non-SSO controller exchanges it once (unified-cli
+bootstrap, or POST /api/v1/bootstrap) for a PAT of the built-in admin account;
+the Deployment reads it through a secretKeyRef that is required (so the pod waits for the Secret) while this Job generates it.
+
+This is a sibling of the KEK Job (kek-job.yaml) and follows the same create-once
+pattern: `kubectl create secret` (never apply) so a re-run on `helm upgrade`
+cannot replace an existing Secret, and an AlreadyExists failure is treated as
+success after confirming the Secret is there. It has its own ServiceAccount and
+Role rather than sharing the KEK Job's, so each Role can name exactly the one
+Secret its Job may read, and because the KEK Job only renders when the chart
+generates the KEK, whereas the initial token applies to production installs
+that bring their own KEK as well. The Job's pod template is reused as is from
+the KEK Job (same pinned image and hook setting) and, like it, carries only a
+stable label because a Job's pod template is immutable.
+*/}}
+{{- $hook := .Values.controller.kek.job.helmHook }}
+{{- $ns := include "unified-cd.namespace" . }}
+{{- $secret := .Values.controller.initialAdminToken.secretName }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: unified-cd-initial-token-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+  {{- if $hook }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: unified-cd-initial-token-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+  {{- if $hook }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+  {{- end }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  {{- /* get cannot be combined with create under resourceNames, so it is its own rule. */}}
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $secret | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: unified-cd-initial-token-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+  {{- if $hook }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+  {{- end }}
+subjects:
+  - kind: ServiceAccount
+    name: unified-cd-initial-token-init
+    namespace: {{ $ns }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: unified-cd-initial-token-init
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: unified-cd-initial-token-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "unified-cd.labels" . | nindent 4 }}
+  {{- if $hook }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+  {{- end }}
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: unified-cd-initial-token-init
+    spec:
+      serviceAccountName: unified-cd-initial-token-init
+      restartPolicy: OnFailure
+      containers:
+        - name: initial-token-init
+          image: {{ .Values.controller.kek.job.image }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              token="uci_$(head -c20 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+              if kubectl -n {{ $ns }} create secret generic {{ $secret }} \
+                  --from-literal=UNIFIED_INITIAL_ADMIN_TOKEN="$token"; then
+                echo "{{ $secret }} created"
+                exit 0
+              fi
+              # create failed. The only acceptable reason is that the
+              # Secret already exists from a previous install, in which
+              # case it must be left alone. Anything else is a real error.
+              if kubectl -n {{ $ns }} get secret {{ $secret }} >/dev/null 2>&1; then
+                echo "{{ $secret }} already exists; leaving it untouched"
+                exit 0
+              fi
+              echo "failed to create {{ $secret }} and it does not already exist" >&2
+              exit 1
+{{- end }}

@@ -116,7 +116,7 @@ func (p *relayIdP) lastToken() url.Values {
 
 func newRelayServer(t *testing.T, p *relayIdP, secret string) *Server {
 	t.Helper()
-	s := NewServer(Config{Token: "t"}, nil)
+	s := NewServer(Config{}, nil)
 	s.SetOIDCConfig(&OIDCConfig{Issuer: p.URL, ClientID: "web", ClientSecret: "web-secret", DeviceClientID: "cli", DeviceClientSecret: secret})
 	return s
 }

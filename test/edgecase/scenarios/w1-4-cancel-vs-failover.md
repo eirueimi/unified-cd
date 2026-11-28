@@ -53,17 +53,17 @@ before relying on the baseline for either race:
 
 ```bash
 curl -fsS -X POST localhost:18080/api/v1/jobs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   --data-binary @../edgecase/workloads/longrun.payload.json
 
 curl -fsS -X POST localhost:18080/api/v1/runs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   -d '{"jobName":"edge-longrun"}'
 # capture .id as RUN_ID
 
-curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer $ADMIN_PAT"
 # expect status:"Running"
-curl -N --max-time 8 "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer ha-admin-token"
+curl -N --max-time 8 "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer $ADMIN_PAT"
 # expect live "tick N" lines arriving during the 8s window
 ```
 
@@ -86,7 +86,7 @@ follows the 2xx as tightly as possible:
 ```bash
 date
 curl -fsS -o /tmp/cancel_resp -w '%{http_code}\n' -X POST "localhost:18080/api/v1/runs/<RUN_ID>/cancel" \
-  -H "Authorization: Bearer ha-admin-token" \
+  -H "Authorization: Bearer $ADMIN_PAT" \
   && ../edgecase/tools/inject.sh kill-hard controller1 \
   && ../edgecase/tools/inject.sh kill-hard controller2 \
   && ../edgecase/tools/inject.sh kill-hard controller3
@@ -126,7 +126,7 @@ for i in $(seq 1 8); do
 done
 
 date
-curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>" -H "Authorization: Bearer $ADMIN_PAT"
 # expect status:"Cancelled" immediately on first successful read after
 # readyz flips to 200 — record the timestamp/updatedAt on the row
 ```
@@ -162,7 +162,7 @@ container is still reachable — that no stray `sh -c ... tick` process
 remains:
 
 ```bash
-curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/logs?after=0" -H "Authorization: Bearer ha-admin-token" \
+curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/logs?after=0" -H "Authorization: Bearer $ADMIN_PAT" \
   | python3 -c "import json,sys; lines=[json.loads(l)['line'] for l in sys.stdin if l.strip()]; print('last tick line:', lines[-1] if lines else None); print('count:', len(lines))"
 # the last "tick N" should correspond to wall-clock time at/before the kill,
 # not continue climbing toward 300 after recovery
@@ -186,11 +186,11 @@ cat > /tmp/w1-4-mutex.payload.json <<'EOF'
 EOF
 
 curl -fsS -X POST localhost:18080/api/v1/jobs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   --data-binary @/tmp/w1-4-mutex.payload.json
 
 curl -fsS -X POST localhost:18080/api/v1/runs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   -d '{"jobName":"edge-mutex-cancel"}'
 # capture .id as MUTEX_RUN_ID
 ```
@@ -198,7 +198,7 @@ curl -fsS -X POST localhost:18080/api/v1/runs \
 Confirm the mutex row exists once the run is `Running`:
 
 ```bash
-curl -fsS "localhost:18080/api/v1/runs/<MUTEX_RUN_ID>" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/runs/<MUTEX_RUN_ID>" -H "Authorization: Bearer $ADMIN_PAT"
 # expect status:"Running"
 docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -c \
   "SELECT * FROM mutex_holders WHERE mutex_name='edge-mutex-cancel';"
@@ -211,7 +211,7 @@ run-status commit):
 
 ```bash
 curl -fsS -o /tmp/cancel_resp2 -w '%{http_code}\n' -X POST "localhost:18080/api/v1/runs/<MUTEX_RUN_ID>/cancel" \
-  -H "Authorization: Bearer ha-admin-token"
+  -H "Authorization: Bearer $ADMIN_PAT"
 cat /tmp/cancel_resp2
 # expect 2xx
 ```
@@ -222,7 +222,7 @@ tables:
 ```bash
 for i in $(seq 1 10); do
   date
-  curl -fsS "localhost:18080/api/v1/runs/<MUTEX_RUN_ID>" -H "Authorization: Bearer ha-admin-token"
+  curl -fsS "localhost:18080/api/v1/runs/<MUTEX_RUN_ID>" -H "Authorization: Bearer $ADMIN_PAT"
   echo
   sleep 2
 done
@@ -251,11 +251,11 @@ Trigger a fresh `edge-longrun` run and confirm it is ticking:
 
 ```bash
 curl -fsS -X POST localhost:18080/api/v1/runs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   -d '{"jobName":"edge-longrun"}'
 # capture .id as RUN_ID2
 
-curl -fsS "localhost:18080/api/v1/runs/<RUN_ID2>" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/runs/<RUN_ID2>" -H "Authorization: Bearer $ADMIN_PAT"
 # expect status:"Running"
 ```
 
@@ -276,7 +276,7 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:18080/readyz
 # expect 502/503/000 (connection error)
 
 curl -sS -o /tmp/cancel_down_resp -w 'HTTP_CODE:%{http_code}\n' -X POST "localhost:18080/api/v1/runs/<RUN_ID2>/cancel" \
-  -H "Authorization: Bearer ha-admin-token"
+  -H "Authorization: Bearer $ADMIN_PAT"
 cat /tmp/cancel_down_resp
 # record exact code (expect 502/503, or a curl exit/connect error if nginx
 # itself has no live upstream at all)
@@ -298,7 +298,7 @@ Retry the identical cancel once `/readyz` is 200:
 ```bash
 date
 curl -fsS -o /tmp/cancel_retry_resp -w '%{http_code}\n' -X POST "localhost:18080/api/v1/runs/<RUN_ID2>/cancel" \
-  -H "Authorization: Bearer ha-admin-token"
+  -H "Authorization: Bearer $ADMIN_PAT"
 cat /tmp/cancel_retry_resp
 # expect 2xx this time
 ```
@@ -310,7 +310,7 @@ no outage was in progress when the cancel actually landed):
 ```bash
 for i in $(seq 1 10); do
   date
-  curl -fsS "localhost:18080/api/v1/runs/<RUN_ID2>" -H "Authorization: Bearer ha-admin-token"
+  curl -fsS "localhost:18080/api/v1/runs/<RUN_ID2>" -H "Authorization: Bearer $ADMIN_PAT"
   echo
   sleep 3
 done

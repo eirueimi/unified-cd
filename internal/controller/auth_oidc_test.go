@@ -1,12 +1,11 @@
 package controller
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
+	"github.com/eirueimi/unified-cd/internal/authz"
 	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,7 +72,7 @@ func TestGenerateState(t *testing.T) {
 
 func TestHandleMe_NoCookie(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t"}, pg)
+	srv := NewServer(Config{}, pg)
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 
@@ -85,7 +84,7 @@ func TestHandleMe_NoCookie(t *testing.T) {
 
 func TestHandleMe_InvalidCookie(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t"}, pg)
+	srv := NewServer(Config{}, pg)
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 
@@ -98,17 +97,13 @@ func TestHandleMe_InvalidCookie(t *testing.T) {
 }
 
 func TestHandleMe_ValidSession(t *testing.T) {
-	pg := storetest.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t"}, pg)
+	srv, pg := newAuthzTestServer(t, authz.Legacy{UserMap: map[string]string{"test@example.com": "admin"}}, "")
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 
 	// Create a session directly in the DB.
 	sessionToken := "exc_testtoken1234567890abcdef12345678"
-	tokenHash := HashToken(sessionToken)
-	expiresAt := time.Now().Add(1 * time.Hour)
-	_, err := pg.CreateSession(context.Background(), tokenHash, "sub123", "test@example.com", "admin", nil, []byte("dek"), []byte("ct"), expiresAt)
-	require.NoError(t, err)
+	addSession(t, pg, sessionToken, "sub123", "test@example.com", "admin", []string{})
 
 	req, _ := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/v1/auth/me", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionToken})
@@ -119,15 +114,12 @@ func TestHandleMe_ValidSession(t *testing.T) {
 }
 
 func TestHandleLogout_ClearsSession(t *testing.T) {
-	pg := storetest.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t"}, pg)
+	srv, pg := newAuthzTestServer(t, authz.Legacy{UserMap: map[string]string{"logout@example.com": "admin"}}, "")
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 
 	sessionToken := "exc_logouttoken1234567890abcdef1234"
-	tokenHash := HashToken(sessionToken)
-	_, err := pg.CreateSession(context.Background(), tokenHash, "sub456", "logout@example.com", "admin", nil, []byte("dek"), []byte("ct"), time.Now().Add(time.Hour))
-	require.NoError(t, err)
+	addSession(t, pg, sessionToken, "sub456", "logout@example.com", "admin", []string{})
 
 	req, _ := http.NewRequest(http.MethodPost, httpSrv.URL+"/api/v1/auth/logout", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionToken})
@@ -147,7 +139,7 @@ func TestHandleLogout_ClearsSession(t *testing.T) {
 
 func TestHandleOIDCLogin_NotConfigured(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t"}, pg)
+	srv := NewServer(Config{}, pg)
 	// OIDCConfig is not configured.
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -163,7 +155,7 @@ func TestHandleOIDCLogin_NotConfigured(t *testing.T) {
 
 func TestHandleOIDCLogin_NoClientSecret(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t"}, pg)
+	srv := NewServer(Config{}, pg)
 	// No ClientSecret (CLI device flow only configuration).
 	srv.SetOIDCConfig(&OIDCConfig{Issuer: "https://example.com", ClientID: "cid"})
 	httpSrv := httptest.NewServer(srv.Router())

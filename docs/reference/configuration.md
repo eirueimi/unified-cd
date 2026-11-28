@@ -13,7 +13,6 @@ unified-cd-controller [FLAGS]
   --dsn                   string   PostgreSQL DSN (env: UNIFIED_DB_DSN)
   --addr                  string   Listen address (default: :8080)
   --external-url          string   Public base URL for run links (env: UNIFIED_EXTERNAL_URL; falls back to oidc.externalUrl)
-  --token                 string   Static bearer token (env: UNIFIED_TOKEN)
   --s3-endpoint           string   S3-compatible endpoint (env: UNIFIED_S3_ENDPOINT)
   --s3-bucket             string   S3 bucket name (env: UNIFIED_S3_BUCKET)
   --s3-key                string   S3 access key ID (env: UNIFIED_S3_KEY)
@@ -29,7 +28,6 @@ unified-cd-controller [FLAGS]
   --audit-retention-days  int      Days to keep audit_logs rows; 0 = keep forever (default: 90, env: UNIFIED_AUDIT_RETENTION_DAYS)
   --run-retention-days    int      Days to keep terminal (Succeeded/Failed/Cancelled) runs; 0 = keep forever (default: 0, env: UNIFIED_RUN_RETENTION_DAYS)
   --log-trim-days         int      Days after a run's logs are archived before its DB log rows are deleted; 0 = never trim (default: 0, env: UNIFIED_LOG_TRIM_DAYS)
-  --allow-default-token   bool     Allow starting with the publicly documented default admin token; trial use only (env: UNIFIED_ALLOW_DEFAULT_TOKEN)
   --insecure-cookies      bool     Do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)
   --git-known-hosts-file   string   Persistent SSH known_hosts file for trust-on-first-use of git SSH host keys (default: <data-dir>/.ssh/known_hosts, else a temp dir; env: UNIFIED_GIT_KNOWN_HOSTS_FILE)
   --git-timeout           duration Maximum time for one controller-side git operation before its process tree is killed (default: 5m, env: UNIFIED_GIT_TIMEOUT)
@@ -53,8 +51,11 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_DB_BACKGROUND_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for scheduler, reaper, archiver, retention, and reconciler queries. Positive integer; default `32`. |
 | `UNIFIED_DB_LOCK_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for session-level advisory locks. Positive integer; default `16`. |
 | `UNIFIED_DB_LISTEN_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for SSE `LISTEN` sessions. Positive integer; default `128`. |
-| `UNIFIED_TOKEN` | Yes (without SSO) | Static admin bearer token. Auto-synced to DB as a PAT named `env:UNIFIED_TOKEN`. Required when OIDC is not configured. The controller refuses to start when this equals the published default token (the one in the quickstarts and `.env.example`) unless `UNIFIED_DEV_MODE=1` or `UNIFIED_ALLOW_DEFAULT_TOKEN=1` is set. |
-| `UNIFIED_ALLOW_DEFAULT_TOKEN` | No | `1` lets the controller start with the published default admin token. For throwaway trials only (the Helm trial Secret and the repo-root dev compose set it). Never use in production. |
+| `UNIFIED_INITIAL_ADMIN_TOKEN` | No | The one-time initial admin token (`uci_` plus 40 hex characters) of a non-SSO install, instead of letting the controller generate one into `initial-admin-token`. Exchange it once with `unified-cli bootstrap`; the same one-time rules apply. It is honoured with SSO too. The controller refuses to start if the value is shorter than 24 characters, or if it is the published development value of the repo-root `docker-compose.yaml` while `UNIFIED_DEV_MODE` is unset. In HA set the same value on every replica. See [Authorization: Built-in admin account and recovery](../operator-manual/authorization.md#built-in-admin-account-and-recovery). |
+| `UNIFIED_TOKENS_DEFAULT_LIFETIME` | No | `tokens.defaultLifetime` as a Go duration (default `2160h`). |
+| `UNIFIED_TOKENS_MAX_LIFETIME` | No | `tokens.maxLifetime` as a Go duration (default `8760h`; `0` = no cap). |
+| `UNIFIED_UI_ALLOW_TOKEN_ENTRY` | No | `1` keeps the manual token form in the web UI while browser SSO is configured (`ui.allowTokenEntry`). |
+| `UNIFIED_TOKEN` | Ignored | **Removed.** The controller no longer has a static admin token. If set (or `--token`, or `token:` in the config file) it logs `UNIFIED_TOKEN is no longer used by the controller and is ignored; see docs/operator-manual/migrations/2026-11-27-internal-accounts.md` and starts anyway. `UNIFIED_TOKEN` still means "the PAT the CLI sends" for `unified-cli`; see the [CLI reference](cli.md#global-flags). The former default-token override variable and flag are accepted and ignored too. |
 | `UNIFIED_CONTROLLER_KEY_FILE` | Required | Path to a file containing a 32-byte hex master key (`unified-cli keygen --out /etc/unified-cd/kek`). Mutually exclusive with `UNIFIED_KMS_URI`. **All replicas must be given the same file in HA setups.** |
 | `UNIFIED_KMS_URI` | Optional | External KMS: `hashivault://[<mount>/]<key>` (default mount `transit`). The controller wraps DEKs with Vault/OpenBao Transit and never holds the key itself. |
 | `UNIFIED_VAULT_ADDR` | With KMS | Vault/OpenBao address. |
@@ -118,7 +119,6 @@ All flags can be specified in a YAML config file (`-f config.yaml`):
 ```yaml
 dsn: postgres://unified:unified@localhost:5432/unified?sslmode=disable
 addr: :8080
-token: dev-secret
 
 s3Endpoint: garage.internal:3900
 s3Bucket: unified-cd
@@ -144,6 +144,19 @@ storeCredentialRateLimit:             # objects/presign; per requester, per cont
   burst: 200
   perSecond: 20
 trustedProxies: []                    # CIDRs/IPs of reverse proxies trusted to set X-Forwarded-For / X-Real-IP, e.g. ["10.244.3.17/32"] (never the whole pod CIDR)
+serviceAccounts:                      # service accounts for CI (see below); the built-in admin takes only `enabled`
+  admin:
+    enabled: true
+  ci-deploy:
+    permissions:
+      global: [viewer, token.create]   # token.create lets CI rotate its own PAT
+      folders:
+        team-a: developer
+tokens:                               # PAT lifetimes (Go durations)
+  defaultLifetime: 2160h              # used when --expires-in is omitted (default 90 days)
+  maxLifetime: 8760h                  # upper bound for --expires-in (default 365 days; 0 = no cap)
+ui:
+  allowTokenEntry: false              # true => keep the manual token form in the web UI while browser SSO is configured
 
 # Log level is a flag/env, not a config-file field: --log-level / UNIFIED_LOG_LEVEL
 
@@ -189,6 +202,33 @@ agentAuth:
 
 Config-file keys map 1:1 to the flags above (e.g. `dataDir` ↔ `--data-dir`), with OIDC settings under the nested `oidc:` block. See `internal/config/controller.go` for the authoritative field list.
 
+#### `serviceAccounts` (config file only)
+
+Declares the service accounts that CI and other automation authenticate as. It is independent of `oidc:`, so it works with or without SSO. The key is the account name (a DNS label that must not start with `env:` or `system:`).
+
+| Key | Value |
+|---|---|
+| `serviceAccounts.<name>.permissions.global` | A role name, a permission name, or a list mixing both: the same grant syntax as one `users:` entry of `oidc.permissions` (any of the 30 permissions) |
+| `serviceAccounts.<name>.permissions.folders.<folder>` | The same, but only folder-scopable permissions; a global-only permission here is an error |
+| `serviceAccounts.admin.enabled` | The built-in `admin` account (always present, holds the admin bundle). **Only `enabled` may be set** (default `true`); `permissions` on it is an error. Set `false` once SSO works |
+
+An entry removed from the file is disabled at the next start (the row is kept for the audit log); adding it back re-enables it. A service account with no `permissions` authenticates but holds nothing (`forbidden: no role`). Issue its PAT with `unified-cli token create --account <name>`. Validation errors, such as `serviceAccounts["admin"]: only "enabled" may be set for the built-in admin account`, are listed in [Troubleshooting](../troubleshooting/controller-and-database.md#accounts-and-the-initial-admin-token). Helm: `controller.serviceAccounts`.
+
+#### `tokens` (PAT lifetimes)
+
+| Key | Env | Default | Meaning |
+|---|---|---|---|
+| `tokens.defaultLifetime` | `UNIFIED_TOKENS_DEFAULT_LIFETIME` | `2160h` (90 days) | Lifetime of a new PAT when `--expires-in` is omitted. Must be positive and must not exceed `maxLifetime` |
+| `tokens.maxLifetime` | `UNIFIED_TOKENS_MAX_LIFETIME` | `8760h` (365 days) | Longest lifetime a new PAT may ask for; above it `token create` answers `expiresIn exceeds tokens.maxLifetime (<max>)`. `0` removes the cap (the bare integer `0` is accepted). Must not be negative |
+
+Both are Go durations (`720h`, `2160h`); the environment variables apply only to keys the config file leaves unset. PATs of the built-in `admin` account are always capped at 720h, whatever these say. Every new PAT has an expiry, and PATs created before the upgrade keep theirs. The controller logs `personal access tokens expire within 7 days` daily and exports `unifiedcd_pats_expiring_soon`. Validation errors: `tokens.defaultLifetime must be positive`, `tokens.maxLifetime must not be negative`, `tokens.defaultLifetime must not exceed tokens.maxLifetime`, `tokens.<field> must be a duration such as 2160h (or 0): ...`, `tokens: unknown field "..."`. Helm: `controller.tokens`.
+
+#### `ui`
+
+| Key | Env | Default | Meaning |
+|---|---|---|---|
+| `ui.allowTokenEntry` | `UNIFIED_UI_ALLOW_TOKEN_ENTRY` | `false` | When browser SSO is configured (OIDC with a client secret), the web UI hides the manual token form and the controller refuses a PAT on browser requests, detected by `Sec-Fetch-Site` (`personal access tokens are not accepted from the browser while SSO is configured; sign in with SSO`). `true` brings the form back, for example during an IdP outage. Without browser SSO the form is always shown. Helm: `controller.ui` |
+
 #### `oidc.permissions` (config file only)
 
 `oidc.permissions` grants permissions to OIDC groups and users, globally and per job folder, on top of the global role that `roleMap` / `userMap` / `defaultRole` produce. It is a nested map, so — like `roleMap` and `userMap` — **it can only be set in the config file; there is no environment variable and no flag for it**. It requires `oidc.issuer`, it is read at startup (change it, then restart), and it is strictly validated: the controller refuses to start on an unknown key, an unknown permission or role, a global-only permission on a folder, or a malformed folder key.
@@ -216,7 +256,7 @@ oidc:
 
 | Key | Value |
 |---|---|
-| `global.groups.<claim value>` / `global.users.<email or sub>` | A role name (`viewer`, `developer`, `admin`), a permission name, or a list mixing both. Any of the 28 permissions is allowed. |
+| `global.groups.<claim value>` / `global.users.<email or sub>` | A role name (`viewer`, `developer`, `admin`), a permission name, or a list mixing both. Any of the 30 permissions is allowed. |
 | `folders.<folder>.groups.<claim value>` / `folders.<folder>.users.<email or sub>` | The same, but only folder-scopable permissions (`job.read`, `job.configure`, `job.delete`, `run.trigger`, `run.replay`, `run.cancel`, `run.delete`, `run.approve`, `schedule.configure`). A role name contributes only its folder-scopable members. |
 
 Group keys are compared to the values of `oidc.rolesClaim`; user keys to the token's `email` and `sub`. Folder keys are normalised by trimming leading and trailing `/`; `*`, `?`, `[`, whitespace and empty, `.` or `..` segments are rejected. The full semantics, the list of startup error strings and recipes are in [Authorization](../operator-manual/authorization.md#configuring-grants-oidcpermissions); `examples/config/controller.yaml` carries a commented example.
@@ -776,7 +816,7 @@ Examples:
 unified-cli keygen --out /etc/unified-cd/kek
 
 UNIFIED_DB_DSN="postgres://user:pass@postgres-ha:5432/unified?sslmode=require" \
-UNIFIED_TOKEN="$(openssl rand -hex 32)" \
+UNIFIED_INITIAL_ADMIN_TOKEN="uci_$(openssl rand -hex 20)" \
 UNIFIED_CONTROLLER_KEY_FILE="/etc/unified-cd/kek" \
 UNIFIED_S3_ENDPOINT="s3.amazonaws.com" \
 UNIFIED_S3_BUCKET="my-unified-cd" \

@@ -225,7 +225,8 @@ in the database any more.
 |----------|----------------|
 | `UNIFIED_CONTROLLER_KEY_FILE` / `UNIFIED_KMS_URI` | **Same key on all replicas** (see above) |
 | `UNIFIED_DB_DSN` | Must point to the HA PostgreSQL endpoint (primary or pooler) |
-| `UNIFIED_TOKEN` | Same on all replicas (admin static token) |
+| `UNIFIED_INITIAL_ADMIN_TOKEN` | Optional. In HA set the same value on all replicas (or use SSO): a generated token is written to the local disk of the one replica that generates it, so the other replicas cannot show it to you. Any replica accepts the exchange, because only the hash is in PostgreSQL |
+| `serviceAccounts`, `tokens`, `ui` (config file) | Same on all replicas: each replica evaluates account permissions and PAT limits from its own config file |
 | `UNIFIED_S3_*` | All replicas must point to the same S3/Garage |
 | `UNIFIED_OIDC_*` | Same on all replicas when SSO is used (see [Authentication Guide](authentication.md)) |
 
@@ -284,6 +285,9 @@ On SIGINT/SIGTERM, the controller shuts down in stages:
 The whole sequence takes at most ~12 seconds, which fits within the Helm chart's `terminationGracePeriodSeconds: 30`. If you run the controller under another orchestrator, set its termination grace period to at least 15 seconds.
 
 This enables one-at-a-time rolling deploys with no downtime.
+
+!!! warning "The internal-accounts upgrade is not a rolling deploy"
+    The migration that introduces accounts drops the old PAT owner columns, which replicas of the previous version read. Stop **every** replica, upgrade, then start them; never run old and new replicas against one database. See [Migrating: internal accounts](migrations/2026-11-27-internal-accounts.md#3-upgrade-stop-every-replica-first).
 
 ### Health check endpoints
 
@@ -549,8 +553,8 @@ spec:
               valueFrom: { secretKeyRef: { name: unified-cd, key: db-dsn } }
             - name: UNIFIED_CONTROLLER_KEY_FILE
               value: /etc/unified-cd/kek
-            - name: UNIFIED_TOKEN
-              valueFrom: { secretKeyRef: { name: unified-cd, key: admin-token } }
+            - name: UNIFIED_INITIAL_ADMIN_TOKEN
+              valueFrom: { secretKeyRef: { name: unified-cd, key: initial-admin-token } }
             - name: UNIFIED_S3_ENDPOINT
               value: s3.amazonaws.com
             # UNIFIED_S3_BUCKET / KEY / SECRET etc. similarly
@@ -607,7 +611,7 @@ spec:
 
 - [ ] Controller is running on 2+ instances behind an L7 load balancer
 - [ ] **The same key file (`UNIFIED_CONTROLLER_KEY_FILE`) or KMS URI (`UNIFIED_KMS_URI`) is given to every replica**
-- [ ] `UNIFIED_TOKEN` / `UNIFIED_S3_*` / `UNIFIED_OIDC_*` are consistent across all replicas
+- [ ] `UNIFIED_INITIAL_ADMIN_TOKEN` (non-SSO) / `UNIFIED_S3_*` / `UNIFIED_OIDC_*` / `serviceAccounts` are consistent across all replicas
 - [ ] PostgreSQL is in an HA configuration (managed service or Patroni etc.)
 - [ ] If using a pooler, it is in **session pooling mode** (required for advisory locks and NOTIFY)
 - [ ] S3 is managed or distributed Garage

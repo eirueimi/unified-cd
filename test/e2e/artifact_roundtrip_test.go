@@ -40,8 +40,8 @@ func startArtifactController(t *testing.T) (baseURL string, pg *store.Postgres) 
 	t.Helper()
 
 	pg = storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	srv.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
 
 	httpSrv := httptest.NewServer(srv.Router())

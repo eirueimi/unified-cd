@@ -35,6 +35,22 @@ spec:
           env:
             - name: UNIFIED_CONTROLLER_KEY_FILE
               value: /etc/unified-cd/kek
+            {{- /*
+            When the chart generates the Secret (initial-token Job) the reference
+            is required, so a pod that starts before the Job has created it waits
+            (CreateContainerConfigError, retried) instead of starting without the
+            token and generating its own. Only when the chart does not generate
+            it (SSO only, or controller.initialAdminToken.generate=false) is it
+            optional.
+            */}}
+            - name: UNIFIED_INITIAL_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controller.initialAdminToken.secretName }}
+                  key: UNIFIED_INITIAL_ADMIN_TOKEN
+                  {{- if not (include "unified-cd.initialTokenGenerate" .) }}
+                  optional: true
+                  {{- end }}
           envFrom:
             - secretRef:
                 name: {{ include "unified-cd.controllerSecretName" . }}

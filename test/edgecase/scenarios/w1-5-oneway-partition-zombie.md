@@ -146,7 +146,7 @@ for c in controller1 controller2 controller3; do
 done
 curl -s -o /dev/null -w '%{http_code}\n' localhost:18080/readyz   # expect 200
 # both agents registered and heartbeating:
-curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token"
+curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer $ADMIN_PAT"
 # expect agent1 and agent2, both with a recent lastSeenAt
 ```
 
@@ -159,10 +159,10 @@ Apply both jobs:
 
 ```bash
 curl -fsS -X POST localhost:18080/api/v1/jobs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   --data-binary @../edgecase/workloads/sideeffect.payload.json
 curl -fsS -X POST localhost:18080/api/v1/jobs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   --data-binary @../edgecase/workloads/mutex-successor.payload.json
 # both expect 200. If either 400s, read the error body and check
 # internal/dsl/types.go — `mutex` lives under spec.concurrency, and
@@ -178,12 +178,12 @@ Trigger the run, then find the claiming agent and block it **immediately**
 ```bash
 date -u +%H:%M:%S
 curl -fsS -X POST localhost:18080/api/v1/runs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   -d '{"jobName":"edge-sideeffect"}'
 # capture .id as RUN_ID
 
 # poll until claimedBy is populated (usually within ~1-2s)
-curl -fsS "localhost:18080/api/v1/runs/$RUN_ID" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/runs/$RUN_ID" -H "Authorization: Bearer $ADMIN_PAT"
 # record: status ("Running"), claimedBy ("agent1" or "agent2"), claimedAt
 
 date -u +%H:%M:%S     # T0
@@ -209,7 +209,7 @@ SCRATCH=/path/to/scratchpad/w1-5
 mkdir -p "$SCRATCH"
 for i in $(seq 1 16); do
   echo "=== $(date -u +%H:%M:%S)"
-  curl -s "localhost:18080/api/v1/runs/$RUN_ID" -H "Authorization: Bearer ha-admin-token" \
+  curl -s "localhost:18080/api/v1/runs/$RUN_ID" -H "Authorization: Bearer $ADMIN_PAT" \
     | tr ',' '\n' | grep -E '"status"|"updatedAt"|"claimedBy"'
   echo "sideeffect lines: $(wc -l < ../edgecase/sideeffect-data/sideeffect.log)"
   sleep 15
@@ -260,13 +260,13 @@ I3 test: the reaper's `MarkRunFinished` is supposed to have deleted the
 ```bash
 date -u +%H:%M:%S
 curl -fsS -X POST localhost:18080/api/v1/runs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   -d '{"jobName":"edge-mutex-successor"}'
 # capture .id as SUCC_ID
 
 for i in $(seq 1 20); do
   date -u +%H:%M:%S
-  curl -s "localhost:18080/api/v1/runs/$SUCC_ID" -H "Authorization: Bearer ha-admin-token" \
+  curl -s "localhost:18080/api/v1/runs/$SUCC_ID" -H "Authorization: Bearer $ADMIN_PAT" \
     | tr ',' '\n' | grep -E '"status"|"claimedBy"'
   sleep 3
 done 2>&1 | tee "$SCRATCH/successor.txt"
@@ -337,7 +337,7 @@ Record specifically:
 
 ```bash
 curl -fsS "localhost:18080/api/v1/runs?jobName=edge-sideeffect" \
-  -H "Authorization: Bearer ha-admin-token" > "$SCRATCH/runs-sideeffect.json"
+  -H "Authorization: Bearer $ADMIN_PAT" > "$SCRATCH/runs-sideeffect.json"
 python -c "import json,sys; d=json.load(open(r'$SCRATCH/runs-sideeffect.json')); \
   rs=d if isinstance(d,list) else d.get('runs',d.get('items',[])); \
   print('run count:', len(rs)); [print(r['id'], r['status'], r.get('claimedBy')) for r in rs]"
@@ -367,7 +367,7 @@ cat > /tmp/w1-5-short.payload.json <<'EOF'
 {"yaml":"apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-short\nspec:\n  native: true\n  agentSelector:\n    - kind:linux\n  steps:\n    - name: quick\n      run: sleep 25; echo done-short\n"}
 EOF
 curl -fsS -X POST localhost:18080/api/v1/jobs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   --data-binary @/tmp/w1-5-short.payload.json
 
 # trigger, poll for claimedBy, block that agent immediately (same shape as above)

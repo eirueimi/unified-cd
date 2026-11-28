@@ -1,28 +1,24 @@
 package controller
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/eirueimi/unified-cd/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestServerAuth_StoresPATPrincipal(t *testing.T) {
-	pg := storetest.NewTestPostgres(t)
+	s, pg := newTestServer(t)
 
 	// Create a PAT named "ci-bot" with a known plain token.
 	plain := "test-pat-token-ci-bot"
-	hash := HashToken(plain)
-	_, err := pg.CreatePAT(context.Background(), "ci-bot", hash, "admin", nil, "")
-	require.NoError(t, err)
+	addRoleServicePAT(t, s, pg, "ci-bot", plain, "admin")
 
 	var got Principal
 	var ok bool
-	h := ServerAuth(pg, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := ServerAuth(pg, s)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, ok = principalFromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))

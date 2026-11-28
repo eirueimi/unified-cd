@@ -23,9 +23,7 @@ import (
 func newTestServer(t *testing.T) (*Server, store.Store) {
 	t.Helper()
 	pg := storetest.NewTestPostgres(t)
-	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
-	require.NoError(t, err)
-	s := NewServer(Config{}, pg)
+	s := newServerWithAdminPAT(t, pg, Config{})
 	// Stops the shared log-notify listener goroutine if an SSE test caused
 	// subscribeLogNotify to start it (most callers of newTestServer never
 	// touch SSE, so this is usually a no-op — see (*Server).Close). Ordered

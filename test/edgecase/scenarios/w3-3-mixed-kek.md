@@ -320,7 +320,7 @@ docker compose $MIXED up -d                 # recreates controller3 only
 
 Throughout, `psql` means
 `docker compose $MIXED exec -T postgres psql -U unified -tAc "<sql>"`, and `API`
-means `curl -sS -H "Authorization: Bearer ha-admin-token"` against
+means `curl -sS -H "Authorization: Bearer $ADMIN_PAT"` against
 `http://localhost:18080`.
 
 **Why an env override and not a re-pointed mount.** The overlay adds a *second*

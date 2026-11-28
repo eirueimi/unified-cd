@@ -81,7 +81,7 @@ services:
       dockerfile: docker/controller.Dockerfile
     environment:
       UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
-      UNIFIED_TOKEN: ha-admin-token
+      UNIFIED_INITIAL_ADMIN_TOKEN: uci_ha00000000000000000000000000000000000000
       # All replicas must share the same key file; see docs/operator-manual/high-availability.md.
       UNIFIED_CONTROLLER_KEY_FILE: /run/secrets/kek
       UNIFIED_S3_ENDPOINT: garage:3900
@@ -130,16 +130,38 @@ services:
     volumes:
       - ../..:/app
       - agent-credentials:/var/lib/unified-cd-agent
+      - admin-state:/state
     depends_on:
       - nginx
     environment:
       UNIFIED_SERVER: http://nginx:8080
-      UNIFIED_TOKEN: ha-admin-token
+      UNIFIED_INITIAL_ADMIN_TOKEN: uci_ha00000000000000000000000000000000000000
     command:
       - sh
       - -c
       - |
         set -e
+        # Exchange the initial admin token once; the exchange works only once,
+        # so the PAT is published in the admin-state volume for the tests and
+        # edgecase tools (they read /state/admin-token) and reused on re-runs.
+        ADMIN=/state/admin-token
+        if [ ! -s "$$ADMIN" ]; then
+          OK=0
+          for i in $$(seq 1 60); do
+            if (umask 077; go run -buildvcs=false ./cmd/unified-cli bootstrap > "$$ADMIN.tmp"); then
+              mv "$$ADMIN.tmp" "$$ADMIN"
+              OK=1
+              break
+            fi
+            echo "agent-enroll: bootstrap not ready yet, retrying..."
+            sleep 2
+          done
+          if [ "$$OK" != "1" ]; then
+            echo "agent-enroll: the initial admin token exchange never succeeded" >&2
+            exit 1
+          fi
+        fi
+        export UNIFIED_TOKEN="$$(cat "$$ADMIN")"
         for AGENTID in agent1 agent2; do
           DIR=/var/lib/unified-cd-agent/$$AGENTID
           mkdir -p "$$DIR"
@@ -221,6 +243,11 @@ services:
 
 volumes:
   agent-credentials:
+  # Holds the admin PAT the agent-enroll one-shot gets by exchanging the initial
+  # admin token (the exchange works once). The tests and edgecase tools read
+  # /state/admin-token from it; see test/ha/ha_test.go and
+  # test/edgecase/tools/lib/admin-token.sh.
+  admin-state:
   # Dedicated to this rig (compose prefixes it: unified-cd-ha_ha-garagedata), so
   # it can never collide with the dev stack's `garagedata`. It is also the
   # reason `docker compose down -v` is now MANDATORY between edge-case

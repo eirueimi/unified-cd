@@ -23,8 +23,8 @@ func TestPhase4_AgentLabelFilter(t *testing.T) {
 		t.Skip("phase 4 is linux/mac only")
 	}
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 
@@ -81,8 +81,8 @@ func TestPhase4_AnyAgentRun(t *testing.T) {
 		t.Skip("phase 4 is linux/mac only")
 	}
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 
@@ -136,8 +136,8 @@ func TestPhase4_LabeledAgentClaimsLabeledRun(t *testing.T) {
 		t.Skip("phase 4 is linux/mac only")
 	}
 	pg := storetest.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
-	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
+	srv := controller.NewServer(adminConfig(controller.Config{}), pg)
+	require.NoError(t, mustSeedAdminPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 

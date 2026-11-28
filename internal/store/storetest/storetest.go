@@ -68,3 +68,10 @@ func BackdateRunCreatedAt(ctx context.Context, pg *store.Postgres, runID string,
 func BackdateRunClaimedAt(ctx context.Context, pg *store.Postgres, runID string, age time.Duration) error {
 	return exec(ctx, pg, `UPDATE runs SET claimed_at = NOW() - ($1 * interval '1 second') WHERE id = $2`, age.Seconds(), runID)
 }
+
+// Exec runs a statement on a side connection of a store created by
+// NewTestPostgres. Tests use it to put rows the store API refuses to create
+// (for example a PAT without an account) into the database.
+func Exec(ctx context.Context, pg *store.Postgres, query string, args ...any) error {
+	return exec(ctx, pg, query, args...)
+}

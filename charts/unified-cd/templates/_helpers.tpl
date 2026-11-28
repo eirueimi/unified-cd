@@ -80,6 +80,18 @@ externalUrl: {{ . | quote }}
 trustedProxies:
   {{- toYaml . | nindent 2 }}
 {{- end }}
+{{- with .Values.controller.serviceAccounts }}
+serviceAccounts:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.controller.tokens }}
+tokens:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.controller.ui }}
+ui:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
 agentAuth:
   kubernetesClusters:
     - name: in-cluster
@@ -125,7 +137,7 @@ combination fails the render with a message naming the value to change.
 {{- fail "ingress.enabled requires controller.enabled: the Ingress routes to the controller Service" -}}
 {{- end -}}
 {{- if and .Values.ingress.enabled (include "unified-cd.trialSecret" .) -}}
-{{- fail "ingress.enabled with the bundled trial credentials would expose dev-token-change-me: set controller.existingSecret to a Secret you created, or disable ingress" -}}
+{{- fail "ingress.enabled with the bundled trial credentials would expose the trial database password; use the production values" -}}
 {{- end -}}
 {{- if and .Values.ingress.enabled (not .Values.ingress.hosts) -}}
 {{- fail "ingress.enabled requires at least one entry in ingress.hosts" -}}
@@ -212,4 +224,29 @@ api_bind_addr = "[::]:3900"
 
 [admin]
 api_bind_addr = "[::]:3903"
+{{- end -}}
+
+{{/*
+Renders "true" when the initial admin token Job runs and renders nothing
+otherwise: only with the controller enabled and controller.initialAdminToken.generate
+true (the default, for trial and production installs alike). Use as:
+  {{ if include "unified-cd.initialTokenGenerate" . }}
+*/}}
+{{- define "unified-cd.initialTokenGenerate" -}}
+{{- if and .Values.controller.enabled .Values.controller.initialAdminToken.generate -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+Shell lines (for NOTES.txt) that read the generated initial admin token and
+exchange it for an admin PAT. Never renders the token itself.
+*/}}
+{{- define "unified-cd.bootstrapSteps" -}}
+  export UNIFIED_SERVER=http://localhost:8080
+  export UNIFIED_INITIAL_ADMIN_TOKEN="$(kubectl -n {{ .Release.Namespace }} get secret {{ .Values.controller.initialAdminToken.secretName }} -o jsonpath='{.data.UNIFIED_INITIAL_ADMIN_TOKEN}' | base64 -d)"
+  unified-cli bootstrap
+
+The last command prints the PAT; use it as UNIFIED_TOKEN for unified-cli and
+paste it into the web UI sign-in form.
 {{- end -}}

@@ -29,16 +29,16 @@
 
 - **Injection mechanism:** the `unified-cli` admin verbs, run inside the
   `agent-enroll` service (it is the only service in this compose that has
-  both the Go toolchain and `UNIFIED_SERVER`/`UNIFIED_TOKEN` in its
-  environment). `-buildvcs=false` is required — this is a linked git
+  both the Go toolchain and `UNIFIED_SERVER` in its
+  environment; pass the admin PAT with `-e UNIFIED_TOKEN="$ADMIN_PAT"`, see README). `-buildvcs=false` is required — this is a linked git
   worktree and `go run` otherwise fails the VCS stamp:
 
   ```bash
-  docker compose -f docker-compose.ha.yaml run --rm agent-enroll \
+  docker compose -f docker-compose.ha.yaml run --rm -e UNIFIED_TOKEN="$ADMIN_PAT" agent-enroll \
     go run -buildvcs=false ./cmd/unified-cli agent identity revoke-credentials agent1
-  docker compose -f docker-compose.ha.yaml run --rm agent-enroll \
+  docker compose -f docker-compose.ha.yaml run --rm -e UNIFIED_TOKEN="$ADMIN_PAT" agent-enroll \
     go run -buildvcs=false ./cmd/unified-cli agent identity disable agent2
-  docker compose -f docker-compose.ha.yaml run --rm agent-enroll \
+  docker compose -f docker-compose.ha.yaml run --rm -e UNIFIED_TOKEN="$ADMIN_PAT" agent-enroll \
     go run -buildvcs=false ./cmd/unified-cli agent identity get agent1
   ```
 
@@ -176,7 +176,7 @@ for c in controller1 controller2 controller3; do
   echo -n "$c: "
   docker compose -f docker-compose.ha.yaml logs $c 2>/dev/null | grep -c "scheduler became leader"
 done                                                                 # expect exactly one controller with >=1
-curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token"
+curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer $ADMIN_PAT"
 # expect agent1 AND agent2, both with a recent lastSeenAt
 ```
 
@@ -188,10 +188,10 @@ Apply the job and confirm the identity is readable:
 
 ```bash
 curl -fsS -X POST localhost:18080/api/v1/jobs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   --data-binary @../edgecase/workloads/longrun.payload.json      # expect 200
 
-docker compose -f docker-compose.ha.yaml run --rm agent-enroll \
+docker compose -f docker-compose.ha.yaml run --rm -e UNIFIED_TOKEN="$ADMIN_PAT" agent-enroll \
   go run -buildvcs=false ./cmd/unified-cli agent identity get agent1
 # expect: Status: active   (this also warms the Go module cache)
 ```
@@ -212,11 +212,11 @@ mkdir -p "$SCRATCH"
 
 date -u +%FT%T.%3NZ
 curl -fsS -X POST localhost:18080/api/v1/runs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   -d '{"jobName":"edge-longrun"}'
 # capture .id as RUN_ID
 
-curl -fsS "localhost:18080/api/v1/runs/$RUN_ID" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/runs/$RUN_ID" -H "Authorization: Bearer $ADMIN_PAT"
 # record: status ("Running"), claimedBy, claimedAt
 ```
 
@@ -225,7 +225,7 @@ victim/control agent names throughout — Part C needs the *other* agent intact.
 
 ```bash
 date -u +%FT%T.%3NZ     # T_revoke
-docker compose -f docker-compose.ha.yaml run --rm agent-enroll \
+docker compose -f docker-compose.ha.yaml run --rm -e UNIFIED_TOKEN="$ADMIN_PAT" agent-enroll \
   go run -buildvcs=false ./cmd/unified-cli agent identity revoke-credentials agent1 \
   2>&1 | tee "$SCRATCH/revoke.txt"
 # expect: agent identity "agent1" revoke-credentials
@@ -246,11 +246,11 @@ from it:
 ```bash
 for i in $(seq 1 20); do
   echo "=== $(date -u +%FT%T.%3NZ)"
-  curl -s "localhost:18080/api/v1/runs/$RUN_ID" -H "Authorization: Bearer ha-admin-token" \
+  curl -s "localhost:18080/api/v1/runs/$RUN_ID" -H "Authorization: Bearer $ADMIN_PAT" \
     | tr ',' '\n' | grep -E '"status"|"updatedAt"|"claimedBy"'
-  curl -s "localhost:18080/api/v1/runs/$RUN_ID/logs/stats" -H "Authorization: Bearer ha-admin-token"
+  curl -s "localhost:18080/api/v1/runs/$RUN_ID/logs/stats" -H "Authorization: Bearer $ADMIN_PAT"
   echo
-  curl -s localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token" \
+  curl -s localhost:18080/api/v1/agents -H "Authorization: Bearer $ADMIN_PAT" \
     | tr ',' '\n' | grep -E '"id"|lastSeenAt'
   sleep 15
 done 2>&1 | tee "$SCRATCH/partA-timeline.txt"
@@ -319,7 +319,7 @@ Record precisely:
 
   ```bash
   grep -n "stuck-run reaper" "$SCRATCH/controllers.log"
-  curl -s "localhost:18080/api/v1/runs/$RUN_ID" -H "Authorization: Bearer ha-admin-token"
+  curl -s "localhost:18080/api/v1/runs/$RUN_ID" -H "Authorization: Bearer $ADMIN_PAT"
   ```
 
   **A run left `Running` forever here is a major I1 violation** — that is the
@@ -347,12 +347,12 @@ the restart is the part that actually discriminates them.
 ```bash
 date -u +%FT%T.%3NZ
 curl -fsS -X POST localhost:18080/api/v1/runs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   -d '{"jobName":"edge-longrun"}'
 # capture .id as RUN2_ID; confirm claimedBy == agent2
 
 date -u +%FT%T.%3NZ     # T_disable
-docker compose -f docker-compose.ha.yaml run --rm agent-enroll \
+docker compose -f docker-compose.ha.yaml run --rm -e UNIFIED_TOKEN="$ADMIN_PAT" agent-enroll \
   go run -buildvcs=false ./cmd/unified-cli agent identity disable agent2 \
   2>&1 | tee "$SCRATCH/disable.txt"
 
@@ -368,9 +368,9 @@ Also read the identity back both ways, so the operator-visible difference is
 on the record:
 
 ```bash
-docker compose -f docker-compose.ha.yaml run --rm agent-enroll \
+docker compose -f docker-compose.ha.yaml run --rm -e UNIFIED_TOKEN="$ADMIN_PAT" agent-enroll \
   go run -buildvcs=false ./cmd/unified-cli agent identity get agent1   # revoked  -> Status: ?
-docker compose -f docker-compose.ha.yaml run --rm agent-enroll \
+docker compose -f docker-compose.ha.yaml run --rm -e UNIFIED_TOKEN="$ADMIN_PAT" agent-enroll \
   go run -buildvcs=false ./cmd/unified-cli agent identity get agent2   # disabled -> Status: ?
 ```
 

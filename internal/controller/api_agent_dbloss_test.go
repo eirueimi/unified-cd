@@ -99,13 +99,11 @@ func (v fixedKubernetesVerifier) Verify(context.Context, string, store.AgentEnro
 // proves its ServiceAccount token and receives fresh credentials.
 func TestAgentDatabaseLoss_KubernetesAgentRecoversOncePolicyExists(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
-	require.NoError(t, err)
-	s := NewServer(Config{KubernetesEnrollmentVerifiers: map[string]KubernetesEnrollmentVerifier{
+	s := newServerWithAdminPAT(t, pg, Config{KubernetesEnrollmentVerifiers: map[string]KubernetesEnrollmentVerifier{
 		"in-cluster": fixedKubernetesVerifier{identity: KubernetesEnrollmentIdentity{
 			Cluster: "in-cluster", Namespace: "unified-cd", ServiceAccount: "unified-cd-k8s-agent", PodName: "agent-0", PodUID: "pod-uid",
 		}},
-	}}, pg)
+	}})
 	t.Cleanup(s.Close)
 
 	enroll := func() *httptest.ResponseRecorder {

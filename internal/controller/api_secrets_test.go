@@ -2,7 +2,6 @@ package controller
 
 import (
 	"bytes"
-	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -37,10 +36,8 @@ func testKeyManager(t *testing.T) secrets.KeyManager {
 func newTestServerWithKM(t *testing.T) (*Server, store.Store) {
 	t.Helper()
 	pg := storetest.NewTestPostgres(t)
-	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
-	require.NoError(t, err)
 	km := testKeyManager(t)
-	s := NewServer(Config{}, pg)
+	s := newServerWithAdminPAT(t, pg, Config{})
 	s.SetKeyManager(km)
 	t.Cleanup(s.Close) // see newTestServer's identical cleanup for why (api_jobs_test.go)
 	return s, pg
@@ -245,7 +242,7 @@ func TestAPI_FetchSecrets_ReturnsExistingSecret(t *testing.T) {
 
 func TestAPI_FetchSecrets_NotConfigured(t *testing.T) {
 	pg := storetest.NewTestPostgres(t)
-	s := NewServer(Config{Token: "secret"}, pg)
+	s := NewServer(Config{}, pg)
 	// KeyManager is not configured.
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 

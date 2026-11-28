@@ -1,0 +1,169 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/eirueimi/unified-cd/internal/config"
+	"github.com/eirueimi/unified-cd/internal/controller"
+	"github.com/eirueimi/unified-cd/internal/store/storetest"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestPrepareInitialTokenRace(t *testing.T) {
+	pg := storetest.NewTestPostgres(t)
+	dirs := []string{t.TempDir(), t.TempDir()}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = prepareInitialToken(t.Context(), pg, false, "", dirs)
+		}(i)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		require.NoError(t, err)
+	}
+
+	var files []string
+	for _, d := range dirs {
+		p := filepath.Join(d, controller.InitialTokenFileName)
+		if _, err := os.Stat(p); err == nil {
+			files = append(files, p)
+		}
+	}
+	require.Len(t, files, 1)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(files[0])
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
+	b, err := os.ReadFile(files[0])
+	require.NoError(t, err)
+	value := string(b)
+	assert.True(t, strings.HasPrefix(value, "uci_"))
+	assert.Len(t, value, len("uci_")+40)
+
+	state, err := pg.GetBootstrapState(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, controller.HashToken(value), state.InitialTokenHash)
+}
+
+func TestPrepareInitialTokenSkipsWithSSO(t *testing.T) {
+	pg := storetest.NewTestPostgres(t)
+	dir := t.TempDir()
+	path, err := prepareInitialToken(t.Context(), pg, true, "", []string{dir})
+	require.NoError(t, err)
+	assert.Empty(t, path)
+	_, statErr := os.Stat(filepath.Join(dir, controller.InitialTokenFileName))
+	assert.True(t, os.IsNotExist(statErr))
+	state, err := pg.GetBootstrapState(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, state.InitialTokenHash)
+}
+
+func TestPrepareInitialTokenProvided(t *testing.T) {
+	pg := storetest.NewTestPostgres(t)
+	dir := t.TempDir()
+	path, err := prepareInitialToken(t.Context(), pg, true, "uci_provided_value_0123456789", []string{dir})
+	require.NoError(t, err)
+	assert.Empty(t, path)
+	_, statErr := os.Stat(filepath.Join(dir, controller.InitialTokenFileName))
+	assert.True(t, os.IsNotExist(statErr))
+	state, err := pg.GetBootstrapState(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, controller.HashToken("uci_provided_value_0123456789"), state.InitialTokenHash)
+
+	// A second, different value does not replace the stored hash.
+	_, err = prepareInitialToken(t.Context(), pg, true, "uci_other_value_0123456789ab", []string{dir})
+	require.NoError(t, err)
+	state, err = pg.GetBootstrapState(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, controller.HashToken("uci_provided_value_0123456789"), state.InitialTokenHash)
+}
+
+func TestPrepareInitialTokenNoDir(t *testing.T) {
+	pg := storetest.NewTestPostgres(t)
+	missing := filepath.Join(t.TempDir(), "does", "not", "exist")
+	_, err := prepareInitialToken(t.Context(), pg, false, "", []string{missing, ""})
+	require.ErrorIs(t, err, errNoWritableDir)
+	_, err = prepareInitialToken(t.Context(), pg, false, "", nil)
+	require.ErrorIs(t, err, errNoWritableDir)
+	// Nothing was claimed, so a later start with a writable directory works.
+	state, err := pg.GetBootstrapState(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, state.InitialTokenHash)
+}
+
+func TestPrepareInitialTokenRemovesUsedFile(t *testing.T) {
+	pg := storetest.NewTestPostgres(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, controller.InitialTokenFileName)
+	require.NoError(t, os.WriteFile(path, []byte("uci_used"), 0o600))
+	ok, err := pg.ClaimInitialToken(t.Context(), controller.HashToken("uci_used"))
+	require.NoError(t, err)
+	require.True(t, ok)
+	ok, err = pg.ConsumeInitialToken(t.Context(), controller.HashToken("uci_used"))
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	_, err = prepareInitialToken(t.Context(), pg, false, "", []string{dir})
+	require.NoError(t, err)
+	_, statErr := os.Stat(path)
+	assert.True(t, os.IsNotExist(statErr))
+}
+
+func TestLegacyTokenKeysAccepted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "controller.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("token: old-secret\nallowDefaultToken: true\n"), 0o600))
+	eff, err := config.ControllerEffective(path)
+	require.NoError(t, err)
+	assert.Equal(t, "old-secret", eff.Token)
+}
+
+func TestWriteSecretFileReplacesStaleFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), controller.InitialTokenFileName)
+	require.NoError(t, os.WriteFile(path, []byte("stale"), 0o644))
+	require.NoError(t, writeSecretFile(path, "uci_new"))
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "uci_new", string(b))
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
+}
+
+func TestValidateProvidedInitialToken(t *testing.T) {
+	strong := "uci_" + strings.Repeat("a1b2c3d4", 5)
+
+	assert.NoError(t, validateProvidedInitialToken("", false), "an unset value is fine")
+	assert.NoError(t, validateProvidedInitialToken(strong, false))
+
+	err := validateProvidedInitialToken("uci_short", false)
+	require.Error(t, err)
+	assert.Equal(t, "UNIFIED_INITIAL_ADMIN_TOKEN is too short: use at least 24 characters", err.Error())
+	assert.Error(t, validateProvidedInitialToken("uci_short", true), "dev mode does not relax the length rule")
+
+	// The value published in the repo-root docker-compose.yaml.
+	err = validateProvidedInitialToken(devInitialAdminToken, false)
+	require.Error(t, err)
+	assert.Equal(t, "UNIFIED_INITIAL_ADMIN_TOKEN is the published development value; set your own value or UNIFIED_DEV_MODE=1 for a throwaway setup", err.Error())
+	assert.NoError(t, validateProvidedInitialToken(devInitialAdminToken, true))
+}
+
+// The constant must match the default in the repo-root docker-compose.yaml.
+func TestDevInitialAdminTokenMatchesCompose(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docker-compose.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "UNIFIED_INITIAL_ADMIN_TOKEN:-"+devInitialAdminToken+"}")
+}

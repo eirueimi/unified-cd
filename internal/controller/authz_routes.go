@@ -52,7 +52,9 @@ type routeRule struct {
 	// AltPerm is an alternative permission: the route is satisfied when the
 	// caller holds Perm or AltPerm (zero value: none).
 	AltPerm authz.Permission
-	Scope   routeScope
+	// AltPerm2 is a second alternative permission (zero value: none).
+	AltPerm2 authz.Permission
+	Scope    routeScope
 	// RunParam names the run path parameter ("id" or "runID") for scopeJobRunID.
 	RunParam string
 	// AgentBypass marks agent-or-human routes: an agent principal skips the
@@ -130,10 +132,16 @@ var routeTable = []routeRule{
 	global(mGet, "/api/v1/gitcredentials", authz.GitCredentialRead),
 	global(mDelete, "/api/v1/gitcredentials/{name}", authz.GitCredentialWrite),
 
-	global(mPost, "/api/v1/tokens", authz.TokenCreate),
-	// token.create covers the caller's own tokens, token.manage everyone's.
-	{Method: mGet, Pattern: "/api/v1/tokens", Perm: authz.TokenCreate, AltPerm: authz.TokenManage, Scope: scopeGlobal},
-	{Method: mDelete, Pattern: "/api/v1/tokens/{id}", Perm: authz.TokenCreate, AltPerm: authz.TokenManage, Scope: scopeGlobal},
+	// serviceaccount.token alone may mint PATs for service accounts.
+	{Method: mPost, Pattern: "/api/v1/tokens", Perm: authz.TokenCreate, AltPerm: authz.ServiceAccountToken, Scope: scopeGlobal},
+	// token.create covers the caller's own tokens, token.manage everyone's and
+	// serviceaccount.token the service accounts' (the handlers narrow the rows).
+	{Method: mGet, Pattern: "/api/v1/tokens", Perm: authz.TokenCreate, AltPerm: authz.TokenManage, AltPerm2: authz.ServiceAccountToken, Scope: scopeGlobal},
+	{Method: mDelete, Pattern: "/api/v1/tokens/{id}", Perm: authz.TokenCreate, AltPerm: authz.TokenManage, AltPerm2: authz.ServiceAccountToken, Scope: scopeGlobal},
+
+	global(mGet, "/api/v1/accounts", authz.AccountManage),
+	global(mPost, "/api/v1/accounts/{id}/disable", authz.AccountManage),
+	global(mPost, "/api/v1/accounts/{id}/enable", authz.AccountManage),
 
 	// agent.enroll (enrollment-only PATs) may create enrollment tokens; every other agent route needs agent.manage.
 	{Method: mPost, Pattern: "/api/v1/agent-enrollments", Perm: authz.AgentManage, AltPerm: authz.AgentEnroll, Scope: scopeGlobal},
@@ -181,6 +189,8 @@ var routeTable = []routeRule{
 	unauthenticated(mGet, "/api/v1/auth/oidc-login"),
 	unauthenticated(mGet, "/api/v1/auth/oidc-callback"),
 	unauthenticated(mPost, "/api/v1/auth/logout"),
+	// The handler checks the one-time initial token and writes its own audit row.
+	unauthenticated(mPost, "/api/v1/bootstrap"),
 	unauthenticated(mPost, "/api/v1/auth/cli/device/start"),
 	unauthenticated(mPost, "/api/v1/auth/cli/device/token"),
 	unauthenticated(mPost, "/api/v1/auth/cli/refresh"),

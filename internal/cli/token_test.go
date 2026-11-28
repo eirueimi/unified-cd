@@ -230,7 +230,7 @@ func TestTokenListShowsCreatedBy(t *testing.T) {
 	cmd.SetArgs([]string{"list"})
 	require.NoError(t, cmd.Execute())
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	require.Len(t, lines, 2)
-	assert.Contains(t, lines[0], "by pat:0)")
-	assert.NotContains(t, lines[1], " by ")
+	require.Len(t, lines, 3) // header + two tokens
+	assert.Contains(t, lines[1], "by pat:0")
+	assert.NotContains(t, lines[2], " by ")
 }

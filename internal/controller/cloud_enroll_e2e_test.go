@@ -22,11 +22,11 @@ import (
 func TestCloudEnroll_E2EHostAgentRegistersAndClaims(t *testing.T) {
 	issuer := newTestIssuer(t)
 	pg := storetest.NewTestPostgres(t)
-	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
+	var err error
 	require.NoError(t, err)
-	s := NewServer(Config{CloudEnrollmentVerifiers: map[string]CloudEnrollmentVerifier{
+	s := newServerWithAdminPAT(t, pg, Config{CloudEnrollmentVerifiers: map[string]CloudEnrollmentVerifier{
 		"gcp": NewGCPEnrollmentVerifier(issuer.Name, issuer.URL, nil),
-	}}, pg)
+	}})
 	t.Cleanup(s.Close)
 	controller := httptest.NewServer(s.Router())
 	t.Cleanup(controller.Close)

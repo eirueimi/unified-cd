@@ -42,9 +42,9 @@ func authzViewServer(t *testing.T) (*Server, string) {
 		UserMap:     map[string]string{"oncall-lead@example.com": "admin"},
 		DefaultRole: "deny",
 	}, authzViewPolicy)
-	makeRolePAT(t, pg, "tok-admin", "admin")
-	makeRolePAT(t, pg, "tok-viewer", "viewer")
-	makeRolePAT(t, pg, "tok-developer", "developer")
+	makeRolePAT(t, s, pg, "tok-admin", "admin")
+	makeRolePAT(t, s, pg, "tok-viewer", "viewer")
+	makeRolePAT(t, s, pg, "tok-developer", "developer")
 	return s, "tok-admin"
 }
 
@@ -96,16 +96,6 @@ func TestAuthzRead_AdminOnlyAmongBundles(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-func TestAuthzRead_BreakGlass(t *testing.T) {
-	s, pg := newAuthzTestServer(t, authz.Legacy{}, "")
-	s.cfg.Token = "bg-token"
-	_, err := pg.UpsertBootstrapPAT(t.Context(), BootstrapPATName, HashToken("bg-token"))
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, doAs(t, s, http.MethodGet, "/api/v1/authz/policy", "bg-token", nil).Code)
-	_, rec := explain(t, s, "bg-token", api.AuthzExplainRequest{User: "a@example.com"})
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
-
 func TestAuthzPolicy_ListsResolvedPolicy(t *testing.T) {
 	s, tok := authzViewServer(t)
 	rec := doAs(t, s, http.MethodGet, "/api/v1/authz/policy", tok, nil)
@@ -114,7 +104,7 @@ func TestAuthzPolicy_ListsResolvedPolicy(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &p))
 	assert.True(t, p.OIDC)
 	assert.Equal(t, "groups", p.RolesClaim)
-	assert.Len(t, p.Bundles["admin"], 28)
+	assert.Len(t, p.Bundles["admin"], 30)
 	require.Len(t, p.Global, 2)
 	require.Len(t, p.Folders, 3)
 	assert.Equal(t, []string{"team-a", "team-a/prod", "team-b"}, []string{p.Folders[0].Folder, p.Folders[1].Folder, p.Folders[2].Folder})
@@ -125,7 +115,7 @@ func TestAuthzPolicy_ListsResolvedPolicy(t *testing.T) {
 
 func TestAuthzPolicy_NoOIDC(t *testing.T) {
 	s, pg := newTestServer(t)
-	makeRolePAT(t, pg, "tok-admin", "admin")
+	makeRolePAT(t, s, pg, "tok-admin", "admin")
 	rec := doAs(t, s, http.MethodGet, "/api/v1/authz/policy", "tok-admin", nil)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	var p api.AuthzPolicy
@@ -145,11 +135,9 @@ func TestAuthzPolicy_NoOIDC(t *testing.T) {
 func TestAuthzEndpoints_ResponsesCarryNoSecrets(t *testing.T) {
 	const (
 		clientSecret = "s3cr3t-client-secret-9f2c"
-		bootToken    = "tok-break-glass-7a1d"
 		deviceID     = "device-client-id-4e8b"
 	)
 	s, tok := authzViewServer(t)
-	s.cfg.Token = bootToken
 	s.oidcCfg.ClientSecret = clientSecret
 	s.oidcCfg.DeviceClientID = deviceID
 
@@ -158,7 +146,7 @@ func TestAuthzEndpoints_ResponsesCarryNoSecrets(t *testing.T) {
 	bodies = append(bodies, rec.Body.String())
 	for _, body := range bodies {
 		require.NotEmpty(t, body)
-		for _, banned := range []string{clientSecret, bootToken, deviceID, tok, "clientSecret", "ClientSecret"} {
+		for _, banned := range []string{clientSecret, deviceID, tok, "clientSecret", "ClientSecret"} {
 			assert.NotContains(t, body, banned)
 		}
 	}
@@ -224,7 +212,7 @@ func TestAuthzExplain_UserMatchedAsEmailAndSub(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	assert.Equal(t, "admin", resp.GlobalRole)
 	assert.True(t, resp.LoginAllowed)
-	assert.Len(t, resp.Permissions, 28)
+	assert.Len(t, resp.Permissions, 30)
 	assert.Equal(t, []string{`role:admin (userMap["oncall-lead@example.com"])`}, grantedBy(resp, "authz.read"))
 
 	resp, _ = explain(t, s, tok, api.AuthzExplainRequest{User: "reader@example.com"})

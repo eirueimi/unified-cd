@@ -16,7 +16,6 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/agentauth"
 	"github.com/eirueimi/unified-cd/internal/cache"
-	"github.com/eirueimi/unified-cd/internal/controller"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/objtransfer"
 	"github.com/eirueimi/unified-cd/internal/store"
@@ -37,9 +36,7 @@ type localEnv struct {
 func newLocalEnv(t *testing.T) *localEnv {
 	t.Helper()
 	pg := storetest.NewTestPostgres(t)
-	_, err := pg.UpsertBootstrapPAT(t.Context(), "test-bootstrap", controller.HashToken("secret"))
-	require.NoError(t, err)
-	srv := controller.NewServer(controller.Config{}, pg)
+	srv := newAdminServer(t, pg)
 	t.Cleanup(srv.Close)
 	srv.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
 

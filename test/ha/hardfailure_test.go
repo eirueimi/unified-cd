@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -18,6 +19,59 @@ const (
 	hfNetwork = "unified-cd-hardfail-dbnet"
 	hfBound   = 20 * time.Second
 )
+
+// hfInitialToken is the one-time initial admin token docker-compose.hardfail.yaml
+// gives both controllers. It is exchanged once for an admin PAT (hfBootstrap).
+const hfInitialToken = "uci_ha00000000000000000000000000000000000000"
+
+var (
+	hfMu  sync.Mutex
+	hfPAT string
+)
+
+// hfBootstrap exchanges the initial admin token for an admin PAT through the
+// controller on port, once per stack, retrying while the controller is coming
+// up. The PAT is cached and dropped when the test ends.
+func hfBootstrap(t *testing.T, port string) string {
+	t.Helper()
+	hfMu.Lock()
+	defer hfMu.Unlock()
+	if hfPAT != "" {
+		return hfPAT
+	}
+	body, _ := json.Marshal(map[string]string{"initialToken": hfInitialToken})
+	deadline := time.Now().Add(60 * time.Second)
+	var lastCode int
+	var lastBody []byte
+	for time.Now().Before(deadline) {
+		resp, err := http.Post("http://localhost:"+port+"/api/v1/bootstrap", "application/json", bytes.NewReader(body))
+		if err == nil {
+			lastBody, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastCode = resp.StatusCode
+			if lastCode == http.StatusCreated {
+				var r struct {
+					Token string `json:"token"`
+				}
+				if json.Unmarshal(lastBody, &r) == nil && r.Token != "" {
+					hfPAT = r.Token
+					t.Cleanup(func() {
+						hfMu.Lock()
+						hfPAT = ""
+						hfMu.Unlock()
+					})
+					return hfPAT
+				}
+			}
+			if lastCode == http.StatusUnauthorized {
+				break // already used: retrying cannot help
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("bootstrap exchange via port %s failed: last status=%d body=%q", port, lastCode, lastBody)
+	return ""
+}
 
 // hf runs `docker compose -f hfCompose <args...>` and fails the test on error.
 func hf(t *testing.T, args ...string) []byte {
@@ -61,7 +115,7 @@ func hfPost(t *testing.T, port, path string, body any) (int, []byte) {
 	t.Helper()
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequest("POST", "http://localhost:"+port+path, bytes.NewReader(b))
-	req.Header.Set("Authorization", "Bearer ha-admin-token")
+	req.Header.Set("Authorization", "Bearer "+hfPAT)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -145,7 +199,7 @@ func hfTriggerQueued(t *testing.T, port string, within time.Duration) (string, t
 	// Poll status until Queued or later.
 	for {
 		req, _ := http.NewRequest("GET", "http://localhost:"+port+"/api/v1/runs/"+runID, nil)
-		req.Header.Set("Authorization", "Bearer ha-admin-token")
+		req.Header.Set("Authorization", "Bearer "+hfPAT)
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
 			rb, _ := io.ReadAll(resp.Body)
@@ -180,6 +234,8 @@ func TestHA_HardFailureLockRelease(t *testing.T) {
 	// Wait for readiness on both controllers.
 	waitHFReady(t, "18081", 120*time.Second)
 	waitHFReady(t, "18082", 120*time.Second)
+	// One exchange of the initial admin token; hfPost and the run poller read the PAT.
+	hfBootstrap(t, "18081")
 
 	// Apply a job (no agent needed; success signal is Queued).
 	const hfJobYAML = `apiVersion: unified-cd/v1

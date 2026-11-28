@@ -14,7 +14,7 @@ An open-source CI/CD tool (Jenkins alternative) written in Go.
 
 **GitHub:** https://github.com/eirueimi/unified-cd
 
-**Key features:** YAML-defined jobs · DAG step execution · Multi-platform agents (Linux, macOS, Windows, Kubernetes) · Ephemeral workspaces with controller-declared named volumes (`AgentVolume`) for data that must survive between runs · Secrets management · Webhook and cron triggers · High availability · Web UI · OIDC SSO with fine-grained, per-folder permissions · Run metadata (run link, status, failures, attempt) exposed to steps as `UNIFIED_RUN_*` env vars and `.Run` templates · Job-defined Prometheus metrics (`metrics:` counters, gauges and histograms served as `unifiedcd_job_*`)
+**Key features:** YAML-defined jobs · DAG step execution · Multi-platform agents (Linux, macOS, Windows, Kubernetes) · Ephemeral workspaces with controller-declared named volumes (`AgentVolume`) for data that must survive between runs · Secrets management · Webhook and cron triggers · High availability · Web UI · OIDC SSO with fine-grained, per-folder permissions · Internal accounts (human and service accounts, one-time initial admin token, bounded PAT lifetimes, offline admin recovery) · Run metadata (run link, status, failures, attempt) exposed to steps as `UNIFIED_RUN_*` env vars and `.Run` templates · Job-defined Prometheus metrics (`metrics:` counters, gauges and histograms served as `unifiedcd_job_*`)
 
 ---
 
@@ -56,7 +56,7 @@ See the [Installation guide](https://eirueimi.github.io/unified-cd/getting-start
 ### 1. Start services
 
 ```bash
-cp .env.example .env        # edit UNIFIED_TOKEN if needed
+cp .env.example .env        # sets the one-time initial admin token (dev only)
 docker compose up -d
 ```
 
@@ -64,7 +64,7 @@ docker compose up -d
 
 ### 2. Log in to the Web UI
 
-Open http://localhost:8080/ui/ in your browser. The Connection card will appear on the dashboard — enter the token you set in `.env` (default: `dev-token-change-me`) and click **Save**. The card disappears once authenticated.
+The dev stack has no standing admin token. On first start the `agent-enroll` service exchanges the one-time initial admin token (`UNIFIED_INITIAL_ADMIN_TOKEN` in `.env`) for an admin PAT (valid 30 days) and keeps it in the `admin-state` volume. Print it with `docker compose run --rm --no-deps --entrypoint cat agent-enroll /state/admin-token`, then enter it on the Connection card and click **Save**. The card disappears once authenticated.
 
 > Alternatively, use OIDC SSO by starting with `docker compose -f docker-compose.yaml -f docker-compose.sso.yml up -d` and clicking **SSO Login**.
 
@@ -89,13 +89,13 @@ unified-cli login --server http://localhost:8080
 
 # b) Environment variables (handy for CI/scripts):
 export UNIFIED_SERVER=http://localhost:8080
-export UNIFIED_TOKEN=dev-token-change-me
+export UNIFIED_TOKEN=<the admin PAT from step 2>
 
 # c) Config file:
 mkdir -p ~/.config/unified-cd
 cat > ~/.config/unified-cd/config.yaml <<EOF
 server: http://localhost:8080
-token: dev-token-change-me
+token: <the admin PAT from step 2>
 EOF
 ```
 
@@ -182,8 +182,8 @@ The full documentation is published at **https://eirueimi.github.io/unified-cd/*
 - **[Field Reference](https://eirueimi.github.io/unified-cd/reference/field-reference/)** — auto-generated field-level schema reference
 
 ### Feature Guides
-- **[Authentication Guide](https://eirueimi.github.io/unified-cd/operator-manual/authentication/)** — static tokens, PATs, OIDC SSO (Dex), CLI login
-- **[Authorization Guide](https://eirueimi.github.io/unified-cd/operator-manual/authorization/)** — roles, the 28-permission catalogue, per-folder grants for separating teams, `authz show` / `explain`
+- **[Authentication Guide](https://eirueimi.github.io/unified-cd/operator-manual/authentication/)** — accounts, the initial admin token, PATs, OIDC SSO (Dex), CLI login
+- **[Authorization Guide](https://eirueimi.github.io/unified-cd/operator-manual/authorization/)** — roles, the 30-permission catalogue, per-folder grants for separating teams, `authz show` / `explain`
 - **[Secrets Management Guide](https://eirueimi.github.io/unified-cd/user-guide/secrets/)** — create, reference, and encrypt secrets; log masking
 - **[Agent Labels and Routing](https://eirueimi.github.io/unified-cd/operator-manual/agents/)** — agentSelector, capability-based routing, hostname labels, Windows agents
 - **[Kubernetes Integration Guide](https://eirueimi.github.io/unified-cd/operator-manual/kubernetes-integration/)** — k8s-agent setup, podTemplate patterns, RBAC

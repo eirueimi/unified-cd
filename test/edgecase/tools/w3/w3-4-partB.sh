@@ -5,6 +5,9 @@
 # Run from test/ha/ with COMPOSE_FILES and SCRATCH exported and
 # MSYS_NO_PATHCONV=1 set. Usage: w3-4-partB.sh <attempt-number> [arm-delay-s] [hold-s] [timeout]
 set -eu
+# The rig has no standing admin token: exchange the initial one once (see ../lib/admin-token.sh).
+. "$(dirname "$0")/../lib/admin-token.sh"
+ADMIN_PAT="${UNIFIED_TOKEN:-$(bootstrap_admin_token)}"
 
 N="${1:?attempt number required}"
 ARM_DELAY="${2:-5}"
@@ -14,7 +17,7 @@ SCRATCH="${SCRATCH:?SCRATCH required}"
 TOOLS="$(cd "$(dirname "$0")" && pwd)"
 OUT="$SCRATCH/partB-attempt$N.txt"
 
-api() { curl -sS -H "Authorization: Bearer ha-admin-token" "$@"; }
+api() { curl -sS -H "Authorization: Bearer $ADMIN_PAT" "$@"; }
 ts() { date -u +%FT%T.%3NZ; }
 
 {

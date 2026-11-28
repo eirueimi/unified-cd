@@ -29,7 +29,7 @@
 # baseline gate's proof that the overlay took.
 #
 # `kek-b` is a THROWAWAY TEST KEY for a throwaway stack, exactly like the
-# `ha-admin-token` literal at `docker-compose.ha.yaml:84` and the `test/ha/kek`
+# `UNIFIED_INITIAL_ADMIN_TOKEN` literal in `docker-compose.ha.yaml` and the `test/ha/kek`
 # fixture itself. It is committed on purpose: the scenario needs a second key
 # that is a *valid* key file (64 hex chars after TrimSpace, per
 # `internal/config/keysource.go:208-211`) but the *wrong* key. It guards nothing

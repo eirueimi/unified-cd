@@ -5,6 +5,9 @@
 # the product's own stuck-run reaper failing the holder.
 # Usage (from test/ha): w2-4-partC.sh <age-seconds-before-kill>
 set -eu
+# The rig has no standing admin token: exchange the initial one once (see ../lib/admin-token.sh).
+. "$(dirname "$0")/../lib/admin-token.sh"
+ADMIN_PAT="${UNIFIED_TOKEN:-$(bootstrap_admin_token)}"
 AGE="${1:-120}"
 SCRATCH="${SCRATCH:?run from test/ha with SCRATCH exported, e.g. export SCRATCH=<scratchpad>/w2-4}"
 S="$SCRATCH"
@@ -18,7 +21,7 @@ sleep 6
 dcpsql "SELECT NOW(), id, last_seen_at FROM agents ORDER BY id;"
 
 echo "== C1: trigger the mutex hog =="
-HOG=$(curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+HOG=$(curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-mutex-hog"}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 echo "hog=$HOG"
 sleep 8
@@ -26,7 +29,7 @@ dcpsql "SELECT NOW(), id, status, claimed_by, claimed_at FROM runs WHERE id='$HO
 dcpsql "SELECT * FROM mutex_holders;"
 
 echo "== C2: trigger the victim (same mutex) =="
-VIC=$(curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+VIC=$(curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-sideeffect"}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 echo "victim=$VIC"
 sleep 5

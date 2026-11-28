@@ -236,3 +236,26 @@ describe('App — permission-aware navigation', () => {
     unmount();
   });
 });
+
+describe('App token navigation', () => {
+  const originalFetch = global.fetch;
+  beforeEach(() => {
+    global.fetch = vi.fn(() => Promise.resolve({ ok: true, json: async () => ([]) }));
+    window.location.hash = '#/';
+  });
+  afterEach(() => {
+    authReady.set(false);
+    currentUser.set(null);
+    global.fetch = originalFetch;
+    window.location.hash = '';
+  });
+
+  it('shows the Tokens link with serviceaccount.token alone', async () => {
+    currentUser.set({ email: 'a@example.com', permissions: { global: ['job.read', 'serviceaccount.token'], folders: {} } });
+    authReady.set(true);
+    const { unmount } = render(App);
+    await waitFor(() => expect(screen.getByText('Jobs')).toBeInTheDocument());
+    expect(screen.getByText('Tokens')).toBeInTheDocument();
+    unmount();
+  });
+});

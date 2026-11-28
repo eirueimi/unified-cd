@@ -14,10 +14,10 @@ cd test/ha
 docker compose -f docker-compose.ha.yaml up -d --build
 curl -fsS localhost:18080/readyz            # expect: ok (retry until up)
 curl -fsS -X POST localhost:18080/api/v1/jobs \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   --data-binary @../edgecase/workloads/tick.payload.json
 curl -fsS -X POST localhost:18080/api/v1/schedules \
-  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_PAT" -H "Content-Type: application/json" \
   --data-binary @../edgecase/workloads/schedule-every-minute.payload.json
 ```
 
@@ -29,10 +29,10 @@ for c in controller1 controller2 controller3; do
   echo "== $c"; docker compose -f docker-compose.ha.yaml logs $c 2>/dev/null | grep -c "scheduler became leader"
 done
 # schedule fired (>=1 run):
-curl -fsS "localhost:18080/api/v1/runs?jobName=edge-tick" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/runs?jobName=edge-tick" -H "Authorization: Bearer $ADMIN_PAT"
 # SSE delivers log lines (replace <RUN_ID> from the previous output; expect
 # "tick N" events streaming; Ctrl-C after a few):
-curl -N "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer ha-admin-token"
+curl -N "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer $ADMIN_PAT"
 ```
 
 Tear down INCLUDING volumes (schedule state must not leak into the probe):
@@ -66,7 +66,7 @@ minutes:
    leadership flap? Any unlock warnings ("you don't own a lock")?
 2. **Scheduling:** does `edge-every-minute` fire at all / once per minute /
    multiple times per minute?
-   `curl -fsS "localhost:18080/api/v1/runs?jobName=edge-tick" -H "Authorization: Bearer ha-admin-token"`
+   `curl -fsS "localhost:18080/api/v1/runs?jobName=edge-tick" -H "Authorization: Bearer $ADMIN_PAT"`
    Count runs after 5 minutes; expected-healthy would be ~5.
 3. **SSE:** attach to a running run's `/events` — do log lines arrive
    (NOTIFY works) or does the stream stall?

@@ -11,6 +11,9 @@
 #
 # Usage: armD1.sh <first> <last> <phase_seconds_within_minute>
 set -u
+# The rig has no standing admin token: exchange the initial one once (see ../lib/admin-token.sh).
+. "$(dirname "$0")/../lib/admin-token.sh"
+ADMIN_PAT="${UNIFIED_TOKEN:-$(bootstrap_admin_token)}"
 SCRATCH="${SCRATCH:?run from test/ha with SCRATCH exported, e.g. export SCRATCH=<scratchpad>/w2-3}"
 S="$SCRATCH"
 CF="${COMPOSE_FILES:--f docker-compose.ha.yaml -f ../edgecase/compose/oneway.override.yaml}"
@@ -30,7 +33,7 @@ for N in $(seq "$1" "$2"); do
     C=$(PSQL "SELECT count(*) FROM agents;"); [ "$C" = "2" ] && break; sleep 2
   done
 
-  P=$(curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+  P=$(curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
       -H 'Content-Type: application/json' -d '{"jobName":"edge-call-parent"}' \
       | sed -E 's/.*"id":"([^"]+)".*/\1/')
   AG=""; CH=""

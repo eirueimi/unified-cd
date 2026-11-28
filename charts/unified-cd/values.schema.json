@@ -31,6 +31,16 @@
             }
           }
         },
+        "initialAdminToken": {
+          "type": "object",
+          "properties": {
+            "secretName": {"type": "string", "minLength": 1},
+            "generate": {"type": "boolean"}
+          }
+        },
+        "serviceAccounts": {"type": "object"},
+        "tokens": {"type": "object"},
+        "ui": {"type": "object"},
         "config": {"type": "object"},
         "trustedProxies": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "externalUrl": {"type": "string"},

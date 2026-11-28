@@ -11,8 +11,10 @@ unified-cli [GLOBAL FLAGS] <subcommand>
 
   --config  string   Config file path (default: ~/.config/unified-cd/config.yaml)
   --server  string   Controller server URL (env: UNIFIED_SERVER)
-  --token   string   Bearer token (env: UNIFIED_TOKEN)
+  --token   string   Bearer token: the PAT the CLI sends (env: UNIFIED_TOKEN)
 ```
+
+`UNIFIED_TOKEN` is the CLI's variable. The controller does not read it (it is ignored there with an error log).
 
 **Resolution order** (highest priority first): `--flag` > environment variable > config file.
 See [Configuration precedence](#configuration-precedence) below for details.
@@ -560,9 +562,11 @@ Manage Personal Access Tokens (PATs) for authentication.
 ### token create
 
 ```
-unified-cli token create <name> [--expires-in duration] [--role role] [--permission name]... [--enroll-label label]...
+unified-cli token create <name> [--account name] [--expires-in duration] [--role role] [--permission name]... [--enroll-label label]...
 
-  --expires-in  string   Token expiry duration (e.g. "720h", "8760h"). No expiry if omitted.
+  --account     string   Create the token for this service account (default: your own account).
+                         Naming another account requires token.manage or serviceaccount.token; naming your own service account does not. Refused for "admin" from another account.
+  --expires-in  string   Token expiry duration (e.g. "720h", "8760h"). Defaults to tokens.defaultLifetime (2160h); refused above tokens.maxLifetime (8760h); PATs of the built-in admin account are capped at 720h.
   --role        string   Role ceiling for the token: admin, developer, or viewer.
                          Must not exceed your own global role; it is refused, never reduced.
   --permission  string   Permission ceiling, e.g. job.read. Repeatable. You must hold each one
@@ -572,16 +576,20 @@ unified-cli token create <name> [--expires-in duration] [--role role] [--permiss
                          only these labels. Entries must be non-empty and unique.
 ```
 
-Generates a new PAT. The token value is shown only once.
+Generates a new PAT. The token value is shown only once. Every PAT belongs to an **account**:
+yours (a human account created at your first SSO sign-in, or the service account you authenticate
+as), or the service account named with `--account`. Every PAT expires: `--expires-in`, or
+`tokens.defaultLifetime` (2160h) when omitted. A PAT may create PATs only for its own account (this is
+how a CI token rotates itself, provided its service account holds `token.create`); creating one for another account needs `token.manage` or `serviceaccount.token`.
 
-A PAT created by an SSO user records that user as its **owner**. Its permissions are always the
-owner's permissions under the current config, intersected with the ceiling; with neither `--role`
-nor `--permission` there is no ceiling (the token carries everything its owner has).
+A PAT's permissions are always its account's permissions under the current config, intersected with the
+ceiling; with neither `--role` nor `--permission` there is no ceiling (the token carries everything its
+account has).
 `--role` no longer reduces your request to your own role: a role above your own global role is refused with a `400`, so a script
 discovers the problem at creation instead of at a later `403`. A user who holds only folder grants
 has no global role and uses `--permission`. See [Authorization: Personal access tokens](../operator-manual/authorization.md#personal-access-tokens).
 
-Names equal to `env:UNIFIED_TOKEN` or starting with `env:` are reserved and rejected
+Names starting with `env:` or `system:` are reserved and rejected
 (`token name "env:..." is reserved`).
 
 Refusals, printed as `server error: <message>` (the HTTP status in parentheses):
@@ -593,16 +601,19 @@ Refusals, printed as `server error: <message>` (the HTTP status in parentheses):
 | `unknown role "x"` / `unknown permission "x"` | 400 | A misspelled `--role` / `--permission` |
 | `role and permissions are mutually exclusive` | 400 | `--role` together with `--permission` |
 | `permissions must not be empty` | 400 | An API request with `"permissions": []` |
-| `cannot grant permissions: this token has no owner; use --role` | 400 | `--permission` used with the break-glass `UNIFIED_TOKEN` or another role-only PAT, with any list other than exactly `agent.enroll` (that one is allowed) |
+| `expiresIn exceeds tokens.maxLifetime (<max>)` | 400 | `--expires-in` above `tokens.maxLifetime` (for example `8760h0m0s`); lower it, or set `tokens.maxLifetime: 0` on the controller |
+| `expiresIn exceeds the 720h limit for the built-in admin account` | 400 | `--expires-in` above 720h for a PAT of the built-in `admin` account |
+| `invalid expiresIn: ...` / `invalid expiresIn: must be positive` | 400 | An unparsable or non-positive `--expires-in` |
+| `unknown service account "<sa>"` | 400 | `--account` names no enabled service account (check `unified-cli serviceaccount list` and the controller's `serviceAccounts`) |
+| `PATs for the built-in admin account can only be obtained through the initial token or the recovery command` | 400 | `--account admin` from another account |
+| `creating a token for another account requires the token.manage or serviceaccount.token permission` | 403 | `--account` without either permission |
+| `cannot create a token: your identity has no account; log in again, then retry` | 403 | The caller has no account record (log in again) |
 | `enrollLabels requires the agent.enroll permission` | 400 | `--enroll-label` without `--permission agent.enroll` |
 | `enrollLabels must not contain empty entries` | 400 | A blank `--enroll-label` |
 | `enrollLabels must not contain duplicates` | 400 | The same `--enroll-label` twice |
 | `enrollLabels must be a subset of the creating token's enrollLabels` | 403 | You do not hold `agent.manage` and asked for a label outside your own enrollment-label bound (a creator with no bound can grant no labels) |
-| `token name "env:x" is reserved` | 400 | A name equal to `env:UNIFIED_TOKEN` or starting with `env:` |
-
-| `cannot create a token: this login predates group-aware tokens; log out and log in again, then retry` | 403 | You are using a browser session created before the upgrade |
+| `token name "env:x" is reserved` | 400 | A name starting with `env:` or `system:` |
 | `cannot create a token: your OIDC token carries no "groups" claim; log in again so the token includes it, then retry` | 403 | Your CLI login's id_token has no roles claim while the config has group-keyed grants (log in again with a current CLI, which requests the roles-claim scope the server advertises) (`groups` is the configured `oidc.rolesClaim`) |
-| `cannot create a token: your identity has no subject (sub); log in again, then retry` | 403 | Your identity carries no `sub` |
 | `forbidden: missing permission "token.create"` | 403 | You do not hold `token.create` (add it in `oidc.permissions.global` for a folder-only user) |
 
 Against a controller that predates `--permission`, the server ignores the field and would create a
@@ -655,19 +666,27 @@ Use the printed token as a bearer token in CLI, API calls, or agent configuratio
 unified-cli token list
 ```
 
-Lists the tokens you may see (IDs, names, and the ceiling only; values are never retrievable): your own
-tokens with `token.create`, every token with `token.manage` (admin). The ceiling column is the role,
-or the comma-separated permission list for a permission-ceiling token, followed by
-`enroll-labels=<labels>` for a token with an enrollment label bound. A role-only (pre-upgrade)
-token has no owner, so a caller without `token.manage` does not see it. After the date, ` by <actorId>`
-names who created the token (`break-glass`, `pat:<id>`, `oidc:<sub>`); it is omitted for tokens created
-before the controller recorded it and for the `env:UNIFIED_TOKEN` token, and when talking to an older
-controller. The same id appears as `createdBy` in `GET /api/v1/tokens`.
+Lists the tokens you may see (IDs, names, account, ceiling and expiry only; values are never retrievable): your own
+tokens with `token.create`, every token with `token.manage` (admin). Columns:
+
+| Column | Meaning |
+|---|---|
+| `ID` | The PAT id (use it with `token delete`) |
+| `NAME` | The name given at creation (not unique) |
+| `ACCOUNT` | The account the PAT belongs to: the person's email (or `sub`) for a human account, `sa:<name>` for a service account |
+| `CEILING` | The role, or the comma-separated permission list for a permission-ceiling token, followed by `enroll-labels=<labels>` for a token with an enrollment label bound |
+| `EXPIRES` | The expiry date, or `never` for a PAT created before lifetimes were bounded (every new PAT has an expiry) |
+| `CREATED` | The creation date, followed by ` by <actorId>` (`pat:<id>`, `oidc:<sub>`, `bootstrap`, `recovery`, or `break-glass` on rows from before accounts) when recorded |
+
+The same id appears as `createdBy` in `GET /api/v1/tokens`.
 
 ```
-a7c3fec8-1922-4278-b7ca-1ec489839a61   env:UNIFIED_TOKEN   admin       (2026-07-03)   ← bootstrap token from UNIFIED_TOKEN env var
-08c1779c-812f-4d68-9971-25ff3467637e   ci-bot               developer   (2026-07-04 by break-glass)
+ID                                    NAME       ACCOUNT        CEILING    EXPIRES     CREATED
+a7c3fec8-1922-4278-b7ca-1ec489839a61  bootstrap  sa:admin                  2026-08-03  2026-07-04 by bootstrap
+08c1779c-812f-4d68-9971-25ff3467637e  ci-bot     sa:ci-deploy   developer  2027-07-04  2026-07-04 by pat:3b1e7c52-...
 ```
+
+An empty `CEILING` means the PAT carries everything its account has.
 
 ### token delete
 
@@ -676,13 +695,117 @@ unified-cli token delete <id>
 ```
 
 Revokes a token immediately. With `token.create` you can revoke only your own tokens; any other id,
-including a role-only (pre-upgrade) token, answers `server error: token not found`. `token.manage`
+including another account's token, answers `server error: token not found`. `token.manage`
 (admin) revokes any token.
 
 ```bash
 unified-cli token delete 08c1779c-812f-4d68-9971-25ff3467637e
 # => token "08c1779c-812f-4d68-9971-25ff3467637e" revoked
 ```
+
+---
+
+## bootstrap
+
+Exchange the one-time initial admin token for an admin PAT. It needs the server URL but no credentials: the request carries no `Authorization` header.
+
+```
+unified-cli bootstrap [--initial-token value | --initial-token-file path] [--name name]
+
+  --initial-token       string   The initial admin token (default: $UNIFIED_INITIAL_ADMIN_TOKEN)
+  --initial-token-file  string   Read the initial admin token from this file
+  --name                string   Name of the PAT (default "bootstrap")
+```
+
+`--initial-token` and `--initial-token-file` are mutually exclusive. The PAT belongs to the built-in `admin` account, is valid for 30 days and is printed on stdout (nothing else is printed there, so `export UNIFIED_TOKEN="$(unified-cli bootstrap)"` works).
+
+```bash
+export UNIFIED_SERVER=https://cd.example.com
+unified-cli bootstrap --initial-token-file /etc/unified-cd/initial-admin-token
+```
+
+Refusals are printed as `server error: <message>`:
+
+| Message | Status | Cause |
+|---|---|---|
+| `invalid or already used initial token` | 401 | A wrong value, or the token was already exchanged (the two are not distinguished) |
+| `too many bootstrap attempts` | 429 | More than 5 attempts per minute from one client address; wait and retry |
+| `the built-in admin account is disabled; enable it or use the recovery command` | 409 | `serviceAccounts.admin.enabled` is `false` and no recovery lease is running; the token is not consumed |
+| `token name "env:x" is reserved` | 400 | `--name` starts with `env:` or `system:` |
+
+If the exchange consumed the token but the PAT could not be created, or the PAT was lost, use [`<controller binary> admin recover`](#controller-admin-recover). See [Authorization: Built-in admin account and recovery](../operator-manual/authorization.md#built-in-admin-account-and-recovery).
+
+---
+
+## account
+
+List accounts, and disable or enable human accounts. Needs the `account.manage` permission (admin bundle); other callers get `403 forbidden: missing permission "account.manage"`.
+
+### account list
+
+```
+unified-cli account list [--kind human|service]
+```
+
+Prints `ID KIND NAME EMAIL DISABLED LAST SEEN`. A human account's name is its email (or `sub`); a service account's name is its name in `serviceAccounts`.
+
+### account disable / enable
+
+```
+unified-cli account disable <id>
+unified-cli account enable <id>
+```
+
+Disabling a human account refuses all of its PATs and sessions at once (`forbidden: account disabled`) and refuses a new SSO sign-in. It takes effect immediately on the replica that handled the request; other replicas refuse the person's CLI id_token within 1 minute (sessions and PATs are refused immediately everywhere). `enable` reverses it.
+
+Service accounts cannot be toggled here: `server error: service accounts are enabled and disabled in serviceAccounts`. Remove the entry from the controller config (or set `serviceAccounts.admin.enabled: false` for the built-in `admin`) and restart.
+
+```bash
+unified-cli account list --kind human
+unified-cli account disable 6f0c1d2e-...
+# => account 6f0c1d2e-... disabled
+```
+
+## serviceaccount
+
+```
+unified-cli serviceaccount list
+```
+
+An alias for `account list --kind service`. Create a service account's PAT with [`token create --account <name>`](#token-create).
+
+---
+
+## controller admin recover
+
+This is a command of the controller binary, not of `unified-cli`. The binary is called `controller` in the release archives (`controller.exe` on Windows) and in the container image (`/controller`), and `bin/unified-cd-controller` when you build with `make build`; this page writes `<controller binary>` for whichever applies. It prints a short-lived PAT of the built-in `admin` account straight from the database, for when nobody can sign in. Running the controller with no subcommand still starts the server.
+
+```
+<controller binary> admin recover [-f config] [--dsn dsn] [--ttl duration] [--enable-admin]
+
+  -f              string   Controller config file (YAML); same effective configuration as the server (env and config file)
+  --dsn           string   PostgreSQL DSN (env: UNIFIED_DB_DSN)
+  --ttl           duration Lifetime of the PAT (default 1h, maximum 24h)
+  --enable-admin           Enable the built-in admin account until the PAT expires, even if the configuration disables it
+```
+
+- It connects to the database with the controller's normal configuration; reaching the database is the gate. It never starts the HTTP server. Run it with the same configuration as the server: the same `-f` file and the same environment (database DSN, `serviceAccounts`, `tokens`). A different config can pick a different database or a different `admin.enabled` decision.
+- The PAT goes to stdout; a line with its expiry goes to stderr. It writes an audit row with actor `recovery`.
+- `--enable-admin` stores a lease equal to the PAT's expiry and replaces any existing lease. While the lease runs, every previously minted, unexpired `admin` PAT works again, not only the new one. Without it, a configuration that sets `serviceAccounts.admin.enabled: false` makes the command refuse: `the built-in admin account is disabled in the configuration; pass --enable-admin`. The config stays the long-term authority: after the PAT expires, `admin` is disabled again.
+- `--ttl` above 24h is refused: `--ttl must not exceed 24h`.
+
+Run it where the controller runs:
+
+```bash
+# release archive (use ./bin/unified-cd-controller after make build)
+./controller admin recover -f /etc/unified-cd/controller.yaml
+# Docker Compose
+docker compose -f deployments/docker/docker-compose.yaml exec controller /controller admin recover
+# Kubernetes
+kubectl -n unified-cd exec deploy/unified-cd-controller -- /controller admin recover -f /etc/unified-cd/controller-config.yaml
+```
+
+The controller's `--token` and `--allow-default-token` flags are deprecated and ignored.
 
 ---
 
@@ -859,13 +982,13 @@ grantedBy, and actorId, newest first. `permission` is the permission that was
 checked and `grantedBy` the grant that allowed it; both show `-` when not
 recorded, and `grantedBy` is `-` on a denied request. `actor` is only a display
 name (PAT names are not unique); `actorId` (`pat:<id>`, `oidc:<sub>`,
-`break-glass`, `agent:<id>`) is the stable identity and is `-` for rows written
+`bootstrap`, `recovery`, `agent:<id>`; `break-glass` on old rows) is the stable identity and is `-` for rows written
 before it was recorded. See [Audit log](../operator-manual/audit.md#actor-identity).
 
 ```bash
 unified-cli audit list --limit 5
-# => 2026-07-04T09:12:00Z   alice   token.create   token/ci-bot    200   token.create   role:admin (pat)      pat:3b1e7c52-...
-# => 2026-07-04T09:10:41Z   bob     run.cancel     run/run-abc123  200   run.cancel     role:developer (pat)  pat:9d04f6a1-...
+# => 2026-07-04T09:12:00Z   bootstrap   token.create   token/ci-bot    200   token.create   sa:admin              pat:3b1e7c52-...
+# => 2026-07-04T09:10:41Z   ci-bot      run.cancel     run/run-abc123  200   run.cancel     sa:ci-deploy        pat:9d04f6a1-...
 ```
 
 ---
@@ -1196,7 +1319,7 @@ There are two separate config files — do not confuse them.
 
 ```yaml
 server: http://localhost:8080
-token: dev-secret
+token: exc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx   # a PAT
 ```
 
 `token` holds either a manually-configured bearer token or the id_token written by

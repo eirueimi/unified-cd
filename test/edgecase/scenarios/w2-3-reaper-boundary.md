@@ -199,11 +199,11 @@ docker compose $COMPOSE_FILES up -d --build
 
 curl -s -o /dev/null -w 'readyz=%{http_code}\n' localhost:18080/readyz
 docker compose $COMPOSE_FILES ps --format '{{.Service}} {{.State}}'
-curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token"
+curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer $ADMIN_PAT"
 
 for f in longrun call-parent call-child; do
   curl -fsS -X POST localhost:18080/api/v1/jobs \
-    -H "Authorization: Bearer ha-admin-token" -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $ADMIN_PAT" -H 'Content-Type: application/json' \
     --data-binary @../edgecase/workloads/$f.payload.json -o /dev/null -w "$f=%{http_code}\n"
 done                                                            # expect 200 x3
 ```
@@ -252,7 +252,7 @@ sample() {  # $1 = run id
 
 ```bash
 # A1. Trigger and catch the claim tightly.
-curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
+curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer $ADMIN_PAT" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-longrun"}' \
   | tee "$SCRATCH/armA-trigger.json"
 RUN=<id>
@@ -394,7 +394,7 @@ RUN4=<fresh edge-longrun>   # catch the claim
 psql "DELETE FROM agents WHERE id='$AGENT4';" ; date -u +%FT%T.%3NZ
 for i in $(seq 1 180); do sample "$RUN4"; sleep 1; done | tee "$SCRATCH/armC2-poll.txt"
 docker compose $COMPOSE_FILES logs "$AGENT4" | tee "$SCRATCH/armC2-agent.log"
-curl -fsS "localhost:18080/api/v1/runs/$RUN4/logs" -H "Authorization: Bearer ha-admin-token" \
+curl -fsS "localhost:18080/api/v1/runs/$RUN4/logs" -H "Authorization: Bearer $ADMIN_PAT" \
   | tail -40 | tee "$SCRATCH/armC2-run-logs.txt"
 ```
 

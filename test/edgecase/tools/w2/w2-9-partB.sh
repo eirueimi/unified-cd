@@ -2,11 +2,14 @@
 # W2-9 Part B. Usage (from test/ha): w2-9-partB.sh <probe-run-id>
 # Falsification — cancel one at a time, find the real threshold.
 set -u
+# The rig has no standing admin token: exchange the initial one once (see ../lib/admin-token.sh).
+. "$(dirname "$0")/../lib/admin-token.sh"
+ADMIN_PAT="${UNIFIED_TOKEN:-$(bootstrap_admin_token)}"
 SCRATCH="${SCRATCH:?run from test/ha with SCRATCH exported, e.g. export SCRATCH=<scratchpad>/w2-9}"
 S="$SCRATCH"
 CF="${COMPOSE_FILES:--f docker-compose.ha.yaml}"
 API="http://localhost:18080"
-AUTH="Authorization: Bearer ha-admin-token"
+AUTH="Authorization: Bearer $ADMIN_PAT"
 PROBE="$1"
 psql() { docker compose $CF exec -T postgres psql -U unified -tAc "$1"; }
 census() { psql "SELECT (SELECT count(*) FROM runs WHERE status='Pending')||'|probe='||(SELECT status FROM runs WHERE id='$PROBE')||'|q='||(SELECT count(*) FROM runs WHERE status='Queued')||'|r='||(SELECT count(*) FROM runs WHERE status='Running');"; }

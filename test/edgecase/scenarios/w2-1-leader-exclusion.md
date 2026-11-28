@@ -195,7 +195,7 @@ docker compose -f docker-compose.ha.yaml logs controller1 \
 # than a finding.  Note the audit line says *enabled* — see mechanism note 3.
 
 # 4. Both agents registered (needed only for Phase 3)
-curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token"
+curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer $ADMIN_PAT"
 ```
 
 Record the container→IP map now; every later attribution depends on it:

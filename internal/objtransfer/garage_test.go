@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/eirueimi/unified-cd/internal/agentauth"
-	"github.com/eirueimi/unified-cd/internal/controller"
 	"github.com/eirueimi/unified-cd/internal/objectstore/objectstoretest"
 	"github.com/eirueimi/unified-cd/internal/objtransfer"
 	"github.com/eirueimi/unified-cd/internal/store"
@@ -30,9 +29,7 @@ import (
 func TestGarage_ClientEndToEnd(t *testing.T) {
 	objs := objectstoretest.S3FromEnv(t)
 	pg := storetest.NewTestPostgres(t)
-	_, err := pg.UpsertBootstrapPAT(t.Context(), "test-bootstrap", controller.HashToken("secret"))
-	require.NoError(t, err)
-	srv := controller.NewServer(controller.Config{}, pg)
+	srv := newAdminServer(t, pg)
 	t.Cleanup(srv.Close)
 	srv.SetObjectStore(objs)
 	ts := httptest.NewServer(srv.Router())

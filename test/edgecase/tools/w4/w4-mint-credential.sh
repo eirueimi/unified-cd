@@ -30,13 +30,14 @@
 #   test/edgecase/tools/w4/w4-mint-credential.sh [agent-id] [label]
 # Env:
 #   UNIFIED_SERVER (default http://localhost:18080)
-#   UNIFIED_TOKEN  (default ha-admin-token)
+#   UNIFIED_TOKEN  (default: the admin PAT from ../lib/admin-token.sh)
 set -euo pipefail
 
 agent_id="${1:-k8s-agent-w4}"
 label="${2:-kind:kubernetes}"
 server="${UNIFIED_SERVER:-http://localhost:18080}"
-admin="${UNIFIED_TOKEN:-ha-admin-token}"
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/admin-token.sh"
+admin="${UNIFIED_TOKEN:-$(bootstrap_admin_token "${server}")}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 out="${here}/w4-agent-credentials.json"

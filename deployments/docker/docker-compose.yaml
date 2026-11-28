@@ -7,7 +7,7 @@
 #
 # Nothing here has a built-in secret. Compose refuses to start until these are
 # set (see deployments/docker/.env.example for how to generate each one):
-#   UNIFIED_TOKEN, POSTGRES_PASSWORD, GARAGE_RPC_SECRET,
+#   UNIFIED_INITIAL_ADMIN_TOKEN, POSTGRES_PASSWORD, GARAGE_RPC_SECRET,
 #   GARAGE_S3_ACCESS_KEY, GARAGE_S3_SECRET_KEY, UNIFIED_KEK_FILE
 #
 # Usage (run from the repository root so relative paths resolve):
@@ -20,9 +20,12 @@
 #   UNIFIED_CD_VERSION=v0.0.3
 #
 # After startup:
-#   Web UI: http://localhost:8080/ui/   (enter UNIFIED_TOKEN on the Connection card)
+#   The agent-enroll service exchanges UNIFIED_INITIAL_ADMIN_TOKEN once (it works only
+#   once) for a 30-day admin PAT and keeps it in the admin-state volume. Read it with:
+#     docker compose -f deployments/docker/docker-compose.yaml run --rm --no-deps --entrypoint cat agent-enroll /state/admin-token
+#   Web UI: http://localhost:8080/ui/   (sign in with that PAT)
 #   CLI:    export UNIFIED_SERVER=http://localhost:8080
-#           export UNIFIED_TOKEN=<your token>
+#           export UNIFIED_TOKEN=<your admin PAT>
 #           unified-cli apply -f examples/jobs/hello.yaml
 #
 # The controller publishes 8080 on all interfaces and speaks plain HTTP. Put a
@@ -94,7 +97,7 @@ services:
       UNIFIED_DB_BACKGROUND_MAX_CONNS: "${UNIFIED_DB_BACKGROUND_MAX_CONNS:-32}"
       UNIFIED_DB_LOCK_MAX_CONNS: "${UNIFIED_DB_LOCK_MAX_CONNS:-16}"
       UNIFIED_DB_LISTEN_MAX_CONNS: "${UNIFIED_DB_LISTEN_MAX_CONNS:-128}"
-      UNIFIED_TOKEN: ${UNIFIED_TOKEN:?set UNIFIED_TOKEN in .env (openssl rand -hex 32)}
+      UNIFIED_INITIAL_ADMIN_TOKEN: ${UNIFIED_INITIAL_ADMIN_TOKEN:?set UNIFIED_INITIAL_ADMIN_TOKEN in .env (uci_ + openssl rand -hex 20)}
       # Dev mode is off: it would use an ephemeral in-memory key, so every
       # stored secret would be lost on restart. The persistent key comes from
       # the `kek` file secret below (generate it with `unified-cli keygen`).
@@ -142,12 +145,13 @@ services:
     volumes:
       - ../../:/app
       - agent-credentials:/var/lib/unified-cd-agent
+      - admin-state:/state
     depends_on:
       controller:
         condition: service_healthy
     environment:
       UNIFIED_SERVER: http://controller:8080
-      UNIFIED_TOKEN: ${UNIFIED_TOKEN:?set UNIFIED_TOKEN in .env}
+      UNIFIED_INITIAL_ADMIN_TOKEN: ${UNIFIED_INITIAL_ADMIN_TOKEN:?set UNIFIED_INITIAL_ADMIN_TOKEN in .env (uci_ + openssl rand -hex 20)}
     command:
       - sh
       - -c
@@ -159,6 +163,17 @@ services:
           echo "agent-enroll: credential file already present, skipping enrollment"
           exit 0
         fi
+        ADMIN=/state/admin-token
+        # The initial admin token works once, so the admin PAT it yields is
+        # kept in the admin-state volume and reused on later runs. The PAT
+        # lasts 30 days; if it expired before the agent enrolled, remove the
+        # admin-state volume and mint a new one with `<controller binary> admin recover`.
+        if [ ! -s "$$ADMIN" ]; then
+          (umask 077; go run -buildvcs=false ./cmd/unified-cli bootstrap > "$$ADMIN.tmp")
+          mv "$$ADMIN.tmp" "$$ADMIN"
+          echo "agent-enroll: exchanged the initial admin token; PAT stored in $$ADMIN"
+        fi
+        export UNIFIED_TOKEN="$$(cat "$$ADMIN")"
         rm -f "$$ENROLL"
         go run -buildvcs=false ./cmd/unified-cli agent enrollment create \
           --agent-id ${UNIFIED_AGENT_ID:-docker-agent-1} \
@@ -251,6 +266,7 @@ volumes:
   dind-certs:
   dind-client-certs:
   agent-credentials:
+  admin-state:
 
 secrets:
   # 64-hex-char secret-encryption key (KEK). Create it once with

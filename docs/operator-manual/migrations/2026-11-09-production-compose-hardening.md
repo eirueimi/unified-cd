@@ -1,5 +1,8 @@
 # Migrating: hardened production Docker Compose and default-token refusal
 
+!!! note "Superseded"
+    The controller's `UNIFIED_TOKEN` and `UNIFIED_ALLOW_DEFAULT_TOKEN` no longer exist: see [Migrating: internal accounts, the initial admin token and recovery](2026-11-27-internal-accounts.md). This page describes the release it is dated for.
+
 Two breaking changes affect operators who run the published-image stack
 (`deployments/docker/docker-compose.yaml`) or any controller whose admin token
 is the documented default.

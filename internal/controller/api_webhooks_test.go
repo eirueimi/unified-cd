@@ -28,9 +28,7 @@ import (
 func newTestServerWithConfig(t *testing.T, cfg Config) (*Server, store.Store) {
 	t.Helper()
 	pg := storetest.NewTestPostgres(t)
-	_, err := pg.UpsertBootstrapPAT(t.Context(), "test-bootstrap", HashToken("secret"))
-	require.NoError(t, err)
-	s := NewServer(cfg, pg)
+	s := newServerWithAdminPAT(t, pg, cfg)
 	t.Cleanup(s.Close) // see newTestServer's identical cleanup for why (api_jobs_test.go)
 	return s, pg
 }

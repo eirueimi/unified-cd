@@ -6,5 +6,7 @@
   { "file": "routes/RunDetail.svelte", "action": "cancel", "method": "POST", "route": "/api/v1/runs/{id}/cancel", "permission": "run.cancel" },
   { "file": "routes/RunDetail.svelte", "action": "rebuild", "method": "POST", "route": "/api/v1/runs", "permission": "run.trigger" },
   { "file": "routes/TokenList.svelte", "action": "create", "method": "POST", "route": "/api/v1/tokens", "permission": "token.create" },
-  { "file": "routes/TokenList.svelte", "action": "delete", "method": "DELETE", "route": "/api/v1/tokens/{id}", "permission": "token.create" }
+  { "file": "routes/TokenList.svelte", "action": "delete", "method": "DELETE", "route": "/api/v1/tokens/{id}", "permission": "token.create" },
+  { "file": "routes/AccountList.svelte", "action": "disable", "method": "POST", "route": "/api/v1/accounts/{id}/disable", "permission": "account.manage" },
+  { "file": "routes/AccountList.svelte", "action": "enable", "method": "POST", "route": "/api/v1/accounts/{id}/enable", "permission": "account.manage" }
 ]

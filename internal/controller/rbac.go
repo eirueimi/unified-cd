@@ -183,3 +183,26 @@ func ceilingSet(role string, perms []string) *authz.Set {
 	}
 	return nil
 }
+
+// globalRoleOf returns the highest role bundle that g holds in full globally,
+// or "" when it holds none. Service accounts have no roleMap, so this is the
+// legacy role used to bound the role a PAT they mint may request.
+func globalRoleOf(g authz.Grants) string {
+	for _, role := range []string{"admin", "developer", "viewer"} {
+		set, ok := authz.Bundle(role)
+		if !ok {
+			continue
+		}
+		held := true
+		for _, name := range set.Names() {
+			if p, ok := authz.Parse(name); !ok || !g.Can(p, "") {
+				held = false
+				break
+			}
+		}
+		if held {
+			return role
+		}
+	}
+	return ""
+}

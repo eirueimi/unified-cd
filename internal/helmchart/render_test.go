@@ -52,7 +52,7 @@ func TestValidateFailures(t *testing.T) {
 		{
 			name: "ingress with trial credentials",
 			set:  []string{"ingress.enabled=true"},
-			want: "ingress.enabled with the bundled trial credentials would expose dev-token-change-me: set controller.existingSecret to a Secret you created, or disable ingress",
+			want: "ingress.enabled with the bundled trial credentials would expose the trial database password; use the production values",
 		},
 	}
 	for _, tc := range tests {

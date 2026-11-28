@@ -62,7 +62,7 @@ func TestBearerAuth_RejectsWrongToken(t *testing.T) {
 }
 
 func TestServer_Healthz(t *testing.T) {
-	s := NewServer(Config{Token: "t"}, nil)
+	s := NewServer(Config{}, nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	s.Router().ServeHTTP(rec, req)
@@ -70,7 +70,7 @@ func TestServer_Healthz(t *testing.T) {
 }
 
 func TestServer_Healthz_ShuttingDown(t *testing.T) {
-	s := NewServer(Config{Token: "t"}, nil)
+	s := NewServer(Config{}, nil)
 	s.SetShuttingDown()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -79,7 +79,7 @@ func TestServer_Healthz_ShuttingDown(t *testing.T) {
 }
 
 func TestServer_Readyz_OK(t *testing.T) {
-	s := NewServer(Config{Token: "t"}, nil)
+	s := NewServer(Config{}, nil)
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
@@ -87,7 +87,7 @@ func TestServer_Readyz_OK(t *testing.T) {
 }
 
 func TestServer_Readyz_ShuttingDown(t *testing.T) {
-	s := NewServer(Config{Token: "t"}, nil)
+	s := NewServer(Config{}, nil)
 	s.SetShuttingDown()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
@@ -106,7 +106,7 @@ func (failingPingStore) Ping(_ context.Context) error {
 }
 
 func TestServer_Readyz_DBDown(t *testing.T) {
-	s := NewServer(Config{Token: "t"}, failingPingStore{})
+	s := NewServer(Config{}, failingPingStore{})
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
@@ -135,10 +135,9 @@ func (f *fakePATStore) GetPATByHash(_ context.Context, hash string) (*store.PAT,
 func (f *fakePATStore) TouchPAT(_ context.Context, _ string) error { return nil }
 
 func TestServerAuth_AcceptsPAT(t *testing.T) {
-	st := &fakePATStore{pats: map[string]*store.PAT{
-		HashToken("exc_abc"): {ID: "1", Name: "ci", Role: "viewer"},
-	}}
-	handler := ServerAuth(st, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s, pg := newTestServer(t)
+	addRoleServicePAT(t, s, pg, "ci", "exc_abc", "viewer")
+	handler := ServerAuth(pg, s)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -161,7 +160,7 @@ func TestServerAuth_RejectsUnknownToken(t *testing.T) {
 }
 
 func TestServer_OIDCConfig_NotConfigured(t *testing.T) {
-	s := NewServer(Config{Token: "t"}, nil)
+	s := NewServer(Config{}, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc-config", nil)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
@@ -169,7 +168,7 @@ func TestServer_OIDCConfig_NotConfigured(t *testing.T) {
 }
 
 func TestServer_OIDCConfig_Configured(t *testing.T) {
-	s := NewServer(Config{Token: "t"}, nil)
+	s := NewServer(Config{}, nil)
 	s.SetOIDCConfig(&OIDCConfig{Issuer: "https://accounts.google.com", ClientID: "client123"})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc-config", nil)
 	rec := httptest.NewRecorder()
@@ -186,7 +185,7 @@ func TestServer_UI_Served(t *testing.T) {
 	if err := os.WriteFile(dir+"/index.html", []byte("<html></html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(Config{Token: "t", WebDir: dir}, nil)
+	s := NewServer(Config{WebDir: dir}, nil)
 	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
@@ -199,7 +198,7 @@ func TestServer_Root_Redirects_To_UI(t *testing.T) {
 	if err := os.WriteFile(dir+"/index.html", []byte("<html></html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(Config{Token: "t", WebDir: dir}, nil)
+	s := NewServer(Config{WebDir: dir}, nil)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
@@ -226,7 +225,7 @@ func TestOIDCScopes_Override(t *testing.T) {
 }
 
 func TestServer_OIDCConfig_ReturnsScopeOverride(t *testing.T) {
-	s := NewServer(Config{Token: "t"}, nil)
+	s := NewServer(Config{}, nil)
 	s.SetOIDCConfig(&OIDCConfig{Issuer: "https://accounts.example.com", ClientID: "c", RolesClaim: "roles", Scopes: []string{"email", "profile"}})
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc-config", nil))
@@ -239,7 +238,7 @@ func TestServer_OIDCConfig_ReturnsScopeOverride(t *testing.T) {
 }
 
 func TestServer_OIDCConfig_ReturnsScopes(t *testing.T) {
-	s := NewServer(Config{Token: "t"}, nil)
+	s := NewServer(Config{}, nil)
 	s.SetOIDCConfig(&OIDCConfig{Issuer: "https://accounts.example.com", ClientID: "c", RolesClaim: "groups"})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc-config", nil)
 	rec := httptest.NewRecorder()
@@ -251,7 +250,7 @@ func TestServer_OIDCConfig_ReturnsScopes(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&result))
 	assert.Equal(t, []string{"openid", "email", "profile", "groups"}, result.Scopes)
 
-	s2 := NewServer(Config{Token: "t"}, nil)
+	s2 := NewServer(Config{}, nil)
 	s2.SetOIDCConfig(&OIDCConfig{Issuer: "https://accounts.example.com", ClientID: "c", RolesClaim: "https://x.example.com/roles"})
 	rec = httptest.NewRecorder()
 	s2.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc-config", nil))

@@ -182,7 +182,8 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 			return
 		}
 		// Cheap pre-check before any body or database read.
-		if !g.HeldAnywhere(rule.Perm) && !(rule.AltPerm != "" && g.HeldAnywhere(rule.AltPerm)) {
+		if !g.HeldAnywhere(rule.Perm) && !(rule.AltPerm != "" && g.HeldAnywhere(rule.AltPerm)) &&
+			!(rule.AltPerm2 != "" && g.HeldAnywhere(rule.AltPerm2)) {
 			deny(w, r, rule.Perm, scopeGlobalName, http.StatusForbidden, missingPerm(rule.Perm))
 			return
 		}
@@ -192,6 +193,9 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 			ok, by := g.Decide(rule.Perm, "")
 			if !ok && rule.AltPerm != "" {
 				ok, by = g.Decide(rule.AltPerm, "")
+			}
+			if !ok && rule.AltPerm2 != "" {
+				ok, by = g.Decide(rule.AltPerm2, "")
 			}
 			if !ok {
 				deny(w, r, rule.Perm, scopeGlobalName, http.StatusForbidden, missingPerm(rule.Perm))

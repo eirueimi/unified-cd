@@ -10,15 +10,16 @@
 # docker compose build is only required on first run.
 #
 # The "agent" service does NOT authenticate with a shared runtime token. A
-# one-shot "agent-enroll" service uses the UNIFIED_TOKEN admin/CLI credential
-# below to issue the agent a one-time enrollment token on first startup; the
+# one-shot "agent-enroll" service exchanges UNIFIED_INITIAL_ADMIN_TOKEN once for
+# an admin PAT (kept in the admin-state volume) and uses it to issue the agent
+# a one-time enrollment token on first startup; the
 # agent exchanges that for its own persistent, per-agent, revocable
 # credential file (kept in the agent-credentials volume), and re-enrollment
 # is skipped on later restarts because that file already exists.
 #
 # After startup:
 #   CLI: export UNIFIED_SERVER=http://localhost:8080
-#        export UNIFIED_TOKEN=dev-token-change-me
+#        export UNIFIED_TOKEN=$(docker compose run --rm --no-deps --entrypoint cat agent-enroll /state/admin-token)
 #        ./bin/unified-cli apply -f examples/jobs/hello.yaml
 #   Web UI: http://localhost:8080/ui/
 
@@ -89,7 +90,10 @@ services:
       UNIFIED_DB_BACKGROUND_MAX_CONNS: "${UNIFIED_DB_BACKGROUND_MAX_CONNS:-32}"
       UNIFIED_DB_LOCK_MAX_CONNS: "${UNIFIED_DB_LOCK_MAX_CONNS:-16}"
       UNIFIED_DB_LISTEN_MAX_CONNS: "${UNIFIED_DB_LISTEN_MAX_CONNS:-128}"
-      UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
+      # One-time initial admin token, exchanged once by the agent-enroll
+      # service below (or by hand: unified-cli bootstrap). A fixed value for this
+      # local dev stack only; never use it anywhere reachable from a network.
+      UNIFIED_INITIAL_ADMIN_TOKEN: ${UNIFIED_INITIAL_ADMIN_TOKEN:-uci_dev0000000000000000000000000000000000000}
       # Persistent secret-encryption key. The controller command above
       # auto-generates secrets/kek with `unified-cli keygen` on first boot if it
       # is absent, and reuses it on every later start, so stored secrets survive
@@ -99,9 +103,6 @@ services:
       # (UNIFIED_CONTROLLER_KEY_FILE takes precedence over UNIFIED_DEV_MODE, so
       # the latter can stay set.)
       UNIFIED_DEV_MODE: "${UNIFIED_DEV_MODE:-1}"
-      # This dev stack ships the default admin token; the controller refuses
-      # it unless dev mode or this opt-in is set.
-      UNIFIED_ALLOW_DEFAULT_TOKEN: "${UNIFIED_ALLOW_DEFAULT_TOKEN:-1}"
       UNIFIED_CONTROLLER_KEY_FILE: "${UNIFIED_CONTROLLER_KEY_FILE:-/app/secrets/kek}"
       UNIFIED_S3_ENDPOINT: garage:3900
       UNIFIED_S3_BUCKET: unified-cd-logs
@@ -177,7 +178,8 @@ services:
 
   # ---- agent enrollment (one-shot bootstrap) ----
   # Issues the docker agent a one-time enrollment token so it can bootstrap
-  # its own per-agent, revocable identity. Uses the admin/CLI UNIFIED_TOKEN only
+  # its own per-agent, revocable identity. Uses the admin PAT (bootstrapped
+  # from UNIFIED_INITIAL_ADMIN_TOKEN and stored in the admin-state volume) only
   # to call the enrollment API -- that admin token is never handed to the
   # agent itself.
   #
@@ -201,6 +203,7 @@ services:
       - gocache:/gocache
       - gomodcache:/gomodcache
       - agent-credentials:/var/lib/unified-cd-agent
+      - admin-state:/state
     depends_on:
       controller:
         condition: service_healthy
@@ -208,7 +211,7 @@ services:
       GOCACHE: /gocache
       GOMODCACHE: /gomodcache
       UNIFIED_SERVER: http://controller:8080
-      UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
+      UNIFIED_INITIAL_ADMIN_TOKEN: ${UNIFIED_INITIAL_ADMIN_TOKEN:-uci_dev0000000000000000000000000000000000000}
     command:
       - sh
       - -c
@@ -216,6 +219,16 @@ services:
         set -e
         CRED=/var/lib/unified-cd-agent/credentials.json
         ENROLL=/var/lib/unified-cd-agent/enrollment.token
+        ADMIN=/state/admin-token
+        # The initial admin token works once, so the admin PAT it yields is
+        # kept in the admin-state volume and reused on later runs. The PAT
+        # lasts 30 days; `docker compose down -v` resets it.
+        if [ ! -s "$$ADMIN" ]; then
+          (umask 077; go run -buildvcs=false ./cmd/unified-cli bootstrap > "$$ADMIN.tmp")
+          mv "$$ADMIN.tmp" "$$ADMIN"
+          echo "agent-enroll: exchanged the initial admin token; PAT stored in $$ADMIN"
+        fi
+        export UNIFIED_TOKEN="$$(cat "$$ADMIN")"
         rm -f "$$ENROLL"
         go run -buildvcs=false ./cmd/unified-cli agent enrollment create \
           --agent-id docker-agent-1 \
@@ -273,3 +286,4 @@ volumes:
   ucd-workspaces:
   dind-storage:
   agent-credentials:
+  admin-state:

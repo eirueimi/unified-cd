@@ -59,7 +59,7 @@ func TestBearerAudiences(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := NewServer(Config{Token: "t"}, nil)
+			s := NewServer(Config{}, nil)
 			cfg := tc.cfg
 			s.SetOIDCConfig(&cfg)
 			assert.Equal(t, tc.want, s.bearerAudiences())
@@ -69,7 +69,7 @@ func TestBearerAudiences(t *testing.T) {
 
 func TestVerifyOIDCBearer_AudienceAllowList(t *testing.T) {
 	iss := newDiscoveryIssuer(t, "")
-	s := NewServer(Config{Token: "t"}, nil)
+	s := NewServer(Config{}, nil)
 	s.SetOIDCConfig(&OIDCConfig{Issuer: iss.URL, ClientID: "web", DeviceClientID: "cli"})
 
 	for _, aud := range []string{"web", "cli"} {
@@ -98,7 +98,7 @@ func TestOIDCConfig_DeviceRelayAndRevocation(t *testing.T) {
 	iss := newDiscoveryIssuer(t, "https://idp.example.com/revoke")
 
 	get := func(cfg OIDCConfig) (string, map[string]any) {
-		s := NewServer(Config{Token: "t"}, nil)
+		s := NewServer(Config{}, nil)
 		s.SetOIDCConfig(&cfg)
 		rec := httptest.NewRecorder()
 		s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc-config", nil))
@@ -124,7 +124,7 @@ func TestOIDCConfig_DeviceRelayAndRevocation(t *testing.T) {
 
 func TestAuthCodeOptions(t *testing.T) {
 	iss := newDiscoveryIssuer(t, "")
-	s := NewServer(Config{Token: "t"}, nil)
+	s := NewServer(Config{}, nil)
 	s.SetOIDCConfig(&OIDCConfig{Issuer: iss.URL, ClientID: "web", ClientSecret: "x", AuthParams: map[string]string{"access_type": "offline", "prompt": "consent"}})
 	_, _, cfg, err := s.oidcProvider(t.Context(), "localhost")
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestAuthCodeOptions(t *testing.T) {
 func TestHandleOIDCLogin_AppliesAuthParams(t *testing.T) {
 	iss := newDiscoveryIssuer(t, "")
 	pg := storetest.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t"}, pg)
+	srv := NewServer(Config{}, pg)
 	srv.SetOIDCConfig(&OIDCConfig{Issuer: iss.URL, ClientID: "web", ClientSecret: "x", AuthParams: map[string]string{"access_type": "offline"}})
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()

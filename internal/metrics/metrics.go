@@ -32,6 +32,7 @@ type Metrics struct {
 	githubAppTokenRequests *prometheus.CounterVec
 	collectorErrors        prometheus.Counter
 	buildInfo              *prometheus.GaugeVec
+	patsExpiringSoon       prometheus.Gauge
 
 	bgRuns     *prometheus.CounterVec
 	bgDuration *prometheus.HistogramVec
@@ -100,6 +101,10 @@ func New() *Metrics {
 			Name: "unifiedcd_build_info",
 			Help: "Controller build information; always 1, the version is carried in the label.",
 		}, []string{"version"}),
+		patsExpiringSoon: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "unifiedcd_pats_expiring_soon",
+			Help: "Personal access tokens that expire within 7 days",
+		}),
 		bgRuns: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "unifiedcd_background_task_runs_total",
 			Help: "Background worker passes, by task and outcome (success, error).",
@@ -146,7 +151,7 @@ func New() *Metrics {
 	}, []string{"metric", "reason"})
 	m.builtinCollectors = []prometheus.Collector{m.runsCreated, m.runsFinished, m.stepsCompleted,
 		m.stepDuration, m.webhookEvents, m.httpRequests, m.httpDuration,
-		m.agentAuthEvents, m.gitCredentialTokens, m.githubAppTokenRequests, m.collectorErrors, m.buildInfo,
+		m.agentAuthEvents, m.gitCredentialTokens, m.githubAppTokenRequests, m.collectorErrors, m.buildInfo, m.patsExpiringSoon,
 		m.bgRuns, m.bgDuration, m.bgItems, m.logLines, m.logBytes, m.queueWait, m.customErrors}
 	m.reg.MustRegister(m.builtinCollectors...)
 	// Disabled until ConfigureCustom; a disabled emitter ignores every sample.
@@ -211,6 +216,18 @@ func (m *Metrics) SetBuildInfo(version string) {
 	m.buildInfo.Reset()
 	m.buildInfo.WithLabelValues(version).Set(1)
 }
+
+// SetPATsExpiringSoon sets the unifiedcd_pats_expiring_soon gauge. A nil
+// Metrics is a no-op.
+func (m *Metrics) SetPATsExpiringSoon(n int) {
+	if m == nil {
+		return
+	}
+	m.patsExpiringSoon.Set(float64(n))
+}
+
+// PATsExpiringSoonForTest returns the underlying gauge for assertions.
+func (m *Metrics) PATsExpiringSoonForTest() prometheus.Gauge { return m.patsExpiringSoon }
 
 // AgentAuthEvent records a credential event using only bounded labels.
 func (m *Metrics) AgentAuthEvent(provider, result, reason string) {
