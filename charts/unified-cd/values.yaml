@@ -66,11 +66,14 @@ controller:
   # The controller verifies a job Pod's token by reading the Pod, so the chart
   # also grants it pods/get (Role and RoleBinding unified-cd-controller-job-pods)
   # in the namespace of every kubernetesStoreCredentialPolicies entry whose
-  # cluster is in-cluster, including the ones you supply here. Those
-  # namespaces must already exist (the chart creates only jobNamespace.name):
-  # create them first or the install fails. For a policy on another cluster the
-  # chart renders nothing: grant pods/get in that namespace to the controller's
-  # identity in that cluster yourself.
+  # cluster is the controller's own (a kubernetesClusters entry without a
+  # kubeconfig; in-cluster by default), including the ones you supply here.
+  # Each of those namespaces must already exist when you install, except
+  # jobNamespace.name, which the chart creates while jobNamespace.create is true
+  # (with create=false it must exist too); otherwise the install fails. For a
+  # policy on a cluster with a kubeconfig the chart renders nothing: grant
+  # pods/get in that namespace to the controller's identity in that cluster
+  # yourself.
   # Maps are merged key by key, but a list you supply (for example
   # agentAuth.kubernetesEnrollmentPolicies) replaces the computed list entirely.
   config: {}

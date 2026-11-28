@@ -55,16 +55,25 @@ roleRef:
 {{- /*
 The controller verifies a job Pod's projected token by reading the Pod, so it
 needs pods/get in every namespace job Pods run in. Those are the namespaces of
-the in-cluster kubernetesStoreCredentialPolicies in the merged controller
-config. The release namespace is already covered by the Role above. Other
-clusters are reached with their own credentials and are the operator's to
-grant. The namespaces must exist before the install.
+the kubernetesStoreCredentialPolicies of the controller's own cluster in the
+merged controller config. A cluster is the controller's own when it is listed
+in agentAuth.kubernetesClusters without a kubeconfig (the controller then uses
+its in-cluster credentials, whatever the cluster is named). The release
+namespace is already covered by the Role above. Other clusters are reached with
+their own credentials and are the operator's to grant. Each namespace must
+exist before the install.
 */}}
 {{- $config := include "unified-cd.controllerConfig" . | fromYaml }}
 {{- $release := include "unified-cd.namespace" . }}
+{{- $ownClusters := list }}
+{{- range (($config.agentAuth | default dict).kubernetesClusters | default list) }}
+{{- if not (trim (.kubeconfig | default "")) }}
+{{- $ownClusters = append $ownClusters .name }}
+{{- end }}
+{{- end }}
 {{- $jobNamespaces := list }}
 {{- range (($config.agentAuth | default dict).kubernetesStoreCredentialPolicies | default list) }}
-{{- if eq (.cluster | default "") "in-cluster" }}
+{{- if has (.cluster | default "") $ownClusters }}
 {{- range (.namespaces | default list) }}
 {{- if ne . $release }}
 {{- $jobNamespaces = append $jobNamespaces . }}
@@ -78,7 +87,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: unified-cd-controller-job-pods
-  namespace: {{ $ns }}
+  namespace: {{ $ns | quote }}
   labels:
     {{- include "unified-cd.labels" $ | nindent 4 }}
 rules:
@@ -90,7 +99,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: unified-cd-controller-job-pods
-  namespace: {{ $ns }}
+  namespace: {{ $ns | quote }}
   labels:
     {{- include "unified-cd.labels" $ | nindent 4 }}
 subjects:

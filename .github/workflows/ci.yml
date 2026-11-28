@@ -378,6 +378,9 @@ jobs:
           helm install unified-cd charts/unified-cd -n "$NS" --create-namespace \
             --set controller.image.repository=unified-cd-controller,controller.image.tag=ci \
             --set agent.image.repository=unified-cd-k8s-agent,agent.image.tag=ci \
+            --set-string agent.config.sidecarImage=unified-cd-artifact-sidecar:ci \
+            --set-string agent.config.shimImage=unified-cd-k8s-agent:ci \
+            --set-string agent.config.podImage=alpine/k8s:1.31.2 \
             --wait --timeout 10m
       - name: Server-side dry-run of every rendered bundle
         # Run after the install so the unified-cd namespace exists: a server
@@ -458,7 +461,8 @@ jobs:
           api() { # api METHOD PATH [curl args...]
             local m=$1 p=$2; shift 2
             kill -0 "$(cat pf.pid)" 2>/dev/null || { sleep 1; start_pf; sleep 2; }
-            curl -fsS --connect-timeout 3 --max-time 10 -X "$m"               -H "Authorization: Bearer $admin_pat" "$@" "http://127.0.0.1:18080$p"
+            curl -fsS --connect-timeout 3 --max-time 10 -X "$m" \
+              -H "Authorization: Bearer $admin_pat" "$@" "http://127.0.0.1:18080$p"
           }
           jq -n --arg y 'apiVersion: unified-cd/v1
           kind: Job
@@ -482,7 +486,8 @@ jobs:
           [ -n "$applied" ] || { echo "applying the job failed"; exit 1; }
           run_id=""
           for i in $(seq 1 10); do
-            if api POST /api/v1/runs -H 'Content-Type: application/json'                  -d '{"jobName":"ci-job-pod-artifact"}' -o run.json 2>/dev/null; then
+            if api POST /api/v1/runs -H 'Content-Type: application/json' \
+                 -d '{"jobName":"ci-job-pod-artifact"}' -o run.json 2>/dev/null; then
               run_id=$(jq -r '.id' run.json); break
             fi
             sleep 2
@@ -503,7 +508,8 @@ jobs:
             exit 1
           fi
           api GET "/api/v1/runs/$run_id/artifacts/" -o artifacts.json
-          jq -e 'any(.[]; .name == "out")' artifacts.json >/dev/null             || { echo "artifact 'out' is not listed for run $run_id"; cat artifacts.json; exit 1; }
+          jq -e 'any(.[]; .name == "out")' artifacts.json >/dev/null \
+            || { echo "artifact 'out' is not listed for run $run_id"; cat artifacts.json; exit 1; }
 
           kek_before=$(kubectl -n "$NS" get secret unified-cd-controller-kek -o jsonpath='{.data.kek}')
           [ -n "$kek_before" ]

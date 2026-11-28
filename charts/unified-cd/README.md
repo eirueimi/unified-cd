@@ -213,11 +213,13 @@ first; see `docs/operator-manual/kubernetes-integration.md`.
 - **The controller can read job Pods.** It verifies a job Pod's token by reading
   the Pod in the Pod's own namespace, so the chart renders a Role and RoleBinding
   `unified-cd-controller-job-pods` (`pods` `get` only) in the namespace of every
-  `kubernetesStoreCredentialPolicies` entry whose `cluster` is `in-cluster`
-  (`jobNamespace.name` by default; the release namespace is already covered by
-  `unified-cd-controller-kubernetes-enrollment`). A namespace you add through
-  `controller.config` must exist before the install, or Helm fails. A policy for
-  another cluster gets no RBAC from the chart: grant `pods get` to the
+  `kubernetesStoreCredentialPolicies` entry whose `cluster` is the controller's
+  own, meaning a `kubernetesClusters` entry without a `kubeconfig` (`in-cluster`
+  by default; `jobNamespace.name` is the default namespace, and the release
+  namespace is already covered by `unified-cd-controller-kubernetes-enrollment`).
+  Every such namespace must exist before the install, or Helm fails; the chart
+  creates only `jobNamespace.name`, and only while `jobNamespace.create` is
+  `true`. A policy for a cluster with a `kubeconfig` gets no RBAC from the chart: grant `pods get` to the
   controller's identity in that cluster yourself. Without it the sidecar's
   presign calls fail with `503 kubernetes identity unavailable`.
 - **Config changes restart Pods.** The Deployments carry `checksum/config`

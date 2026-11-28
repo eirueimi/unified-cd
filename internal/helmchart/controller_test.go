@@ -205,6 +205,29 @@ func TestControllerJobPodsRBAC_UserPolicies(t *testing.T) {
 	assert.Equal(t, []string{"team-a", "team-b"}, namespacesOf(bindings))
 }
 
+// The controller's own cluster is the kubernetesClusters entry without a
+// kubeconfig, whatever its name; a cluster with a kubeconfig is reached with
+// other credentials and gets no Role from the chart.
+func TestControllerJobPodsRBAC_OwnClusterByKubeconfig(t *testing.T) {
+	objs := Render(t, "unified-cd",
+		"controller.config.agentAuth.kubernetesClusters[0].name=home",
+		"controller.config.agentAuth.kubernetesClusters[1].name=remote",
+		"controller.config.agentAuth.kubernetesClusters[1].kubeconfig=/etc/kube/remote",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[0].cluster=home",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[0].namespaces={team-home}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[0].serviceAccounts={default}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[1].cluster=remote",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[1].namespaces={team-remote}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[1].serviceAccounts={default}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[2].cluster=in-cluster",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[2].namespaces={not-listed}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[2].serviceAccounts={default}",
+	)
+	roles, bindings := jobPodsObjects(objs)
+	assert.Equal(t, []string{"team-home"}, namespacesOf(roles))
+	assert.Equal(t, []string{"team-home"}, namespacesOf(bindings))
+}
+
 func TestControllerConfigDeepMerge(t *testing.T) {
 	objs := Render(t, "unified-cd", "controller.config.server.listen=:9090")
 	cfg := controllerConfig(t, objs)
