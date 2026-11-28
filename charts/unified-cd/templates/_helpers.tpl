@@ -117,6 +117,15 @@ agentAuth:
 {{- end -}}
 
 {{/*
+The controller config as rendered into its ConfigMap: controller.config
+deep-merged over the computed default. Shared by the ConfigMap and the RBAC
+that is derived from the config.
+*/}}
+{{- define "unified-cd.controllerConfig" -}}
+{{- include "unified-cd.mergeConfig" (dict "base" (include "unified-cd.controllerConfigDefault" . | fromYaml) "over" .Values.controller.config) -}}
+{{- end -}}
+
+{{/*
 Render-time value checks. Included from every top-level template so an invalid
 combination fails the render with a message naming the value to change.
 */}}

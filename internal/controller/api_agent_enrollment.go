@@ -417,6 +417,7 @@ func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Requ
 	identity, err := verifier.Verify(r.Context(), token, *policy)
 	if err != nil {
 		if errors.Is(err, ErrKubernetesEnrollmentUnavailable) {
+			slog.Warn("kubernetes enrollment: identity unavailable", "policy", policy.Name, "cluster", providerConfig.Cluster, "error", err)
 			s.recordAgentAuth("kubernetes", "failure", "unavailable")
 			http.Error(w, "kubernetes identity unavailable", http.StatusServiceUnavailable)
 		} else {

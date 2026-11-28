@@ -5,7 +5,7 @@ key and the user's value always wins (including false and 0), but a list (for
 example kubernetesEnrollmentPolicies) supplied by the user replaces the
 computed list entirely.
 */}}
-{{- $config := include "unified-cd.mergeConfig" (dict "base" (include "unified-cd.controllerConfigDefault" . | fromYaml) "over" .Values.controller.config) | fromYaml }}
+{{- $config := include "unified-cd.controllerConfig" . | fromYaml }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

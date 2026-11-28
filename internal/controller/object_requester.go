@@ -64,6 +64,13 @@ func (s *Server) verifyStoreCredentialToken(r *http.Request, token string) (Boun
 		if err == nil {
 			return identity, cluster, nil
 		}
+		if isKubernetesIdentityUnavailable(err) {
+			// The client sees only "kubernetes identity unavailable"; this is
+			// the one place the cause (for example a forbidden Pod get when the
+			// controller lacks pods/get in the job namespace) is visible. The
+			// error carries API errors only, never the token.
+			slog.Warn("kubernetes identity unavailable for object request", "cluster", cluster.Cluster, "error", err)
+		}
 		lastErr = err
 	}
 	return BoundPodIdentity{}, StoreCredentialCluster{}, lastErr
