@@ -210,6 +210,16 @@ first; see `docs/operator-manual/kubernetes-integration.md`.
   `kubernetesStoreCredentialPolicies` is rendered with the controller, whether or not
   `bundledStores.enabled`; list another ServiceAccount there through
   `controller.config` if your jobs do not run under `default`.
+- **The controller can read job Pods.** It verifies a job Pod's token by reading
+  the Pod in the Pod's own namespace, so the chart renders a Role and RoleBinding
+  `unified-cd-controller-job-pods` (`pods` `get` only) in the namespace of every
+  `kubernetesStoreCredentialPolicies` entry whose `cluster` is `in-cluster`
+  (`jobNamespace.name` by default; the release namespace is already covered by
+  `unified-cd-controller-kubernetes-enrollment`). A namespace you add through
+  `controller.config` must exist before the install, or Helm fails. A policy for
+  another cluster gets no RBAC from the chart: grant `pods get` to the
+  controller's identity in that cluster yourself. Without it the sidecar's
+  presign calls fail with `503 kubernetes identity unavailable`.
 - **Config changes restart Pods.** The Deployments carry `checksum/config`
   annotations, so editing `controller.config` or `agent.config` rolls the Pods.
 - **KEK Job.** With the bundled stores (or `controller.kek.generate=true`) a

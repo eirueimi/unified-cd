@@ -63,6 +63,14 @@ controller:
   # an in-cluster Kubernetes enrollment policy for the release namespace, plus
   # kubernetesStoreCredentialPolicies for the job namespace: the policy that
   # lets job Pods ask the controller for presigned object URLs).
+  # The controller verifies a job Pod's token by reading the Pod, so the chart
+  # also grants it pods/get (Role and RoleBinding unified-cd-controller-job-pods)
+  # in the namespace of every kubernetesStoreCredentialPolicies entry whose
+  # cluster is in-cluster, including the ones you supply here. Those
+  # namespaces must already exist (the chart creates only jobNamespace.name):
+  # create them first or the install fails. For a policy on another cluster the
+  # chart renders nothing: grant pods/get in that namespace to the controller's
+  # identity in that cluster yourself.
   # Maps are merged key by key, but a list you supply (for example
   # agentAuth.kubernetesEnrollmentPolicies) replaces the computed list entirely.
   config: {}
