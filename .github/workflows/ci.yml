@@ -566,7 +566,7 @@ jobs:
                   type: string
                   default: miss
             steps:
-              - name: restore-cache
+              - name: restore_cache
                 cache:
                   path: cachedir
                   key: ci-sa-cache-v1
