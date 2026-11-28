@@ -12,6 +12,7 @@ cache requires UNIFIED_CONTROLLER_URL and UNIFIED_POD_TOKEN_FILE (set by the k8s
 presign artifact/get: 403 forbidden: this namespace or service account may not request object URLs
 presign artifact/put: 409 binding-pending: no pod is bound to this run yet; retry
 presign artifact/get: 403 forbidden: the presented pod is not the one bound to this run
+artifact upload failed: presign artifact/put: 503 unavailable: kubernetes identity unavailable
 ```
 
 **Cause**
@@ -20,11 +21,20 @@ The Kubernetes sidecar holds no store credentials. It asks the controller for pr
 
 - `requires UNIFIED_CONTROLLER_URL and UNIFIED_POD_TOKEN_FILE`: the sidecar container was started without the two variables the k8s-agent sets, usually because the sidecar image and the agent are different releases or the Pod was not built by this agent.
 - `403 forbidden: this namespace or service account may not request object URLs`: the job Pod's namespace and ServiceAccount are not in the controller's `agentAuth.kubernetesStoreCredentialPolicies` for this cluster. The Helm chart renders a policy for the job namespace and the `default` ServiceAccount; a job that runs under another ServiceAccount needs its own entry.
+- `503 unavailable: kubernetes identity unavailable`: the controller could not verify the Pod's token. The usual cause is missing RBAC: the controller reads the job Pod in the Pod's own namespace, so its ServiceAccount needs `get` on `pods` there, and without it the Pod lookup is refused (`403`). The chart grants this (Role `unified-cd-controller-job-pods`) from v0.21.1 on; v0.21.0 and earlier granted it only in the release namespace, so every job in another namespace (the default `ci`) failed this way. Other causes are an unreachable cluster API or a TokenReview timeout. The controller logs the real cause as a `level=WARN` line, `kubernetes identity unavailable for object request` with `cluster=<name>` and `error=...` (for example `pods "ucd-run-abc" is forbidden: User "system:serviceaccount:unified-cd:unified-cd-controller" cannot get resource "pods" in API group "" in the namespace "ci"`). To check the permission:
+
+  ```bash
+  kubectl auth can-i get pods -n <job-namespace> --as=system:serviceaccount:<release-namespace>:unified-cd-controller
+  ```
+
+  It must answer `yes`.
 - `409 binding-pending`: the controller has not yet been told which Pod runs this run. The sidecar retries for up to 30 seconds, so the error means the agent's heartbeat carrying the Pod binding did not arrive in that time; check that the agent can reach the controller.
 - `409 run-finished`: the run has already finished (succeeded or failed, or cancelled and its Pod is no longer bound or more than an hour has passed), so its Pod no longer gets object URLs. The sidecar does not retry. `finally:` and hook transfers of a cancelled run keep working for up to an hour from Pods that were bound before the cancel (a scope Pod started after the cancel is never bound and gets `403`); if one fails with this error, its cleanup ran longer than that. For any other run, check why the run ended.
 - `403 forbidden: the presented pod is not the one bound to this run`: the token belongs to a different Pod than the one the agent reported for the run.
 
 **Fix**
+
+For `503 kubernetes identity unavailable`, upgrade the chart to v0.21.1 or later, or create a Role with `get` on `pods` and a RoleBinding to the controller's ServiceAccount in each job namespace (for a policy on another cluster, grant it to the controller's identity in that cluster). See [the controller needs `pods get` in every job namespace](../operator-manual/kubernetes-integration.md#how-the-sidecar-reaches-the-object-store).
 
 Upgrade the sidecar image together with the k8s-agent (the default `sidecarImage` follows the agent's version), add the job ServiceAccount to `kubernetesStoreCredentialPolicies`, and check the agent's connection to the controller. Nothing needs to be configured for the object store itself, and there is no Secret to create.
 

@@ -59,12 +59,28 @@ func (s *Server) verifyStoreCredentialToken(r *http.Request, token string) (Boun
 		return BoundPodIdentity{}, StoreCredentialCluster{}, ErrKubernetesEnrollmentUnavailable
 	}
 	var lastErr error
+	type clusterErr struct {
+		cluster string
+		err     error
+	}
+	var unavailable []clusterErr
 	for _, cluster := range s.storeCredentialClusters {
 		identity, err := VerifyProjectedToken(r.Context(), cluster.Client, cluster.Cluster, api.KubernetesStoreCredentialAudience, token, KubernetesStoreCredentialRequestTimeout)
 		if err == nil {
 			return identity, cluster, nil
 		}
+		if isKubernetesIdentityUnavailable(err) {
+			unavailable = append(unavailable, clusterErr{cluster.Cluster, err})
+		}
 		lastErr = err
+	}
+	// Only when no cluster authenticated the token: the client sees at most
+	// "kubernetes identity unavailable", so this is the one place the cause
+	// (for example a forbidden Pod get when the controller lacks pods/get in
+	// the job namespace) is visible. The errors carry API errors only, never
+	// the token.
+	for _, u := range unavailable {
+		slog.Warn("kubernetes identity unavailable for object request", "cluster", u.cluster, "error", u.err)
 	}
 	return BoundPodIdentity{}, StoreCredentialCluster{}, lastErr
 }

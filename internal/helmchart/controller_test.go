@@ -120,11 +120,112 @@ func TestControllerConfigFollowsNamespace(t *testing.T) {
 	assert.Equal(t, "cd-system", dig(t, crb, "subjects", 0, "namespace"))
 	for _, k := range []string{"Deployment", "Service", "ServiceAccount", "ConfigMap", "Role", "RoleBinding"} {
 		for _, o := range objs {
-			if o.Kind() == k && strings.HasPrefix(o.Name(), "unified-cd-controller") {
+			if o.Kind() == k && strings.HasPrefix(o.Name(), "unified-cd-controller") && o.Name() != jobPodsRBACName {
 				assert.Equalf(t, "cd-system", o.Namespace(), "%s/%s", k, o.Name())
 			}
 		}
 	}
+}
+
+const jobPodsRBACName = "unified-cd-controller-job-pods"
+
+func jobPodsObjects(objs []Object) (roles, bindings []Object) {
+	for _, o := range objs {
+		if o.Name() != jobPodsRBACName {
+			continue
+		}
+		switch o.Kind() {
+		case "Role":
+			roles = append(roles, o)
+		case "RoleBinding":
+			bindings = append(bindings, o)
+		}
+	}
+	return roles, bindings
+}
+
+func namespacesOf(objs []Object) []string {
+	var ns []string
+	for _, o := range objs {
+		ns = append(ns, o.Namespace())
+	}
+	return ns
+}
+
+// The controller reads the job Pod to verify its projected token, so it needs
+// pods/get in the job namespace, not only in the release namespace.
+func TestControllerJobPodsRBAC_Default(t *testing.T) {
+	objs := Render(t, "unified-cd")
+	role := map[string]any(Find(objs, "Role", jobPodsRBACName))
+	require.NotNil(t, role)
+	assert.Equal(t, "ci", Object(role).Namespace())
+	assert.Equal(t, []any{
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"get"}},
+	}, dig(t, role, "rules"))
+	assert.Equal(t, "unified-cd", dig(t, role, "metadata", "labels", "app.kubernetes.io/name"))
+
+	rb := map[string]any(Find(objs, "RoleBinding", jobPodsRBACName))
+	require.NotNil(t, rb)
+	assert.Equal(t, "ci", Object(rb).Namespace())
+	assert.Equal(t, "ServiceAccount", dig(t, rb, "subjects", 0, "kind"))
+	assert.Equal(t, "unified-cd-controller", dig(t, rb, "subjects", 0, "name"))
+	assert.Equal(t, "unified-cd", dig(t, rb, "subjects", 0, "namespace"))
+	assert.Equal(t, "Role", dig(t, rb, "roleRef", "kind"))
+	assert.Equal(t, jobPodsRBACName, dig(t, rb, "roleRef", "name"))
+	assert.Equal(t, "rbac.authorization.k8s.io", dig(t, rb, "roleRef", "apiGroup"))
+}
+
+func TestControllerJobPodsRBAC_ReleaseNamespaceSkipped(t *testing.T) {
+	objs := Render(t, "unified-cd", "jobNamespace.name=unified-cd")
+	roles, bindings := jobPodsObjects(objs)
+	assert.Empty(t, roles)
+	assert.Empty(t, bindings)
+	seen := map[string]bool{}
+	for _, o := range objs {
+		key := o.Kind() + "/" + o.Namespace() + "/" + o.Name()
+		assert.Falsef(t, seen[key], "duplicate object %s", key)
+		seen[key] = true
+	}
+}
+
+func TestControllerJobPodsRBAC_UserPolicies(t *testing.T) {
+	objs := Render(t, "unified-cd",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[0].cluster=in-cluster",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[0].namespaces={team-b,team-a,unified-cd}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[0].serviceAccounts={default}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[1].cluster=in-cluster",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[1].namespaces={team-a}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[1].serviceAccounts={runner}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[2].cluster=remote",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[2].namespaces={elsewhere}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[2].serviceAccounts={default}",
+	)
+	roles, bindings := jobPodsObjects(objs)
+	assert.Equal(t, []string{"team-a", "team-b"}, namespacesOf(roles))
+	assert.Equal(t, []string{"team-a", "team-b"}, namespacesOf(bindings))
+}
+
+// The controller's own cluster is the kubernetesClusters entry without a
+// kubeconfig, whatever its name; a cluster with a kubeconfig is reached with
+// other credentials and gets no Role from the chart.
+func TestControllerJobPodsRBAC_OwnClusterByKubeconfig(t *testing.T) {
+	objs := Render(t, "unified-cd",
+		"controller.config.agentAuth.kubernetesClusters[0].name=home",
+		"controller.config.agentAuth.kubernetesClusters[1].name=remote",
+		"controller.config.agentAuth.kubernetesClusters[1].kubeconfig=/etc/kube/remote",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[0].cluster=home",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[0].namespaces={team-home}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[0].serviceAccounts={default}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[1].cluster=remote",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[1].namespaces={team-remote}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[1].serviceAccounts={default}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[2].cluster=in-cluster",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[2].namespaces={not-listed}",
+		"controller.config.agentAuth.kubernetesStoreCredentialPolicies[2].serviceAccounts={default}",
+	)
+	roles, bindings := jobPodsObjects(objs)
+	assert.Equal(t, []string{"team-home"}, namespacesOf(roles))
+	assert.Equal(t, []string{"team-home"}, namespacesOf(bindings))
 }
 
 func TestControllerConfigDeepMerge(t *testing.T) {

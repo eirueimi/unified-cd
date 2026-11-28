@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +14,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stesting "k8s.io/client-go/testing"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -273,4 +278,31 @@ func TestPresign_PodBoundToRunACannotPresignRunB(t *testing.T) {
 	}))
 	rec = doPresign(t, s, sidecarToken(), runB, api.PresignRequest{Kind: "artifact", Op: "put", Name: "a"})
 	requireObjectError(t, rec, http.StatusForbidden, "forbidden")
+}
+
+// When the controller may not read the job Pod (no pods/get in the job
+// namespace), the sidecar sees only 503 "kubernetes identity unavailable".
+// The cause must reach the controller log, and nothing about the token.
+func TestPresign_SidecarPodGetForbiddenIsLogged(t *testing.T) {
+	cfg := sidecarPresignConfig([]string{"ci"})
+	client := cfg.StoreCredentialClusters[0].Client.(*fake.Clientset)
+	client.PrependReactor("get", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "ucd-run-abc", nil)
+	})
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	s, st, _ := presignTestServer(t, cfg)
+	runID := seedRun(t, st, "job-a", "")
+	token := sidecarToken()
+	rec := doPresign(t, s, token, runID, api.PresignRequest{Kind: "artifact", Op: "put", Name: "a"})
+	requireObjectError(t, rec, http.StatusServiceUnavailable, "unavailable")
+
+	logs := buf.String()
+	assert.Contains(t, logs, "level=WARN")
+	assert.Contains(t, logs, "cluster=prod")
+	assert.Contains(t, logs, "forbidden")
+	assert.NotContains(t, logs, token)
 }

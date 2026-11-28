@@ -147,7 +147,11 @@ or a Pod UID that does not match the live bound Pod. Check the policy and
 projected token volume; do not substitute a static Secret. A 503 is retryable:
 check the configured cluster verifier, TokenReview permission, bounded Pod
 `get` permission, and API-server health. The required audience is
-`unified-cd-agent-enrollment`.
+`unified-cd-agent-enrollment`. The controller logs the real cause of a 503 as
+a `level=WARN` line (`kubernetes enrollment: identity unavailable`, with
+`policy`, `cluster` and `error`), for example a forbidden Pod `get`. The same
+permission is needed in every job namespace for artifact and cache transfers;
+see [Artifacts and Storage](artifacts-and-storage.md).
 
 ### Cloud VM agent returns 403 or 503 during enrollment
 
