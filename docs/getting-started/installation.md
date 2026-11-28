@@ -294,9 +294,15 @@ helm install unified-cd-agent oci://ghcr.io/eirueimi/charts/unified-cd \
 ```
 
 First configure the external controller with an `agentAuth.kubernetesClusters`
-entry for this cluster and an enabled enrollment policy that binds the agent's
-ServiceAccount (`unified-cd-k8s-agent`) and namespace; see
-[Kubernetes Integration](../operator-manual/kubernetes-integration.md). Do not
+entry for this cluster that has a `kubeconfig` (the `in-cluster` entry works
+only for a controller running inside a cluster), an enabled enrollment policy
+that binds the agent's ServiceAccount (`unified-cd-k8s-agent`) and namespace
+(`unified-cd`), and an `agentAuth.kubernetesStoreCredentialPolicies` entry for
+the job namespace and ServiceAccounts, without which every artifact and cache
+step fails with `401`. The kubeconfig's identity needs `tokenreviews` `create`
+and `pods` `get` in the agent and job namespaces. The complete snippet and RBAC
+are in [Kubernetes Integration](../operator-manual/kubernetes-integration.md#controller-side-of-an-agent-only-install).
+The chart cannot yet mount a kubeconfig into a controller it installs. Do not
 substitute a static token or create an agent credential Secret.
 
 ### Release bundles (`kubectl apply`)

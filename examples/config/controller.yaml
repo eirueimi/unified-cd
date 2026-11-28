@@ -62,6 +62,15 @@ agentAuth:
       requiredLabels: [kind:kubernetes]
       accessTokenTTL: 1h
       enabled: true
+  # Which job Pods (cluster, namespace, ServiceAccount) may ask for presigned
+  # object URLs for artifact and cache steps. Needed for them on a Kubernetes agent:
+  # with no entry every sidecar request is refused with 401. Several entries may
+  # name one cluster; a Pod is allowed when any of them lists its namespace and
+  # ServiceAccount.
+  kubernetesStoreCredentialPolicies:
+    - cluster: in-cluster
+      namespaces: [ci]
+      serviceAccounts: [default]
 
 # OIDC SSO (optional)
 # oidc:

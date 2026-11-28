@@ -119,3 +119,10 @@ No active items.
 - **Impact:** Vars can only be global or per-job, so per-repository image aliases (such as `GO_IMAGE`) cannot be defined by an AppSource: two AppSources defining the same key collide (`vars X defined by both ...`). A "test" AppSource that syncs the same repository as a production one produces identical job names (a job's folder comes from its directory under `spec.path`, so both AppSources yield the same qualified names), and nothing detects two AppSources writing the same job, so they would overwrite each other on every sync.
 - **Evidence:** The Vars collision check (`internal/dsl/vars_parse.go`) rejects a key defined by two manifests. `internal/controller/appsource_apply.go` has no cross-AppSource ownership check (per code reading, not reproduced).
 - **Done when:** A design covers AppSource-scoped Vars, a destination folder or prefix for an AppSource's jobs, and conflict detection between AppSources; it is then implemented with tests, or the decision not to is recorded.
+
+### 63. The chart cannot give the controller a kubeconfig
+
+- **Status:** Open
+- **Impact:** `agentAuth.kubernetesClusters[].kubeconfig` is a file path in the controller Pod, but the chart mounts only the config map and the KEK, so a chart-installed controller cannot reach a remote cluster. An agent-only install against an external controller works only because that controller is run by hand (see "Controller side of an agent-only install" in `docs/operator-manual/kubernetes-integration.md`).
+- **Evidence:** `charts/unified-cd/templates/controller/deployment.yaml` has no extra volumes, volume mounts or env; `cmd/controller/main.go` loads the path with `clientcmd.BuildConfigFromFlags`.
+- **Done when:** The chart supports `controller.extraVolumes` / `extraVolumeMounts` (and `extraEnv`), or the decision to leave remote clusters to hand-run controllers is documented in the chart README; a helm render test covers the mount.

@@ -144,7 +144,7 @@ unavailable` (503).
 **Fix:** A 403 indicates an unrecognized/disabled policy, wrong audience,
 ServiceAccount or namespace mismatch, requested label/capability escalation,
 or a Pod UID that does not match the live bound Pod. Check the policy and
-projected token volume; do not substitute a static Secret. A 503 is retryable:
+projected token volume; do not substitute a static Secret. The controller logs the cause of a 403 from a Kubernetes agent as a `level=WARN` line, `kubernetes enrollment: rejected`, with `policy`, `cluster` and `reason` (a namespace or ServiceAccount the policy does not list is named in the reason). A 503 is retryable:
 check the configured cluster verifier, TokenReview permission, bounded Pod
 `get` permission, and API-server health. The required audience is
 `unified-cd-agent-enrollment`. The controller logs the real cause of a 503 as
